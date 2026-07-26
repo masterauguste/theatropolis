@@ -1,0 +1,100 @@
+syntax = "proto3";
+
+package theatropolis.control.v1;
+
+option go_package = "github.com/masterauguste/theatropolis/api/gen/theatropolis/control/v1;controlv1";
+
+service AgentControlService {
+  // Enroll binds a single-use enrollment token to an agent-generated
+  // Ed25519 public key. The private key never leaves the agent.
+  rpc Enroll(EnrollRequest) returns (EnrollResponse);
+
+  // Connect is an agent-initiated, long-lived control channel. The agent
+  // proves possession of its private key before receiving any commands.
+  rpc Connect(stream AgentFrame) returns (stream MasterFrame);
+}
+
+message EnrollRequest {
+  string agent_id = 1;
+  bytes enrollment_token = 2;
+  bytes public_key = 3;
+}
+
+message EnrollResponse {
+  string agent_id = 1;
+  int64 enrolled_at_unix = 2;
+}
+
+message AgentFrame {
+  uint64 sequence = 1;
+
+  oneof payload {
+    AgentHello hello = 10;
+    AgentProof proof = 11;
+    AgentHeartbeat heartbeat = 12;
+    ConfigValidationReport config_validation_report = 13;
+  }
+}
+
+message MasterFrame {
+  uint64 sequence = 1;
+
+  oneof payload {
+    AgentChallenge challenge = 10;
+    AuthenticationResult authentication_result = 11;
+    ValidateConfigCommand validate_config = 12;
+  }
+}
+
+message AgentHello {
+  string agent_id = 1;
+  uint32 protocol_version = 2;
+  string agent_version = 3;
+  string operating_system = 4;
+  string architecture = 5;
+}
+
+message AgentChallenge {
+  bytes nonce = 1;
+  int64 expires_at_unix = 2;
+}
+
+message AgentProof {
+  bytes signature = 1;
+}
+
+message AuthenticationResult {
+  bool authenticated = 1;
+  string error_code = 2;
+}
+
+message AgentHeartbeat {
+  int64 observed_at_unix = 1;
+  string active_revision_id = 2;
+  string sing_box_version = 3;
+}
+
+message ValidateConfigCommand {
+  string deployment_id = 1;
+  string revision_id = 2;
+  bytes config_sha256 = 3;
+  bytes config_json = 4;
+  uint32 timeout_seconds = 5;
+}
+
+enum ConfigValidationStatus {
+  CONFIG_VALIDATION_STATUS_UNSPECIFIED = 0;
+  CONFIG_VALIDATION_STATUS_VALID = 1;
+  CONFIG_VALIDATION_STATUS_INVALID = 2;
+  CONFIG_VALIDATION_STATUS_INTERNAL_ERROR = 3;
+}
+
+message ConfigValidationReport {
+  string deployment_id = 1;
+  string revision_id = 2;
+  bytes config_sha256 = 3;
+  ConfigValidationStatus status = 4;
+  string diagnostic = 5;
+  int64 checked_at_unix = 6;
+  uint64 duration_milliseconds = 7;
+}

@@ -1,0 +1,5 @@
+# Local deployment credentials
+.deploy/
+
+# Project-local development toolchain
+.tools/
