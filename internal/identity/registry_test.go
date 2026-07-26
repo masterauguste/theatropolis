@@ -69,3 +69,68 @@ func TestLoadOrCreatePrivateKeyPersistsIdentity(t *testing.T) {
 		t.Fatalf("agent identity is accessible by group or others: %v", info.Mode().Perm())
 	}
 }
+
+func TestPersistentRegistryStoresOnlyTokenDigestAndPublicKey(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	path := filepath.Join(t.TempDir(), "master", "identities.json")
+	registry, err := OpenRegistry(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	token, err := registry.CreateEnrollment(ctx, "edge-persistent-1", time.Now().Add(time.Minute))
+	if err != nil {
+		t.Fatal(err)
+	}
+	stored, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if bytes.Contains(stored, token) {
+		t.Fatal("identity registry stored a plaintext enrollment token")
+	}
+
+	reopened, err := OpenRegistry(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	publicKey, _, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := reopened.Enroll(ctx, "edge-persistent-1", token, publicKey, time.Now()); err != nil {
+		t.Fatal(err)
+	}
+	reopened, err = OpenRegistry(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	actualPublicKey, err := reopened.PublicKey(ctx, "edge-persistent-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(actualPublicKey, publicKey) {
+		t.Fatal("persistent registry returned a different public key")
+	}
+}
+
+func TestPersistentRegistryRejectsOversizedFile(t *testing.T) {
+	t.Parallel()
+
+	path := filepath.Join(t.TempDir(), "identities.json")
+	file, err := os.Create(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := file.Truncate(maxRegistryFileBytes + 1); err != nil {
+		_ = file.Close()
+		t.Fatal(err)
+	}
+	if err := file.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := OpenRegistry(path); err == nil {
+		t.Fatal("oversized identity registry was accepted")
+	}
+}

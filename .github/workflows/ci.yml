@@ -19,6 +19,8 @@ jobs:
       - run: go mod verify
       - run: go test -count=1 ./...
       - run: go vet ./...
+      - run: sh -n install.sh
+      - run: shellcheck --shell=sh install.sh
 
   linux-build:
     runs-on: ubuntu-latest

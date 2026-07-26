@@ -6,10 +6,16 @@ import (
 	"crypto/rand"
 	"crypto/sha256"
 	"crypto/subtle"
+	"encoding/base64"
 	"encoding/binary"
+	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
+	"os"
+	"path/filepath"
 	"regexp"
+	"strings"
 	"sync"
 	"time"
 )
@@ -17,6 +23,7 @@ import (
 const (
 	EnrollmentTokenBytes = 32
 	ChallengeNonceBytes  = 32
+	maxRegistryFileBytes = 4 << 20
 )
 
 var (
@@ -35,9 +42,10 @@ type pendingEnrollment struct {
 }
 
 type Registry struct {
-	mu       sync.RWMutex
-	pending  map[string]pendingEnrollment
-	enrolled map[string]ed25519.PublicKey
+	mu          sync.RWMutex
+	pending     map[string]pendingEnrollment
+	enrolled    map[string]ed25519.PublicKey
+	persistPath string
 }
 
 func NewRegistry() *Registry {
@@ -45,6 +53,78 @@ func NewRegistry() *Registry {
 		pending:  make(map[string]pendingEnrollment),
 		enrolled: make(map[string]ed25519.PublicKey),
 	}
+}
+
+// OpenRegistry opens a registry which persists enrollment-token hashes and
+// agent public keys. Agent private keys and plaintext tokens are never stored.
+func OpenRegistry(path string) (*Registry, error) {
+	if strings.TrimSpace(path) == "" {
+		return nil, errors.New("identity registry path is required")
+	}
+	registry := NewRegistry()
+	registry.persistPath = filepath.Clean(path)
+
+	info, err := os.Lstat(registry.persistPath)
+	if errors.Is(err, os.ErrNotExist) {
+		return registry, nil
+	}
+	if err != nil {
+		return nil, fmt.Errorf("inspect identity registry: %w", err)
+	}
+	if !info.Mode().IsRegular() {
+		return nil, errors.New("identity registry is not a regular file")
+	}
+	if info.Size() > maxRegistryFileBytes {
+		return nil, errors.New("identity registry exceeds the size limit")
+	}
+	if err := os.Chmod(registry.persistPath, 0o600); err != nil {
+		return nil, fmt.Errorf("secure identity registry: %w", err)
+	}
+
+	file, err := os.Open(registry.persistPath)
+	if err != nil {
+		return nil, fmt.Errorf("open identity registry: %w", err)
+	}
+	defer file.Close()
+	decoder := json.NewDecoder(io.LimitReader(file, maxRegistryFileBytes+1))
+	decoder.DisallowUnknownFields()
+	var stored diskRegistry
+	if err := decoder.Decode(&stored); err != nil {
+		return nil, fmt.Errorf("decode identity registry: %w", err)
+	}
+	if stored.Version != 1 {
+		return nil, fmt.Errorf("unsupported identity registry version %d", stored.Version)
+	}
+	if err := ensureJSONEOF(decoder); err != nil {
+		return nil, err
+	}
+
+	for agentID, pending := range stored.Pending {
+		if !agentIDPattern.MatchString(agentID) {
+			return nil, errors.New("identity registry contains an invalid agent ID")
+		}
+		tokenHash, err := base64.RawURLEncoding.DecodeString(pending.TokenSHA256)
+		if err != nil || len(tokenHash) != sha256.Size {
+			return nil, errors.New("identity registry contains an invalid enrollment digest")
+		}
+		var digest [sha256.Size]byte
+		copy(digest[:], tokenHash)
+		registry.pending[agentID] = pendingEnrollment{
+			tokenSHA256: digest,
+			expiresAt:   pending.ExpiresAt.UTC(),
+		}
+	}
+	for agentID, encodedPublicKey := range stored.Enrolled {
+		if !agentIDPattern.MatchString(agentID) {
+			return nil, errors.New("identity registry contains an invalid agent ID")
+		}
+		publicKey, err := base64.RawURLEncoding.DecodeString(encodedPublicKey)
+		if err != nil || len(publicKey) != ed25519.PublicKeySize {
+			return nil, errors.New("identity registry contains an invalid public key")
+		}
+		registry.enrolled[agentID] = append(ed25519.PublicKey(nil), publicKey...)
+	}
+	return registry, nil
 }
 
 func (r *Registry) CreateEnrollment(
@@ -69,9 +149,18 @@ func (r *Registry) CreateEnrollment(
 	if _, exists := r.enrolled[agentID]; exists {
 		return nil, ErrAgentAlreadyEnrolled
 	}
+	previous, hadPrevious := r.pending[agentID]
 	r.pending[agentID] = pendingEnrollment{
 		tokenSHA256: sha256.Sum256(token),
 		expiresAt:   expiresAt.UTC(),
+	}
+	if err := r.persistLocked(); err != nil {
+		if hadPrevious {
+			r.pending[agentID] = previous
+		} else {
+			delete(r.pending, agentID)
+		}
+		return nil, err
 	}
 	return token, nil
 }
@@ -106,6 +195,11 @@ func (r *Registry) Enroll(
 
 	r.enrolled[agentID] = append(ed25519.PublicKey(nil), publicKey...)
 	delete(r.pending, agentID)
+	if err := r.persistLocked(); err != nil {
+		delete(r.enrolled, agentID)
+		r.pending[agentID] = pending
+		return fmt.Errorf("persist enrollment: %w", err)
+	}
 	return nil
 }
 
@@ -147,4 +241,85 @@ func VerifyProof(publicKey ed25519.PublicKey, agentID string, nonce, signature [
 		return false
 	}
 	return ed25519.Verify(publicKey, ChallengePayload(agentID, nonce), signature)
+}
+
+type diskRegistry struct {
+	Version  int                    `json:"version"`
+	Pending  map[string]diskPending `json:"pending"`
+	Enrolled map[string]string      `json:"enrolled"`
+}
+
+type diskPending struct {
+	TokenSHA256 string    `json:"token_sha256"`
+	ExpiresAt   time.Time `json:"expires_at"`
+}
+
+func (r *Registry) persistLocked() error {
+	if r.persistPath == "" {
+		return nil
+	}
+	stored := diskRegistry{
+		Version:  1,
+		Pending:  make(map[string]diskPending, len(r.pending)),
+		Enrolled: make(map[string]string, len(r.enrolled)),
+	}
+	for agentID, pending := range r.pending {
+		stored.Pending[agentID] = diskPending{
+			TokenSHA256: base64.RawURLEncoding.EncodeToString(pending.tokenSHA256[:]),
+			ExpiresAt:   pending.expiresAt.UTC(),
+		}
+	}
+	for agentID, publicKey := range r.enrolled {
+		stored.Enrolled[agentID] = base64.RawURLEncoding.EncodeToString(publicKey)
+	}
+	encoded, err := json.MarshalIndent(stored, "", "  ")
+	if err != nil {
+		return fmt.Errorf("encode identity registry: %w", err)
+	}
+	encoded = append(encoded, '\n')
+
+	directory := filepath.Dir(r.persistPath)
+	if err := os.MkdirAll(directory, 0o700); err != nil {
+		return fmt.Errorf("create identity registry directory: %w", err)
+	}
+	tempFile, err := os.CreateTemp(directory, ".identities-*.tmp")
+	if err != nil {
+		return fmt.Errorf("create temporary identity registry: %w", err)
+	}
+	tempPath := tempFile.Name()
+	installed := false
+	defer func() {
+		_ = tempFile.Close()
+		if !installed {
+			_ = os.Remove(tempPath)
+		}
+	}()
+	if err := tempFile.Chmod(0o600); err != nil {
+		return fmt.Errorf("secure temporary identity registry: %w", err)
+	}
+	if _, err := tempFile.Write(encoded); err != nil {
+		return fmt.Errorf("write temporary identity registry: %w", err)
+	}
+	if err := tempFile.Sync(); err != nil {
+		return fmt.Errorf("flush temporary identity registry: %w", err)
+	}
+	if err := tempFile.Close(); err != nil {
+		return fmt.Errorf("close temporary identity registry: %w", err)
+	}
+	if err := replaceFile(tempPath, r.persistPath); err != nil {
+		return fmt.Errorf("replace identity registry: %w", err)
+	}
+	installed = true
+	return nil
+}
+
+func ensureJSONEOF(decoder *json.Decoder) error {
+	var extra any
+	if err := decoder.Decode(&extra); !errors.Is(err, io.EOF) {
+		if err == nil {
+			return errors.New("identity registry contains trailing JSON data")
+		}
+		return fmt.Errorf("decode trailing identity registry data: %w", err)
+	}
+	return nil
 }

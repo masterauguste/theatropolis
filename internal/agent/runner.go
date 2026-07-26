@@ -129,7 +129,7 @@ func (r *Runner) Run(
 	for {
 		frame, err := stream.Recv()
 		if errors.Is(err, io.EOF) {
-			return nil
+			return errors.New("master closed the control stream")
 		}
 		if err != nil {
 			return fmt.Errorf("receive master command: %w", err)
