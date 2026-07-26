@@ -142,8 +142,9 @@ master | all)
 	case "$HTTPS_PORT" in
 	*[!0-9]* | '') fail "--https-port must be numeric" ;;
 	esac
-	[ "$HTTPS_PORT" -ge 1024 ] && [ "$HTTPS_PORT" -le 65535 ] ||
+	if [ "$HTTPS_PORT" -lt 1024 ] || [ "$HTTPS_PORT" -gt 65535 ]; then
 		fail "--https-port must be between 1024 and 65535"
+	fi
 	;;
 esac
 
@@ -164,8 +165,9 @@ agent | all)
 			fail "--token is not a 32-byte base64url enrollment token"
 	fi
 	if [ -n "$CA_FILE" ]; then
-		[ -f "$CA_FILE" ] && [ ! -L "$CA_FILE" ] ||
+		if [ ! -f "$CA_FILE" ] || [ -L "$CA_FILE" ]; then
 			fail "--ca-file must be a regular file"
+		fi
 	fi
 	;;
 esac
@@ -213,8 +215,9 @@ EOF
 tar --no-same-owner -xzf "$TEMP_DIRECTORY/$ARCHIVE_NAME" -C "$TEMP_DIRECTORY/extracted"
 for COMPONENT in master agent; do
 	BINARY="$TEMP_DIRECTORY/extracted/theatropolis-$COMPONENT"
-	[ -f "$BINARY" ] && [ ! -L "$BINARY" ] ||
+	if [ ! -f "$BINARY" ] || [ -L "$BINARY" ]; then
 		fail "release archive is missing the $COMPONENT binary"
+	fi
 done
 
 install_binary() {
