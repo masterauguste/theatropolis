@@ -14,7 +14,7 @@ MASTER_ADMIN_SOCKET="/run/theatropolis/master-admin.sock"
 DEFAULT_HTTPS_PORT="8443"
 
 ROLE=""
-VERSION="latest"
+RELEASE_TAG="latest"
 DOMAIN=""
 HTTPS_PORT="$DEFAULT_HTTPS_PORT"
 MASTER_ADDRESS=""
@@ -69,7 +69,7 @@ while [ "$#" -gt 0 ]; do
 	case "$1" in
 	--version)
 		[ "$#" -ge 2 ] || fail "--version requires a value"
-		VERSION="$2"
+		RELEASE_TAG="$2"
 		shift 2
 		;;
 	--domain)
@@ -128,8 +128,8 @@ aarch64 | arm64) ARCHITECTURE="arm64" ;;
 *) fail "only amd64 and arm64 are supported" ;;
 esac
 
-if [ "$VERSION" != "latest" ]; then
-	printf '%s' "$VERSION" |
+if [ "$RELEASE_TAG" != "latest" ]; then
+	printf '%s' "$RELEASE_TAG" |
 		grep -Eq '^v[0-9]+\.[0-9]+\.[0-9]+([.-][A-Za-z0-9.-]+)?$' ||
 		fail "invalid release tag"
 fi
@@ -178,10 +178,10 @@ apt-get install -y ca-certificates curl tar
 
 TEMP_DIRECTORY="$(mktemp -d)"
 ARCHIVE_NAME="theatropolis_linux_${ARCHITECTURE}.tar.gz"
-if [ "$VERSION" = "latest" ]; then
+if [ "$RELEASE_TAG" = "latest" ]; then
 	RELEASE_BASE="https://github.com/${REPOSITORY}/releases/latest/download"
 else
-	RELEASE_BASE="https://github.com/${REPOSITORY}/releases/download/${VERSION}"
+	RELEASE_BASE="https://github.com/${REPOSITORY}/releases/download/${RELEASE_TAG}"
 fi
 CURL_OPTIONS="--fail --silent --show-error --location --proto =https --tlsv1.2 --retry 3"
 # Word splitting is intentional for the constant curl option list.
@@ -477,7 +477,7 @@ all)
 esac
 
 printf 'Installed precompiled Theatropolis binaries (%s, linux/%s).\n' \
-	"$VERSION" "$ARCHITECTURE"
+	"$RELEASE_TAG" "$ARCHITECTURE"
 if [ "$ROLE" = "master" ] || [ "$ROLE" = "all" ]; then
 	printf 'Master endpoint: https://%s:%s (HTTP-01 uses port 80).\n' \
 		"$DOMAIN" "$HTTPS_PORT"

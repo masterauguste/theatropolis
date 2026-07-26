@@ -20,7 +20,8 @@ jobs:
       - run: go test -count=1 ./...
       - run: go vet ./...
       - run: sh -n install.sh
-      - run: shellcheck --shell=sh install.sh
+      - run: sh tests/installer-release-tag.sh
+      - run: shellcheck --shell=sh install.sh tests/*.sh
 
   linux-build:
     runs-on: ubuntu-latest
