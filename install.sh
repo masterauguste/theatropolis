@@ -1018,6 +1018,7 @@ Description=Watch for verified Theatropolis master update requests
 
 [Path]
 PathExists=${MASTER_STATE_DIRECTORY}/update-request.json
+PathExists=${MASTER_STATE_DIRECTORY}/.update-request.processing.json
 Unit=theatropolis-master-update.service
 
 [Install]

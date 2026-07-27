@@ -2432,6 +2432,40 @@ h3,
   max-width: 560px;
 }
 
+.update-progress {
+  display: grid;
+  max-width: 680px;
+  margin: 8vh auto 0;
+  padding: 2rem;
+  gap: 1rem;
+}
+
+.update-progress h1,
+.update-progress p {
+  margin: 0;
+}
+
+.update-progress__bar {
+  height: 4px;
+  overflow: hidden;
+  background: var(--ink-200);
+  border-radius: 999px;
+}
+
+.update-progress__bar span {
+  display: block;
+  width: 35%;
+  height: 100%;
+  background: var(--ink-900);
+  border-radius: inherit;
+  animation: update-progress 1.2s ease-in-out infinite alternate;
+}
+
+@keyframes update-progress {
+  from { transform: translateX(-15%); }
+  to { transform: translateX(200%); }
+}
+
 @media (max-width: 720px) {
   .global-header__inner {
     width: min(100% - 1rem, 1360px);

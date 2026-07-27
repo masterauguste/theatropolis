@@ -29,12 +29,13 @@
         <div><dt>Running version</dt><dd><code>{{.MasterVersion}}</code></dd></div>
         <div><dt>Latest available</dt><dd><code data-master-latest-label>loading…</code></dd></div>
       </dl>
-      <form action="/master-update" method="post">
+      <form action="/master-update" method="post" data-master-update-form>
         <input type="hidden" name="csrf_token" value="{{.CSRFToken}}">
         <button class="button button--primary" type="submit" data-submit-button data-submit-label="Scheduling…" data-master-update-button disabled>
           <span data-master-button-text>Checking for updates…</span>
         </button>
       </form>
+      <div class="notice" data-master-update-progress hidden aria-live="polite"></div>
     </section>
   </main>
   <script src="/assets/app.js?v={{.AssetVersion}}" defer></script>

@@ -1280,13 +1280,14 @@ func TestMasterUpdateQueuesOnlyLatestRelease(t *testing.T) {
 		"/master-update",
 		form,
 	)
+	request.Header.Set("Accept", "application/json")
 	response := httptest.NewRecorder()
 	fixture.handler.ServeHTTP(response, request)
-	if response.Code != http.StatusSeeOther {
+	if response.Code != http.StatusAccepted {
 		t.Fatalf("master update response = %d %q", response.Code, response.Body.String())
 	}
-	if response.Header().Get("Location") != "/settings" {
-		t.Fatalf("master update redirect = %q, want /settings", response.Header().Get("Location"))
+	if !strings.Contains(response.Body.String(), `"status_url":"/settings/update-status?request_id=`) {
+		t.Fatalf("master update JSON response = %q", response.Body.String())
 	}
 	encoded, err := os.ReadFile(filepath.Join(stateDirectory, "update-request.json"))
 	if err != nil {
@@ -1301,6 +1302,36 @@ func TestMasterUpdateQueuesOnlyLatestRelease(t *testing.T) {
 	}
 	if !strings.HasPrefix(updateRequest.RequestID, "master_") {
 		t.Fatalf("master update request ID = %q", updateRequest.RequestID)
+	}
+	result := agentupdate.Result{
+		Version:        1,
+		RequestID:      updateRequest.RequestID,
+		TargetVersion:  updateRequest.TargetVersion,
+		RunningVersion: updateRequest.TargetVersion,
+		Status:         "applied",
+		ObservedAt:     time.Now().UTC(),
+	}
+	encodedResult, err := json.Marshal(result)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(
+		filepath.Join(stateDirectory, "update-result.json"),
+		append(encodedResult, '\n'),
+		0o600,
+	); err != nil {
+		t.Fatal(err)
+	}
+	handler.version = updateRequest.TargetVersion
+	request = fixture.authenticatedRequest(
+		http.MethodGet,
+		"/settings/update-status?request_id="+url.QueryEscape(updateRequest.RequestID),
+		"",
+	)
+	response = httptest.NewRecorder()
+	fixture.handler.ServeHTTP(response, request)
+	if response.Code != http.StatusOK || !strings.Contains(response.Body.String(), `"status":"applied"`) {
+		t.Fatalf("master update status = %d %q", response.Code, response.Body.String())
 	}
 }
 

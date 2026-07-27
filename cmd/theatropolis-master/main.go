@@ -181,7 +181,10 @@ func serve(arguments []string) error {
 	if accessPath == "" {
 		accessPath = filepath.Join(*stateDirectory, "web-auth.json")
 	}
-	access, err := webui.LoadAccess(accessPath)
+	access, err := webui.LoadAccessWithSessions(
+		accessPath,
+		filepath.Join(*stateDirectory, "web-sessions.json"),
+	)
 	if err != nil {
 		return fmt.Errorf("load web operator access: %w", err)
 	}

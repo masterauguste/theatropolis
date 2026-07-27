@@ -780,6 +780,63 @@ func TestSessionAuthenticationIdleExpiryCSRFAndLogout(t *testing.T) {
 	}
 }
 
+func TestPersistentSessionSurvivesManagerRestartAndLogout(t *testing.T) {
+	t.Parallel()
+	directory := t.TempDir()
+	accessPath := filepath.Join(directory, "access.json")
+	sessionPath := filepath.Join(directory, "web-sessions.json")
+	if err := initializeAdminAccessWithPasswordDeriver(
+		accessPath,
+		testAdminUsername,
+		[]byte(testAdminPassword),
+		fastTestPasswordDeriver,
+		nilSafeRandomReader{},
+	); err != nil {
+		t.Fatal(err)
+	}
+	now := time.Date(2026, 7, 28, 12, 0, 0, 0, time.UTC)
+	load := func() *AccessManager {
+		manager, err := loadAccessWithPasswordDeriverAndSessions(
+			accessPath,
+			sessionPath,
+			fastTestPasswordDeriver,
+		)
+		if err != nil {
+			t.Fatal(err)
+		}
+		manager.passwordKDFGate = make(chan struct{}, 1)
+		manager.now = func() time.Time { return now }
+		return manager
+	}
+	first := load()
+	session, err := first.Login(testAdminUsername, testAdminPassword)
+	if err != nil {
+		t.Fatal(err)
+	}
+	stored, err := os.ReadFile(sessionPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if bytes.Contains(stored, []byte(session.Token)) {
+		t.Fatal("session file contains the plaintext bearer token")
+	}
+	second := load()
+	authenticated, err := second.Authenticate(session.Token)
+	if err != nil {
+		t.Fatalf("Authenticate() after restart error = %v", err)
+	}
+	if authenticated.CSRFToken != session.CSRFToken {
+		t.Fatal("restored session has a different CSRF token")
+	}
+	if err := second.Logout(session.Token); err != nil {
+		t.Fatal(err)
+	}
+	third := load()
+	if _, err := third.Authenticate(session.Token); !errors.Is(err, ErrAuthenticationFailed) {
+		t.Fatalf("logged-out session survived restart: %v", err)
+	}
+}
+
 func TestFailedCSRFAttemptDoesNotRefreshIdleExpiry(t *testing.T) {
 	t.Parallel()
 

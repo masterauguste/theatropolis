@@ -15,6 +15,7 @@ import (
 	"path/filepath"
 	"reflect"
 	"runtime"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -29,6 +30,8 @@ const (
 	accessFileVersion      = 1
 	adminAccessFileVersion = 2
 	accessFileMaxBytes     = 8 << 10
+	sessionFileVersion     = 1
+	sessionFileMaxBytes    = 128 << 10
 
 	credentialBytes         = 32
 	encodedCredentialLength = 43
@@ -108,6 +111,20 @@ type memorySession struct {
 	absoluteExpiresAt time.Time
 }
 
+type sessionDocument struct {
+	Version           int                 `json:"version"`
+	CredentialBinding string              `json:"credential_binding_sha256"`
+	Sessions          []persistedSession  `json:"sessions"`
+}
+
+type persistedSession struct {
+	TokenSHA256      string    `json:"token_sha256"`
+	CSRFSecret       string    `json:"csrf_secret"`
+	CreatedAt        time.Time `json:"created_at"`
+	LastSeenAt       time.Time `json:"last_seen_at"`
+	AbsoluteExpiresAt time.Time `json:"absolute_expires_at"`
+}
+
 type loginFailureLimiter struct {
 	windowStartedAt time.Time
 	attempts        int
@@ -139,6 +156,8 @@ type AccessManager struct {
 	maxSessions            int
 	now                    func() time.Time
 	random                 io.Reader
+	sessionPath            string
+	credentialBinding      [sha256.Size]byte
 }
 
 // InitializeAccess creates a legacy v1 access-key file. It remains available
@@ -464,7 +483,24 @@ func LoadAccess(path string) (*AccessManager, error) {
 	return loadAccessWithPasswordDeriver(path, deriveArgon2idPassword)
 }
 
+// LoadAccessWithSessions loads operator credentials and restores browser
+// sessions from a separate owner-only state file.
+func LoadAccessWithSessions(path, sessionPath string) (*AccessManager, error) {
+	return loadAccessWithPasswordDeriverAndSessions(
+		path,
+		sessionPath,
+		deriveArgon2idPassword,
+	)
+}
+
 func loadAccessWithPasswordDeriver(path string, derive passwordDeriver) (*AccessManager, error) {
+	return loadAccessWithPasswordDeriverAndSessions(path, "", derive)
+}
+
+func loadAccessWithPasswordDeriverAndSessions(
+	path, sessionPath string,
+	derive passwordDeriver,
+) (*AccessManager, error) {
 	if err := validateAccessPath(path); err != nil {
 		return nil, err
 	}
@@ -496,6 +532,7 @@ func loadAccessWithPasswordDeriver(path string, derive passwordDeriver) (*Access
 	}
 
 	manager := newAccessManager()
+	manager.credentialBinding = sha256.Sum256(encoded)
 	switch version {
 	case accessFileVersion:
 		if err := loadLegacyCredential(manager, fields); err != nil {
@@ -507,6 +544,12 @@ func loadAccessWithPasswordDeriver(path string, derive passwordDeriver) (*Access
 		}
 	default:
 		return nil, fmt.Errorf("unsupported access file version %d", version)
+	}
+	if strings.TrimSpace(sessionPath) != "" {
+		manager.sessionPath = filepath.Clean(sessionPath)
+		if err := manager.loadSessions(); err != nil {
+			return nil, fmt.Errorf("load web sessions: %w", err)
+		}
 	}
 	return manager, nil
 }
@@ -722,6 +765,164 @@ func decodeCanonicalBase64(encoded string, expectedBytes int) ([]byte, error) {
 	return decoded, nil
 }
 
+func (m *AccessManager) loadSessions() error {
+	info, err := os.Lstat(m.sessionPath)
+	if errors.Is(err, os.ErrNotExist) {
+		return nil
+	}
+	if err != nil {
+		return fmt.Errorf("inspect session file: %w", err)
+	}
+	if info.Mode()&os.ModeSymlink != 0 || !info.Mode().IsRegular() {
+		return errors.New("session file must be a regular file, not a symbolic link")
+	}
+	if runtime.GOOS != "windows" && info.Mode().Perm() != 0o600 {
+		return errors.New("session file permissions must be 0600")
+	}
+	file, err := os.Open(m.sessionPath)
+	if err != nil {
+		return fmt.Errorf("open session file: %w", err)
+	}
+	defer file.Close()
+	encoded, err := io.ReadAll(io.LimitReader(file, sessionFileMaxBytes+1))
+	if err != nil {
+		return fmt.Errorf("read session file: %w", err)
+	}
+	if len(encoded) == 0 || len(encoded) > sessionFileMaxBytes {
+		return errors.New("session file is empty or exceeds the size limit")
+	}
+	decoder := json.NewDecoder(bytes.NewReader(encoded))
+	decoder.DisallowUnknownFields()
+	var document sessionDocument
+	if err := decoder.Decode(&document); err != nil {
+		return fmt.Errorf("decode session file: %w", err)
+	}
+	var trailing any
+	if err := decoder.Decode(&trailing); !errors.Is(err, io.EOF) {
+		return errors.New("session file contains trailing JSON")
+	}
+	if document.Version != sessionFileVersion {
+		return fmt.Errorf("unsupported session file version %d", document.Version)
+	}
+	binding, err := decodeCanonicalBase64(document.CredentialBinding, sha256.Size)
+	if err != nil {
+		return errors.New("session file contains an invalid credential binding")
+	}
+	defer clear(binding)
+	if subtle.ConstantTimeCompare(binding, m.credentialBinding[:]) != 1 {
+		return m.persistSessionsLocked()
+	}
+	if len(document.Sessions) > m.maxSessions {
+		return errors.New("session file contains too many sessions")
+	}
+	now := m.currentTime()
+	for _, stored := range document.Sessions {
+		tokenDigest, err := decodeCanonicalBase64(stored.TokenSHA256, sha256.Size)
+		if err != nil {
+			return errors.New("session file contains an invalid token digest")
+		}
+		csrfSecret, err := decodeCanonicalBase64(stored.CSRFSecret, credentialBytes)
+		if err != nil {
+			clear(tokenDigest)
+			return errors.New("session file contains an invalid CSRF secret")
+		}
+		var digest [sha256.Size]byte
+		var csrf [credentialBytes]byte
+		copy(digest[:], tokenDigest)
+		copy(csrf[:], csrfSecret)
+		clear(tokenDigest)
+		clear(csrfSecret)
+		if _, duplicate := m.sessions[digest]; duplicate {
+			return errors.New("session file contains a duplicate token digest")
+		}
+		session := &memorySession{
+			csrfSecret:        csrf,
+			createdAt:         stored.CreatedAt.UTC(),
+			lastSeenAt:        stored.LastSeenAt.UTC(),
+			absoluteExpiresAt: stored.AbsoluteExpiresAt.UTC(),
+		}
+		if session.createdAt.IsZero() ||
+			session.lastSeenAt.Before(session.createdAt) ||
+			!session.absoluteExpiresAt.After(session.createdAt) {
+			return errors.New("session file contains invalid timestamps")
+		}
+		if !m.sessionExpiredLocked(session, now) {
+			m.sessions[digest] = session
+		}
+	}
+	return nil
+}
+
+func (m *AccessManager) persistSessionsLocked() error {
+	if m.sessionPath == "" {
+		return nil
+	}
+	document := sessionDocument{
+		Version:           sessionFileVersion,
+		CredentialBinding: base64.RawURLEncoding.EncodeToString(m.credentialBinding[:]),
+		Sessions:          make([]persistedSession, 0, len(m.sessions)),
+	}
+	for digest, session := range m.sessions {
+		document.Sessions = append(document.Sessions, persistedSession{
+			TokenSHA256:       base64.RawURLEncoding.EncodeToString(digest[:]),
+			CSRFSecret:        base64.RawURLEncoding.EncodeToString(session.csrfSecret[:]),
+			CreatedAt:         session.createdAt.UTC(),
+			LastSeenAt:        session.lastSeenAt.UTC(),
+			AbsoluteExpiresAt: session.absoluteExpiresAt.UTC(),
+		})
+	}
+	sort.Slice(document.Sessions, func(left, right int) bool {
+		return document.Sessions[left].TokenSHA256 < document.Sessions[right].TokenSHA256
+	})
+	encoded, err := json.Marshal(document)
+	if err != nil {
+		return fmt.Errorf("encode session file: %w", err)
+	}
+	encoded = append(encoded, '\n')
+	if len(encoded) > sessionFileMaxBytes {
+		return errors.New("session file exceeds the size limit")
+	}
+	directory := filepath.Dir(m.sessionPath)
+	temp, err := os.CreateTemp(directory, "."+filepath.Base(m.sessionPath)+".tmp-*")
+	if err != nil {
+		return fmt.Errorf("create temporary session file: %w", err)
+	}
+	tempPath := temp.Name()
+	committed := false
+	defer func() {
+		_ = temp.Close()
+		if !committed {
+			_ = os.Remove(tempPath)
+		}
+	}()
+	if err := temp.Chmod(0o600); err != nil {
+		return fmt.Errorf("secure temporary session file: %w", err)
+	}
+	if _, err := temp.Write(encoded); err != nil {
+		return fmt.Errorf("write session file: %w", err)
+	}
+	if err := temp.Sync(); err != nil {
+		return fmt.Errorf("synchronize session file: %w", err)
+	}
+	if err := temp.Close(); err != nil {
+		return fmt.Errorf("close session file: %w", err)
+	}
+	if err := os.Rename(tempPath, m.sessionPath); err != nil {
+		return fmt.Errorf("replace session file: %w", err)
+	}
+	committed = true
+	return syncParentDirectory(m.sessionPath)
+}
+
+func cloneSessions(sessions map[[sha256.Size]byte]*memorySession) map[[sha256.Size]byte]*memorySession {
+	copyMap := make(map[[sha256.Size]byte]*memorySession, len(sessions))
+	for digest, session := range sessions {
+		copySession := *session
+		copyMap[digest] = &copySession
+	}
+	return copyMap
+}
+
 func newAccessManager() *AccessManager {
 	return &AccessManager{
 		sessions:               make(map[[sha256.Size]byte]*memorySession),
@@ -796,12 +997,18 @@ func (m *AccessManager) Login(username, password string) (Session, error) {
 	}
 
 	m.mu.Lock()
+	previousSessions := cloneSessions(m.sessions)
 	m.failures = loginFailureLimiter{}
 	m.purgeExpiredSessionsLocked(now)
 	if len(m.sessions) >= m.maxSessions {
 		m.evictOldestSessionLocked()
 	}
 	m.sessions[tokenDigest] = session
+	if err := m.persistSessionsLocked(); err != nil {
+		m.sessions = previousSessions
+		m.mu.Unlock()
+		return Session{}, fmt.Errorf("persist browser session: %w", err)
+	}
 	m.mu.Unlock()
 
 	return Session{
@@ -992,9 +1199,15 @@ func (m *AccessManager) Authenticate(sessionToken string) (Session, error) {
 	}
 	if m.sessionExpiredLocked(session, now) {
 		delete(m.sessions, tokenDigest)
+		_ = m.persistSessionsLocked()
 		return Session{}, ErrAuthenticationFailed
 	}
+	previousLastSeen := session.lastSeenAt
 	m.touchSessionLocked(session, now)
+	if err := m.persistSessionsLocked(); err != nil {
+		session.lastSeenAt = previousLastSeen
+		return Session{}, fmt.Errorf("persist browser session activity: %w", err)
+	}
 	return Session{
 		Token:     sessionToken,
 		CSRFToken: base64.RawURLEncoding.EncodeToString(session.csrfSecret[:]),
@@ -1018,33 +1231,51 @@ func (m *AccessManager) AuthorizeCSRF(sessionToken, csrfToken string) bool {
 	}
 	if m.sessionExpiredLocked(session, now) {
 		delete(m.sessions, tokenDigest)
+		_ = m.persistSessionsLocked()
 		return false
 	}
 	matches := subtle.ConstantTimeCompare(session.csrfSecret[:], candidateCSRF[:]) & csrfValid
 	if matches != 1 {
 		return false
 	}
+	previousLastSeen := session.lastSeenAt
 	m.touchSessionLocked(session, now)
+	if err := m.persistSessionsLocked(); err != nil {
+		session.lastSeenAt = previousLastSeen
+		return false
+	}
 	return true
 }
 
 // Logout removes a session when the supplied token is well formed.
-func (m *AccessManager) Logout(sessionToken string) {
+func (m *AccessManager) Logout(sessionToken string) error {
 	tokenDigest, valid := credentialDigest(sessionToken)
 	if valid != 1 {
-		return
+		return nil
 	}
 	m.mu.Lock()
+	defer m.mu.Unlock()
+	previousSessions := cloneSessions(m.sessions)
 	delete(m.sessions, tokenDigest)
-	m.mu.Unlock()
+	if err := m.persistSessionsLocked(); err != nil {
+		m.sessions = previousSessions
+		return fmt.Errorf("persist browser logout: %w", err)
+	}
+	return nil
 }
 
 // InvalidateAllSessions revokes every browser session, for example after a
 // synchronized live credential reload.
-func (m *AccessManager) InvalidateAllSessions() {
+func (m *AccessManager) InvalidateAllSessions() error {
 	m.mu.Lock()
+	defer m.mu.Unlock()
+	previousSessions := cloneSessions(m.sessions)
 	clear(m.sessions)
-	m.mu.Unlock()
+	if err := m.persistSessionsLocked(); err != nil {
+		m.sessions = previousSessions
+		return fmt.Errorf("persist session invalidation: %w", err)
+	}
+	return nil
 }
 
 // NewSessionCookie returns the host-only cookie used by the public HTTPS

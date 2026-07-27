@@ -248,3 +248,85 @@ if (versionCatalogURL) {
   });
   }
 }
+
+const masterUpdateStatusURL = document.body.dataset.masterUpdateStatusUrl;
+const masterUpdateForm = document.querySelector("[data-master-update-form]");
+
+const monitorMasterUpdate = (statusURL, message, returnLink = null) => {
+  let attempts = 0;
+  const pollMasterUpdate = async () => {
+    attempts++;
+    try {
+      const response = await fetch(statusURL, {
+        cache: "no-store",
+        credentials: "same-origin",
+        headers: { Accept: "application/json" },
+      });
+      if (response.status === 401 || response.status >= 500) {
+        throw new Error("master is restarting");
+      }
+      if (!response.ok) {
+        throw new Error(`update status returned ${response.status}`);
+      }
+      const status = await response.json();
+      if (status.status === "applied") {
+        if (message) message.textContent = "Update complete. Reconnecting to the updated master…";
+        window.setTimeout(() => window.location.replace("/settings"), 700);
+        return;
+      }
+      if (status.status === "failed") {
+        if (message) message.textContent = status.diagnostic || "The master update failed.";
+        if (returnLink) returnLink.hidden = false;
+        return;
+      }
+      if (message && attempts > 1) {
+        message.textContent = "The master is restarting. Waiting for it to come back online…";
+      }
+    } catch {
+      if (message) message.textContent = "The master is restarting. Waiting for it to come back online…";
+    }
+    window.setTimeout(pollMasterUpdate, 1500);
+  };
+  window.setTimeout(pollMasterUpdate, 500);
+};
+
+if (masterUpdateStatusURL) {
+  monitorMasterUpdate(
+    masterUpdateStatusURL,
+    document.querySelector("[data-master-update-message]"),
+    document.querySelector("[data-master-update-return]"),
+  );
+}
+
+if (masterUpdateForm) {
+  masterUpdateForm.addEventListener("submit", async (event) => {
+    event.preventDefault();
+    const progress = document.querySelector("[data-master-update-progress]");
+    const button = masterUpdateForm.querySelector("[data-master-update-button]");
+    if (progress) {
+      progress.hidden = false;
+      progress.textContent = "Scheduling the verified update…";
+    }
+    if (button) button.disabled = true;
+    try {
+      const response = await fetch(masterUpdateForm.action, {
+        method: "POST",
+        body: new URLSearchParams(new FormData(masterUpdateForm)),
+        credentials: "same-origin",
+        headers: {
+          Accept: "application/json",
+          "Content-Type": "application/x-www-form-urlencoded",
+        },
+      });
+      const data = await response.json().catch(() => ({}));
+      if (!response.ok || !data.status_url) {
+        throw new Error(data.error || `update request returned ${response.status}`);
+      }
+      if (progress) progress.textContent = "Installing the update. Waiting for the master to restart…";
+      monitorMasterUpdate(data.status_url, progress);
+    } catch (error) {
+      if (progress) progress.textContent = error.message || "The master update could not be scheduled.";
+      if (button) button.disabled = false;
+    }
+  });
+}

@@ -791,6 +791,10 @@ grep -Fq -- \
 	"$UPDATE_PATH" ||
 	fail "master update path does not watch the master's request file"
 grep -Fq -- \
+	"PathExists=$TEST_ROOT/var/lib/theatropolis/master/.update-request.processing.json" \
+	"$UPDATE_PATH" ||
+	fail "master update path does not recover a claimed request after interruption"
+grep -Fq -- \
 	"enable --now theatropolis-master-update.path" \
 	"$SYSTEMCTL_LOG" ||
 	fail "master update path unit was not enabled"

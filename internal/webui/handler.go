@@ -158,6 +158,7 @@ type pageData struct {
 	MasterVersion         string
 	MasterUpdateEnabled   bool
 	MasterUpdate          *agentUpdateView
+	MasterUpdateRequestID string
 }
 
 type fleetStats struct {
@@ -319,6 +320,7 @@ func (h *Handler) routes() {
 	h.mux.HandleFunc("GET /servers", h.serversPage)
 	h.mux.HandleFunc("GET /settings", h.settingsPage)
 	h.mux.HandleFunc("GET /settings/versions", h.masterVersions)
+	h.mux.HandleFunc("GET /settings/update-status", h.masterUpdateStatus)
 	h.mux.HandleFunc("GET /servers/new", h.newServerPage)
 	h.mux.HandleFunc("GET /servers/enrollment-result", h.enrollmentResultPage)
 	h.mux.HandleFunc(
@@ -485,7 +487,11 @@ func (h *Handler) logout(response http.ResponseWriter, request *http.Request) {
 		http.Error(response, "request was not authorized", http.StatusForbidden)
 		return
 	}
-	h.access.Logout(sessionToken)
+	if err := h.access.Logout(sessionToken); err != nil {
+		h.logger.Error("persist web logout", "error", err)
+		http.Error(response, "logout could not be completed", http.StatusInternalServerError)
+		return
+	}
 	http.SetCookie(response, DeleteSessionCookie())
 	http.Redirect(response, request, "/login", http.StatusSeeOther)
 }
@@ -562,6 +568,38 @@ func (h *Handler) masterVersions(response http.ResponseWriter, request *http.Req
 	}); err != nil {
 		h.logger.Warn("encode master version catalog", "error", err)
 	}
+}
+
+func (h *Handler) masterUpdateStatus(response http.ResponseWriter, request *http.Request) {
+	if _, ok := h.authenticate(request); !ok {
+		response.Header().Set("Content-Type", "application/json")
+		response.WriteHeader(http.StatusUnauthorized)
+		_, _ = io.WriteString(response, `{"status":"restarting"}`+"\n")
+		return
+	}
+	requestID := request.URL.Query().Get("request_id")
+	if !agentupdate.ValidRequestID(requestID) || h.masterUpdater == nil {
+		http.Error(response, "invalid update status request", http.StatusBadRequest)
+		return
+	}
+	result, exists, err := h.masterUpdater.LoadResult()
+	if err != nil {
+		http.Error(response, "update status could not be loaded", http.StatusInternalServerError)
+		return
+	}
+	status := "updating"
+	if exists && result.RequestID == requestID {
+		status = result.Status
+		if status == "applied" && h.version != result.TargetVersion {
+			status = "restarting"
+		}
+	}
+	response.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(response).Encode(map[string]string{
+		"status":          status,
+		"running_version": result.RunningVersion,
+		"diagnostic":      result.Diagnostic,
+	})
 }
 
 func (h *Handler) serverPage(response http.ResponseWriter, request *http.Request) {
@@ -1109,7 +1147,23 @@ func (h *Handler) updateMaster(response http.ResponseWriter, request *http.Reque
 		"target_version", targetVersion,
 		"request_id", requestID,
 	)
-	http.Redirect(response, request, "/settings", http.StatusSeeOther)
+	statusURL := "/settings/update-status?request_id=" + url.QueryEscape(requestID)
+	if strings.Contains(request.Header.Get("Accept"), "application/json") {
+		response.Header().Set("Content-Type", "application/json")
+		response.WriteHeader(http.StatusAccepted)
+		_ = json.NewEncoder(response).Encode(map[string]string{
+			"request_id": requestID,
+			"status_url": statusURL,
+		})
+		return
+	}
+	h.render(response, http.StatusAccepted, "master-updating.html", pageData{
+		Title:                 "Updating master",
+		ActiveNav:             "settings",
+		CSRFToken:             form.Get("csrf_token"),
+		MasterVersion:         h.version,
+		MasterUpdateRequestID: requestID,
+	})
 }
 
 func (h *Handler) renderAgentUpdateError(
