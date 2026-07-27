@@ -182,6 +182,12 @@ func TestLoginRejectsUntrustedOrAmbiguousOriginMetadata(t *testing.T) {
 			reason:     "origin_mismatch",
 		},
 		{
+			name:       "opaque origin",
+			fetchSites: []string{"same-origin"},
+			origins:    []string{"null"},
+			reason:     "invalid_origin",
+		},
+		{
 			name:       "cross-site metadata overrides origin",
 			fetchSites: []string{"cross-site"},
 			origins:    []string{testPublicURL},
@@ -743,6 +749,9 @@ func assertSecurityHeaders(t *testing.T, header http.Header) {
 		if header.Get(name) == "" {
 			t.Errorf("security header %s is missing", name)
 		}
+	}
+	if got := header.Get("Referrer-Policy"); got != "strict-origin" {
+		t.Errorf("Referrer-Policy = %q, want strict-origin", got)
 	}
 }
 

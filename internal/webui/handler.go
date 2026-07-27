@@ -773,7 +773,9 @@ func setSecurityHeaders(header http.Header) {
 		"Permissions-Policy",
 		"accelerometer=(), camera=(), geolocation=(), gyroscope=(), microphone=(), payment=(), usb=()",
 	)
-	header.Set("Referrer-Policy", "no-referrer")
+	// no-referrer serializes Origin as "null" for non-CORS form POSTs.
+	// strict-origin preserves the exact origin without disclosing paths or queries.
+	header.Set("Referrer-Policy", "strict-origin")
 	header.Set("X-Content-Type-Options", "nosniff")
 	header.Set("X-Frame-Options", "DENY")
 	header.Set("X-Robots-Tag", "noindex, nofollow, noarchive")
