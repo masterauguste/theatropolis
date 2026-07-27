@@ -1090,7 +1090,7 @@ func TestSingBoxUpdateQueuesExactPrerelease(t *testing.T) {
 	}
 }
 
-func TestServerPageRendersSingBoxStableAndTestingSelector(t *testing.T) {
+func TestServerPageRendersSingBoxUpdateForm(t *testing.T) {
 	t.Parallel()
 	fixture := newWebFixture(t)
 	enrollAgent(t, fixture.registry, "edge-online")
@@ -1113,18 +1113,48 @@ func TestServerPageRendersSingBoxStableAndTestingSelector(t *testing.T) {
 			body,
 			`action="/servers/edge-online/sing-box-update"`,
 		) ||
-		!strings.Contains(body, `value="v1.14.0-alpha.27">Testing`) ||
-		!strings.Contains(body, `value="v1.14.0">Stable`) ||
 		!strings.Contains(body, "Running v1.14.0-beta.2") {
 		t.Fatalf(
-			"sing-box selector response = %d %q",
+			"sing-box update form response = %d %q",
 			response.Code,
 			body,
 		)
 	}
 }
 
-func TestServerPageListsStableAndTestingAgentReleases(t *testing.T) {
+func TestServerVersionsEndpointReturnsSingBoxAndAgentReleases(t *testing.T) {
+	t.Parallel()
+	fixture := newWebFixture(t)
+	enrollAgent(t, fixture.registry, "edge-online")
+	fixture.handler.(*Handler).releases = testReleaseCatalog{releases: []AgentRelease{
+		{Tag: "v1.14.0-beta.7", Prerelease: true},
+		{Tag: "v1.13.2"},
+	}}
+	fixture.handler.(*Handler).singBoxReleases = testReleaseCatalog{
+		releases: []AgentRelease{
+			{Tag: "v1.14.0-alpha.27", Prerelease: true},
+			{Tag: "v1.14.0", Prerelease: false},
+		},
+	}
+	request := fixture.authenticatedRequest(
+		http.MethodGet,
+		"/servers/edge-online/versions",
+		"",
+	)
+	response := httptest.NewRecorder()
+	fixture.handler.ServeHTTP(response, request)
+	if response.Code != http.StatusOK {
+		t.Fatalf("versions response = %d %q", response.Code, response.Body.String())
+	}
+	body := response.Body.String()
+	if !strings.Contains(body, "v1.14.0-beta.7") ||
+		!strings.Contains(body, "v1.14.0-alpha.27") ||
+		!strings.Contains(body, "v1.14.0") {
+		t.Fatalf("versions response missing expected tags: %q", body)
+	}
+}
+
+func TestServerPageRendersAgentUpdateForm(t *testing.T) {
 	t.Parallel()
 
 	fixture := newWebFixture(t)
@@ -1142,13 +1172,13 @@ func TestServerPageListsStableAndTestingAgentReleases(t *testing.T) {
 	fixture.handler.ServeHTTP(response, request)
 	body := response.Body.String()
 	if response.Code != http.StatusOK ||
-		!strings.Contains(body, `value="v1.14.0-beta.7">Testing`) ||
-		!strings.Contains(body, `value="v1.13.2">Stable`) {
-		t.Fatalf("release options response = %d %q", response.Code, body)
+		!strings.Contains(body, "Update agent to latest") ||
+		!strings.Contains(body, "data-latest-agent-version") {
+		t.Fatalf("agent update form response = %d %q", response.Code, body)
 	}
 }
 
-func TestServerPageDefaultsAgentUpdateToLatestRelease(t *testing.T) {
+func TestServerPageShowsCurrentAgentVersion(t *testing.T) {
 	t.Parallel()
 
 	fixture := newWebFixture(t)
@@ -1174,9 +1204,8 @@ func TestServerPageDefaultsAgentUpdateToLatestRelease(t *testing.T) {
 	fixture.handler.ServeHTTP(response, request)
 	body := response.Body.String()
 	if response.Code != http.StatusOK ||
-		!strings.Contains(body, `name="target_version"`+
-			"\n                    "+`value="v1.14.0-beta.7"`) {
-		t.Fatalf("agent update did not default to latest release: %d %q", response.Code, body)
+		!strings.Contains(body, "data-latest-agent-version") {
+		t.Fatalf("agent update form missing latest version hook: %d %q", response.Code, body)
 	}
 }
 

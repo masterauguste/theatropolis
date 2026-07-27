@@ -324,6 +324,10 @@ func (h *Handler) routes() {
 	)
 	h.mux.HandleFunc("GET /servers/{agent_id}/manage", h.serverPage)
 	h.mux.HandleFunc(
+		"GET /servers/{agent_id}/versions",
+		h.serverVersions,
+	)
+	h.mux.HandleFunc(
 		"POST /servers/{agent_id}/configuration",
 		h.deployServerConfiguration,
 	)
@@ -1100,7 +1104,6 @@ func (h *Handler) renderAgentUpdateError(
 	}
 	data.Error = message
 	data.ErrorField = "target_version"
-	data.Agent.UpdateTarget = targetVersion
 	h.render(response, status, "server.html", data)
 }
 
@@ -1190,29 +1193,7 @@ func (h *Handler) serverPageData(
 	if update, exists := h.controller.LatestSingBoxUpdate(snapshot.ID); exists {
 		detail.SingBoxUpdate = singBoxUpdateViewFor(update)
 	}
-	var (
-		versions, singBoxVersions         []agentVersionView
-		latestVersion, latestSingBoxVersion string
-		catalogWarning, singBoxCatalogWarning string
-	)
-	var wg sync.WaitGroup
-	wg.Add(2)
-	go func() {
-		defer wg.Done()
-		versions, latestVersion, catalogWarning = h.releaseVersions(ctx)
-	}()
-	go func() {
-		defer wg.Done()
-		singBoxVersions, latestSingBoxVersion, singBoxCatalogWarning =
-			h.releaseVersionsFor(ctx, h.singBoxReleases, "sing-box")
-	}()
-	wg.Wait()
-	if detail.UpdateTarget == "" {
-		detail.UpdateTarget = latestVersion
-	}
-	if detail.SingBoxUpdateTarget == "" {
-		detail.SingBoxUpdateTarget = latestSingBoxVersion
-	}
+	_, latestVersion, _ := h.releaseVersions(ctx)
 	var masterUpdate *agentUpdateView
 	if h.masterUpdater != nil {
 		if result, exists, err := h.masterUpdater.LoadResult(); err == nil && exists {
@@ -1220,21 +1201,47 @@ func (h *Handler) serverPageData(
 		}
 	}
 	return pageData{
-		Title:                 snapshot.ID,
-		CSRFToken:             session.CSRFToken,
-		Agent:                 detail,
-		AgentVersions:         versions,
-		ReleaseCatalogWarning: catalogWarning,
-		LatestVersion:         latestVersion,
-		SingBoxVersions:       singBoxVersions,
-		SingBoxCatalogWarning: singBoxCatalogWarning,
-		LatestSingBoxVersion:  latestSingBoxVersion,
-		MasterVersion:         h.version,
+		Title:         snapshot.ID,
+		CSRFToken:     session.CSRFToken,
+		Agent:         detail,
+		LatestVersion: latestVersion,
+		MasterVersion: h.version,
 		MasterUpdateEnabled: h.masterUpdater != nil &&
 			latestVersion != "" &&
 			latestVersion != h.version,
 		MasterUpdate: masterUpdate,
 	}, nil
+}
+
+type versionCatalogResponse struct {
+	LatestVersion         string             `json:"latest_version"`
+	AgentVersions         []agentVersionView `json:"agent_versions"`
+	LatestSingBoxVersion  string             `json:"latest_sing_box_version"`
+	SingBoxVersions       []agentVersionView `json:"sing_box_versions"`
+	SingBoxCatalogWarning string             `json:"sing_box_catalog_warning,omitempty"`
+}
+
+func (h *Handler) serverVersions(response http.ResponseWriter, request *http.Request) {
+	if _, ok := h.authenticate(request); !ok {
+		http.Error(response, "unauthorized", http.StatusUnauthorized)
+		return
+	}
+	agentVersions, latestVersion, _ := h.releaseVersions(request.Context())
+	singBoxVersions, latestSingBoxVersion, singBoxWarning :=
+		h.releaseVersionsFor(request.Context(), h.singBoxReleases, "sing-box")
+	body, err := json.Marshal(versionCatalogResponse{
+		LatestVersion:         latestVersion,
+		AgentVersions:         agentVersions,
+		LatestSingBoxVersion:  latestSingBoxVersion,
+		SingBoxVersions:       singBoxVersions,
+		SingBoxCatalogWarning: singBoxWarning,
+	})
+	if err != nil {
+		http.Error(response, "version catalog could not be encoded", http.StatusInternalServerError)
+		return
+	}
+	response.Header().Set("Content-Type", "application/json")
+	response.Write(body)
 }
 
 func (h *Handler) releaseVersions(
@@ -1261,6 +1268,14 @@ func (h *Handler) releaseVersionsFor(
 		branch := "Stable"
 		if release.Prerelease {
 			branch = "Testing"
+			tag := release.Tag
+			if strings.Contains(tag, "-alpha.") {
+				branch = "Alpha"
+			} else if strings.Contains(tag, "-beta.") {
+				branch = "Beta"
+			} else if strings.Contains(tag, "-rc.") {
+				branch = "Release Candidate"
+			}
 		}
 		versions = append(versions, agentVersionView{
 			Tag:    release.Tag,

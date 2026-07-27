@@ -329,20 +329,17 @@
                         name="target_version"
                         value="{{.Agent.SingBoxUpdateTarget}}"
                         list="sing-box-version-options"
-                        placeholder="{{if .LatestSingBoxVersion}}{{.LatestSingBoxVersion}}{{else}}v1.14.0-alpha.1{{end}}"
+                        placeholder="v1.14.0-beta.2"
                         pattern="v([2-9][0-9]*\.[0-9]+|1\.(1[4-9]|[2-9][0-9]))\.[0-9]+(-(alpha|beta|rc)\.[0-9]+)?"
                         maxlength="64"
                         required
                         {{if not .Agent.SingBoxUpdateEnabled}}disabled{{end}}
                         {{if eq .ErrorField "sing_box_target_version"}}autofocus aria-invalid="true"{{else}}aria-invalid="false"{{end}}
                       >
-                      <datalist id="sing-box-version-options">
-                        {{range .SingBoxVersions}}
-                        <option value="{{.Tag}}">{{.Branch}}</option>
-                        {{end}}
-                      </datalist>
+                      <datalist id="sing-box-version-options"></datalist>
                       <small>{{.Agent.SingBoxUpdateHint}}</small>
-                      {{if .SingBoxCatalogWarning}}<small class="field-warning">{{.SingBoxCatalogWarning}}</small>{{else}}<small>Stable and prerelease builds are loaded from the official SagerNet GitHub releases.</small>{{end}}
+                      <small data-sing-box-catalog-warning hidden class="field-warning"></small>
+                      <small data-sing-box-catalog-info>Stable, beta, and alpha builds are loaded from the official SagerNet GitHub releases. Any version 1.14 or newer can be installed, including downgrades.</small>
                     </label>
                     <button class="button button--secondary button--full" type="submit" data-submit-button data-submit-label="Scheduling…" {{if not .Agent.SingBoxUpdateEnabled}}disabled{{end}}>Install selected sing-box version</button>
                   </form>
@@ -384,39 +381,20 @@
               {{end}}
               <form action="/servers/{{.Agent.ID}}/agent-update" method="post" class="stack stack--compact">
                 <input type="hidden" name="csrf_token" value="{{.CSRFToken}}">
-                <label class="field">
-                  <span>Target release</span>
-                  <input
-                    type="text"
-                    name="target_version"
-                    value="{{.Agent.UpdateTarget}}"
-                    list="agent-version-options"
-                    placeholder="{{if .LatestVersion}}{{.LatestVersion}}{{else}}v0.0.12{{end}}"
-                    pattern="v[0-9]+\.[0-9]+\.[0-9]+([.-][A-Za-z0-9][A-Za-z0-9.-]*)?"
-                    maxlength="64"
-                    required
-                    {{if not .Agent.UpdateEnabled}}disabled{{end}}
-                    {{if eq .ErrorField "target_version"}}autofocus aria-invalid="true"{{else}}aria-invalid="false"{{end}}
-                  >
-                  <datalist id="agent-version-options">
-                    {{range .AgentVersions}}
-                    <option value="{{.Tag}}">{{.Branch}}</option>
-                    {{end}}
-                  </datalist>
-                  <small>{{.Agent.UpdateHint}}</small>
-                  {{if .ReleaseCatalogWarning}}
-                  <small class="field-warning">{{.ReleaseCatalogWarning}}</small>
-                  {{else}}
-                  <small>Published stable and testing releases are loaded from GitHub and cached by the master.</small>
-                  {{end}}
-                </label>
+                <input type="hidden" name="target_version" value="" data-latest-agent-version>
+                <dl class="detail-list detail-list--compact">
+                  <div><dt>Current version</dt><dd><code>{{if .Agent.AgentVersion}}{{.Agent.AgentVersion}}{{else}}unknown{{end}}</code></dd></div>
+                  <div><dt>Latest available</dt><dd><code data-latest-agent-version-label>loading…</code></dd></div>
+                </dl>
+                <small>{{.Agent.UpdateHint}}</small>
+                <small data-agent-catalog-warning hidden class="field-warning"></small>
                 <button
                   class="button button--secondary button--full"
                   type="submit"
                   data-submit-button
                   data-submit-label="Requesting…"
                   {{if not .Agent.UpdateEnabled}}disabled{{end}}
-                >Update agent</button>
+                >Update agent to latest</button>
               </form>
                 </div>
               </details>
@@ -510,6 +488,48 @@
   </div>
   <script src="/assets/config-editor.js?v={{.AssetVersion}}" defer></script>
   <script src="/assets/app.js?v={{.AssetVersion}}" defer></script>
+  <script>
+    (function () {
+      var versionURL = "/servers/{{.Agent.ID}}/versions";
+      fetch(versionURL, { credentials: "same-origin" })
+        .then(function (r) { return r.json(); })
+        .then(function (data) {
+          var singBoxList = document.getElementById("sing-box-version-options");
+          if (singBoxList && data.sing_box_versions) {
+            data.sing_box_versions.forEach(function (v) {
+              var opt = document.createElement("option");
+              opt.value = v.Tag;
+              opt.label = v.Branch;
+              singBoxList.appendChild(opt);
+            });
+          }
+          var sbInput = document.querySelector('input[name="target_version"][list="sing-box-version-options"]');
+          if (sbInput && !sbInput.value && data.latest_sing_box_version) {
+            sbInput.value = data.latest_sing_box_version;
+          }
+          var sbWarn = document.querySelector("[data-sing-box-catalog-warning]");
+          if (sbWarn && data.sing_box_catalog_warning) {
+            sbWarn.textContent = data.sing_box_catalog_warning;
+            sbWarn.hidden = false;
+          }
+          var sbInfo = document.querySelector("[data-sing-box-catalog-info]");
+          if (sbInfo && data.sing_box_catalog_warning) { sbInfo.hidden = true; }
+
+          var agentLatestInput = document.querySelector("[data-latest-agent-version]");
+          var agentLatestLabel = document.querySelector("[data-latest-agent-version-label]");
+          if (agentLatestInput && data.latest_version) {
+            agentLatestInput.value = data.latest_version;
+          }
+          if (agentLatestLabel) {
+            agentLatestLabel.textContent = data.latest_version || "unavailable";
+          }
+        })
+        .catch(function () {
+          var agentLatestLabel = document.querySelector("[data-latest-agent-version-label]");
+          if (agentLatestLabel) { agentLatestLabel.textContent = "unavailable"; }
+        });
+    })();
+  </script>
 </body>
 </html>
 {{end}}
