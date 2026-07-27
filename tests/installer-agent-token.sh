@@ -263,8 +263,9 @@ set -e
 
 [ "$NORMAL_STATUS" -eq 0 ] ||
 	fail "normal token installation failed (status $NORMAL_STATUS): $NORMAL_OUTPUT"
-[ -f "$TOKEN_PATH" ] && [ ! -L "$TOKEN_PATH" ] ||
+if [ ! -f "$TOKEN_PATH" ] || [ -L "$TOKEN_PATH" ]; then
 	fail "normal token installation did not leave a regular file"
+fi
 cmp -s "$EXPECTED_TOKEN_FILE" "$TOKEN_PATH" ||
 	fail "installed token does not exactly match the enrollment token"
 printf '%s\n' "$STALE_TOKEN" | cmp -s - "$OLD_TOKEN_LINK" ||
