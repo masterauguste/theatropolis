@@ -407,6 +407,23 @@ svg {
   font-size: 0.85rem;
 }
 
+.button--icon-only {
+  width: 44px;
+  min-width: 44px;
+  padding: 0;
+  flex: 0 0 44px;
+}
+
+.button--icon-only svg {
+  width: 20px;
+  height: 20px;
+  fill: none;
+  stroke: currentColor;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  stroke-width: 1.8;
+}
+
 .button--icon svg {
   width: 1.05rem;
   height: 1.05rem;
@@ -1047,6 +1064,182 @@ tbody tr:hover {
   margin: 0.2rem 0 0;
   color: var(--ink-500);
   font-size: 0.72rem;
+}
+
+.resource-summary {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto auto;
+  gap: 1rem;
+  align-items: center;
+  padding: 1rem;
+  background: var(--ink-50);
+  border: 1px solid var(--ink-100);
+  border-radius: var(--radius-md);
+}
+
+.resource-summary h3 {
+  margin: 0;
+  color: var(--ink-900);
+  font-size: 0.94rem;
+}
+
+.resource-summary p {
+  margin: 0.2rem 0 0;
+  color: var(--ink-500);
+  font-size: 0.76rem;
+}
+
+.resource-summary__count {
+  min-width: 5rem;
+  color: var(--ink-600);
+  font-size: 0.78rem;
+  font-weight: 750;
+  text-align: right;
+}
+
+.modal {
+  width: min(720px, calc(100vw - 2rem));
+  max-width: none;
+  max-height: none;
+  padding: 0;
+  overflow: visible;
+  background: transparent;
+  border: 0;
+  border-radius: 20px;
+  box-shadow: 0 28px 90px rgb(16 24 40 / 28%);
+}
+
+.modal::backdrop {
+  background: rgb(16 24 40 / 62%);
+  backdrop-filter: blur(4px);
+}
+
+.modal__surface {
+  display: flex;
+  max-height: min(88vh, 900px);
+  flex-direction: column;
+  overflow: hidden;
+  background: var(--white);
+  border: 1px solid rgb(255 255 255 / 34%);
+  border-radius: 20px;
+}
+
+.modal__header,
+.modal__footer {
+  display: flex;
+  padding: 1rem 1.15rem;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+}
+
+.modal__header {
+  border-bottom: 1px solid var(--ink-100);
+}
+
+.modal__header h2 {
+  margin: 0;
+  color: var(--ink-900);
+  font-size: 1.14rem;
+}
+
+.modal__header p {
+  margin: 0.25rem 0 0;
+  color: var(--ink-500);
+  font-size: 0.82rem;
+}
+
+.modal__body {
+  min-height: 0;
+  padding: 1rem 1.15rem;
+  overflow: auto;
+}
+
+.modal__footer {
+  justify-content: flex-end;
+  border-top: 1px solid var(--ink-100);
+}
+
+.resource-modal {
+  width: min(1120px, calc(100vw - 2rem));
+}
+
+.actions-modal {
+  width: min(720px, calc(100vw - 2rem));
+}
+
+.actions-list {
+  display: block;
+}
+
+.action-section + .action-section {
+  margin-top: 0.75rem;
+}
+
+.action-section {
+  overflow: hidden;
+  background: var(--white);
+  border: 1px solid var(--ink-100);
+  border-radius: var(--radius-sm);
+}
+
+.action-section > summary {
+  display: flex;
+  padding: 0.9rem 1rem;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+  color: var(--ink-800);
+  cursor: pointer;
+  list-style: none;
+}
+
+.action-section > summary::-webkit-details-marker {
+  display: none;
+}
+
+.action-section > summary::after {
+  width: 0.55rem;
+  height: 0.55rem;
+  flex: 0 0 auto;
+  border-right: 2px solid currentcolor;
+  border-bottom: 2px solid currentcolor;
+  content: "";
+  transform: rotate(45deg);
+  transition: transform 140ms ease;
+}
+
+.action-section[open] > summary::after {
+  transform: rotate(225deg);
+}
+
+.action-section > summary span {
+  display: grid;
+  gap: 0.16rem;
+}
+
+.action-section > summary strong {
+  font-size: 0.9rem;
+}
+
+.action-section > summary small {
+  color: var(--ink-500);
+  font-size: 0.74rem;
+  font-weight: 500;
+}
+
+.action-section__body {
+  padding: 1rem;
+  border-top: 1px solid var(--ink-100);
+}
+
+.action-section--danger > summary,
+.action-section--danger > summary small {
+  color: var(--danger);
+}
+
+body:has(dialog[open]) {
+  overflow: hidden;
 }
 
 .builder-list,
@@ -1705,6 +1898,41 @@ tbody tr:hover {
   }
 
   .page-header__actions .button {
+    flex: 1;
+  }
+
+  .page-header__actions .button--icon-only {
+    flex: 0 0 44px;
+  }
+
+  .resource-summary {
+    grid-template-columns: minmax(0, 1fr) auto;
+  }
+
+  .resource-summary .button {
+    grid-column: 1 / -1;
+  }
+
+  .resource-summary__count {
+    min-width: 0;
+  }
+
+  .modal {
+    width: calc(100vw - 1rem);
+  }
+
+  .modal__header,
+  .modal__footer,
+  .modal__body {
+    padding-right: 0.85rem;
+    padding-left: 0.85rem;
+  }
+
+  .modal__footer {
+    flex-wrap: wrap;
+  }
+
+  .modal__footer .button {
     flex: 1;
   }
 

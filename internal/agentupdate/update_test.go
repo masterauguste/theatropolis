@@ -153,6 +153,21 @@ func TestExtractAgentBinaryRejectsUnexpectedPath(t *testing.T) {
 	}
 }
 
+func TestExtractReleaseBinarySelectsMaster(t *testing.T) {
+	t.Parallel()
+	archive := testArchive(t, map[string][]byte{
+		"theatropolis-agent":  []byte("agent"),
+		"theatropolis-master": []byte("master"),
+	})
+	binary, err := extractReleaseBinary(archive, "master")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(binary) != "master" {
+		t.Fatalf("master binary = %q", binary)
+	}
+}
+
 func TestSchedulerRejectsConcurrentRequest(t *testing.T) {
 	t.Parallel()
 	scheduler, _ := NewScheduler(t.TempDir())

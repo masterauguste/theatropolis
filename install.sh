@@ -18,6 +18,8 @@ CONFIG_DIRECTORY="/etc/theatropolis"
 MASTER_ADMIN_SOCKET="/run/theatropolis/master-admin.sock"
 WEB_AUTH_FILE="${CONFIG_DIRECTORY}/web-auth.json"
 MASTER_UNIT_FILE="/etc/systemd/system/theatropolis-master.service"
+MASTER_UPDATE_SERVICE_FILE="/etc/systemd/system/theatropolis-master-update.service"
+MASTER_UPDATE_PATH_FILE="/etc/systemd/system/theatropolis-master-update.path"
 AGENT_UPDATE_SERVICE_FILE="/etc/systemd/system/theatropolis-agent-update.service"
 AGENT_UPDATE_PATH_FILE="/etc/systemd/system/theatropolis-agent-update.path"
 INSTALL_LOCK_FILE="/run/theatropolis-installer.lock"
@@ -879,6 +881,14 @@ install_master() {
 		MASTER_UNIT_BACKUP="$TEMP_DIRECTORY/theatropolis-master.service.backup"
 		cp -a "$MASTER_UNIT_FILE" "$MASTER_UNIT_BACKUP"
 	fi
+	for UPDATE_UNIT_FILE in \
+		"$MASTER_UPDATE_SERVICE_FILE" \
+		"$MASTER_UPDATE_PATH_FILE"; do
+		if [ -L "$UPDATE_UNIT_FILE" ] ||
+			{ [ -e "$UPDATE_UNIT_FILE" ] && [ ! -f "$UPDATE_UNIT_FILE" ]; }; then
+			fail "a master update unit exists but is not a regular file"
+		fi
+	done
 	if systemctl is-active --quiet theatropolis-master; then
 		MASTER_WAS_ACTIVE="yes"
 	fi
@@ -971,7 +981,49 @@ EOF
 		fail "could not atomically install the master service unit"
 	fi
 	MASTER_UNIT_TEMP=""
+	cat >"$MASTER_UPDATE_SERVICE_FILE" <<EOF
+[Unit]
+Description=Apply a verified Theatropolis master update
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=root
+Group=root
+UMask=0077
+ExecStartPre=/bin/sleep 2
+ExecStart=${INSTALL_DIRECTORY}/theatropolis-master apply-update --state-dir=${MASTER_STATE_DIRECTORY} --install-path=${INSTALL_DIRECTORY}/theatropolis-master
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ProtectClock=true
+ProtectHostname=true
+ProtectKernelLogs=true
+ProtectKernelModules=true
+ProtectKernelTunables=true
+LockPersonality=true
+MemoryDenyWriteExecute=true
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+RestrictRealtime=true
+CapabilityBoundingSet=CAP_DAC_OVERRIDE CAP_FOWNER
+ReadWritePaths=${INSTALL_DIRECTORY} ${MASTER_STATE_DIRECTORY}
+EOF
+	cat >"$MASTER_UPDATE_PATH_FILE" <<EOF
+[Unit]
+Description=Watch for verified Theatropolis master update requests
+
+[Path]
+PathExists=${MASTER_STATE_DIRECTORY}/update-request.json
+Unit=theatropolis-master-update.service
+
+[Install]
+WantedBy=multi-user.target
+EOF
+	chmod 0644 "$MASTER_UPDATE_SERVICE_FILE" "$MASTER_UPDATE_PATH_FILE"
 	systemctl daemon-reload
+	systemctl enable --now theatropolis-master-update.path
 	systemctl enable --now theatropolis-master
 	systemctl restart theatropolis-master
 	configure_caddy

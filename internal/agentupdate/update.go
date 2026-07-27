@@ -154,6 +154,7 @@ func (s *Scheduler) resultPath() string {
 type ApplyOptions struct {
 	StateDirectory string
 	InstallPath    string
+	Component      string
 	Architecture   string
 	RunningVersion string
 	HTTPClient     *http.Client
@@ -166,7 +167,14 @@ func Apply(ctx context.Context, options ApplyOptions) error {
 		return errors.New("agent update state directory is required")
 	}
 	if strings.TrimSpace(options.InstallPath) == "" {
-		return errors.New("agent install path is required")
+		return errors.New("install path is required")
+	}
+	component := options.Component
+	if component == "" {
+		component = "agent"
+	}
+	if component != "agent" && component != "master" {
+		return errors.New("update component is invalid")
 	}
 	architecture := options.Architecture
 	if architecture == "" {
@@ -209,7 +217,7 @@ func Apply(ctx context.Context, options ApplyOptions) error {
 		Status:         "failed",
 		ObservedAt:     time.Now().UTC(),
 	}
-	applyErr := applyRelease(ctx, options, request, architecture)
+	applyErr := applyRelease(ctx, options, request, architecture, component)
 	if applyErr == nil {
 		result.Status = "applied"
 		result.RunningVersion = request.TargetVersion
@@ -228,7 +236,7 @@ func Apply(ctx context.Context, options ApplyOptions) error {
 				ctx,
 				"systemctl",
 				"restart",
-				"theatropolis-agent.service",
+				"theatropolis-"+component+".service",
 			).Run()
 		}
 	}
@@ -268,6 +276,7 @@ func applyRelease(
 	options ApplyOptions,
 	request Request,
 	architecture string,
+	component string,
 ) error {
 	if request.TargetVersion == options.RunningVersion {
 		return nil
@@ -306,7 +315,7 @@ func applyRelease(
 	if !strings.EqualFold(hex.EncodeToString(actualDigest[:]), expectedDigest) {
 		return errors.New("agent release checksum verification failed")
 	}
-	binary, err := extractAgentBinary(archive)
+	binary, err := extractReleaseBinary(archive, component)
 	if err != nil {
 		return err
 	}
@@ -369,12 +378,17 @@ func checksumFor(contents []byte, archiveName string) (string, error) {
 }
 
 func extractAgentBinary(archive []byte) ([]byte, error) {
+	return extractReleaseBinary(archive, "agent")
+}
+
+func extractReleaseBinary(archive []byte, component string) ([]byte, error) {
 	gzipReader, err := gzip.NewReader(bytes.NewReader(archive))
 	if err != nil {
 		return nil, fmt.Errorf("open agent release archive: %w", err)
 	}
 	defer gzipReader.Close()
 	tarReader := tar.NewReader(gzipReader)
+	targetName := "theatropolis-" + component
 	var binary []byte
 	for {
 		header, err := tarReader.Next()
@@ -392,11 +406,11 @@ func extractAgentBinary(archive []byte) ([]byte, error) {
 			header.Size > maxBinaryBytes {
 			return nil, errors.New("agent release archive contains an unsafe entry")
 		}
-		if header.Name != "theatropolis-agent" {
+		if header.Name != targetName {
 			continue
 		}
 		if binary != nil {
-			return nil, errors.New("agent release archive contains duplicate agent binaries")
+			return nil, errors.New("release archive contains duplicate target binaries")
 		}
 		binary, err = io.ReadAll(io.LimitReader(tarReader, maxBinaryBytes+1))
 		if err != nil || int64(len(binary)) != header.Size {
@@ -404,7 +418,7 @@ func extractAgentBinary(archive []byte) ([]byte, error) {
 		}
 	}
 	if len(binary) == 0 {
-		return nil, errors.New("agent release archive is missing the agent binary")
+		return nil, errors.New("release archive is missing the target binary")
 	}
 	return binary, nil
 }

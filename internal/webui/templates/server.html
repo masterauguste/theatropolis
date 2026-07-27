@@ -25,6 +25,9 @@
             <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M20 11a8 8 0 1 0-2.3 5.7M20 5v6h-6"/></svg>
             Refresh
           </a>
+          <button class="button button--secondary button--icon-only" type="button" data-dialog-open="server-actions-dialog" aria-label="Open server and software actions">
+            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 15.5a3.5 3.5 0 1 0 0-7 3.5 3.5 0 0 0 0 7ZM19.4 15a1.7 1.7 0 0 0 .3 1.9l.1.1-2.8 2.8-.1-.1a1.7 1.7 0 0 0-1.9-.3 1.7 1.7 0 0 0-1 1.6v.2h-4V21a1.7 1.7 0 0 0-1-1.6 1.7 1.7 0 0 0-1.9.3l-.1.1L4.2 17l.1-.1a1.7 1.7 0 0 0 .3-1.9A1.7 1.7 0 0 0 3 14H2.8v-4H3a1.7 1.7 0 0 0 1.6-1 1.7 1.7 0 0 0-.3-1.9L4.2 7 7 4.2l.1.1a1.7 1.7 0 0 0 1.9.3A1.7 1.7 0 0 0 10 3V2.8h4V3a1.7 1.7 0 0 0 1 1.6 1.7 1.7 0 0 0 1.9-.3l.1-.1L19.8 7l-.1.1a1.7 1.7 0 0 0-.3 1.9 1.7 1.7 0 0 0 1.6 1h.2v4H21a1.7 1.7 0 0 0-1.6 1Z"/></svg>
+          </button>
         </div>
       </header>
 
@@ -62,7 +65,7 @@
         </article>
       </section>
 
-      <div class="management-grid">
+      <div>
         <section class="panel configuration-panel" aria-labelledby="configuration-heading">
           <div class="panel__header">
             <div>
@@ -96,32 +99,32 @@
             <section class="guided-config" data-config-panel="guided">
               <div class="notice notice--warning guided-config__notice" data-guided-warning hidden></div>
               <section class="builder-section" aria-labelledby="inbound-builder-heading">
-                <div class="builder-section__header">
+                <div class="resource-summary">
                   <div><h3 id="inbound-builder-heading">Inbounds and users</h3><p>Shadowsocks 2022, AnyTLS, and Hysteria2 listeners.</p></div>
-                  <button class="button button--secondary button--small" type="button" data-add-inbound {{if not .Agent.ConfigurationEditable}}disabled{{end}}>Add inbound</button>
+                  <span class="resource-summary__count" data-resource-count="inbound">0 configured</span>
+                  <button class="button button--secondary button--small" type="button" data-dialog-open="inbound-manager-dialog">Manage</button>
                 </div>
-                <div class="builder-list" data-inbound-list></div>
               </section>
               <section class="builder-section" aria-labelledby="outbound-builder-heading">
-                <div class="builder-section__header">
+                <div class="resource-summary">
                   <div><h3 id="outbound-builder-heading">Outbounds</h3><p>Direct, block, or externally supplied outbound JSON.</p></div>
-                  <button class="button button--secondary button--small" type="button" data-add-outbound {{if not .Agent.ConfigurationEditable}}disabled{{end}}>Add outbound</button>
+                  <span class="resource-summary__count" data-resource-count="outbound">0 configured</span>
+                  <button class="button button--secondary button--small" type="button" data-dialog-open="outbound-manager-dialog">Manage</button>
                 </div>
-                <div class="builder-list" data-outbound-list></div>
               </section>
               <section class="builder-section" aria-labelledby="ruleset-builder-heading">
-                <div class="builder-section__header">
+                <div class="resource-summary">
                   <div><h3 id="ruleset-builder-heading">Geo rule sets</h3><p>Official SagerNet geosite/geoip rule sets or a custom remote SRS URL.</p></div>
-                  <button class="button button--secondary button--small" type="button" data-add-rule-set {{if not .Agent.ConfigurationEditable}}disabled{{end}}>Add rule set</button>
+                  <span class="resource-summary__count" data-resource-count="rule-set">0 configured</span>
+                  <button class="button button--secondary button--small" type="button" data-dialog-open="rule-set-manager-dialog">Manage</button>
                 </div>
-                <div class="builder-list" data-rule-set-list></div>
               </section>
               <section class="builder-section" aria-labelledby="route-builder-heading">
-                <div class="builder-section__header">
+                <div class="resource-summary">
                   <div><h3 id="route-builder-heading">Routing rules</h3><p>Route by inbound, protocol, domain, IP, user, network, or rule set.</p></div>
-                  <button class="button button--secondary button--small" type="button" data-add-route-rule {{if not .Agent.ConfigurationEditable}}disabled{{end}}>Add rule</button>
+                  <span class="resource-summary__count" data-resource-count="route-rule">0 configured</span>
+                  <button class="button button--secondary button--small" type="button" data-dialog-open="route-rule-manager-dialog">Manage</button>
                 </div>
-                <div class="builder-list" data-route-rule-list></div>
                 <label class="field builder-final-outbound">
                   <span>Default outbound</span>
                   <input type="text" data-route-final list="outbound-tags" placeholder="direct-out" {{if not .Agent.ConfigurationEditable}}disabled{{end}}>
@@ -162,6 +165,62 @@
               >Validate and deploy</button>
             </div>
           </form>
+
+          <dialog class="modal resource-modal" id="inbound-manager-dialog" aria-labelledby="inbound-manager-title">
+            <div class="modal__surface">
+              <header class="modal__header">
+                <div><p class="eyebrow">Configuration resource</p><h2 id="inbound-manager-title">Manage inbounds and users</h2><p>Add, inspect, change, or remove every managed listener.</p></div>
+                <button class="button button--secondary button--icon-only" type="button" data-dialog-close aria-label="Close inbound manager">×</button>
+              </header>
+              <div class="modal__body"><div class="builder-list" data-inbound-list></div></div>
+              <footer class="modal__footer">
+                <button class="button button--secondary" type="button" data-add-inbound {{if not .Agent.ConfigurationEditable}}disabled{{end}}>New inbound</button>
+                <button class="button button--primary" type="button" data-dialog-close>Done</button>
+              </footer>
+            </div>
+          </dialog>
+
+          <dialog class="modal resource-modal" id="outbound-manager-dialog" aria-labelledby="outbound-manager-title">
+            <div class="modal__surface">
+              <header class="modal__header">
+                <div><p class="eyebrow">Configuration resource</p><h2 id="outbound-manager-title">Manage outbounds</h2><p>Add, inspect, change, or remove routing destinations.</p></div>
+                <button class="button button--secondary button--icon-only" type="button" data-dialog-close aria-label="Close outbound manager">×</button>
+              </header>
+              <div class="modal__body"><div class="builder-list" data-outbound-list></div></div>
+              <footer class="modal__footer">
+                <button class="button button--secondary" type="button" data-add-outbound {{if not .Agent.ConfigurationEditable}}disabled{{end}}>New outbound</button>
+                <button class="button button--primary" type="button" data-dialog-close>Done</button>
+              </footer>
+            </div>
+          </dialog>
+
+          <dialog class="modal resource-modal" id="rule-set-manager-dialog" aria-labelledby="rule-set-manager-title">
+            <div class="modal__surface">
+              <header class="modal__header">
+                <div><p class="eyebrow">Configuration resource</p><h2 id="rule-set-manager-title">Manage rule sets</h2><p>Add, inspect, change, or remove geo and custom SRS sources.</p></div>
+                <button class="button button--secondary button--icon-only" type="button" data-dialog-close aria-label="Close rule-set manager">×</button>
+              </header>
+              <div class="modal__body"><div class="builder-list" data-rule-set-list></div></div>
+              <footer class="modal__footer">
+                <button class="button button--secondary" type="button" data-add-rule-set {{if not .Agent.ConfigurationEditable}}disabled{{end}}>New rule set</button>
+                <button class="button button--primary" type="button" data-dialog-close>Done</button>
+              </footer>
+            </div>
+          </dialog>
+
+          <dialog class="modal resource-modal" id="route-rule-manager-dialog" aria-labelledby="route-rule-manager-title">
+            <div class="modal__surface">
+              <header class="modal__header">
+                <div><p class="eyebrow">Configuration resource</p><h2 id="route-rule-manager-title">Manage routing rules</h2><p>Add, inspect, change, reorder in JSON, or remove match rules.</p></div>
+                <button class="button button--secondary button--icon-only" type="button" data-dialog-close aria-label="Close routing-rule manager">×</button>
+              </header>
+              <div class="modal__body"><div class="builder-list" data-route-rule-list></div></div>
+              <footer class="modal__footer">
+                <button class="button button--secondary" type="button" data-add-route-rule {{if not .Agent.ConfigurationEditable}}disabled{{end}}>New rule</button>
+                <button class="button button--primary" type="button" data-dialog-close>Done</button>
+              </footer>
+            </div>
+          </dialog>
 
           <template id="inbound-card-template">
             <article class="builder-card" data-inbound-card>
@@ -242,15 +301,16 @@
           </template>
         </section>
 
-        <aside class="management-aside">
-          <section class="panel update-card" aria-labelledby="agent-update-heading">
-            <div class="panel__header">
-              <div>
-                <h2 id="agent-update-heading">Agent software</h2>
-                <p>Remotely install a verified release.</p>
-              </div>
-            </div>
-            <div class="update-card__body">
+        <dialog class="modal actions-modal" id="server-actions-dialog" aria-labelledby="server-actions-title">
+          <div class="modal__surface">
+            <header class="modal__header">
+              <div><p class="eyebrow">Operations</p><h2 id="server-actions-title">Server and software actions</h2><p>Updates, deployment diagnostics, and access controls.</p></div>
+              <button class="button button--secondary button--icon-only" type="button" data-dialog-close aria-label="Close server actions">×</button>
+            </header>
+            <div class="modal__body actions-list">
+              <details class="action-section" open>
+                <summary><span><strong>Agent software</strong><small>Running {{if .Agent.AgentVersion}}{{.Agent.AgentVersion}}{{else}}unknown version{{end}}</small></span></summary>
+                <div class="action-section__body">
               {{if .Agent.Update}}
               <dl class="detail-list detail-list--compact">
                 <div>
@@ -290,7 +350,7 @@
                     name="target_version"
                     value="{{.Agent.UpdateTarget}}"
                     list="agent-version-options"
-                    placeholder="v0.0.10"
+                    placeholder="{{if .LatestVersion}}{{.LatestVersion}}{{else}}v0.0.12{{end}}"
                     pattern="v[0-9]+\.[0-9]+\.[0-9]+([.-][A-Za-z0-9][A-Za-z0-9.-]*)?"
                     maxlength="64"
                     required
@@ -317,16 +377,34 @@
                   {{if not .Agent.UpdateEnabled}}disabled{{end}}
                 >Update agent</button>
               </form>
-            </div>
-          </section>
+                </div>
+              </details>
 
-          <section class="panel deployment-card" aria-labelledby="deployment-heading">
-            <div class="panel__header">
-              <div>
-                <h2 id="deployment-heading">Latest deployment</h2>
-                <p>Agent-reported activation result.</p>
-              </div>
-            </div>
+              <details class="action-section">
+                <summary><span><strong>Master software</strong><small>Running {{.MasterVersion}}; latest {{if .LatestVersion}}{{.LatestVersion}}{{else}}unavailable{{end}}</small></span></summary>
+                <div class="action-section__body">
+                  {{if .MasterUpdate}}
+                  <dl class="detail-list detail-list--compact">
+                    <div><dt>Last update</dt><dd><span class="status status--{{.MasterUpdate.StatusClass}}"><span aria-hidden="true"></span>{{.MasterUpdate.StatusLabel}}</span></dd></div>
+                    <div><dt>Target</dt><dd><code>{{.MasterUpdate.TargetVersion}}</code></dd></div>
+                    <div><dt>Updated</dt><dd>{{.MasterUpdate.UpdatedAt}}</dd></div>
+                  </dl>
+                  {{if .MasterUpdate.Diagnostic}}<div class="diagnostic"><strong>Update diagnostic</strong><pre>{{.MasterUpdate.Diagnostic}}</pre></div>{{end}}
+                  {{end}}
+                  <p>The master can only update to the newest published build. The release checksum is verified before replacement.</p>
+                  <form action="/master-update" method="post">
+                    <input type="hidden" name="csrf_token" value="{{.CSRFToken}}">
+                    <input type="hidden" name="agent_id" value="{{.Agent.ID}}">
+                    <button class="button button--secondary button--full" type="submit" data-submit-button data-submit-label="Scheduling…" {{if not .MasterUpdateEnabled}}disabled{{end}}>
+                      {{if eq .MasterVersion .LatestVersion}}Master is up to date{{else}}Update master to {{.LatestVersion}}{{end}}
+                    </button>
+                  </form>
+                </div>
+              </details>
+
+              <details class="action-section">
+                <summary><span><strong>Latest deployment</strong><small>{{if .Agent.Deployment}}{{.Agent.Deployment.StatusLabel}}{{else}}No deployment yet{{end}}</small></span></summary>
+                <div class="action-section__body">
             {{if .Agent.Deployment}}
             <dl class="detail-list">
               <div>
@@ -361,16 +439,12 @@
               <p>No configuration has been sent to this agent yet.</p>
             </div>
             {{end}}
-          </section>
+                </div>
+              </details>
 
-          <section class="panel danger-card" aria-labelledby="danger-heading">
-            <div class="panel__header">
-              <div>
-                <h2 id="danger-heading">Revoke access</h2>
-                <p>Remove this identity from the master.</p>
-              </div>
-            </div>
-            <div class="danger-card__body">
+              <details class="action-section action-section--danger">
+                <summary><span><strong>Revoke access</strong><small>Disconnect and invalidate this identity</small></span></summary>
+                <div class="action-section__body">
               <p>This immediately closes an active control session and invalidates enrollment credentials. It does not uninstall the remote agent or stop its current sing-box process.</p>
               <form
                 action="/servers/{{.Agent.ID}}/revoke"
@@ -384,9 +458,12 @@
                 </label>
                 <button class="button button--danger button--full" type="submit">{{.Agent.RevokeLabel}}</button>
               </form>
+                </div>
+              </details>
             </div>
-          </section>
-        </aside>
+            <footer class="modal__footer"><button class="button button--primary" type="button" data-dialog-close>Done</button></footer>
+          </div>
+        </dialog>
       </div>
     </main>
   </div>

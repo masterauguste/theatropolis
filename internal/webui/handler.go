@@ -81,15 +81,16 @@ type AgentController interface {
 }
 
 type Options struct {
-	Registry   *identity.Registry
-	Sessions   SessionRegistry
-	Controller AgentController
-	Access     *AccessManager
-	Releases   ReleaseCatalog
-	PublicURL  string
-	Version    string
-	Logger     *slog.Logger
-	Now        func() time.Time
+	Registry      *identity.Registry
+	Sessions      SessionRegistry
+	Controller    AgentController
+	Access        *AccessManager
+	Releases      ReleaseCatalog
+	MasterUpdater *agentupdate.Scheduler
+	PublicURL     string
+	Version       string
+	Logger        *slog.Logger
+	Now           func() time.Time
 }
 
 type Handler struct {
@@ -98,6 +99,8 @@ type Handler struct {
 	controller    AgentController
 	access        *AccessManager
 	releases      ReleaseCatalog
+	masterUpdater *agentupdate.Scheduler
+	version       string
 	publicURL     string
 	publicScheme  string
 	publicHost    string
@@ -141,6 +144,10 @@ type pageData struct {
 	Created               *createdServerView
 	AgentVersions         []agentVersionView
 	ReleaseCatalogWarning string
+	LatestVersion         string
+	MasterVersion         string
+	MasterUpdateEnabled   bool
+	MasterUpdate          *agentUpdateView
 }
 
 type fleetStats struct {
@@ -264,6 +271,8 @@ func New(options Options) (http.Handler, error) {
 		controller:    options.Controller,
 		access:        options.Access,
 		releases:      options.Releases,
+		masterUpdater: options.MasterUpdater,
+		version:       versionLabel,
 		publicURL:     public.origin,
 		publicScheme:  public.scheme,
 		publicHost:    public.hostname,
@@ -305,6 +314,7 @@ func (h *Handler) routes() {
 	)
 	h.mux.HandleFunc("POST /servers/{agent_id}/revoke", h.revokeServer)
 	h.mux.HandleFunc("POST /servers/{agent_id}/agent-update", h.updateAgent)
+	h.mux.HandleFunc("POST /master-update", h.updateMaster)
 	h.mux.HandleFunc("POST /servers", h.createServer)
 	h.mux.HandleFunc("GET /", h.root)
 }
@@ -879,6 +889,80 @@ func (h *Handler) updateAgent(response http.ResponseWriter, request *http.Reques
 	http.Redirect(response, request, "/servers/"+url.PathEscape(snapshot.ID)+"/manage", http.StatusSeeOther)
 }
 
+func (h *Handler) updateMaster(response http.ResponseWriter, request *http.Request) {
+	sessionToken, ok := h.sessionToken(request)
+	if !ok {
+		h.redirectToLogin(response, request)
+		return
+	}
+	if h.rejectInvalidMutationOrigin(response, request) {
+		return
+	}
+	form, err := readExactForm(
+		response,
+		request,
+		maxEnrollmentBodyBytes,
+		"csrf_token",
+		"agent_id",
+	)
+	if err != nil || !h.access.AuthorizeCSRF(sessionToken, form.Get("csrf_token")) {
+		http.Error(response, "request was not authorized", http.StatusForbidden)
+		return
+	}
+	if _, err := h.access.Authenticate(sessionToken); err != nil {
+		h.redirectToLogin(response, request)
+		return
+	}
+	agentID := form.Get("agent_id")
+	if _, exists := h.agentSnapshot(agentID); !exists {
+		http.NotFound(response, request)
+		return
+	}
+	if h.masterUpdater == nil || h.releases == nil {
+		http.Error(response, "master update control is unavailable", http.StatusConflict)
+		return
+	}
+	releases, err := h.releases.Versions(request.Context())
+	if err != nil || len(releases) == 0 {
+		http.Error(response, "the latest release could not be determined", http.StatusServiceUnavailable)
+		return
+	}
+	targetVersion := releases[0].Tag
+	if targetVersion == h.version {
+		http.Redirect(
+			response,
+			request,
+			"/servers/"+url.PathEscape(agentID)+"/manage",
+			http.StatusSeeOther,
+		)
+		return
+	}
+	requestID, err := randomOpaqueID("master")
+	if err != nil {
+		http.Error(response, "master update could not be prepared", http.StatusInternalServerError)
+		return
+	}
+	if err := h.masterUpdater.Schedule(requestID, targetVersion); err != nil {
+		status := http.StatusInternalServerError
+		if errors.Is(err, agentupdate.ErrUpdatePending) {
+			status = http.StatusConflict
+		}
+		http.Error(response, "master update could not be scheduled", status)
+		return
+	}
+	h.logger.Info(
+		"master update scheduled",
+		"target_version", targetVersion,
+		"request_id", requestID,
+	)
+	http.Redirect(
+		response,
+		request,
+		"/servers/"+url.PathEscape(agentID)+"/manage",
+		http.StatusSeeOther,
+	)
+}
+
 func (h *Handler) renderAgentUpdateError(
 	response http.ResponseWriter,
 	status int,
@@ -976,26 +1060,42 @@ func (h *Handler) serverPageData(
 	}
 	if update, exists := h.controller.LatestAgentUpdate(snapshot.ID); exists {
 		detail.Update = agentUpdateViewFor(update)
-		detail.UpdateTarget = update.TargetVersion
 	}
-	versions, catalogWarning := h.agentVersions(ctx)
+	versions, latestVersion, catalogWarning := h.releaseVersions(ctx)
+	if detail.UpdateTarget == "" {
+		detail.UpdateTarget = latestVersion
+	}
+	var masterUpdate *agentUpdateView
+	if h.masterUpdater != nil {
+		if result, exists, err := h.masterUpdater.LoadResult(); err == nil && exists {
+			masterUpdate = updateResultViewFor(result)
+		}
+	}
 	return pageData{
 		Title:                 snapshot.ID,
 		CSRFToken:             session.CSRFToken,
 		Agent:                 detail,
 		AgentVersions:         versions,
 		ReleaseCatalogWarning: catalogWarning,
+		LatestVersion:         latestVersion,
+		MasterVersion:         h.version,
+		MasterUpdateEnabled: h.masterUpdater != nil &&
+			latestVersion != "" &&
+			latestVersion != h.version,
+		MasterUpdate: masterUpdate,
 	}, nil
 }
 
-func (h *Handler) agentVersions(ctx context.Context) ([]agentVersionView, string) {
+func (h *Handler) releaseVersions(
+	ctx context.Context,
+) ([]agentVersionView, string, string) {
 	if h.releases == nil {
-		return nil, "The release catalog is unavailable; enter an exact tag manually."
+		return nil, "", "The release catalog is unavailable; enter an exact tag manually."
 	}
 	releases, err := h.releases.Versions(ctx)
 	if err != nil {
 		h.logger.Warn("load agent release catalog", "error", err)
-		return nil, "GitHub releases could not be loaded; enter an exact tag manually."
+		return nil, "", "GitHub releases could not be loaded; enter an exact tag manually."
 	}
 	versions := make([]agentVersionView, 0, len(releases))
 	for _, release := range releases {
@@ -1008,7 +1108,11 @@ func (h *Handler) agentVersions(ctx context.Context) ([]agentVersionView, string
 			Branch: branch,
 		})
 	}
-	return versions, ""
+	latest := ""
+	if len(releases) != 0 {
+		latest = releases[0].Tag
+	}
+	return versions, latest, ""
 }
 
 func agentUpdateViewFor(state control.AgentUpdateState) *agentUpdateView {
@@ -1031,6 +1135,17 @@ func agentUpdateViewFor(state control.AgentUpdateState) *agentUpdateView {
 		Diagnostic:     state.Diagnostic,
 		UpdatedAt:      state.UpdatedAt.UTC().Format("2 Jan 2006, 15:04:05 UTC"),
 	}
+}
+
+func updateResultViewFor(result agentupdate.Result) *agentUpdateView {
+	state := control.AgentUpdateState{
+		TargetVersion:  result.TargetVersion,
+		RunningVersion: result.RunningVersion,
+		Status:         result.Status,
+		Diagnostic:     result.Diagnostic,
+		UpdatedAt:      result.ObservedAt,
+	}
+	return agentUpdateViewFor(state)
 }
 
 func (h *Handler) renderServerError(

@@ -1,5 +1,32 @@
 "use strict";
 
+const dialogTriggers = new WeakMap();
+
+for (const button of document.querySelectorAll("[data-dialog-open]")) {
+  button.addEventListener("click", () => {
+    const dialog = document.getElementById(button.dataset.dialogOpen);
+    if (!(dialog instanceof HTMLDialogElement)) {
+      return;
+    }
+    dialogTriggers.set(dialog, button);
+    dialog.showModal();
+  });
+}
+
+for (const dialog of document.querySelectorAll("dialog.modal")) {
+  dialog.addEventListener("click", (event) => {
+    if (event.target === dialog) {
+      dialog.close();
+    }
+  });
+  dialog.addEventListener("close", () => {
+    dialogTriggers.get(dialog)?.focus();
+  });
+  for (const button of dialog.querySelectorAll("[data-dialog-close]")) {
+    button.addEventListener("click", () => dialog.close());
+  }
+}
+
 for (const button of document.querySelectorAll("[data-copy-target]")) {
   button.addEventListener("click", async () => {
     const target = document.getElementById(button.dataset.copyTarget);

@@ -2,17 +2,18 @@
 
 const configTextarea = document.getElementById("config-json");
 const configurationForm = configTextarea?.closest("form");
+const configurationEditor = configurationForm?.closest(".configuration-panel");
 
-if (configTextarea && configurationForm) {
+if (configTextarea && configurationForm && configurationEditor) {
   const editable = !configTextarea.readOnly;
   const guidedPanel = configurationForm.querySelector('[data-config-panel="guided"]');
   const advancedPanel = configurationForm.querySelector('[data-config-panel="advanced"]');
   const warning = configurationForm.querySelector("[data-guided-warning]");
   const summary = configurationForm.querySelector("[data-config-summary]");
-  const inboundList = configurationForm.querySelector("[data-inbound-list]");
-  const outboundList = configurationForm.querySelector("[data-outbound-list]");
-  const ruleSetList = configurationForm.querySelector("[data-rule-set-list]");
-  const routeRuleList = configurationForm.querySelector("[data-route-rule-list]");
+  const inboundList = configurationEditor.querySelector("[data-inbound-list]");
+  const outboundList = configurationEditor.querySelector("[data-outbound-list]");
+  const ruleSetList = configurationEditor.querySelector("[data-rule-set-list]");
+  const routeRuleList = configurationEditor.querySelector("[data-route-rule-list]");
   const routeFinal = configurationForm.querySelector("[data-route-final]");
   const outboundTags = configurationForm.querySelector("[data-outbound-tags]");
   const inboundTemplate = document.getElementById("inbound-card-template");
@@ -33,6 +34,40 @@ if (configTextarea && configurationForm) {
     "auth_user",
   ];
   let documentModel = {};
+
+  function updateResourceCounts() {
+    const counts = {
+      inbound: inboundList.querySelectorAll("[data-inbound-card]").length,
+      outbound: outboundList.querySelectorAll("[data-outbound-card]").length,
+      "rule-set": ruleSetList.querySelectorAll("[data-rule-set-card]").length,
+      "route-rule": routeRuleList.querySelectorAll("[data-route-rule-card]").length,
+    };
+    for (const [name, count] of Object.entries(counts)) {
+      const output = configurationEditor.querySelector(`[data-resource-count="${name}"]`);
+      if (output) {
+        output.textContent = `${count} configured`;
+      }
+    }
+  }
+
+  function reportInvalidManagedResource() {
+    const controls = configurationEditor.querySelectorAll(
+      ".resource-modal input, .resource-modal select, .resource-modal textarea",
+    );
+    for (const control of controls) {
+      if (control.disabled || control.checkValidity()) {
+        continue;
+      }
+      const dialog = control.closest("dialog");
+      if (dialog instanceof HTMLDialogElement && !dialog.open) {
+        dialog.showModal();
+      }
+      control.focus();
+      control.reportValidity();
+      return true;
+    }
+    return false;
+  }
 
   const clone = (value) => JSON.parse(JSON.stringify(value));
   const objectValue = (value) => value && typeof value === "object" && !Array.isArray(value);
@@ -145,6 +180,7 @@ if (configTextarea && configurationForm) {
     inboundList.append(card);
     updateInboundVisibility(card);
     disableWhenReadonly(card);
+    updateResourceCounts();
     return card;
   }
 
@@ -169,6 +205,7 @@ if (configTextarea && configurationForm) {
     updateOutboundVisibility(card);
     disableWhenReadonly(card);
     updateOutboundTagOptions();
+    updateResourceCounts();
     return card;
   }
 
@@ -203,6 +240,7 @@ if (configTextarea && configurationForm) {
     ruleSetList.append(card);
     updateRuleSetVisibility(card);
     disableWhenReadonly(card);
+    updateResourceCounts();
     return card;
   }
 
@@ -217,6 +255,7 @@ if (configTextarea && configurationForm) {
     setValue(field(card, "route", "outbound"), rule.outbound);
     routeRuleList.append(card);
     disableWhenReadonly(card);
+    updateResourceCounts();
     return card;
   }
 
@@ -428,6 +467,7 @@ if (configTextarea && configurationForm) {
       setWarning("");
     }
     summary.textContent = `${listValue(documentModel.inbounds).length} inbound(s), ${listValue(documentModel.outbounds).length} outbound(s), ${listValue(route.rules).length} rule(s)`;
+    updateResourceCounts();
   }
 
   function switchMode(mode) {
@@ -468,7 +508,7 @@ if (configTextarea && configurationForm) {
     }
   }
 
-  configurationForm.addEventListener("click", (event) => {
+  configurationEditor.addEventListener("click", (event) => {
     const button = event.target.closest("button");
     if (!button) return;
     if (button.dataset.configTab) {
@@ -486,6 +526,7 @@ if (configTextarea && configurationForm) {
     } else if (button.matches("[data-remove-card]")) {
       button.closest(".builder-card")?.remove();
       updateOutboundTagOptions();
+      updateResourceCounts();
     } else if (button.matches("[data-add-user]")) {
       addUser(button.closest("[data-inbound-card]"));
     } else if (button.matches("[data-remove-user]")) {
@@ -506,7 +547,7 @@ if (configTextarea && configurationForm) {
     }
   });
 
-  configurationForm.addEventListener("input", (event) => {
+  configurationEditor.addEventListener("input", (event) => {
     const card = event.target.closest("[data-inbound-card], [data-outbound-card], [data-rule-set-card]");
     if (card?.matches("[data-inbound-card]")) updateInboundVisibility(card);
     if (card?.matches("[data-outbound-card]")) updateOutboundVisibility(card);
@@ -514,7 +555,7 @@ if (configTextarea && configurationForm) {
     if (event.target.matches('[data-outbound-field="tag"]')) updateOutboundTagOptions();
   });
 
-  configurationForm.addEventListener("change", (event) => {
+  configurationEditor.addEventListener("change", (event) => {
     const inbound = event.target.closest("[data-inbound-card]");
     if (inbound) updateInboundVisibility(inbound);
     const outbound = event.target.closest("[data-outbound-card]");
@@ -534,6 +575,10 @@ if (configTextarea && configurationForm) {
         configTextarea.setCustomValidity(error.message);
         configTextarea.reportValidity();
       }
+      return;
+    }
+    if (reportInvalidManagedResource()) {
+      event.preventDefault();
       return;
     }
     try {

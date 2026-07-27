@@ -776,6 +776,25 @@ grep -Fq -- \
 	"$UNIT" ||
 	fail "master unit does not contain the persistent web access path"
 
+UPDATE_UNIT="$TEST_ROOT/etc/systemd/system/theatropolis-master-update.service"
+UPDATE_PATH="$TEST_ROOT/etc/systemd/system/theatropolis-master-update.path"
+[ -f "$UPDATE_UNIT" ] ||
+	fail "master update systemd unit was not generated"
+[ -f "$UPDATE_PATH" ] ||
+	fail "master update path unit was not generated"
+grep -Fq -- \
+	"theatropolis-master apply-update --state-dir=$TEST_ROOT/var/lib/theatropolis/master --install-path=$TEST_ROOT/usr/local/bin/theatropolis-master" \
+	"$UPDATE_UNIT" ||
+	fail "master update unit does not invoke the verified self-updater"
+grep -Fq -- \
+	"PathExists=$TEST_ROOT/var/lib/theatropolis/master/update-request.json" \
+	"$UPDATE_PATH" ||
+	fail "master update path does not watch the master's request file"
+grep -Fq -- \
+	"enable --now theatropolis-master-update.path" \
+	"$SYSTEMCTL_LOG" ||
+	fail "master update path unit was not enabled"
+
 SNIPPET="$TEST_ROOT/etc/caddy/conf.d/theatropolis.caddy"
 [ -f "$SNIPPET" ] ||
 	fail "Caddy snippet was not generated"

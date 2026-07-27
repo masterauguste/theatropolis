@@ -21,6 +21,7 @@ import (
 	"time"
 
 	controlv1 "github.com/masterauguste/theatropolis/api/gen/theatropolis/control/v1"
+	"github.com/masterauguste/theatropolis/internal/agentupdate"
 	"github.com/masterauguste/theatropolis/internal/control"
 	"github.com/masterauguste/theatropolis/internal/deployment"
 	"github.com/masterauguste/theatropolis/internal/identity"
@@ -52,11 +53,13 @@ func main() {
 
 func run(arguments []string) error {
 	if len(arguments) == 0 {
-		return errors.New("expected serve, create-enrollment, set-web-admin, or version")
+		return errors.New("expected serve, apply-update, create-enrollment, set-web-admin, or version")
 	}
 	switch arguments[0] {
 	case "serve":
 		return serve(arguments[1:])
+	case "apply-update":
+		return applyUpdate(arguments[1:])
 	case "create-enrollment":
 		return createEnrollment(arguments[1:])
 	case "set-web-admin":
@@ -67,6 +70,36 @@ func run(arguments []string) error {
 	default:
 		return fmt.Errorf("unknown command %q", arguments[0])
 	}
+}
+
+func applyUpdate(arguments []string) error {
+	flags := flag.NewFlagSet("theatropolis-master apply-update", flag.ContinueOnError)
+	flags.SetOutput(io.Discard)
+	stateDirectory := flags.String(
+		"state-dir",
+		"/var/lib/theatropolis/master",
+		"master state directory",
+	)
+	installPath := flags.String(
+		"install-path",
+		"/usr/local/bin/theatropolis-master",
+		"installed master binary",
+	)
+	if err := flags.Parse(arguments); err != nil {
+		return err
+	}
+	if flags.NArg() != 0 {
+		return errors.New("apply-update does not accept positional arguments")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
+	defer cancel()
+	return agentupdate.Apply(ctx, agentupdate.ApplyOptions{
+		StateDirectory: *stateDirectory,
+		InstallPath:    *installPath,
+		Component:      "master",
+		Architecture:   runtime.GOARCH,
+		RunningVersion: version,
+	})
 }
 
 func serve(arguments []string) error {
@@ -148,15 +181,20 @@ func serve(arguments []string) error {
 	if err != nil {
 		return fmt.Errorf("load web operator access: %w", err)
 	}
+	masterUpdater, err := agentupdate.NewScheduler(*stateDirectory)
+	if err != nil {
+		return fmt.Errorf("configure master updater: %w", err)
+	}
 	webHandler, err := webui.New(webui.Options{
-		Registry:   identities,
-		Sessions:   server.Sessions,
-		Controller: server,
-		Access:     access,
-		Releases:   webui.NewGitHubReleaseCatalog(nil),
-		PublicURL:  *publicURL,
-		Version:    version,
-		Logger:     logger,
+		Registry:      identities,
+		Sessions:      server.Sessions,
+		Controller:    server,
+		Access:        access,
+		Releases:      webui.NewGitHubReleaseCatalog(nil),
+		MasterUpdater: masterUpdater,
+		PublicURL:     *publicURL,
+		Version:       version,
+		Logger:        logger,
 	})
 	if err != nil {
 		return fmt.Errorf("configure web interface: %w", err)

@@ -5,6 +5,7 @@ import (
 	"crypto/ed25519"
 	"crypto/rand"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"net/http"
@@ -17,6 +18,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/masterauguste/theatropolis/internal/agentupdate"
 	"github.com/masterauguste/theatropolis/internal/control"
 	"github.com/masterauguste/theatropolis/internal/deployment"
 	"github.com/masterauguste/theatropolis/internal/identity"
@@ -1046,6 +1048,120 @@ func TestServerPageListsStableAndTestingAgentReleases(t *testing.T) {
 		!strings.Contains(body, `value="v1.14.0-beta.7">Testing`) ||
 		!strings.Contains(body, `value="v1.13.2">Stable`) {
 		t.Fatalf("release options response = %d %q", response.Code, body)
+	}
+}
+
+func TestServerPageDefaultsAgentUpdateToLatestRelease(t *testing.T) {
+	t.Parallel()
+
+	fixture := newWebFixture(t)
+	enrollAgent(t, fixture.registry, "edge-online")
+	fixture.controller.updates = map[string]control.AgentUpdateState{
+		"edge-online": {
+			RequestID:     "update_previous123",
+			TargetVersion: "v1.13.2",
+			Status:        "applied",
+			UpdatedAt:     time.Now().UTC(),
+		},
+	}
+	fixture.handler.(*Handler).releases = testReleaseCatalog{releases: []AgentRelease{
+		{Tag: "v1.14.0-beta.7", Prerelease: true},
+		{Tag: "v1.13.2"},
+	}}
+	request := fixture.authenticatedRequest(
+		http.MethodGet,
+		"/servers/edge-online/manage",
+		"",
+	)
+	response := httptest.NewRecorder()
+	fixture.handler.ServeHTTP(response, request)
+	body := response.Body.String()
+	if response.Code != http.StatusOK ||
+		!strings.Contains(body, `name="target_version"`+
+			"\n                    "+`value="v1.14.0-beta.7"`) {
+		t.Fatalf("agent update did not default to latest release: %d %q", response.Code, body)
+	}
+}
+
+func TestMasterUpdateQueuesOnlyLatestRelease(t *testing.T) {
+	t.Parallel()
+
+	fixture := newWebFixture(t)
+	enrollAgent(t, fixture.registry, "edge-online")
+	stateDirectory := t.TempDir()
+	updater, err := agentupdate.NewScheduler(stateDirectory)
+	if err != nil {
+		t.Fatal(err)
+	}
+	handler := fixture.handler.(*Handler)
+	handler.masterUpdater = updater
+	handler.version = "v1.13.2"
+	handler.releases = testReleaseCatalog{releases: []AgentRelease{
+		{Tag: "v1.14.0-beta.7", Prerelease: true},
+		{Tag: "v1.13.2"},
+	}}
+	form := url.Values{
+		"agent_id":   {"edge-online"},
+		"csrf_token": {fixture.session.CSRFToken},
+	}.Encode()
+	request := fixture.authenticatedMutationRequest(
+		http.MethodPost,
+		"/master-update",
+		form,
+	)
+	response := httptest.NewRecorder()
+	fixture.handler.ServeHTTP(response, request)
+	if response.Code != http.StatusSeeOther {
+		t.Fatalf("master update response = %d %q", response.Code, response.Body.String())
+	}
+	encoded, err := os.ReadFile(filepath.Join(stateDirectory, "update-request.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var updateRequest agentupdate.Request
+	if err := json.Unmarshal(encoded, &updateRequest); err != nil {
+		t.Fatal(err)
+	}
+	if updateRequest.TargetVersion != "v1.14.0-beta.7" {
+		t.Fatalf("master update target = %q, want latest", updateRequest.TargetVersion)
+	}
+	if !strings.HasPrefix(updateRequest.RequestID, "master_") {
+		t.Fatalf("master update request ID = %q", updateRequest.RequestID)
+	}
+}
+
+func TestMasterUpdateRejectsClientSelectedVersion(t *testing.T) {
+	t.Parallel()
+
+	fixture := newWebFixture(t)
+	enrollAgent(t, fixture.registry, "edge-online")
+	stateDirectory := t.TempDir()
+	updater, err := agentupdate.NewScheduler(stateDirectory)
+	if err != nil {
+		t.Fatal(err)
+	}
+	handler := fixture.handler.(*Handler)
+	handler.masterUpdater = updater
+	handler.releases = testReleaseCatalog{releases: []AgentRelease{
+		{Tag: "v1.14.0-beta.7", Prerelease: true},
+	}}
+	form := url.Values{
+		"agent_id":       {"edge-online"},
+		"csrf_token":     {fixture.session.CSRFToken},
+		"target_version": {"v1.13.2"},
+	}.Encode()
+	request := fixture.authenticatedMutationRequest(
+		http.MethodPost,
+		"/master-update",
+		form,
+	)
+	response := httptest.NewRecorder()
+	fixture.handler.ServeHTTP(response, request)
+	if response.Code != http.StatusForbidden {
+		t.Fatalf("client-selected master update response = %d %q", response.Code, response.Body.String())
+	}
+	if _, err := os.Stat(filepath.Join(stateDirectory, "update-request.json")); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("client-selected master update created a request: %v", err)
 	}
 }
 
