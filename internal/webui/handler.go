@@ -1190,9 +1190,23 @@ func (h *Handler) serverPageData(
 	if update, exists := h.controller.LatestSingBoxUpdate(snapshot.ID); exists {
 		detail.SingBoxUpdate = singBoxUpdateViewFor(update)
 	}
-	versions, latestVersion, catalogWarning := h.releaseVersions(ctx)
-	singBoxVersions, latestSingBoxVersion, singBoxCatalogWarning :=
-		h.releaseVersionsFor(ctx, h.singBoxReleases, "sing-box")
+	var (
+		versions, singBoxVersions         []agentVersionView
+		latestVersion, latestSingBoxVersion string
+		catalogWarning, singBoxCatalogWarning string
+	)
+	var wg sync.WaitGroup
+	wg.Add(2)
+	go func() {
+		defer wg.Done()
+		versions, latestVersion, catalogWarning = h.releaseVersions(ctx)
+	}()
+	go func() {
+		defer wg.Done()
+		singBoxVersions, latestSingBoxVersion, singBoxCatalogWarning =
+			h.releaseVersionsFor(ctx, h.singBoxReleases, "sing-box")
+	}()
+	wg.Wait()
 	if detail.UpdateTarget == "" {
 		detail.UpdateTarget = latestVersion
 	}

@@ -19,7 +19,7 @@ const (
 	releaseCatalogTTL          = 10 * time.Minute
 	maxReleaseResponseSize     = 2 << 20
 	maxReleaseResponseSizeWide = 4 << 20
-	maxReleasePages            = 40
+	maxReleasePages = 20
 )
 
 type AgentRelease struct {
@@ -71,7 +71,7 @@ func NewSingBoxReleaseCatalog(client *http.Client) *GitHubReleaseCatalog {
 	catalog := NewGitHubReleaseCatalog(client)
 	catalog.apiURL = "https://api.github.com/repos/SagerNet/sing-box/releases"
 	catalog.validVersion = singboxupdate.ValidVersion
-	catalog.perPage = 3
+	catalog.perPage = 8
 	catalog.maxResponseSize = maxReleaseResponseSizeWide
 	return catalog
 }
