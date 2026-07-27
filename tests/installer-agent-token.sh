@@ -306,8 +306,9 @@ AGENT_UNIT="$TEST_ROOT/etc/systemd/system/theatropolis-agent.service"
 	fail "agent systemd unit was not generated"
 UPDATE_SERVICE="$TEST_ROOT/etc/systemd/system/theatropolis-agent-update.service"
 UPDATE_PATH="$TEST_ROOT/etc/systemd/system/theatropolis-agent-update.path"
-[ -f "$UPDATE_SERVICE" ] && [ -f "$UPDATE_PATH" ] ||
+if [ ! -f "$UPDATE_SERVICE" ] || [ ! -f "$UPDATE_PATH" ]; then
 	fail "root update helper units were not generated"
+fi
 grep -Fq ' apply-update ' "$UPDATE_SERVICE" ||
 	fail "update helper does not invoke the isolated apply-update command"
 grep -Fqx "PathExists=$AGENT_STATE_DIRECTORY/update-request.json" "$UPDATE_PATH" ||
