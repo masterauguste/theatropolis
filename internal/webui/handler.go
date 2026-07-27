@@ -242,8 +242,7 @@ func (h *Handler) loginPage(response http.ResponseWriter, request *http.Request)
 }
 
 func (h *Handler) login(response http.ResponseWriter, request *http.Request) {
-	if !h.validMutationOrigin(request) {
-		http.Error(response, "request origin is not allowed", http.StatusForbidden)
+	if h.rejectInvalidMutationOrigin(response, request) {
 		return
 	}
 	form, err := readExactForm(response, request, maxLoginBodyBytes, "access_key")
@@ -271,8 +270,7 @@ func (h *Handler) login(response http.ResponseWriter, request *http.Request) {
 }
 
 func (h *Handler) logout(response http.ResponseWriter, request *http.Request) {
-	if !h.validMutationOrigin(request) {
-		http.Error(response, "request origin is not allowed", http.StatusForbidden)
+	if h.rejectInvalidMutationOrigin(response, request) {
 		return
 	}
 	sessionToken, ok := h.sessionToken(request)
@@ -370,8 +368,7 @@ func (h *Handler) createServer(response http.ResponseWriter, request *http.Reque
 		h.redirectToLogin(response, request)
 		return
 	}
-	if !h.validMutationOrigin(request) {
-		http.Error(response, "request origin is not allowed", http.StatusForbidden)
+	if h.rejectInvalidMutationOrigin(response, request) {
 		return
 	}
 	form, err := readExactForm(
@@ -682,13 +679,32 @@ func (h *Handler) redirectToLogin(response http.ResponseWriter, request *http.Re
 	http.Redirect(response, request, "/login", http.StatusSeeOther)
 }
 
-func (h *Handler) validMutationOrigin(request *http.Request) bool {
-	if request.Header.Get("Content-Encoding") != "" || request.URL.RawQuery != "" {
+func (h *Handler) rejectInvalidMutationOrigin(
+	response http.ResponseWriter,
+	request *http.Request,
+) bool {
+	reason := h.mutationOriginRejection(request)
+	if reason == "" {
 		return false
+	}
+	http.Error(
+		response,
+		"request origin is not allowed ("+reason+")",
+		http.StatusForbidden,
+	)
+	return true
+}
+
+func (h *Handler) mutationOriginRejection(request *http.Request) string {
+	if request.Header.Get("Content-Encoding") != "" {
+		return "content_encoding"
+	}
+	if request.URL.RawQuery != "" {
+		return "query_string"
 	}
 	fetchSiteValues := request.Header.Values("Sec-Fetch-Site")
 	if len(fetchSiteValues) > 1 {
-		return false
+		return "multiple_fetch_site_headers"
 	}
 	fetchSite := ""
 	if len(fetchSiteValues) == 1 {
@@ -697,18 +713,23 @@ func (h *Handler) validMutationOrigin(request *http.Request) bool {
 	// "none" is valid for browser-initiated navigation, and unknown values
 	// must be ignored for forward compatibility when Origin is present.
 	switch fetchSite {
-	case "cross-site", "same-site":
-		return false
+	case "cross-site":
+		return "cross_site"
+	case "same-site":
+		return "same_site"
 	}
 
 	originValues := request.Header.Values("Origin")
 	if len(originValues) == 0 {
 		// Some privacy clients omit Origin. Sec-Fetch-* headers are controlled
 		// by the browser, while the canonical request Host was already checked.
-		return fetchSite == "same-origin" || fetchSite == "none"
+		if fetchSite == "same-origin" || fetchSite == "none" {
+			return ""
+		}
+		return "missing_origin"
 	}
 	if len(originValues) != 1 {
-		return false
+		return "multiple_origin_headers"
 	}
 	origin := originValues[0]
 	parsed, err := url.Parse(origin)
@@ -718,13 +739,18 @@ func (h *Handler) validMutationOrigin(request *http.Request) bool {
 		parsed.Path != "" ||
 		parsed.RawQuery != "" ||
 		parsed.Fragment != "" {
-		return false
+		return "invalid_origin"
 	}
 	host, port, err := splitAuthority(parsed.Host, defaultPort(parsed.Scheme))
-	return err == nil &&
-		strings.EqualFold(parsed.Scheme, h.publicScheme) &&
+	if err != nil {
+		return "invalid_origin"
+	}
+	if !(strings.EqualFold(parsed.Scheme, h.publicScheme) &&
 		strings.EqualFold(host, h.publicHost) &&
-		port == h.publicPort
+		port == h.publicPort) {
+		return "origin_mismatch"
+	}
+	return ""
 }
 
 func (h *Handler) validRequestHost(hostHeader string) bool {

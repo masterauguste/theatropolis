@@ -168,47 +168,80 @@ func TestLoginRejectsUntrustedOrAmbiguousOriginMetadata(t *testing.T) {
 	fixture := newWebFixture(t)
 	form := url.Values{"access_key": {fixture.key}}.Encode()
 	tests := []struct {
-		name       string
-		fetchSites []string
-		origins    []string
+		name            string
+		path            string
+		contentEncoding string
+		fetchSites      []string
+		origins         []string
+		reason          string
 	}{
 		{
 			name:       "mismatched origin overrides metadata",
 			fetchSites: []string{"same-origin"},
 			origins:    []string{"https://attacker.example"},
+			reason:     "origin_mismatch",
 		},
 		{
 			name:       "cross-site metadata overrides origin",
 			fetchSites: []string{"cross-site"},
 			origins:    []string{testPublicURL},
+			reason:     "cross_site",
 		},
 		{
 			name:       "same-site metadata overrides origin",
 			fetchSites: []string{"same-site"},
 			origins:    []string{testPublicURL},
+			reason:     "same_site",
 		},
-		{name: "missing origin and metadata"},
-		{name: "missing origin with unknown metadata", fetchSites: []string{"future-value"}},
+		{name: "missing origin and metadata", reason: "missing_origin"},
+		{
+			name:       "missing origin with unknown metadata",
+			fetchSites: []string{"future-value"},
+			reason:     "missing_origin",
+		},
 		{
 			name:       "duplicate origin",
 			fetchSites: []string{"same-origin"},
 			origins:    []string{testPublicURL, testPublicURL},
+			reason:     "multiple_origin_headers",
 		},
 		{
 			name:       "duplicate fetch metadata",
 			fetchSites: []string{"same-origin", "none"},
 			origins:    []string{testPublicURL},
+			reason:     "multiple_fetch_site_headers",
+		},
+		{
+			name:            "encoded body",
+			contentEncoding: "gzip",
+			fetchSites:      []string{"same-origin"},
+			origins:         []string{testPublicURL},
+			reason:          "content_encoding",
+		},
+		{
+			name:       "query string",
+			path:       "/login?source=test",
+			fetchSites: []string{"same-origin"},
+			origins:    []string{testPublicURL},
+			reason:     "query_string",
 		},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
+			path := test.path
+			if path == "" {
+				path = "/login"
+			}
 			request := httptest.NewRequest(
 				http.MethodPost,
-				"http://127.0.0.1:8080/login",
+				"http://127.0.0.1:8080"+path,
 				strings.NewReader(form),
 			)
 			request.Host = "master.example.com:8443"
 			request.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+			if test.contentEncoding != "" {
+				request.Header.Set("Content-Encoding", test.contentEncoding)
+			}
 			for _, fetchSite := range test.fetchSites {
 				request.Header.Add("Sec-Fetch-Site", fetchSite)
 			}
@@ -224,6 +257,14 @@ func TestLoginRejectsUntrustedOrAmbiguousOriginMetadata(t *testing.T) {
 					"untrusted login response = %d, want %d",
 					response.Code,
 					http.StatusForbidden,
+				)
+			}
+			expectedBody := "request origin is not allowed (" + test.reason + ")\n"
+			if response.Body.String() != expectedBody {
+				t.Fatalf(
+					"untrusted login body = %q, want %q",
+					response.Body.String(),
+					expectedBody,
 				)
 			}
 		})
