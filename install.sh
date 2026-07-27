@@ -7,10 +7,12 @@ REPOSITORY="masterauguste/theatropolis"
 INSTALL_DIRECTORY="/usr/local/bin"
 MASTER_USER="theatropolis-master"
 AGENT_USER="theatropolis-agent"
-MASTER_STATE_DIRECTORY="/var/lib/theatropolis/master"
-AGENT_STATE_DIRECTORY="/var/lib/theatropolis/agent"
+STATE_DIRECTORY="/var/lib/theatropolis"
+MASTER_STATE_DIRECTORY="${STATE_DIRECTORY}/master"
+AGENT_STATE_DIRECTORY="${STATE_DIRECTORY}/agent"
 CONFIG_DIRECTORY="/etc/theatropolis"
 MASTER_ADMIN_SOCKET="/run/theatropolis/master-admin.sock"
+WEB_AUTH_FILE="${CONFIG_DIRECTORY}/web-auth.json"
 DEFAULT_HTTPS_PORT="8443"
 
 ROLE=""
@@ -22,12 +24,19 @@ AGENT_ID=""
 ENROLLMENT_TOKEN=""
 CA_FILE=""
 TEMP_DIRECTORY=""
+WEB_ADMIN_ACCESS_KEY=""
+WEB_AUTH_CREATED="no"
+INSTALL_SUCCEEDED="no"
+TTY_SETTINGS=""
+ENROLLMENT_TOKEN_TEMP=""
+AGENT_WAS_ACTIVE="no"
+AGENT_STOPPED="no"
 
 usage() {
 	printf '%s\n' \
 		"Usage:" \
 		"  install.sh master --domain <name> [--https-port <port>] [--version <tag>]" \
-		"  install.sh agent --master <host:port> --agent-id <id> --token <token> [--ca-file <path>]" \
+		"  install.sh agent --master <host:port> --agent-id <id> [--token <token>] [--ca-file <path>]" \
 		"  install.sh all --domain <name> --agent-id <id> [--https-port <port>]" \
 		"" \
 		"Installs precompiled Linux amd64/arm64 release binaries. It never compiles locally."
@@ -39,12 +48,68 @@ fail() {
 }
 
 cleanup() {
+	if [ -n "$TTY_SETTINGS" ]; then
+		stty "$TTY_SETTINGS" </dev/tty >/dev/null 2>&1 || true
+		TTY_SETTINGS=""
+	fi
+	if [ "$WEB_AUTH_CREATED" = "yes" ] &&
+		[ "$INSTALL_SUCCEEDED" != "yes" ] &&
+		[ -n "$WEB_ADMIN_ACCESS_KEY" ]; then
+		printf '%s\n' \
+			'' \
+			'Web interface operator access was initialized before installation failed.' \
+			'Keep this key, correct the reported error, and run the installer again.' >&2
+		printf 'Access key: %s\n' "$WEB_ADMIN_ACCESS_KEY" >&2
+		WEB_ADMIN_ACCESS_KEY=""
+	fi
 	if [ -n "$TEMP_DIRECTORY" ] && [ -d "$TEMP_DIRECTORY" ]; then
 		rm -rf -- "$TEMP_DIRECTORY"
+	fi
+	if [ -n "$ENROLLMENT_TOKEN_TEMP" ] &&
+		[ -f "$ENROLLMENT_TOKEN_TEMP" ] &&
+		[ ! -L "$ENROLLMENT_TOKEN_TEMP" ]; then
+		rm -f -- "$ENROLLMENT_TOKEN_TEMP"
+	fi
+	if [ "$INSTALL_SUCCEEDED" != "yes" ] &&
+		[ "$AGENT_WAS_ACTIVE" = "yes" ] &&
+		[ "$AGENT_STOPPED" = "yes" ]; then
+		if ! systemctl start theatropolis-agent; then
+			printf '%s\n' \
+				'theatropolis installer: the previous agent could not be restarted after installation failed' >&2
+		fi
+		AGENT_STOPPED="no"
 	fi
 }
 
 trap cleanup EXIT HUP INT TERM
+
+validate_enrollment_token() {
+	printf '%s' "$ENROLLMENT_TOKEN" |
+		grep -Eq '^[A-Za-z0-9_-]{43}$' ||
+		fail "the enrollment token is not a 32-byte base64url value"
+}
+
+prompt_for_enrollment_token() {
+	if [ ! -r /dev/tty ] || [ ! -w /dev/tty ]; then
+		fail "a terminal is required to enter the enrollment token; use --token only for secured automation"
+	fi
+	TTY_SETTINGS="$(stty -g </dev/tty)" ||
+		fail "could not read terminal settings for the enrollment token prompt"
+	stty -echo </dev/tty ||
+		fail "could not disable terminal echo for the enrollment token prompt"
+	printf 'Enrollment token: ' >/dev/tty
+	if ! IFS= read -r ENROLLMENT_TOKEN </dev/tty; then
+		stty "$TTY_SETTINGS" </dev/tty >/dev/null 2>&1 || true
+		TTY_SETTINGS=""
+		printf '\n' >/dev/tty
+		fail "could not read the enrollment token from the terminal"
+	fi
+	stty "$TTY_SETTINGS" </dev/tty ||
+		fail "could not restore terminal settings after reading the enrollment token"
+	TTY_SETTINGS=""
+	printf '\n' >/dev/tty
+	validate_enrollment_token
+}
 
 if [ "$#" -eq 0 ]; then
 	usage
@@ -159,10 +224,16 @@ agent | all)
 	printf '%s' "$MASTER_ADDRESS" |
 		grep -Eq '^([A-Za-z0-9.-]+|\[[0-9A-Fa-f:]+\]):[0-9]{1,5}$' ||
 		fail "--master must be a host:port pair"
+	IDENTITY_FILE="$AGENT_STATE_DIRECTORY/identity.pem"
+	if [ -L "$IDENTITY_FILE" ] ||
+		{ [ -e "$IDENTITY_FILE" ] && [ ! -f "$IDENTITY_FILE" ]; }; then
+		fail "the existing agent identity is not a regular file"
+	fi
 	if [ -n "$ENROLLMENT_TOKEN" ]; then
-		printf '%s' "$ENROLLMENT_TOKEN" |
-			grep -Eq '^[A-Za-z0-9_-]{43}$' ||
-			fail "--token is not a 32-byte base64url enrollment token"
+		validate_enrollment_token
+	elif [ "$ROLE" = "agent" ] &&
+		[ ! -f "$IDENTITY_FILE" ]; then
+		prompt_for_enrollment_token
 	fi
 	if [ -n "$CA_FILE" ]; then
 		if [ ! -f "$CA_FILE" ] || [ -L "$CA_FILE" ]; then
@@ -220,6 +291,23 @@ for COMPONENT in master agent; do
 	fi
 done
 
+case "$ROLE" in
+master | all)
+	COMPATIBILITY_STATE="$TEMP_DIRECTORY/master-compatibility"
+	mkdir "$COMPATIBILITY_STATE"
+	if ! COMPATIBILITY_KEY="$(
+		"$TEMP_DIRECTORY/extracted/theatropolis-master" init-web-admin \
+			--state-dir "$COMPATIBILITY_STATE" 2>/dev/null
+	)"; then
+		fail "the selected release does not support the required master web interface; choose a newer version"
+	fi
+	printf '%s' "$COMPATIBILITY_KEY" |
+		grep -Eq '^[A-Za-z0-9_-]{43}$' ||
+		fail "the selected release returned an invalid web-interface compatibility result"
+	COMPATIBILITY_KEY=""
+	;;
+esac
+
 install_binary() {
 	COMPONENT="$1"
 	install -o root -g root -m 0755 \
@@ -237,6 +325,10 @@ ensure_service_user() {
 			--home-dir "$HOME_DIRECTORY" \
 			--shell /usr/sbin/nologin \
 			"$USER_NAME"
+	fi
+	if [ -L "$HOME_DIRECTORY" ] ||
+		{ [ -e "$HOME_DIRECTORY" ] && [ ! -d "$HOME_DIRECTORY" ]; }; then
+		fail "service state path is not a directory: $HOME_DIRECTORY"
 	fi
 	install -d -o "$USER_NAME" -g "$USER_NAME" -m 0700 "$HOME_DIRECTORY"
 }
@@ -287,10 +379,18 @@ configure_caddy() {
 	fi
 	cat >"$SNIPPET" <<EOF
 https://${DOMAIN}:${HTTPS_PORT} {
-	@agent protocol grpc
+	header Strict-Transport-Security "max-age=31536000"
+
+	@agent {
+		protocol grpc
+		path /theatropolis.control.v1.AgentControlService/*
+	}
 
 	handle @agent {
-		reverse_proxy h2c://127.0.0.1:8081
+		reverse_proxy h2c://127.0.0.1:8081 {
+			header_up -Authorization
+			header_up -Cookie
+		}
 	}
 
 	handle {
@@ -330,7 +430,28 @@ EOF
 
 install_master() {
 	install_binary master
+	install -d -o root -g root -m 0755 "$STATE_DIRECTORY"
 	ensure_service_user "$MASTER_USER" "$MASTER_STATE_DIRECTORY"
+	install -d -o root -g "$MASTER_USER" -m 0750 "$CONFIG_DIRECTORY"
+	if [ -e "$WEB_AUTH_FILE" ] || [ -L "$WEB_AUTH_FILE" ]; then
+		if [ -L "$WEB_AUTH_FILE" ] || [ ! -f "$WEB_AUTH_FILE" ]; then
+			fail "the web access file exists but is not a regular file"
+		fi
+	else
+		WEB_ADMIN_ACCESS_KEY="$(
+			"$INSTALL_DIRECTORY/theatropolis-master" init-web-admin \
+				--state-dir "$CONFIG_DIRECTORY"
+		)"
+		if ! printf '%s' "$WEB_ADMIN_ACCESS_KEY" |
+			grep -Eq '^[A-Za-z0-9_-]{43}$'; then
+			rm -f -- "$WEB_AUTH_FILE"
+			WEB_ADMIN_ACCESS_KEY=""
+			fail "the master returned an invalid web access key"
+		fi
+		WEB_AUTH_CREATED="yes"
+	fi
+	chown "root:$MASTER_USER" "$WEB_AUTH_FILE"
+	chmod 0640 "$WEB_AUTH_FILE"
 	cat >/etc/systemd/system/theatropolis-master.service <<EOF
 [Unit]
 Description=Theatropolis master
@@ -344,7 +465,7 @@ Group=${MASTER_USER}
 UMask=0077
 RuntimeDirectory=theatropolis
 RuntimeDirectoryMode=0700
-ExecStart=${INSTALL_DIRECTORY}/theatropolis-master serve
+ExecStart=${INSTALL_DIRECTORY}/theatropolis-master serve --public-url https://${DOMAIN}:${HTTPS_PORT} --web-auth-file ${WEB_AUTH_FILE}
 Restart=on-failure
 RestartSec=5s
 NoNewPrivileges=true
@@ -372,6 +493,25 @@ EOF
 	systemctl enable --now theatropolis-master
 	systemctl restart theatropolis-master
 	configure_caddy
+}
+
+write_enrollment_token() {
+	TOKEN_TARGET="$AGENT_STATE_DIRECTORY/enrollment.token"
+	if [ -L "$TOKEN_TARGET" ] ||
+		{ [ -e "$TOKEN_TARGET" ] && [ ! -f "$TOKEN_TARGET" ]; }; then
+		fail "the existing enrollment token path is not a regular file"
+	fi
+	STATE_DEVICE="$(stat -c '%d' "$STATE_DIRECTORY")"
+	AGENT_DEVICE="$(stat -c '%d' "$AGENT_STATE_DIRECTORY")"
+	[ "$STATE_DEVICE" = "$AGENT_DEVICE" ] ||
+		fail "agent state must share a filesystem with $STATE_DIRECTORY for secure token installation"
+
+	ENROLLMENT_TOKEN_TEMP="$(mktemp "$STATE_DIRECTORY/.enrollment-token.XXXXXX")"
+	printf '%s\n' "$ENROLLMENT_TOKEN" >"$ENROLLMENT_TOKEN_TEMP"
+	chown "root:$AGENT_USER" "$ENROLLMENT_TOKEN_TEMP"
+	chmod 0640 "$ENROLLMENT_TOKEN_TEMP"
+	mv -fT -- "$ENROLLMENT_TOKEN_TEMP" "$TOKEN_TARGET"
+	ENROLLMENT_TOKEN_TEMP=""
 }
 
 write_agent_configuration() {
@@ -404,7 +544,13 @@ wait_for_master_socket() {
 }
 
 install_agent() {
+	if systemctl is-active --quiet theatropolis-agent; then
+		AGENT_WAS_ACTIVE="yes"
+		AGENT_STOPPED="yes"
+		systemctl stop theatropolis-agent
+	fi
 	install_binary agent
+	install -d -o root -g root -m 0755 "$STATE_DIRECTORY"
 	ensure_service_user "$AGENT_USER" "$AGENT_STATE_DIRECTORY"
 	if [ -z "$ENROLLMENT_TOKEN" ] && [ "$ROLE" = "all" ]; then
 		wait_for_master_socket
@@ -414,10 +560,7 @@ install_agent() {
 		)"
 	fi
 	if [ -n "$ENROLLMENT_TOKEN" ]; then
-		printf '%s\n' "$ENROLLMENT_TOKEN" \
-			>"$AGENT_STATE_DIRECTORY/enrollment.token"
-		chown "$AGENT_USER:$AGENT_USER" "$AGENT_STATE_DIRECTORY/enrollment.token"
-		chmod 0600 "$AGENT_STATE_DIRECTORY/enrollment.token"
+		write_enrollment_token
 	elif [ ! -f "$AGENT_STATE_DIRECTORY/identity.pem" ]; then
 		fail "--token is required for a new agent installation"
 	fi
@@ -461,6 +604,7 @@ EOF
 	systemctl daemon-reload
 	systemctl enable --now theatropolis-agent
 	systemctl restart theatropolis-agent
+	AGENT_STOPPED="no"
 }
 
 case "$ROLE" in
@@ -484,4 +628,12 @@ if [ "$ROLE" = "master" ] || [ "$ROLE" = "all" ]; then
 	if [ "$HTTPS_PORT" != "443" ]; then
 		printf 'Port 443 remains available for a sing-box inbound.\n'
 	fi
+	if [ -n "$WEB_ADMIN_ACCESS_KEY" ]; then
+		printf '%s\n' \
+			'' \
+			'Web interface operator access (shown once):'
+		printf 'Access key: %s\n' "$WEB_ADMIN_ACCESS_KEY"
+		WEB_ADMIN_ACCESS_KEY=""
+	fi
 fi
+INSTALL_SUCCEEDED="yes"

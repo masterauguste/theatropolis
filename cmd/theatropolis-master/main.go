@@ -22,6 +22,7 @@ import (
 	"github.com/masterauguste/theatropolis/internal/control"
 	"github.com/masterauguste/theatropolis/internal/deployment"
 	"github.com/masterauguste/theatropolis/internal/identity"
+	"github.com/masterauguste/theatropolis/internal/webui"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/health"
 	healthv1 "google.golang.org/grpc/health/grpc_health_v1"
@@ -44,13 +45,15 @@ func main() {
 
 func run(arguments []string) error {
 	if len(arguments) == 0 {
-		return errors.New("expected serve, create-enrollment, or version")
+		return errors.New("expected serve, create-enrollment, init-web-admin, or version")
 	}
 	switch arguments[0] {
 	case "serve":
 		return serve(arguments[1:])
 	case "create-enrollment":
 		return createEnrollment(arguments[1:])
+	case "init-web-admin":
+		return initWebAdmin(arguments[1:])
 	case "version":
 		fmt.Printf("%s (commit %s, built %s)\n", version, commit, buildDate)
 		return nil
@@ -69,6 +72,16 @@ func serve(arguments []string) error {
 	)
 	grpcAddress := flags.String("grpc-listen", "127.0.0.1:8081", "local gRPC address")
 	webAddress := flags.String("web-listen", "127.0.0.1:8080", "local HTTP address")
+	publicURL := flags.String(
+		"public-url",
+		"",
+		"canonical public HTTPS URL used by operators and agents",
+	)
+	webAuthFile := flags.String(
+		"web-auth-file",
+		"",
+		"operator access file (defaults to <state-dir>/web-auth.json)",
+	)
 	adminSocket := flags.String(
 		"admin-socket",
 		"/run/theatropolis/master-admin.sock",
@@ -115,6 +128,25 @@ func serve(arguments []string) error {
 		logNotifier{logger: logger},
 		logger,
 	)
+	accessPath := strings.TrimSpace(*webAuthFile)
+	if accessPath == "" {
+		accessPath = filepath.Join(*stateDirectory, "web-auth.json")
+	}
+	access, err := webui.LoadAccess(accessPath)
+	if err != nil {
+		return fmt.Errorf("load web operator access: %w", err)
+	}
+	webHandler, err := webui.New(webui.Options{
+		Registry:  identities,
+		Sessions:  server.Sessions,
+		Access:    access,
+		PublicURL: *publicURL,
+		Version:   version,
+		Logger:    logger,
+	})
+	if err != nil {
+		return fmt.Errorf("configure web interface: %w", err)
+	}
 
 	grpcServer := grpc.NewServer(
 		grpc.MaxRecvMsgSize(maxWireMessageBytes),
@@ -129,7 +161,7 @@ func serve(arguments []string) error {
 	healthv1.RegisterHealthServer(grpcServer, healthServer)
 
 	webServer := &http.Server{
-		Handler:           webHandler(),
+		Handler:           webHandler,
 		ReadHeaderTimeout: 5 * time.Second,
 		ReadTimeout:       10 * time.Second,
 		WriteTimeout:      10 * time.Second,
@@ -196,6 +228,31 @@ func serve(arguments []string) error {
 		grpcServer.Stop()
 	}
 	return serveErr
+}
+
+func initWebAdmin(arguments []string) error {
+	flags := flag.NewFlagSet("init-web-admin", flag.ContinueOnError)
+	flags.SetOutput(io.Discard)
+	stateDirectory := flags.String(
+		"state-dir",
+		"/var/lib/theatropolis/master",
+		"master state directory",
+	)
+	if err := flags.Parse(arguments); err != nil {
+		return err
+	}
+	if flags.NArg() != 0 || strings.TrimSpace(*stateDirectory) == "" {
+		return errors.New("--state-dir is required and positional arguments are not accepted")
+	}
+	if err := os.MkdirAll(*stateDirectory, 0o700); err != nil {
+		return fmt.Errorf("create master state directory: %w", err)
+	}
+	accessKey, err := webui.InitializeAccess(filepath.Join(*stateDirectory, "web-auth.json"))
+	if err != nil {
+		return fmt.Errorf("initialize web operator access: %w", err)
+	}
+	fmt.Println(accessKey)
+	return nil
 }
 
 func createEnrollment(arguments []string) error {
@@ -305,30 +362,6 @@ func listenUnixSocket(path string) (net.Listener, error) {
 	return listener, nil
 }
 
-func webHandler() http.Handler {
-	mux := http.NewServeMux()
-	mux.HandleFunc("/healthz", func(response http.ResponseWriter, request *http.Request) {
-		if request.Method != http.MethodGet {
-			response.Header().Set("Allow", http.MethodGet)
-			http.Error(response, "method not allowed", http.StatusMethodNotAllowed)
-			return
-		}
-		setSecurityHeaders(response.Header())
-		response.Header().Set("Content-Type", "application/json")
-		_, _ = io.WriteString(response, `{"status":"ok"}`+"\n")
-	})
-	mux.HandleFunc("/", func(response http.ResponseWriter, request *http.Request) {
-		setSecurityHeaders(response.Header())
-		response.Header().Set("Content-Type", "text/plain; charset=utf-8")
-		response.WriteHeader(http.StatusServiceUnavailable)
-		_, _ = io.WriteString(
-			response,
-			"Theatropolis master is running; the web interface is not implemented yet.\n",
-		)
-	})
-	return mux
-}
-
 type enrollmentRequest struct {
 	AgentID    string `json:"agent_id"`
 	TTLSeconds int64  `json:"ttl_seconds"`
@@ -361,11 +394,11 @@ func adminHandler(registry *identity.Registry) http.Handler {
 			http.Error(response, "invalid request", http.StatusBadRequest)
 			return
 		}
-		ttl := time.Duration(enrollment.TTLSeconds) * time.Second
-		if ttl <= 0 || ttl > 24*time.Hour {
+		if enrollment.TTLSeconds <= 0 || enrollment.TTLSeconds > 24*60*60 {
 			http.Error(response, "invalid enrollment lifetime", http.StatusBadRequest)
 			return
 		}
+		ttl := time.Duration(enrollment.TTLSeconds) * time.Second
 		expiresAt := time.Now().UTC().Add(ttl)
 		token, err := registry.CreateEnrollment(
 			request.Context(),
@@ -373,7 +406,23 @@ func adminHandler(registry *identity.Registry) http.Handler {
 			expiresAt,
 		)
 		if err != nil {
-			http.Error(response, "enrollment was not created", http.StatusBadRequest)
+			status := http.StatusInternalServerError
+			switch {
+			case errors.Is(err, identity.ErrInvalidAgentID):
+				status = http.StatusBadRequest
+			case errors.Is(err, identity.ErrAgentAlreadyEnrolled),
+				errors.Is(err, identity.ErrEnrollmentPending):
+				status = http.StatusConflict
+			default:
+				slog.Error(
+					"create local enrollment",
+					"agent_id",
+					enrollment.AgentID,
+					"error",
+					err,
+				)
+			}
+			http.Error(response, "enrollment was not created", status)
 			return
 		}
 		response.Header().Set("Content-Type", "application/json")

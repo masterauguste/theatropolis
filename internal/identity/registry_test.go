@@ -8,6 +8,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"reflect"
 	"runtime"
 	"testing"
 	"time"
@@ -132,5 +133,178 @@ func TestPersistentRegistryRejectsOversizedFile(t *testing.T) {
 	}
 	if _, err := OpenRegistry(path); err == nil {
 		t.Fatal("oversized identity registry was accepted")
+	}
+}
+
+func TestRegistrySnapshotIsSortedAndClassifiesIdentities(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	now := time.Now().UTC()
+	registry := NewRegistry()
+
+	pendingExpiry := now.Add(2 * time.Hour)
+	if _, err := registry.CreateEnrollment(ctx, "zulu-pending", pendingExpiry); err != nil {
+		t.Fatal(err)
+	}
+	expiredExpiry := now.Add(time.Hour)
+	if _, err := registry.CreateEnrollment(ctx, "middle-expired", expiredExpiry); err != nil {
+		t.Fatal(err)
+	}
+	enrollmentToken, err := registry.CreateEnrollment(
+		ctx,
+		"alpha-enrolled",
+		now.Add(3*time.Hour),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	publicKey, _, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := registry.Enroll(
+		ctx,
+		"alpha-enrolled",
+		enrollmentToken,
+		publicKey,
+		now,
+	); err != nil {
+		t.Fatal(err)
+	}
+
+	snapshot := registry.Snapshot(now.Add(90 * time.Minute))
+	expected := []AgentSnapshot{
+		{
+			ID:    "alpha-enrolled",
+			State: AgentStateEnrolled,
+		},
+		{
+			ID:                  "middle-expired",
+			State:               AgentStateExpired,
+			EnrollmentExpiresAt: expiredExpiry,
+		},
+		{
+			ID:                  "zulu-pending",
+			State:               AgentStatePending,
+			EnrollmentExpiresAt: pendingExpiry,
+		},
+	}
+	if !reflect.DeepEqual(snapshot, expected) {
+		t.Fatalf("snapshot mismatch:\ngot:  %#v\nwant: %#v", snapshot, expected)
+	}
+}
+
+func TestCreateEnrollmentRejectsActivePendingCredential(t *testing.T) {
+	t.Parallel()
+
+	registry := NewRegistry()
+	ctx := context.Background()
+	firstToken, err := registry.CreateEnrollment(
+		ctx,
+		"edge-pending-once",
+		time.Now().Add(time.Hour),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := registry.CreateEnrollment(
+		ctx,
+		"edge-pending-once",
+		time.Now().Add(2*time.Hour),
+	); !errors.Is(err, ErrEnrollmentPending) {
+		t.Fatalf("second CreateEnrollment() error = %v, want ErrEnrollmentPending", err)
+	}
+
+	publicKey, _, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := registry.Enroll(
+		ctx,
+		"edge-pending-once",
+		firstToken,
+		publicKey,
+		time.Now(),
+	); err != nil {
+		t.Fatalf("first token was invalidated by rejected duplicate: %v", err)
+	}
+}
+
+func TestCreateEnrollmentReplacesExpiredPendingCredential(t *testing.T) {
+	t.Parallel()
+
+	registry := NewRegistry()
+	ctx := context.Background()
+	oldToken, err := registry.CreateEnrollment(
+		ctx,
+		"edge-expired-replacement",
+		time.Now().Add(time.Hour),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	registry.mu.Lock()
+	expired := registry.pending["edge-expired-replacement"]
+	expired.expiresAt = time.Now().Add(-time.Minute)
+	registry.pending["edge-expired-replacement"] = expired
+	registry.mu.Unlock()
+
+	newToken, err := registry.CreateEnrollment(
+		ctx,
+		"edge-expired-replacement",
+		time.Now().Add(time.Hour),
+	)
+	if err != nil {
+		t.Fatalf("replace expired enrollment: %v", err)
+	}
+	if bytes.Equal(oldToken, newToken) {
+		t.Fatal("replacement enrollment reused the old token")
+	}
+	publicKey, _, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := registry.Enroll(
+		ctx,
+		"edge-expired-replacement",
+		oldToken,
+		publicKey,
+		time.Now(),
+	); !errors.Is(err, ErrEnrollmentUnavailable) {
+		t.Fatalf("old token error = %v, want ErrEnrollmentUnavailable", err)
+	}
+	if err := registry.Enroll(
+		ctx,
+		"edge-expired-replacement",
+		newToken,
+		publicKey,
+		time.Now(),
+	); err != nil {
+		t.Fatalf("new token was not accepted: %v", err)
+	}
+}
+
+func TestAgentSnapshotContainsNoCredentialFields(t *testing.T) {
+	t.Parallel()
+
+	recordType := reflect.TypeOf(AgentSnapshot{})
+	expectedFields := map[string]reflect.Type{
+		"ID":                  reflect.TypeOf(""),
+		"State":               reflect.TypeOf(AgentState("")),
+		"EnrollmentExpiresAt": reflect.TypeOf(time.Time{}),
+	}
+	if recordType.NumField() != len(expectedFields) {
+		t.Fatalf("AgentSnapshot exposes %d fields, want %d", recordType.NumField(), len(expectedFields))
+	}
+	for index := range recordType.NumField() {
+		field := recordType.Field(index)
+		expectedType, ok := expectedFields[field.Name]
+		if !ok {
+			t.Fatalf("AgentSnapshot exposes unexpected field %q", field.Name)
+		}
+		if field.Type != expectedType {
+			t.Fatalf("AgentSnapshot field %q has type %v, want %v", field.Name, field.Type, expectedType)
+		}
 	}
 }

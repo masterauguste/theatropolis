@@ -1,0 +1,72 @@
+{{define "server-created.html"}}
+<!doctype html>
+<html lang="en">
+{{template "document-head" .}}
+<body>
+  <a class="skip-link" href="#main">Skip to content</a>
+  {{template "mobile-header" .}}
+  <div class="app-shell">
+    {{template "sidebar" .}}
+    <main class="main main--narrow" id="main">
+      <nav class="breadcrumbs" aria-label="Breadcrumb">
+        <a href="/servers">Servers</a>
+        <span aria-hidden="true">/</span>
+        <span aria-current="page">{{.Created.AgentID}}</span>
+      </nav>
+
+      <section class="result-card" data-enrollment-result>
+        <div class="result-card__success" aria-hidden="true">
+          <svg viewBox="0 0 24 24"><path d="m7 12 3 3 7-7"/></svg>
+        </div>
+        <p class="eyebrow">Enrollment ready</p>
+        <h1>Install {{.Created.AgentID}}</h1>
+        <p class="result-card__lead">Run this command as a sudo-capable user on the destination server.</p>
+
+        <div class="copy-section">
+          <div class="command-card">
+            <div class="command-card__header">
+              <div>
+                <span class="command-card__dots" aria-hidden="true"><i></i><i></i><i></i></span>
+                <strong>Terminal</strong>
+              </div>
+              <button
+                class="copy-button"
+                type="button"
+                data-copy-target="install-command"
+                data-copy-label="command"
+              >
+                <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M9 8h10v11H9zM5 15V5h10"/></svg>
+                <span>Copy command</span>
+              </button>
+            </div>
+            <pre><code id="install-command">{{.Created.InstallCommand}}</code></pre>
+          </div>
+          <p class="copy-status" data-copy-status aria-live="polite"></p>
+        </div>
+
+        <div class="notice notice--warning">
+          <strong>Shown once.</strong>
+          This command contains a credential that expires at
+          <time datetime="{{.Created.ExpiresAtISO}}">{{.Created.ExpiresAt}}</time>
+          and becomes unusable after enrollment. The master persists only its hash.
+        </div>
+
+        <div class="next-step">
+          <span class="step-number">2</span>
+          <div>
+            <h2>Wait for the agent to connect</h2>
+            <p>After installation, return to Servers and refresh to see its authenticated connection state.</p>
+          </div>
+        </div>
+
+        <div class="result-card__actions">
+          <a class="button button--primary" href="/servers">Return to servers</a>
+          <a class="button button--secondary" href="/servers/new">Add another server</a>
+        </div>
+      </section>
+    </main>
+  </div>
+  <script src="/assets/app.js?v={{.AssetVersion}}" defer></script>
+</body>
+</html>
+{{end}}

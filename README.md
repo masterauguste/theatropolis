@@ -10,7 +10,9 @@ Debian/Ubuntu on amd64 or arm64:
 curl --proto '=https' --tlsv1.2 -fsSL https://raw.githubusercontent.com/masterauguste/theatropolis/main/install.sh | sudo sh -s -- master --domain master.example.com
 ```
 
-Create a single-use token with `sudo theatropolis-master create-enrollment --agent-id edge-1`, then install the agent:
+Replace `master.example.com` with the master's DNS name. The installer prints the web-interface access key once; sign in at `https://master.example.com:8443`.
+
+Add a server in the web interface, then run its generated command. The equivalent manual flow is `sudo theatropolis-master create-enrollment --agent-id edge-1`, followed by:
 
 ```sh
 curl --proto '=https' --tlsv1.2 -fsSL https://raw.githubusercontent.com/masterauguste/theatropolis/main/install.sh | sudo sh -s -- agent --master master.example.com:8443 --agent-id edge-1 --token TOKEN

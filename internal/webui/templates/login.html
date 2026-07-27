@@ -1,0 +1,76 @@
+{{define "login.html"}}
+<!doctype html>
+<html lang="en">
+{{template "document-head" .}}
+<body class="auth-page">
+  <a class="skip-link" href="#main">Skip to content</a>
+  <main class="auth-shell" id="main">
+    <section class="auth-intro" aria-labelledby="welcome-title">
+      {{template "brand" .}}
+      <div class="auth-intro__copy">
+        <p class="eyebrow">Master control plane</p>
+        <h2 id="welcome-title">Your fleet,<br>under one roof.</h2>
+        <p>Securely enroll servers and manage every Theatropolis agent from one private workspace.</p>
+      </div>
+      <div class="auth-intro__signal" aria-hidden="true">
+        <span></span><span></span><span></span>
+      </div>
+    </section>
+
+    <section class="auth-panel" aria-labelledby="login-title">
+      <div class="auth-card">
+        <div class="auth-card__heading">
+          <span class="auth-card__icon" aria-hidden="true">
+            <svg viewBox="0 0 24 24"><path d="M7 10V8a5 5 0 0 1 10 0v2m-9 0h8a2 2 0 0 1 2 2v7H6v-7a2 2 0 0 1 2-2Z"/></svg>
+          </span>
+          <p class="eyebrow">Operator access</p>
+          <h1 id="login-title">Sign in to continue</h1>
+          <p>Enter the access key shown when the master was installed.</p>
+        </div>
+
+        {{if .Error}}
+        <div class="notice notice--error" id="login-error" role="alert">{{.Error}}</div>
+        {{end}}
+
+        <form class="stack" action="/login" method="post">
+          <div class="field">
+            <label for="access-key">Access key</label>
+            <span class="secret-input">
+              <input
+                id="access-key"
+                name="access_key"
+                type="password"
+                autocomplete="current-password"
+                required
+                minlength="43"
+                maxlength="128"
+                autofocus
+                aria-invalid="{{if .Error}}true{{else}}false{{end}}"
+                aria-describedby="access-key-help{{if .Error}} login-error{{end}}"
+              >
+              <button
+                type="button"
+                data-reveal-secret
+                aria-label="Show access key"
+                aria-controls="access-key"
+                aria-pressed="false"
+              >Show</button>
+            </span>
+            <small id="access-key-help">Use the 43-character value printed once by the installer.</small>
+          </div>
+          <button class="button button--primary button--full" type="submit">Sign in</button>
+        </form>
+
+        <p class="auth-help">
+          The master stores no plaintext copy. Keep the value printed by the installer in your password manager.
+        </p>
+      </div>
+      <p class="auth-panel__foot">
+        TLS-protected sign-in. The master stores only a hash of your access key.
+      </p>
+    </section>
+  </main>
+  <script src="/assets/app.js?v={{.AssetVersion}}" defer></script>
+</body>
+</html>
+{{end}}

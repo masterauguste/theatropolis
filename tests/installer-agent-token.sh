@@ -1,0 +1,340 @@
+#!/bin/sh
+
+set -eu
+
+INSTALLER_INPUT="${1:-./install.sh}"
+case "$INSTALLER_INPUT" in
+/*) INSTALLER="$INSTALLER_INPUT" ;;
+*) INSTALLER="$(pwd)/$INSTALLER_INPUT" ;;
+esac
+
+TEST_DIRECTORY="$(mktemp -d)"
+TEST_ROOT="$TEST_DIRECTORY/root"
+MOCK_BIN="$TEST_DIRECTORY/bin"
+RELEASE_DIRECTORY="$TEST_DIRECTORY/release"
+RELEASE_STAGE="$TEST_DIRECTORY/release-stage"
+MV_LOG="$TEST_DIRECTORY/mv.log"
+CHOWN_LOG="$TEST_DIRECTORY/chown.log"
+SYSTEMCTL_LOG="$TEST_DIRECTORY/systemctl.log"
+TEST_PLATFORM="$(uname -s)"
+VALID_TOKEN="AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
+STALE_TOKEN="stale-enrollment-token"
+RELEASE_TAG="v9.9.9"
+
+cleanup() {
+	rm -rf -- "$TEST_DIRECTORY"
+}
+
+fail() {
+	printf 'agent token installer test: %s\n' "$*" >&2
+	exit 1
+}
+
+trap cleanup EXIT HUP INT TERM
+
+mkdir -p \
+	"$MOCK_BIN" \
+	"$RELEASE_DIRECTORY" \
+	"$RELEASE_STAGE" \
+	"$TEST_ROOT/etc/systemd/system" \
+	"$TEST_ROOT/usr/local/bin" \
+	"$TEST_ROOT/var/lib/theatropolis/agent"
+
+printf '%s\n' \
+	'ID=debian' \
+	'VERSION_ID=13' \
+	>"$TEST_ROOT/etc/os-release"
+
+# Relocate every fixed system path so the installer cannot write to the host.
+sed \
+	-e "s#/usr/local/#$TEST_ROOT/usr/local/#g" \
+	-e "s#/usr/share/#$TEST_ROOT/usr/share/#g" \
+	-e "s#/var/lib/#$TEST_ROOT/var/lib/#g" \
+	-e "s#/etc/#$TEST_ROOT/etc/#g" \
+	-e "s#/run/#$TEST_ROOT/run/#g" \
+	"$INSTALLER" >"$TEST_DIRECTORY/install.sh"
+chmod +x "$TEST_DIRECTORY/install.sh"
+
+cat >"$RELEASE_STAGE/theatropolis-master" <<'EOF'
+#!/bin/sh
+exit 0
+EOF
+
+cat >"$RELEASE_STAGE/theatropolis-agent" <<'EOF'
+#!/bin/sh
+exit 0
+EOF
+
+chmod +x \
+	"$RELEASE_STAGE/theatropolis-master" \
+	"$RELEASE_STAGE/theatropolis-agent"
+
+tar -czf "$RELEASE_DIRECTORY/theatropolis_linux_amd64.tar.gz" \
+	-C "$RELEASE_STAGE" \
+	theatropolis-master \
+	theatropolis-agent
+(
+	cd "$RELEASE_DIRECTORY"
+	ARCHIVE_CHECKSUM="$(
+		sha256sum theatropolis_linux_amd64.tar.gz |
+			awk '{ print $1 }'
+	)"
+	printf '%s  %s\n' \
+		"$ARCHIVE_CHECKSUM" \
+		theatropolis_linux_amd64.tar.gz \
+		>checksums.txt
+)
+
+cat >"$MOCK_BIN/id" <<'EOF'
+#!/bin/sh
+if [ "${1:-}" = "-u" ]; then
+	printf '0\n'
+	exit 0
+fi
+case "${1:-}" in
+theatropolis-agent) exit 0 ;;
+esac
+exec /usr/bin/id "$@"
+EOF
+
+cat >"$MOCK_BIN/uname" <<'EOF'
+#!/bin/sh
+printf 'x86_64\n'
+EOF
+
+cat >"$MOCK_BIN/apt-get" <<'EOF'
+#!/bin/sh
+exit 0
+EOF
+
+cat >"$MOCK_BIN/curl" <<'EOF'
+#!/bin/sh
+set -eu
+
+OUTPUT=""
+SOURCE=""
+while [ "$#" -gt 0 ]; do
+	case "$1" in
+	-o)
+		[ "$#" -ge 2 ] || exit 64
+		OUTPUT="$2"
+		shift 2
+		;;
+	http://* | https://*)
+		SOURCE="$1"
+		shift
+		;;
+	*)
+		shift
+		;;
+	esac
+done
+
+[ -n "$OUTPUT" ] || exit 64
+case "$SOURCE" in
+*/theatropolis_linux_amd64.tar.gz)
+	cp "$TEST_RELEASE_DIRECTORY/theatropolis_linux_amd64.tar.gz" "$OUTPUT"
+	;;
+*/checksums.txt)
+	cp "$TEST_RELEASE_DIRECTORY/checksums.txt" "$OUTPUT"
+	;;
+*)
+	printf 'unexpected mock curl source: %s\n' "$SOURCE" >&2
+	exit 65
+	;;
+esac
+EOF
+
+cat >"$MOCK_BIN/install" <<'EOF'
+#!/bin/sh
+set -eu
+
+DIRECTORY="no"
+MODE=""
+while [ "$#" -gt 0 ]; do
+	case "$1" in
+	-d)
+		DIRECTORY="yes"
+		shift
+		;;
+	-o | -g)
+		[ "$#" -ge 2 ] || exit 64
+		shift 2
+		;;
+	-m)
+		[ "$#" -ge 2 ] || exit 64
+		MODE="$2"
+		shift 2
+		;;
+	--)
+		shift
+		break
+		;;
+	-*)
+		exit 64
+		;;
+	*)
+		break
+		;;
+	esac
+done
+
+if [ "$DIRECTORY" = "yes" ]; then
+	[ "$#" -ge 1 ] || exit 64
+	for TARGET in "$@"; do
+		mkdir -p "$TARGET"
+		if [ -n "$MODE" ]; then
+			chmod "$MODE" "$TARGET"
+		fi
+	done
+else
+	[ "$#" -eq 2 ] || exit 64
+	cp "$1" "$2"
+	if [ -n "$MODE" ]; then
+		chmod "$MODE" "$2"
+	fi
+fi
+EOF
+
+cat >"$MOCK_BIN/chown" <<'EOF'
+#!/bin/sh
+printf '%s\n' "$*" >>"$TEST_CHOWN_LOG"
+exit 0
+EOF
+
+cat >"$MOCK_BIN/mv" <<'EOF'
+#!/bin/sh
+set -eu
+
+[ "$#" -eq 4 ] || exit 64
+[ "$1" = "-fT" ] || exit 64
+[ "$2" = "--" ] || exit 64
+[ -f "$3" ] || exit 65
+[ ! -L "$3" ] || exit 65
+printf '%s\n' \
+	"$3" \
+	"$4" \
+	"$(stat -c '%a' "$3")" \
+	"$(cat "$3")" \
+	>>"$TEST_MV_LOG"
+exec /bin/mv "$@"
+EOF
+
+cat >"$MOCK_BIN/systemctl" <<'EOF'
+#!/bin/sh
+printf '%s\n' "$*" >>"$TEST_SYSTEMCTL_LOG"
+case "${1:-}" in
+is-active) exit 3 ;;
+*) exit 0 ;;
+esac
+EOF
+
+chmod +x "$MOCK_BIN"/*
+
+run_installer() {
+	PATH="$MOCK_BIN:$PATH" \
+		TEST_RELEASE_DIRECTORY="$RELEASE_DIRECTORY" \
+		TEST_MV_LOG="$MV_LOG" \
+		TEST_CHOWN_LOG="$CHOWN_LOG" \
+		TEST_SYSTEMCTL_LOG="$SYSTEMCTL_LOG" \
+		sh "$TEST_DIRECTORY/install.sh" agent \
+		--master master.example.com:8443 \
+		--agent-id edge-1 \
+		--token "$VALID_TOKEN" \
+		--version "$RELEASE_TAG"
+}
+
+STATE_DIRECTORY="$TEST_ROOT/var/lib/theatropolis"
+AGENT_STATE_DIRECTORY="$STATE_DIRECTORY/agent"
+TOKEN_PATH="$AGENT_STATE_DIRECTORY/enrollment.token"
+OLD_TOKEN_LINK="$TEST_DIRECTORY/old-enrollment-token"
+EXPECTED_TOKEN_FILE="$TEST_DIRECTORY/expected-enrollment-token"
+
+# Begin with an ordinary token file and keep a hard link to its old inode. An
+# atomic rename must replace the pathname rather than truncate that inode.
+printf '%s\n' "$STALE_TOKEN" >"$TOKEN_PATH"
+ln "$TOKEN_PATH" "$OLD_TOKEN_LINK"
+printf '%s\n' "$VALID_TOKEN" >"$EXPECTED_TOKEN_FILE"
+
+set +e
+NORMAL_OUTPUT="$(run_installer 2>&1)"
+NORMAL_STATUS="$?"
+set -e
+
+[ "$NORMAL_STATUS" -eq 0 ] ||
+	fail "normal token installation failed (status $NORMAL_STATUS): $NORMAL_OUTPUT"
+[ -f "$TOKEN_PATH" ] && [ ! -L "$TOKEN_PATH" ] ||
+	fail "normal token installation did not leave a regular file"
+cmp -s "$EXPECTED_TOKEN_FILE" "$TOKEN_PATH" ||
+	fail "installed token does not exactly match the enrollment token"
+printf '%s\n' "$STALE_TOKEN" | cmp -s - "$OLD_TOKEN_LINK" ||
+	fail "installer modified the old token inode instead of replacing it"
+[ "$(stat -c '%i' "$TOKEN_PATH")" != "$(stat -c '%i' "$OLD_TOKEN_LINK")" ] ||
+	fail "installer did not atomically replace the old token inode"
+
+[ "$(wc -l <"$MV_LOG")" -eq 4 ] ||
+	fail "token installation did not perform exactly one logged replacement"
+STAGED_TOKEN="$(sed -n '1p' "$MV_LOG")"
+LOGGED_TARGET="$(sed -n '2p' "$MV_LOG")"
+LOGGED_MODE="$(sed -n '3p' "$MV_LOG")"
+LOGGED_VALUE="$(sed -n '4p' "$MV_LOG")"
+case "$STAGED_TOKEN" in
+"$STATE_DIRECTORY"/.enrollment-token.*) ;;
+*) fail "token was not staged inside the root-controlled state directory" ;;
+esac
+[ "$LOGGED_TARGET" = "$TOKEN_PATH" ] ||
+	fail "atomic replacement targeted an unexpected path"
+case "$TEST_PLATFORM" in
+MINGW* | MSYS*)
+	# Git Bash maps POSIX group permissions onto Windows ACLs and can report
+	# the mktemp mode even after a successful chmod. Linux CI checks exactly.
+	;;
+*)
+	[ "$LOGGED_MODE" = "640" ] ||
+		fail "staged token did not have mode 0640 before replacement"
+	;;
+esac
+[ "$LOGGED_VALUE" = "$VALID_TOKEN" ] ||
+	fail "staged token did not contain the exact enrollment token"
+grep -Fqx "root:theatropolis-agent $STAGED_TOKEN" "$CHOWN_LOG" ||
+	fail "staged token was not assigned root ownership before replacement"
+if find "$STATE_DIRECTORY" -maxdepth 1 \
+	-name '.enrollment-token.*' -print | grep -q .; then
+	fail "successful installation left a staged token behind"
+fi
+
+# Git Bash cannot reliably create a native Windows symlink without optional
+# host privileges. The Linux CI run below remains authoritative for this case.
+case "$TEST_PLATFORM" in
+MINGW* | MSYS*) exit 0 ;;
+esac
+
+# A pre-existing symlink must be rejected without touching its referent or
+# reaching the atomic move.
+SENTINEL="$TEST_DIRECTORY/symlink-referent"
+printf '%s\n' 'do-not-overwrite' >"$SENTINEL"
+rm -f -- "$TOKEN_PATH" "$MV_LOG" "$CHOWN_LOG"
+ln -s "$SENTINEL" "$TOKEN_PATH"
+
+set +e
+SYMLINK_OUTPUT="$(run_installer 2>&1)"
+SYMLINK_STATUS="$?"
+set -e
+
+[ "$SYMLINK_STATUS" -ne 0 ] ||
+	fail "installer unexpectedly accepted a pre-existing token symlink"
+[ -L "$TOKEN_PATH" ] ||
+	fail "installer replaced or removed the pre-existing token symlink"
+[ "$(readlink "$TOKEN_PATH")" = "$SENTINEL" ] ||
+	fail "installer changed the pre-existing token symlink"
+printf '%s\n' 'do-not-overwrite' | cmp -s - "$SENTINEL" ||
+	fail "installer followed the token symlink and overwrote its referent"
+[ ! -s "$MV_LOG" ] ||
+	fail "installer attempted an atomic move after detecting the symlink"
+printf '%s' "$SYMLINK_OUTPUT" |
+	grep -Eiq '(enrollment token path|not a regular file|symlink)' ||
+	fail "symlink rejection did not provide a useful diagnostic"
+if find "$STATE_DIRECTORY" -maxdepth 1 \
+	-name '.enrollment-token.*' -print | grep -q .; then
+	fail "rejected symlink installation left a staged token behind"
+fi

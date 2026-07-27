@@ -1,0 +1,120 @@
+{{define "servers.html"}}
+<!doctype html>
+<html lang="en">
+{{template "document-head" .}}
+<body>
+  <a class="skip-link" href="#main">Skip to content</a>
+  {{template "mobile-header" .}}
+  <div class="app-shell">
+    {{template "sidebar" .}}
+    <main class="main" id="main">
+      <header class="page-header">
+        <div>
+          <p class="eyebrow">Infrastructure</p>
+          <h1>Servers</h1>
+          <p class="page-header__description">Enroll and monitor every agent connected to this master.</p>
+        </div>
+        <div class="page-header__actions">
+          <a class="button button--secondary button--icon" href="/servers" aria-label="Refresh server status">
+            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M20 11a8 8 0 1 0-2.3 5.7M20 5v6h-6"/></svg>
+            Refresh
+          </a>
+          <a class="button button--primary" href="/servers/new">
+            <span aria-hidden="true">+</span>
+            Add server
+          </a>
+        </div>
+      </header>
+
+      <section class="metric-grid" aria-label="Fleet summary">
+        <article class="metric-card">
+          <span class="metric-card__label">Total servers</span>
+          <strong>{{.Stats.Total}}</strong>
+          <span class="metric-card__hint">Known to this master</span>
+        </article>
+        <article class="metric-card metric-card--positive">
+          <span class="metric-card__label">Online</span>
+          <strong>{{.Stats.Online}}</strong>
+          <span class="metric-card__hint">Authenticated sessions</span>
+        </article>
+        <article class="metric-card metric-card--pending">
+          <span class="metric-card__label">Pending</span>
+          <strong>{{.Stats.Pending}}</strong>
+          <span class="metric-card__hint">Awaiting installation</span>
+        </article>
+        <article class="metric-card metric-card--attention">
+          <span class="metric-card__label">Needs attention</span>
+          <strong>{{.Stats.Attention}}</strong>
+          <span class="metric-card__hint">Offline or expired</span>
+        </article>
+      </section>
+
+      <section class="panel" aria-labelledby="fleet-heading">
+        <div class="panel__header">
+          <div>
+            <h2 id="fleet-heading">Fleet</h2>
+            <p>Current connection state and enrollment readiness.</p>
+          </div>
+          <span class="panel__count">{{.Stats.Total}} total</span>
+        </div>
+
+        {{if .Agents}}
+        <div class="table-wrap">
+          <table>
+            <thead>
+              <tr>
+                <th scope="col">Server</th>
+                <th scope="col">Enrollment</th>
+                <th scope="col">Connection</th>
+                <th scope="col">Details</th>
+              </tr>
+            </thead>
+            <tbody>
+              {{range .Agents}}
+              <tr>
+                <td data-label="Server">
+                  <div class="server-name">
+                    <span class="server-name__avatar" aria-hidden="true">{{.Initial}}</span>
+                    <div>
+                      <strong>{{.ID}}</strong>
+                      <small>Agent-managed server</small>
+                    </div>
+                  </div>
+                </td>
+                <td data-label="Enrollment">
+                  <span class="status status--{{.EnrollmentClass}}">
+                    <span aria-hidden="true"></span>{{.EnrollmentLabel}}
+                  </span>
+                </td>
+                <td data-label="Connection">
+                  <span class="status status--{{.ConnectionClass}}">
+                    <span aria-hidden="true"></span>{{.ConnectionLabel}}
+                  </span>
+                </td>
+                <td data-label="Details">
+                  <span class="muted">{{.Detail}}</span>
+                </td>
+              </tr>
+              {{end}}
+            </tbody>
+          </table>
+        </div>
+        {{else}}
+        <div class="empty-state">
+          <div class="empty-state__art" aria-hidden="true">
+            <span></span>
+            <svg viewBox="0 0 64 64"><path d="M14 17h36v30H14zM22 26h8m4 0h8M22 35h20"/></svg>
+          </div>
+          <p class="eyebrow">The stage is ready</p>
+          <h3>No servers enrolled yet</h3>
+          <p>Create a server entry to generate its secure, single-use installation command.</p>
+          <a class="button button--primary" href="/servers/new">Add your first server</a>
+        </div>
+        {{end}}
+      </section>
+    </main>
+  </div>
+  <script src="/assets/app.js?v={{.AssetVersion}}" defer></script>
+</body>
+</html>
+{{end}}

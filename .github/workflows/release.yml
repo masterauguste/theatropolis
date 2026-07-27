@@ -20,6 +20,13 @@ jobs:
           go-version-file: go.mod
           cache: true
       - run: go test -count=1 ./...
+      - run: go vet ./...
+      - run: sh -n install.sh
+      - run: sh tests/installer-release-tag.sh
+      - run: sh tests/installer-master.sh
+      - run: sh tests/installer-agent-token.sh
+      - run: sh tests/installer-security.sh
+      - run: shellcheck --shell=sh install.sh tests/*.sh
       - name: Build release archives
         shell: bash
         run: |

@@ -1,0 +1,53 @@
+{{define "document-head"}}
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="light">
+  <title>{{.Title}} · Theatropolis</title>
+  <link rel="stylesheet" href="/assets/app.css?v={{.AssetVersion}}">
+</head>
+{{end}}
+
+{{define "brand"}}
+<a class="brand" href="/servers" aria-label="Theatropolis servers">
+  <span class="brand__mark" aria-hidden="true"><span>T</span></span>
+  <span>
+    <strong>Theatropolis</strong>
+    <small>Control plane</small>
+  </span>
+</a>
+{{end}}
+
+{{define "sidebar"}}
+<aside class="sidebar">
+  {{template "brand" .}}
+  <nav class="primary-nav" aria-label="Primary navigation">
+    <a class="primary-nav__item primary-nav__item--active" href="/servers" aria-current="page">
+      <svg viewBox="0 0 24 24" aria-hidden="true">
+        <path d="M4 6.5h16v11H4zM8 10h2m4 0h2m-8 4h8"/>
+      </svg>
+      Servers
+    </a>
+  </nav>
+  <div class="sidebar__footer">
+    <div class="endpoint-card">
+      <span>Master endpoint</span>
+      <strong>{{.PublicURL}}</strong>
+    </div>
+    <form action="/logout" method="post">
+      <input type="hidden" name="csrf_token" value="{{.CSRFToken}}">
+      <button class="button button--quiet button--full" type="submit">Sign out</button>
+    </form>
+  </div>
+</aside>
+{{end}}
+
+{{define "mobile-header"}}
+<header class="mobile-header">
+  {{template "brand" .}}
+  <form action="/logout" method="post">
+    <input type="hidden" name="csrf_token" value="{{.CSRFToken}}">
+    <button class="button button--quiet button--small" type="submit">Sign out</button>
+  </form>
+</header>
+{{end}}

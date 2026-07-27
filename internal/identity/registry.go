@@ -15,6 +15,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -29,6 +30,7 @@ const (
 var (
 	ErrAgentNotFound         = errors.New("agent identity not found")
 	ErrAgentAlreadyEnrolled  = errors.New("agent already enrolled")
+	ErrEnrollmentPending     = errors.New("agent enrollment is already pending")
 	ErrEnrollmentUnavailable = errors.New("enrollment token is invalid or expired")
 	ErrInvalidPublicKey      = errors.New("invalid Ed25519 public key")
 	ErrInvalidAgentID        = errors.New("invalid agent ID")
@@ -39,6 +41,22 @@ var agentIDPattern = regexp.MustCompile(`\A[a-zA-Z0-9][a-zA-Z0-9._-]{0,127}\z`)
 type pendingEnrollment struct {
 	tokenSHA256 [sha256.Size]byte
 	expiresAt   time.Time
+}
+
+type AgentState string
+
+const (
+	AgentStatePending  AgentState = "pending"
+	AgentStateEnrolled AgentState = "enrolled"
+	AgentStateExpired  AgentState = "expired"
+)
+
+// AgentSnapshot is a credential-free view of an identity known to the registry.
+// EnrollmentExpiresAt is set only for pending and expired identities.
+type AgentSnapshot struct {
+	ID                  string
+	State               AgentState
+	EnrollmentExpiresAt time.Time
 }
 
 type Registry struct {
@@ -147,9 +165,14 @@ func (r *Registry) CreateEnrollment(
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	if _, exists := r.enrolled[agentID]; exists {
+		clear(token)
 		return nil, ErrAgentAlreadyEnrolled
 	}
 	previous, hadPrevious := r.pending[agentID]
+	if hadPrevious && !time.Now().After(previous.expiresAt) {
+		clear(token)
+		return nil, ErrEnrollmentPending
+	}
 	r.pending[agentID] = pendingEnrollment{
 		tokenSHA256: sha256.Sum256(token),
 		expiresAt:   expiresAt.UTC(),
@@ -212,6 +235,38 @@ func (r *Registry) PublicKey(_ context.Context, agentID string) (ed25519.PublicK
 		return nil, ErrAgentNotFound
 	}
 	return append(ed25519.PublicKey(nil), publicKey...), nil
+}
+
+// Snapshot returns a sorted, credential-free view of registered identities.
+func (r *Registry) Snapshot(now time.Time) []AgentSnapshot {
+	r.mu.RLock()
+	records := make([]AgentSnapshot, 0, len(r.pending)+len(r.enrolled))
+	for agentID := range r.enrolled {
+		records = append(records, AgentSnapshot{
+			ID:    agentID,
+			State: AgentStateEnrolled,
+		})
+	}
+	for agentID, pending := range r.pending {
+		if _, enrolled := r.enrolled[agentID]; enrolled {
+			continue
+		}
+		state := AgentStatePending
+		if now.After(pending.expiresAt) {
+			state = AgentStateExpired
+		}
+		records = append(records, AgentSnapshot{
+			ID:                  agentID,
+			State:               state,
+			EnrollmentExpiresAt: pending.expiresAt.UTC(),
+		})
+	}
+	r.mu.RUnlock()
+
+	sort.Slice(records, func(left, right int) bool {
+		return records[left].ID < records[right].ID
+	})
+	return records
 }
 
 func NewChallenge() ([]byte, error) {
