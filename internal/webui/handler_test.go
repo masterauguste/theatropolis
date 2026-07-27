@@ -702,7 +702,7 @@ func TestServersPageUsesRealEnrollmentAndConnectionState(t *testing.T) {
 	}
 }
 
-func TestAuthenticatedSidebarOmitsMasterEndpoint(t *testing.T) {
+func TestAuthenticatedHeaderLinksServersAndSettings(t *testing.T) {
 	t.Parallel()
 
 	fixture := newWebFixture(t)
@@ -720,14 +720,45 @@ func TestAuthenticatedSidebarOmitsMasterEndpoint(t *testing.T) {
 		testPublicURL,
 	} {
 		if strings.Contains(body, unexpected) {
-			t.Errorf("authenticated sidebar contains %q", unexpected)
+			t.Errorf("authenticated header contains %q", unexpected)
 		}
 	}
-	if !strings.Contains(
-		body,
-		`class="button button--quiet button--full button--small"`,
-	) {
-		t.Fatal("authenticated sidebar does not contain a compact, full-width sign-out button")
+	for _, expected := range []string{
+		`class="global-header"`,
+		`href="/servers"`,
+		`href="/settings"`,
+		`action="/logout"`,
+	} {
+		if !strings.Contains(body, expected) {
+			t.Errorf("authenticated header does not contain %q", expected)
+		}
+	}
+	if strings.Contains(body, `class="sidebar"`) {
+		t.Fatal("authenticated page still renders the removed sidebar")
+	}
+}
+
+func TestSettingsPageOwnsMasterSoftwareManagement(t *testing.T) {
+	t.Parallel()
+	fixture := newWebFixture(t)
+	request := fixture.authenticatedRequest(http.MethodGet, "/settings", "")
+	response := httptest.NewRecorder()
+	fixture.handler.ServeHTTP(response, request)
+	if response.Code != http.StatusOK {
+		t.Fatalf("GET /settings status = %d, body = %s", response.Code, response.Body.String())
+	}
+	body := response.Body.String()
+	for _, expected := range []string{
+		"Global settings",
+		"Master software",
+		`action="/master-update"`,
+		`data-master-latest-label`,
+		`data-version-catalog-url="/settings/versions"`,
+		`href="/settings" class="is-active"`,
+	} {
+		if !strings.Contains(body, expected) {
+			t.Errorf("settings page does not contain %q", expected)
+		}
 	}
 }
 
@@ -767,7 +798,10 @@ func TestServerManagementPageShowsConfigurationAndRevocationControls(t *testing.
 		}
 	}
 	if strings.Contains(body, testPublicURL) {
-		t.Fatal("server management sidebar exposed the master endpoint")
+		t.Fatal("server management page exposed the master endpoint")
+	}
+	if strings.Contains(body, "Master software") || strings.Contains(body, `action="/master-update"`) {
+		t.Fatal("server management page still contains global master controls")
 	}
 
 	request = fixture.authenticatedRequest(
@@ -1240,10 +1274,7 @@ func TestMasterUpdateQueuesOnlyLatestRelease(t *testing.T) {
 		{Tag: "v1.14.0-beta.7", Prerelease: true},
 		{Tag: "v1.13.2"},
 	}}
-	form := url.Values{
-		"agent_id":   {"edge-online"},
-		"csrf_token": {fixture.session.CSRFToken},
-	}.Encode()
+	form := url.Values{"csrf_token": {fixture.session.CSRFToken}}.Encode()
 	request := fixture.authenticatedMutationRequest(
 		http.MethodPost,
 		"/master-update",
@@ -1253,6 +1284,9 @@ func TestMasterUpdateQueuesOnlyLatestRelease(t *testing.T) {
 	fixture.handler.ServeHTTP(response, request)
 	if response.Code != http.StatusSeeOther {
 		t.Fatalf("master update response = %d %q", response.Code, response.Body.String())
+	}
+	if response.Header().Get("Location") != "/settings" {
+		t.Fatalf("master update redirect = %q, want /settings", response.Header().Get("Location"))
 	}
 	encoded, err := os.ReadFile(filepath.Join(stateDirectory, "update-request.json"))
 	if err != nil {
@@ -1286,7 +1320,6 @@ func TestMasterUpdateRejectsClientSelectedVersion(t *testing.T) {
 		{Tag: "v1.14.0-beta.7", Prerelease: true},
 	}}
 	form := url.Values{
-		"agent_id":       {"edge-online"},
 		"csrf_token":     {fixture.session.CSRFToken},
 		"target_version": {"v1.13.2"},
 	}.Encode()

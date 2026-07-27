@@ -10,40 +10,23 @@
 
 {{define "brand"}}
 <a class="brand" href="/servers" aria-label="Theatropolis servers">
-  <span class="brand__mark" aria-hidden="true"><span>T</span></span>
-  <span>
-    <strong>Theatropolis</strong>
-    <small>Control plane</small>
-  </span>
+  <span class="brand__mark" aria-hidden="true">T</span>
+  <strong>Theatropolis</strong>
 </a>
 {{end}}
 
-{{define "sidebar"}}
-<aside class="sidebar">
-  {{template "brand" .}}
-  <nav class="primary-nav" aria-label="Primary navigation">
-    <a class="primary-nav__item primary-nav__item--active" href="/servers" aria-current="page">
-      <svg viewBox="0 0 24 24" aria-hidden="true">
-        <path d="M4 6.5h16v11H4zM8 10h2m4 0h2m-8 4h8"/>
-      </svg>
-      Servers
-    </a>
-  </nav>
-  <div class="sidebar__footer">
+{{define "global-header"}}
+<header class="global-header">
+  <div class="global-header__inner">
+    {{template "brand" .}}
+    <nav class="global-nav" aria-label="Primary navigation">
+      <a href="/servers"{{if eq .ActiveNav "servers"}} class="is-active" aria-current="page"{{end}}>Servers</a>
+      <a href="/settings"{{if eq .ActiveNav "settings"}} class="is-active" aria-current="page"{{end}}>Settings</a>
+    </nav>
     <form action="/logout" method="post">
       <input type="hidden" name="csrf_token" value="{{.CSRFToken}}">
-      <button class="button button--quiet button--full button--small" type="submit">Sign out</button>
+      <button class="button button--secondary button--small" type="submit">Sign out</button>
     </form>
   </div>
-</aside>
-{{end}}
-
-{{define "mobile-header"}}
-<header class="mobile-header">
-  {{template "brand" .}}
-  <form action="/logout" method="post">
-    <input type="hidden" name="csrf_token" value="{{.CSRFToken}}">
-    <button class="button button--quiet button--small" type="submit">Sign out</button>
-  </form>
 </header>
 {{end}}

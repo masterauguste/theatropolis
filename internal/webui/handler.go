@@ -134,6 +134,7 @@ type Handler struct {
 
 type pageData struct {
 	Title                 string
+	ActiveNav             string
 	AssetVersion          string
 	PublicURL             string
 	MasterAddress         string
@@ -316,6 +317,8 @@ func (h *Handler) routes() {
 	h.mux.HandleFunc("POST /login", h.login)
 	h.mux.HandleFunc("POST /logout", h.logout)
 	h.mux.HandleFunc("GET /servers", h.serversPage)
+	h.mux.HandleFunc("GET /settings", h.settingsPage)
+	h.mux.HandleFunc("GET /settings/versions", h.masterVersions)
 	h.mux.HandleFunc("GET /servers/new", h.newServerPage)
 	h.mux.HandleFunc("GET /servers/enrollment-result", h.enrollmentResultPage)
 	h.mux.HandleFunc(
@@ -514,10 +517,51 @@ func (h *Handler) serversPage(response http.ResponseWriter, request *http.Reques
 	}
 	h.render(response, http.StatusOK, "servers.html", pageData{
 		Title:     "Servers",
+		ActiveNav: "servers",
 		CSRFToken: session.CSRFToken,
 		Stats:     stats,
 		Agents:    agents,
 	})
+}
+
+func (h *Handler) settingsPage(response http.ResponseWriter, request *http.Request) {
+	session, ok := h.requireAuthentication(response, request)
+	if !ok {
+		return
+	}
+	if request.URL.RawQuery != "" {
+		http.NotFound(response, request)
+		return
+	}
+	var masterUpdate *agentUpdateView
+	if h.masterUpdater != nil {
+		if result, exists, err := h.masterUpdater.LoadResult(); err == nil && exists {
+			masterUpdate = updateResultViewFor(result)
+		}
+	}
+	h.render(response, http.StatusOK, "settings.html", pageData{
+		Title:         "Settings",
+		ActiveNav:     "settings",
+		CSRFToken:     session.CSRFToken,
+		MasterVersion: h.version,
+		MasterUpdate:  masterUpdate,
+	})
+}
+
+func (h *Handler) masterVersions(response http.ResponseWriter, request *http.Request) {
+	if _, ok := h.authenticate(request); !ok {
+		http.Error(response, "unauthorized", http.StatusUnauthorized)
+		return
+	}
+	versions, latest, warning := h.releaseVersions(request.Context())
+	response.Header().Set("Content-Type", "application/json")
+	if err := json.NewEncoder(response).Encode(versionCatalogResponse{
+		LatestVersion:       latest,
+		AgentVersions:       versions,
+		AgentCatalogWarning: warning,
+	}); err != nil {
+		h.logger.Warn("encode master version catalog", "error", err)
+	}
 }
 
 func (h *Handler) serverPage(response http.ResponseWriter, request *http.Request) {
@@ -1024,7 +1068,6 @@ func (h *Handler) updateMaster(response http.ResponseWriter, request *http.Reque
 		request,
 		maxEnrollmentBodyBytes,
 		"csrf_token",
-		"agent_id",
 	)
 	if err != nil || !h.access.AuthorizeCSRF(sessionToken, form.Get("csrf_token")) {
 		http.Error(response, "request was not authorized", http.StatusForbidden)
@@ -1032,11 +1075,6 @@ func (h *Handler) updateMaster(response http.ResponseWriter, request *http.Reque
 	}
 	if _, err := h.access.Authenticate(sessionToken); err != nil {
 		h.redirectToLogin(response, request)
-		return
-	}
-	agentID := form.Get("agent_id")
-	if _, exists := h.agentSnapshot(agentID); !exists {
-		http.NotFound(response, request)
 		return
 	}
 	if h.masterUpdater == nil || h.releases == nil {
@@ -1050,12 +1088,7 @@ func (h *Handler) updateMaster(response http.ResponseWriter, request *http.Reque
 	}
 	targetVersion := releases[0].Tag
 	if targetVersion == h.version {
-		http.Redirect(
-			response,
-			request,
-			"/servers/"+url.PathEscape(agentID)+"/manage",
-			http.StatusSeeOther,
-		)
+		http.Redirect(response, request, "/settings", http.StatusSeeOther)
 		return
 	}
 	requestID, err := randomOpaqueID("master")
@@ -1076,12 +1109,7 @@ func (h *Handler) updateMaster(response http.ResponseWriter, request *http.Reque
 		"target_version", targetVersion,
 		"request_id", requestID,
 	)
-	http.Redirect(
-		response,
-		request,
-		"/servers/"+url.PathEscape(agentID)+"/manage",
-		http.StatusSeeOther,
-	)
+	http.Redirect(response, request, "/settings", http.StatusSeeOther)
 }
 
 func (h *Handler) renderAgentUpdateError(
@@ -1193,18 +1221,11 @@ func (h *Handler) serverPageData(
 	if update, exists := h.controller.LatestSingBoxUpdate(snapshot.ID); exists {
 		detail.SingBoxUpdate = singBoxUpdateViewFor(update)
 	}
-	var masterUpdate *agentUpdateView
-	if h.masterUpdater != nil {
-		if result, exists, err := h.masterUpdater.LoadResult(); err == nil && exists {
-			masterUpdate = updateResultViewFor(result)
-		}
-	}
 	return pageData{
 		Title:         snapshot.ID,
+		ActiveNav:     "servers",
 		CSRFToken:     session.CSRFToken,
 		Agent:         detail,
-		MasterVersion: h.version,
-		MasterUpdate:  masterUpdate,
 	}, nil
 }
 
@@ -1376,6 +1397,7 @@ func (h *Handler) newServerPage(response http.ResponseWriter, request *http.Requ
 	}
 	h.render(response, http.StatusOK, "new-server.html", pageData{
 		Title:      "Add server",
+		ActiveNav:  "servers",
 		CSRFToken:  session.CSRFToken,
 		TTLSeconds: 900,
 	})
@@ -1405,6 +1427,7 @@ func (h *Handler) enrollmentResultPage(response http.ResponseWriter, request *ht
 	}
 	h.render(response, http.StatusOK, "server-created.html", pageData{
 		Title:     "Enrollment ready",
+		ActiveNav: "servers",
 		CSRFToken: session.CSRFToken,
 		Created:   &created,
 	})
@@ -1538,6 +1561,7 @@ func (h *Handler) renderNewServerError(
 ) {
 	h.render(response, status, "new-server.html", pageData{
 		Title:      "Add server",
+		ActiveNav:  "servers",
 		CSRFToken:  session.CSRFToken,
 		AgentID:    agentID,
 		TTLSeconds: ttlSeconds,

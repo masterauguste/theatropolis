@@ -59,6 +59,8 @@ if (configTextarea && configurationForm && configurationEditor) {
         continue;
       }
       const dialog = control.closest("dialog");
+      const card = control.closest(".builder-card");
+      if (card) setCardEditing(card, true);
       if (dialog instanceof HTMLDialogElement && !dialog.open) {
         dialog.showModal();
       }
@@ -99,7 +101,7 @@ if (configTextarea && configurationForm && configurationEditor) {
       return;
     }
     for (const control of root.querySelectorAll("input, select, textarea, button")) {
-      if (control.matches("[data-copy-uri]")) {
+      if (control.matches("[data-copy-uri], [data-edit-card]")) {
         continue;
       }
       control.disabled = true;
@@ -184,6 +186,21 @@ if (configTextarea && configurationForm && configurationEditor) {
     }, 1500);
   }
 
+  function setCardEditing(card, editing) {
+    const editor = card.querySelector("[data-card-editor]");
+    const button = card.querySelector("[data-edit-card]");
+    if (!editor || !button) return;
+    card.classList.toggle("is-editing", editing);
+    editor.hidden = !editing;
+    button.textContent = editing ? "Done" : "Edit";
+    button.setAttribute("aria-expanded", editing ? "true" : "false");
+  }
+
+  function updateCardSummary(card, title, meta) {
+    card.querySelector("[data-card-title]").textContent = title;
+    card.querySelector("[data-card-meta]").textContent = meta;
+  }
+
   function findACMEProvider(inbound) {
     const providerTag = inbound?.tls?.certificate_provider;
     if (!providerTag) {
@@ -220,7 +237,9 @@ if (configTextarea && configurationForm && configurationEditor) {
     const serverPassword = field(card, "inbound", "password");
     serverPassword.required = type === "shadowsocks";
     const title = field(card, "inbound", "tag").value || "New inbound";
-    card.querySelector("[data-card-title]").textContent = title;
+    const port = field(card, "inbound", "listen_port").value || "no port";
+    const users = card.querySelectorAll("[data-user-row]").length;
+    updateCardSummary(card, title, `${type} · ${port} · ${users} user${users === 1 ? "" : "s"}`);
   }
 
   function addInbound(inbound = {}) {
@@ -251,6 +270,7 @@ if (configTextarea && configurationForm && configurationEditor) {
     }
     inboundList.append(card);
     updateInboundVisibility(card);
+    setCardEditing(card, !inbound.tag);
     disableWhenReadonly(card);
     updateResourceCounts();
     return card;
@@ -260,8 +280,11 @@ if (configTextarea && configurationForm && configurationEditor) {
     const kind = field(card, "outbound", "kind").value;
     card.querySelector("[data-external-outbound-field]").hidden = kind !== "external";
     field(card, "outbound", "json").required = kind === "external";
-    card.querySelector("[data-card-title]").textContent =
-      field(card, "outbound", "tag").value || "New outbound";
+    updateCardSummary(
+      card,
+      field(card, "outbound", "tag").value || "New outbound",
+      kind === "external" ? "External JSON" : kind,
+    );
   }
 
   function addOutbound(outbound = {}) {
@@ -275,6 +298,7 @@ if (configTextarea && configurationForm && configurationEditor) {
     }
     outboundList.append(card);
     updateOutboundVisibility(card);
+    setCardEditing(card, !outbound.tag);
     disableWhenReadonly(card);
     updateOutboundTagOptions();
     updateResourceCounts();
@@ -299,7 +323,7 @@ if (configTextarea && configurationForm && configurationEditor) {
     card.querySelector("[data-rule-set-url-field]").hidden = kind !== "custom";
     field(card, "rule-set", "url").required = kind === "custom";
     const name = field(card, "rule-set", "name").value || "New rule set";
-    card.querySelector("[data-card-title]").textContent = name;
+    updateCardSummary(card, name, kind === "custom" ? "Custom SRS" : `SagerNet ${kind}`);
   }
 
   function addRuleSet(ruleSet = {}) {
@@ -311,6 +335,7 @@ if (configTextarea && configurationForm && configurationEditor) {
     setValue(field(card, "rule-set", "url"), inferred.url);
     ruleSetList.append(card);
     updateRuleSetVisibility(card);
+    setCardEditing(card, !ruleSet.tag);
     disableWhenReadonly(card);
     updateResourceCounts();
     return card;
@@ -326,9 +351,22 @@ if (configTextarea && configurationForm && configurationEditor) {
     setValue(field(card, "route", "match_values"), values.join("\n"));
     setValue(field(card, "route", "outbound"), rule.outbound);
     routeRuleList.append(card);
+    updateRouteRuleSummary(card);
+    setCardEditing(card, Object.keys(rule).length === 0);
     disableWhenReadonly(card);
     updateResourceCounts();
     return card;
+  }
+
+  function updateRouteRuleSummary(card) {
+    const type = field(card, "route", "match_type").value;
+    const values = splitValues(field(card, "route", "match_values").value);
+    const outbound = field(card, "route", "outbound").value || "no outbound";
+    updateCardSummary(
+      card,
+      values[0] || "Routing rule",
+      `${type.replaceAll("_", " ")} · ${outbound}`,
+    );
   }
 
   function updateOutboundTagOptions() {
@@ -599,10 +637,17 @@ if (configTextarea && configurationForm && configurationEditor) {
       button.closest(".builder-card")?.remove();
       updateOutboundTagOptions();
       updateResourceCounts();
+    } else if (button.matches("[data-edit-card]")) {
+      const card = button.closest(".builder-card");
+      if (card) setCardEditing(card, !card.classList.contains("is-editing"));
     } else if (button.matches("[data-add-user]")) {
-      addUser(button.closest("[data-inbound-card]"));
+      const card = button.closest("[data-inbound-card]");
+      addUser(card);
+      updateInboundVisibility(card);
     } else if (button.matches("[data-remove-user]")) {
+      const card = button.closest("[data-inbound-card]");
       button.closest("[data-user-row]")?.remove();
+      if (card) updateInboundVisibility(card);
     } else if (button.matches("[data-generate-secret]")) {
       const card = button.closest("[data-inbound-card]");
       const name = button.dataset.generateSecret === "obfs" ? "obfs_password" : "password";
@@ -631,6 +676,7 @@ if (configTextarea && configurationForm && configurationEditor) {
     if (card?.matches("[data-inbound-card]")) updateInboundVisibility(card);
     if (card?.matches("[data-outbound-card]")) updateOutboundVisibility(card);
     if (card?.matches("[data-rule-set-card]")) updateRuleSetVisibility(card);
+    if (card?.matches("[data-route-rule-card]")) updateRouteRuleSummary(card);
     if (event.target.matches('[data-outbound-field="tag"]')) updateOutboundTagOptions();
   });
 
@@ -641,6 +687,8 @@ if (configTextarea && configurationForm && configurationEditor) {
     if (outbound) updateOutboundVisibility(outbound);
     const ruleSet = event.target.closest("[data-rule-set-card]");
     if (ruleSet) updateRuleSetVisibility(ruleSet);
+    const routeRule = event.target.closest("[data-route-rule-card]");
+    if (routeRule) updateRouteRuleSummary(routeRule);
   });
 
   configurationForm.addEventListener("submit", (event) => {

@@ -2,12 +2,10 @@
 <!doctype html>
 <html lang="en">
 {{template "document-head" .}}
-<body data-version-catalog-url="/servers/{{.Agent.ID}}/versions" data-master-version="{{.MasterVersion}}"{{if and .Agent.Deployment .Agent.Deployment.Pending}} data-deployment-refresh-url="{{.Agent.URL}}" data-deployment-status-url="{{.Agent.DeploymentStatusURL}}"{{end}}>
+<body data-version-catalog-url="/servers/{{.Agent.ID}}/versions"{{if and .Agent.Deployment .Agent.Deployment.Pending}} data-deployment-refresh-url="{{.Agent.URL}}" data-deployment-status-url="{{.Agent.DeploymentStatusURL}}"{{end}}>
   <a class="skip-link" href="#main">Skip to content</a>
-  {{template "mobile-header" .}}
-  <div class="app-shell">
-    {{template "sidebar" .}}
-    <main class="main main--narrow" id="main">
+  {{template "global-header" .}}
+  <main class="main main--wide" id="main">
       <nav class="breadcrumbs" aria-label="Breadcrumb">
         <a href="/servers">Servers</a>
         <span aria-hidden="true">/</span>
@@ -125,11 +123,6 @@
                   <span class="resource-summary__count" data-resource-count="route-rule">0 configured</span>
                   <button class="button button--secondary button--small" type="button" data-dialog-open="route-rule-manager-dialog">Manage</button>
                 </div>
-                <label class="field builder-final-outbound">
-                  <span>Default outbound</span>
-                  <input type="text" data-route-final list="outbound-tags" placeholder="direct-out" {{if not .Agent.ConfigurationEditable}}disabled{{end}}>
-                  <small>Used when no routing rule matches.</small>
-                </label>
               </section>
             </section>
 
@@ -214,7 +207,14 @@
                 <div><p class="eyebrow">Configuration resource</p><h2 id="route-rule-manager-title">Manage routing rules</h2><p>Add, inspect, change, reorder in JSON, or remove match rules.</p></div>
                 <button class="button button--secondary button--icon-only" type="button" data-dialog-close aria-label="Close routing-rule manager">×</button>
               </header>
-              <div class="modal__body"><div class="builder-list" data-route-rule-list></div></div>
+              <div class="modal__body">
+                <label class="field builder-final-outbound">
+                  <span>Default outbound</span>
+                  <input type="text" data-route-final list="outbound-tags" placeholder="direct-out" {{if not .Agent.ConfigurationEditable}}disabled{{end}}>
+                  <small>Used when no routing rule matches.</small>
+                </label>
+                <div class="builder-list" data-route-rule-list></div>
+              </div>
               <footer class="modal__footer">
                 <button class="button button--secondary" type="button" data-add-route-rule {{if not .Agent.ConfigurationEditable}}disabled{{end}}>New rule</button>
                 <button class="button button--primary" type="button" data-dialog-close>Done</button>
@@ -225,9 +225,10 @@
           <template id="inbound-card-template">
             <article class="builder-card" data-inbound-card>
               <div class="builder-card__header">
-                <strong data-card-title>New inbound</strong>
-                <button class="button-link button-link--danger" type="button" data-remove-card>Remove</button>
+                <div class="builder-card__identity"><strong data-card-title>New inbound</strong><small data-card-meta>Not configured</small></div>
+                <button class="button button--secondary button--small" type="button" data-edit-card>Edit</button>
               </div>
+              <div class="builder-card__editor" data-card-editor hidden>
               <div class="builder-fields builder-fields--three">
                 <label class="field"><span>Protocol</span><select data-inbound-field="type"><option value="shadowsocks">Shadowsocks 2022</option><option value="anytls">AnyTLS</option><option value="hysteria2">Hysteria2</option></select></label>
                 <label class="field"><span>Tag</span><input type="text" data-inbound-field="tag" placeholder="proxy-in" maxlength="128" required></label>
@@ -255,6 +256,8 @@
                 <div class="builder-subsection__header"><legend>Users</legend><button class="button-link" type="button" data-add-user>Add user</button></div>
                 <div class="user-list" data-user-list></div>
               </fieldset>
+              <div class="builder-card__actions"><button class="button-link button-link--danger" type="button" data-remove-card>Remove inbound</button></div>
+              </div>
             </article>
           </template>
 
@@ -269,34 +272,43 @@
 
           <template id="outbound-card-template">
             <article class="builder-card" data-outbound-card>
-              <div class="builder-card__header"><strong data-card-title>New outbound</strong><button class="button-link button-link--danger" type="button" data-remove-card>Remove</button></div>
+              <div class="builder-card__header"><div class="builder-card__identity"><strong data-card-title>New outbound</strong><small data-card-meta>Not configured</small></div><button class="button button--secondary button--small" type="button" data-edit-card>Edit</button></div>
+              <div class="builder-card__editor" data-card-editor hidden>
               <div class="builder-fields">
                 <label class="field"><span>Kind</span><select data-outbound-field="kind"><option value="direct">Direct</option><option value="block">Block</option><option value="external">External outbound JSON</option></select></label>
                 <label class="field"><span>Tag</span><input type="text" data-outbound-field="tag" placeholder="direct-out" maxlength="128" required></label>
               </div>
               <label class="field" data-external-outbound-field hidden><span>Outbound JSON object</span><textarea data-outbound-field="json" rows="8" spellcheck="false" placeholder='{"type":"socks","server":"127.0.0.1","server_port":1080}'></textarea><small>The tag above is authoritative and will be merged into this object.</small></label>
+              <div class="builder-card__actions"><button class="button-link button-link--danger" type="button" data-remove-card>Remove outbound</button></div>
+              </div>
             </article>
           </template>
 
           <template id="rule-set-card-template">
             <article class="builder-card" data-rule-set-card>
-              <div class="builder-card__header"><strong data-card-title>New rule set</strong><button class="button-link button-link--danger" type="button" data-remove-card>Remove</button></div>
+              <div class="builder-card__header"><div class="builder-card__identity"><strong data-card-title>New rule set</strong><small data-card-meta>Not configured</small></div><button class="button button--secondary button--small" type="button" data-edit-card>Edit</button></div>
+              <div class="builder-card__editor" data-card-editor hidden>
               <div class="builder-fields builder-fields--three">
                 <label class="field"><span>Source</span><select data-rule-set-field="kind"><option value="geosite">SagerNet geosite</option><option value="geoip">SagerNet geoip</option><option value="custom">Custom SRS URL</option></select></label>
                 <label class="field"><span>Name / tag</span><input type="text" data-rule-set-field="name" placeholder="openai" maxlength="128" required></label>
                 <label class="field" data-rule-set-url-field hidden><span>HTTPS URL</span><input type="url" data-rule-set-field="url" placeholder="https://example.com/rules.srs"></label>
+              </div>
+              <div class="builder-card__actions"><button class="button-link button-link--danger" type="button" data-remove-card>Remove rule set</button></div>
               </div>
             </article>
           </template>
 
           <template id="route-rule-card-template">
             <article class="builder-card" data-route-rule-card>
-              <div class="builder-card__header"><strong>Routing rule</strong><button class="button-link button-link--danger" type="button" data-remove-card>Remove</button></div>
+              <div class="builder-card__header"><div class="builder-card__identity"><strong data-card-title>Routing rule</strong><small data-card-meta>Not configured</small></div><button class="button button--secondary button--small" type="button" data-edit-card>Edit</button></div>
+              <div class="builder-card__editor" data-card-editor hidden>
               <div class="builder-fields builder-fields--three">
                 <label class="field"><span>Inbound tags</span><input type="text" data-route-field="inbound" placeholder="proxy-in, another-in"></label>
                 <label class="field"><span>Match</span><select data-route-field="match_type"><option value="protocol">Protocol</option><option value="domain">Exact domain</option><option value="domain_suffix">Domain suffix</option><option value="domain_keyword">Domain keyword</option><option value="ip_cidr">IP/CIDR</option><option value="rule_set">Geo/custom rule set</option><option value="network">Network</option><option value="auth_user">Authenticated user</option></select></label>
                 <label class="field"><span>Match values</span><textarea data-route-field="match_values" rows="3" placeholder="tls, quic"></textarea></label>
                 <label class="field"><span>Outbound</span><input type="text" data-route-field="outbound" list="outbound-tags" placeholder="direct-out" required></label>
+              </div>
+              <div class="builder-card__actions"><button class="button-link button-link--danger" type="button" data-remove-card>Remove rule</button></div>
               </div>
             </article>
           </template>
@@ -391,28 +403,6 @@
               </details>
 
               <details class="action-section">
-                <summary><span><strong>Master software</strong><small>Running {{.MasterVersion}}; latest <span data-master-latest-label>loading…</span></small></span></summary>
-                <div class="action-section__body">
-                  {{if .MasterUpdate}}
-                  <dl class="detail-list detail-list--compact">
-                    <div><dt>Last update</dt><dd><span class="status status--{{.MasterUpdate.StatusClass}}"><span aria-hidden="true"></span>{{.MasterUpdate.StatusLabel}}</span></dd></div>
-                    <div><dt>Target</dt><dd><code>{{.MasterUpdate.TargetVersion}}</code></dd></div>
-                    <div><dt>Updated</dt><dd>{{.MasterUpdate.UpdatedAt}}</dd></div>
-                  </dl>
-                  {{if .MasterUpdate.Diagnostic}}<div class="diagnostic"><strong>Update diagnostic</strong><pre>{{.MasterUpdate.Diagnostic}}</pre></div>{{end}}
-                  {{end}}
-                  <p>The master can only update to the newest published build. The release checksum is verified before replacement.</p>
-                  <form action="/master-update" method="post">
-                    <input type="hidden" name="csrf_token" value="{{.CSRFToken}}">
-                    <input type="hidden" name="agent_id" value="{{.Agent.ID}}">
-                    <button class="button button--secondary button--full" type="submit" data-submit-button data-submit-label="Scheduling…" data-master-update-button disabled>
-                      <span data-master-button-text>Checking for updates…</span>
-                    </button>
-                  </form>
-                </div>
-              </details>
-
-              <details class="action-section">
                 <summary><span><strong>Latest deployment</strong><small>{{if .Agent.Deployment}}{{.Agent.Deployment.StatusLabel}}{{else}}No deployment yet{{end}}</small></span></summary>
                 <div class="action-section__body">
             {{if .Agent.Deployment}}
@@ -475,8 +465,7 @@
           </div>
         </dialog>
       </div>
-    </main>
-  </div>
+  </main>
   <script src="/assets/config-editor.js?v={{.AssetVersion}}" defer></script>
   <script src="/assets/app.js?v={{.AssetVersion}}" defer></script>
 </body>

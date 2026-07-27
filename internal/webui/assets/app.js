@@ -162,6 +162,7 @@ if (versionCatalogURL) {
     return response.json();
   };
 
+  if (document.querySelector("[data-latest-agent-version], [data-master-latest-label]")) {
   fetchCatalog("agent").then((data) => {
     const latest = data.latest_version || "";
     const agentInput = document.querySelector("[data-latest-agent-version]");
@@ -198,7 +199,9 @@ if (versionCatalogURL) {
     if (masterLabel) masterLabel.textContent = "unavailable";
     if (masterButtonText) masterButtonText.textContent = "Latest version unavailable";
   });
+  }
 
+  if (document.querySelector("[data-sing-box-version-select]")) {
   fetchCatalog("sing-box").then((data) => {
     const select = document.querySelector("[data-sing-box-version-select]");
     if (select) {
@@ -237,4 +240,5 @@ if (versionCatalogURL) {
       warning.hidden = false;
     }
   });
+  }
 }
