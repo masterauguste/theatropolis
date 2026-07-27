@@ -385,6 +385,16 @@ printf '%s' "$SING_BOX_SYMLINK_OUTPUT" |
 	grep -Eiq '(unsafe entry type|sing-box archive)' ||
 	fail "sing-box archive symlink rejection did not provide a useful diagnostic"
 
+# Restore the valid archive fixture before testing an unrelated local-path
+# rejection. Otherwise prepare_sing_box correctly rejects the malicious
+# archive again before write_enrollment_token can inspect TOKEN_PATH.
+rm -f -- "$SING_BOX_STAGE/$SING_BOX_PACKAGE/libcronet.so"
+printf '%s\n' 'mock cronet library' \
+	>"$SING_BOX_STAGE/$SING_BOX_PACKAGE/libcronet.so"
+tar -czf "$RELEASE_DIRECTORY/$SING_BOX_ARCHIVE" \
+	-C "$SING_BOX_STAGE" \
+	"$SING_BOX_PACKAGE"
+
 # A pre-existing symlink must be rejected without touching its referent or
 # reaching the atomic move.
 SENTINEL="$TEST_DIRECTORY/symlink-referent"
