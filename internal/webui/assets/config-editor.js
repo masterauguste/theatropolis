@@ -99,6 +99,9 @@ if (configTextarea && configurationForm && configurationEditor) {
       return;
     }
     for (const control of root.querySelectorAll("input, select, textarea, button")) {
+      if (control.matches("[data-copy-uri]")) {
+        continue;
+      }
       control.disabled = true;
     }
   }
@@ -110,6 +113,37 @@ if (configTextarea && configurationForm && configurationEditor) {
     card.querySelector("[data-user-list]").append(row);
     disableWhenReadonly(row);
     return row;
+  }
+
+  function buildShareURI(card, row) {
+    const type = field(card, "inbound", "type").value;
+    const port = field(card, "inbound", "listen_port").value;
+    const tag = field(card, "inbound", "tag").value || "inbound";
+    const userName = field(row, "user", "name").value || "user";
+    const password = field(row, "user", "password").value;
+    const tlsMode = field(card, "inbound", "tls_mode").value;
+    const tlsDomain = field(card, "inbound", "tls_domain").value;
+    const host = tlsMode === "acme" && tlsDomain ? tlsDomain : window.location.hostname;
+    const insecure = tlsMode === "files" ? "1" : "0";
+    const label = encodeURIComponent(tag + " - " + userName);
+    if (type === "anytls") {
+      return "anytls://" + encodeURIComponent(password) + "@" + host + ":" + port + "?sni=" + encodeURIComponent(host) + "&insecure=" + insecure + "#" + label;
+    }
+    if (type === "hysteria2") {
+      var params = "insecure=" + insecure + "&sni=" + encodeURIComponent(host);
+      const obfsType = field(card, "inbound", "obfs_type").value;
+      const obfsPassword = field(card, "inbound", "obfs_password").value;
+      if (obfsType) {
+        params += "&obfs=" + encodeURIComponent(obfsType) + "&obfs-password=" + encodeURIComponent(obfsPassword);
+      }
+      return "hysteria2://" + encodeURIComponent(password) + "@" + host + ":" + port + "?" + params + "#" + label;
+    }
+    if (type === "shadowsocks") {
+      const method = field(card, "inbound", "method").value;
+      const userInfo = btoa(method + ":" + password).replaceAll("=", "");
+      return "ss://" + userInfo + "@" + host + ":" + port + "#" + label;
+    }
+    return null;
   }
 
   function findACMEProvider(inbound) {
@@ -544,6 +578,21 @@ if (configTextarea && configurationForm && configurationEditor) {
       const method = field(card, "inbound", "method").value;
       const length = type === "shadowsocks" && method === "2022-blake3-aes-128-gcm" ? 16 : 32;
       field(row, "user", "password").value = randomSecret(length, type !== "shadowsocks");
+    } else if (button.matches("[data-copy-uri]")) {
+      const card = button.closest("[data-inbound-card]");
+      const row = button.closest("[data-user-row]");
+      const uri = buildShareURI(card, row);
+      if (uri) {
+        navigator.clipboard.writeText(uri).then(function () {
+          var original = button.textContent;
+          button.textContent = "Copied!";
+          setTimeout(function () { button.textContent = original; }, 1500);
+        }).catch(function () {
+          var original = button.textContent;
+          button.textContent = "Copy failed";
+          setTimeout(function () { button.textContent = original; }, 1500);
+        });
+      }
     }
   });
 

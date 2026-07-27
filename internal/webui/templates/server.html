@@ -262,6 +262,7 @@
             <div class="user-row" data-user-row>
               <label class="field"><span>Name</span><input type="text" data-user-field="name" maxlength="128" placeholder="user"></label>
               <label class="field"><span>Password / key</span><span class="field-with-action"><input type="password" data-user-field="password" autocomplete="new-password" required><button type="button" class="button button--secondary button--small" data-generate-user-secret>Generate</button></span></label>
+              <button class="button button--secondary button--small" type="button" data-copy-uri title="Copy import URI for this user">Copy URI</button>
               <button class="button-link button-link--danger user-row__remove" type="button" data-remove-user>Remove</button>
             </div>
           </template>
@@ -324,19 +325,9 @@
                     <input type="hidden" name="csrf_token" value="{{.CSRFToken}}">
                     <label class="field">
                       <span>sing-box release</span>
-                      <input
-                        type="text"
-                        name="target_version"
-                        value="{{.Agent.SingBoxUpdateTarget}}"
-                        list="sing-box-version-options"
-                        placeholder="v1.14.0-beta.2"
-                        pattern="v([2-9][0-9]*\.[0-9]+|1\.(1[4-9]|[2-9][0-9]))\.[0-9]+(-(alpha|beta|rc)\.[0-9]+)?"
-                        maxlength="64"
-                        required
-                        {{if not .Agent.SingBoxUpdateEnabled}}disabled{{end}}
-                        {{if eq .ErrorField "sing_box_target_version"}}autofocus aria-invalid="true"{{else}}aria-invalid="false"{{end}}
-                      >
-                      <datalist id="sing-box-version-options"></datalist>
+                      <select name="target_version" data-sing-box-version-select {{if not .Agent.SingBoxUpdateEnabled}}disabled{{end}} {{if eq .ErrorField "sing_box_target_version"}}aria-invalid="true"{{else}}aria-invalid="false"{{end}}>
+                        <option value="" disabled selected>loading available versions…</option>
+                      </select>
                       <small>{{.Agent.SingBoxUpdateHint}}</small>
                       <small data-sing-box-catalog-warning hidden class="field-warning"></small>
                       <small data-sing-box-catalog-info>Stable, beta, and alpha builds are loaded from the official SagerNet GitHub releases. Any version 1.14 or newer can be installed, including downgrades.</small>
@@ -400,7 +391,7 @@
               </details>
 
               <details class="action-section">
-                <summary><span><strong>Master software</strong><small>Running {{.MasterVersion}}; latest {{if .LatestVersion}}{{.LatestVersion}}{{else}}unavailable{{end}}</small></span></summary>
+                <summary><span><strong>Master software</strong><small>Running {{.MasterVersion}}; latest <span data-master-latest-label>loading…</span></small></span></summary>
                 <div class="action-section__body">
                   {{if .MasterUpdate}}
                   <dl class="detail-list detail-list--compact">
@@ -414,8 +405,8 @@
                   <form action="/master-update" method="post">
                     <input type="hidden" name="csrf_token" value="{{.CSRFToken}}">
                     <input type="hidden" name="agent_id" value="{{.Agent.ID}}">
-                    <button class="button button--secondary button--full" type="submit" data-submit-button data-submit-label="Scheduling…" {{if not .MasterUpdateEnabled}}disabled{{end}}>
-                      {{if eq .MasterVersion .LatestVersion}}Master is up to date{{else}}Update master to {{.LatestVersion}}{{end}}
+                    <button class="button button--secondary button--full" type="submit" data-submit-button data-submit-label="Scheduling…" data-master-update-button disabled>
+                      <span data-master-button-text>Checking for updates…</span>
                     </button>
                   </form>
                 </div>
@@ -494,18 +485,18 @@
       fetch(versionURL, { credentials: "same-origin" })
         .then(function (r) { return r.json(); })
         .then(function (data) {
-          var singBoxList = document.getElementById("sing-box-version-options");
-          if (singBoxList && data.sing_box_versions) {
+          var sbSelect = document.querySelector("[data-sing-box-version-select]");
+          if (sbSelect && data.sing_box_versions) {
+            sbSelect.innerHTML = "";
             data.sing_box_versions.forEach(function (v) {
               var opt = document.createElement("option");
               opt.value = v.Tag;
-              opt.label = v.Branch;
-              singBoxList.appendChild(opt);
+              opt.textContent = v.Tag + " (" + v.Branch + ")";
+              sbSelect.appendChild(opt);
             });
-          }
-          var sbInput = document.querySelector('input[name="target_version"][list="sing-box-version-options"]');
-          if (sbInput && !sbInput.value && data.latest_sing_box_version) {
-            sbInput.value = data.latest_sing_box_version;
+            if (data.latest_sing_box_version) {
+              sbSelect.value = data.latest_sing_box_version;
+            }
           }
           var sbWarn = document.querySelector("[data-sing-box-catalog-warning]");
           if (sbWarn && data.sing_box_catalog_warning) {
@@ -523,10 +514,32 @@
           if (agentLatestLabel) {
             agentLatestLabel.textContent = data.latest_version || "unavailable";
           }
+
+          var masterLabel = document.querySelector("[data-master-latest-label]");
+          var masterButton = document.querySelector("[data-master-update-button]");
+          var masterButtonText = document.querySelector("[data-master-button-text]");
+          var masterVersion = "{{.MasterVersion}}";
+          if (masterLabel) {
+            masterLabel.textContent = data.latest_version || "unavailable";
+          }
+          if (masterButton && masterButtonText && data.latest_version) {
+            if (data.latest_version === masterVersion) {
+              masterButton.disabled = true;
+              masterButtonText.textContent = "Master is up to date";
+            } else {
+              masterButton.disabled = false;
+              masterButtonText.textContent = "Update master to " + data.latest_version;
+            }
+          } else if (masterButton && masterButtonText) {
+            masterButton.disabled = true;
+            masterButtonText.textContent = "Latest version unavailable";
+          }
         })
         .catch(function () {
           var agentLatestLabel = document.querySelector("[data-latest-agent-version-label]");
           if (agentLatestLabel) { agentLatestLabel.textContent = "unavailable"; }
+          var masterLabel = document.querySelector("[data-master-latest-label]");
+          if (masterLabel) { masterLabel.textContent = "unavailable"; }
         });
     })();
   </script>

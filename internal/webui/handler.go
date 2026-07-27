@@ -1193,7 +1193,6 @@ func (h *Handler) serverPageData(
 	if update, exists := h.controller.LatestSingBoxUpdate(snapshot.ID); exists {
 		detail.SingBoxUpdate = singBoxUpdateViewFor(update)
 	}
-	_, latestVersion, _ := h.releaseVersions(ctx)
 	var masterUpdate *agentUpdateView
 	if h.masterUpdater != nil {
 		if result, exists, err := h.masterUpdater.LoadResult(); err == nil && exists {
@@ -1204,12 +1203,8 @@ func (h *Handler) serverPageData(
 		Title:         snapshot.ID,
 		CSRFToken:     session.CSRFToken,
 		Agent:         detail,
-		LatestVersion: latestVersion,
 		MasterVersion: h.version,
-		MasterUpdateEnabled: h.masterUpdater != nil &&
-			latestVersion != "" &&
-			latestVersion != h.version,
-		MasterUpdate: masterUpdate,
+		MasterUpdate:  masterUpdate,
 	}, nil
 }
 
