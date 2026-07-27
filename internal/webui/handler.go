@@ -686,11 +686,31 @@ func (h *Handler) validMutationOrigin(request *http.Request) bool {
 	if request.Header.Get("Content-Encoding") != "" || request.URL.RawQuery != "" {
 		return false
 	}
-	fetchSite := request.Header.Get("Sec-Fetch-Site")
-	if fetchSite != "" && fetchSite != "same-origin" {
+	fetchSiteValues := request.Header.Values("Sec-Fetch-Site")
+	if len(fetchSiteValues) > 1 {
 		return false
 	}
-	origin := request.Header.Get("Origin")
+	fetchSite := ""
+	if len(fetchSiteValues) == 1 {
+		fetchSite = fetchSiteValues[0]
+	}
+	// "none" is valid for browser-initiated navigation, and unknown values
+	// must be ignored for forward compatibility when Origin is present.
+	switch fetchSite {
+	case "cross-site", "same-site":
+		return false
+	}
+
+	originValues := request.Header.Values("Origin")
+	if len(originValues) == 0 {
+		// Some privacy clients omit Origin. Sec-Fetch-* headers are controlled
+		// by the browser, while the canonical request Host was already checked.
+		return fetchSite == "same-origin" || fetchSite == "none"
+	}
+	if len(originValues) != 1 {
+		return false
+	}
+	origin := originValues[0]
 	parsed, err := url.Parse(origin)
 	if err != nil ||
 		parsed.Scheme == "" ||

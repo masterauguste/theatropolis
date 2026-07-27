@@ -117,6 +117,119 @@ func TestLoginRequiresSameOriginAndCreatesSecureSession(t *testing.T) {
 	}
 }
 
+func TestLoginAllowsTrustedOriginWithBrowserInitiatedFetchMetadata(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name      string
+		fetchSite string
+		origin    string
+	}{
+		{name: "browser initiated", fetchSite: "none", origin: testPublicURL},
+		{name: "future metadata", fetchSite: "future-value", origin: testPublicURL},
+		{name: "private same origin", fetchSite: "same-origin"},
+		{name: "private browser initiated", fetchSite: "none"},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			fixture := newWebFixture(t)
+			form := url.Values{"access_key": {fixture.key}}.Encode()
+			request := httptest.NewRequest(
+				http.MethodPost,
+				"http://127.0.0.1:8080/login",
+				strings.NewReader(form),
+			)
+			request.Host = "master.example.com:8443"
+			request.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+			if test.origin != "" {
+				request.Header.Set("Origin", test.origin)
+			}
+			request.Header.Set("Sec-Fetch-Site", test.fetchSite)
+
+			response := httptest.NewRecorder()
+			fixture.handler.ServeHTTP(response, request)
+
+			if response.Code != http.StatusSeeOther ||
+				response.Header().Get("Location") != "/servers" {
+				t.Fatalf(
+					"trusted login with Sec-Fetch-Site %q = %d %q",
+					test.fetchSite,
+					response.Code,
+					response.Header().Get("Location"),
+				)
+			}
+		})
+	}
+}
+
+func TestLoginRejectsUntrustedOrAmbiguousOriginMetadata(t *testing.T) {
+	t.Parallel()
+
+	fixture := newWebFixture(t)
+	form := url.Values{"access_key": {fixture.key}}.Encode()
+	tests := []struct {
+		name       string
+		fetchSites []string
+		origins    []string
+	}{
+		{
+			name:       "mismatched origin overrides metadata",
+			fetchSites: []string{"same-origin"},
+			origins:    []string{"https://attacker.example"},
+		},
+		{
+			name:       "cross-site metadata overrides origin",
+			fetchSites: []string{"cross-site"},
+			origins:    []string{testPublicURL},
+		},
+		{
+			name:       "same-site metadata overrides origin",
+			fetchSites: []string{"same-site"},
+			origins:    []string{testPublicURL},
+		},
+		{name: "missing origin and metadata"},
+		{name: "missing origin with unknown metadata", fetchSites: []string{"future-value"}},
+		{
+			name:       "duplicate origin",
+			fetchSites: []string{"same-origin"},
+			origins:    []string{testPublicURL, testPublicURL},
+		},
+		{
+			name:       "duplicate fetch metadata",
+			fetchSites: []string{"same-origin", "none"},
+			origins:    []string{testPublicURL},
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			request := httptest.NewRequest(
+				http.MethodPost,
+				"http://127.0.0.1:8080/login",
+				strings.NewReader(form),
+			)
+			request.Host = "master.example.com:8443"
+			request.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+			for _, fetchSite := range test.fetchSites {
+				request.Header.Add("Sec-Fetch-Site", fetchSite)
+			}
+			for _, origin := range test.origins {
+				request.Header.Add("Origin", origin)
+			}
+
+			response := httptest.NewRecorder()
+			fixture.handler.ServeHTTP(response, request)
+
+			if response.Code != http.StatusForbidden {
+				t.Fatalf(
+					"untrusted login response = %d, want %d",
+					response.Code,
+					http.StatusForbidden,
+				)
+			}
+		})
+	}
+}
+
 func TestServersPageUsesRealEnrollmentAndConnectionState(t *testing.T) {
 	t.Parallel()
 
