@@ -17,6 +17,7 @@ import (
 	"github.com/masterauguste/theatropolis/internal/control"
 	"github.com/masterauguste/theatropolis/internal/identity"
 	"github.com/masterauguste/theatropolis/internal/singbox"
+	"github.com/masterauguste/theatropolis/internal/singboxupdate"
 	"google.golang.org/grpc"
 )
 
@@ -39,10 +40,12 @@ type ConfigurationManager interface {
 type Runner struct {
 	AgentID         string
 	AgentVersion    string
+	SingBoxVersion  string
 	PrivateKey      ed25519.PrivateKey
 	Validator       singbox.Validator
 	Manager         ConfigurationManager
 	Updater         *agentupdate.Scheduler
+	SingBoxUpdater  *singboxupdate.Scheduler
 	HeartbeatPeriod time.Duration
 	Now             func() time.Time
 }
@@ -156,6 +159,7 @@ func (r *Runner) runControlSession(
 		AgentVersion:    r.AgentVersion,
 		OperatingSystem: runtime.GOOS,
 		Architecture:    runtime.GOARCH,
+		SingBoxVersion:  r.SingBoxVersion,
 	}
 	if r.Manager != nil {
 		hello.Capabilities = append(
@@ -167,6 +171,12 @@ func (r *Runner) runControlSession(
 		hello.Capabilities = append(
 			hello.Capabilities,
 			control.AgentUpdateCapability,
+		)
+	}
+	if r.SingBoxUpdater != nil {
+		hello.Capabilities = append(
+			hello.Capabilities,
+			control.SingBoxUpdateCapability,
 		)
 	}
 	hello.Capabilities = append(
@@ -222,6 +232,9 @@ func (r *Runner) runControlSession(
 	if err := r.sendPendingUpdateResult(stream, &agentSequence); err != nil {
 		return err
 	}
+	if err := r.sendPendingSingBoxUpdateResult(stream, &agentSequence); err != nil {
+		return err
+	}
 
 	var runtimeEvents <-chan singbox.RuntimeEvent
 	if r.Manager != nil {
@@ -231,7 +244,7 @@ func (r *Runner) runControlSession(
 	go receiveMasterFrames(stream, incoming)
 	var updateTicker *time.Ticker
 	var updateTicks <-chan time.Time
-	if r.Updater != nil {
+	if r.Updater != nil || r.SingBoxUpdater != nil {
 		updateTicker = time.NewTicker(2 * time.Second)
 		defer updateTicker.Stop()
 		updateTicks = updateTicker.C
@@ -283,6 +296,12 @@ func (r *Runner) runControlSession(
 						command.UpdateAgent,
 					),
 				}
+			case *controlv1.MasterFrame_UpdateSingBox:
+				response.Payload = &controlv1.AgentFrame_SingBoxUpdateReport{
+					SingBoxUpdateReport: r.scheduleSingBoxUpdate(
+						command.UpdateSingBox,
+					),
+				}
 			default:
 				return errors.New("master sent an unsupported command")
 			}
@@ -296,6 +315,12 @@ func (r *Runner) runControlSession(
 			); err != nil {
 				return err
 			}
+			if err := r.sendPendingSingBoxUpdateResult(
+				stream,
+				&agentSequence,
+			); err != nil {
+				return err
+			}
 		case <-heartbeatTicker.C:
 			agentSequence++
 			if err := stream.Send(&controlv1.AgentFrame{
@@ -303,6 +328,7 @@ func (r *Runner) runControlSession(
 				Payload: &controlv1.AgentFrame_Heartbeat{
 					Heartbeat: &controlv1.AgentHeartbeat{
 						ObservedAtUnix: r.now().Unix(),
+						SingBoxVersion: r.SingBoxVersion,
 					},
 				},
 			}); err != nil {
@@ -320,6 +346,78 @@ func (r *Runner) runControlSession(
 			}
 		}
 	}
+}
+
+func (r *Runner) scheduleSingBoxUpdate(
+	command *controlv1.SingBoxUpdateCommand,
+) *controlv1.SingBoxUpdateReport {
+	report := &controlv1.SingBoxUpdateReport{
+		Status:         controlv1.SingBoxUpdateStatus_SING_BOX_UPDATE_STATUS_REJECTED,
+		RunningVersion: r.SingBoxVersion,
+		ObservedAtUnix: r.now().Unix(),
+	}
+	if command != nil {
+		report.RequestId = command.GetRequestId()
+		report.TargetVersion = command.GetTargetVersion()
+	}
+	if r.SingBoxUpdater == nil || command == nil {
+		report.Diagnostic = "sing-box update control is unavailable"
+		return report
+	}
+	if err := r.SingBoxUpdater.Schedule(
+		command.GetRequestId(),
+		command.GetTargetVersion(),
+	); err != nil {
+		if errors.Is(err, singboxupdate.ErrUpdatePending) {
+			report.Diagnostic = "another sing-box update is already pending"
+		} else {
+			report.Diagnostic = "agent rejected the sing-box update request"
+		}
+		return report
+	}
+	report.Status =
+		controlv1.SingBoxUpdateStatus_SING_BOX_UPDATE_STATUS_SCHEDULED
+	return report
+}
+
+func (r *Runner) sendPendingSingBoxUpdateResult(
+	stream controlv1.AgentControlService_ConnectClient,
+	agentSequence *uint64,
+) error {
+	if r.SingBoxUpdater == nil {
+		return nil
+	}
+	result, exists, err := r.SingBoxUpdater.LoadResult()
+	if err != nil {
+		return fmt.Errorf("load sing-box update result: %w", err)
+	}
+	if !exists {
+		return nil
+	}
+	status := controlv1.SingBoxUpdateStatus_SING_BOX_UPDATE_STATUS_FAILED
+	if result.Status == "applied" {
+		status = controlv1.SingBoxUpdateStatus_SING_BOX_UPDATE_STATUS_APPLIED
+	}
+	(*agentSequence)++
+	if err := stream.Send(&controlv1.AgentFrame{
+		Sequence: *agentSequence,
+		Payload: &controlv1.AgentFrame_SingBoxUpdateReport{
+			SingBoxUpdateReport: &controlv1.SingBoxUpdateReport{
+				RequestId:      result.RequestID,
+				TargetVersion:  result.TargetVersion,
+				RunningVersion: result.RunningVersion,
+				Status:         status,
+				Diagnostic:     result.Diagnostic,
+				ObservedAtUnix: result.ObservedAt.Unix(),
+			},
+		},
+	}); err != nil {
+		return fmt.Errorf("send sing-box update result: %w", err)
+	}
+	if err := r.SingBoxUpdater.AcknowledgeResult(result.RequestID); err != nil {
+		return fmt.Errorf("acknowledge sing-box update result: %w", err)
+	}
+	return nil
 }
 
 func (r *Runner) scheduleAgentUpdate(

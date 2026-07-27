@@ -30,6 +30,7 @@ import (
 	"github.com/masterauguste/theatropolis/internal/deployment"
 	"github.com/masterauguste/theatropolis/internal/identity"
 	"github.com/masterauguste/theatropolis/internal/singbox"
+	"github.com/masterauguste/theatropolis/internal/singboxupdate"
 )
 
 const (
@@ -68,6 +69,9 @@ type AgentController interface {
 	CanUpdateAgent(agentID string) bool
 	LatestAgentUpdate(agentID string) (control.AgentUpdateState, bool)
 	QueueAgentUpdate(context.Context, string, string, string) error
+	CanUpdateSingBox(agentID string) bool
+	LatestSingBoxUpdate(agentID string) (control.SingBoxUpdateState, bool)
+	QueueSingBoxUpdate(context.Context, string, string, string) error
 	LatestDeployment(context.Context, string) (deployment.Record, error)
 	QueueDeployment(
 		context.Context,
@@ -81,36 +85,38 @@ type AgentController interface {
 }
 
 type Options struct {
-	Registry      *identity.Registry
-	Sessions      SessionRegistry
-	Controller    AgentController
-	Access        *AccessManager
-	Releases      ReleaseCatalog
-	MasterUpdater *agentupdate.Scheduler
-	PublicURL     string
-	Version       string
-	Logger        *slog.Logger
-	Now           func() time.Time
+	Registry        *identity.Registry
+	Sessions        SessionRegistry
+	Controller      AgentController
+	Access          *AccessManager
+	Releases        ReleaseCatalog
+	SingBoxReleases ReleaseCatalog
+	MasterUpdater   *agentupdate.Scheduler
+	PublicURL       string
+	Version         string
+	Logger          *slog.Logger
+	Now             func() time.Time
 }
 
 type Handler struct {
-	registry      *identity.Registry
-	sessions      SessionRegistry
-	controller    AgentController
-	access        *AccessManager
-	releases      ReleaseCatalog
-	masterUpdater *agentupdate.Scheduler
-	version       string
-	publicURL     string
-	publicScheme  string
-	publicHost    string
-	publicPort    string
-	masterAddress string
-	assetVersion  string
-	logger        *slog.Logger
-	now           func() time.Time
-	templates     *template.Template
-	mux           *http.ServeMux
+	registry        *identity.Registry
+	sessions        SessionRegistry
+	controller      AgentController
+	access          *AccessManager
+	releases        ReleaseCatalog
+	singBoxReleases ReleaseCatalog
+	masterUpdater   *agentupdate.Scheduler
+	version         string
+	publicURL       string
+	publicScheme    string
+	publicHost      string
+	publicPort      string
+	masterAddress   string
+	assetVersion    string
+	logger          *slog.Logger
+	now             func() time.Time
+	templates       *template.Template
+	mux             *http.ServeMux
 
 	enrollmentMu            sync.Mutex
 	enrollmentWindowStarted time.Time
@@ -145,6 +151,9 @@ type pageData struct {
 	AgentVersions         []agentVersionView
 	ReleaseCatalogWarning string
 	LatestVersion         string
+	SingBoxVersions       []agentVersionView
+	SingBoxCatalogWarning string
+	LatestSingBoxVersion  string
 	MasterVersion         string
 	MasterUpdateEnabled   bool
 	MasterUpdate          *agentUpdateView
@@ -185,6 +194,11 @@ type agentDetailView struct {
 	AgentVersion          string
 	OperatingSystem       string
 	Architecture          string
+	SingBoxVersion        string
+	SingBoxUpdateEnabled  bool
+	SingBoxUpdateHint     string
+	SingBoxUpdateTarget   string
+	SingBoxUpdate         *agentUpdateView
 	UpdateEnabled         bool
 	UpdateHint            string
 	UpdateTarget          string
@@ -266,24 +280,25 @@ func New(options Options) (http.Handler, error) {
 	versionDigest := sha256.Sum256([]byte(versionLabel))
 
 	handler := &Handler{
-		registry:      options.Registry,
-		sessions:      options.Sessions,
-		controller:    options.Controller,
-		access:        options.Access,
-		releases:      options.Releases,
-		masterUpdater: options.MasterUpdater,
-		version:       versionLabel,
-		publicURL:     public.origin,
-		publicScheme:  public.scheme,
-		publicHost:    public.hostname,
-		publicPort:    public.port,
-		masterAddress: net.JoinHostPort(public.hostname, public.port),
-		assetVersion:  base64.RawURLEncoding.EncodeToString(versionDigest[:12]),
-		logger:        logger,
-		now:           now,
-		templates:     templates,
-		mux:           http.NewServeMux(),
-		results:       make(map[string]enrollmentResult),
+		registry:        options.Registry,
+		sessions:        options.Sessions,
+		controller:      options.Controller,
+		access:          options.Access,
+		releases:        options.Releases,
+		singBoxReleases: options.SingBoxReleases,
+		masterUpdater:   options.MasterUpdater,
+		version:         versionLabel,
+		publicURL:       public.origin,
+		publicScheme:    public.scheme,
+		publicHost:      public.hostname,
+		publicPort:      public.port,
+		masterAddress:   net.JoinHostPort(public.hostname, public.port),
+		assetVersion:    base64.RawURLEncoding.EncodeToString(versionDigest[:12]),
+		logger:          logger,
+		now:             now,
+		templates:       templates,
+		mux:             http.NewServeMux(),
+		results:         make(map[string]enrollmentResult),
 	}
 	handler.routes()
 	return handler, nil
@@ -314,6 +329,7 @@ func (h *Handler) routes() {
 	)
 	h.mux.HandleFunc("POST /servers/{agent_id}/revoke", h.revokeServer)
 	h.mux.HandleFunc("POST /servers/{agent_id}/agent-update", h.updateAgent)
+	h.mux.HandleFunc("POST /servers/{agent_id}/sing-box-update", h.updateSingBox)
 	h.mux.HandleFunc("POST /master-update", h.updateMaster)
 	h.mux.HandleFunc("POST /servers", h.createServer)
 	h.mux.HandleFunc("GET /", h.root)
@@ -889,6 +905,107 @@ func (h *Handler) updateAgent(response http.ResponseWriter, request *http.Reques
 	http.Redirect(response, request, "/servers/"+url.PathEscape(snapshot.ID)+"/manage", http.StatusSeeOther)
 }
 
+func (h *Handler) updateSingBox(
+	response http.ResponseWriter,
+	request *http.Request,
+) {
+	sessionToken, ok := h.sessionToken(request)
+	if !ok {
+		h.redirectToLogin(response, request)
+		return
+	}
+	if h.rejectInvalidMutationOrigin(response, request) {
+		return
+	}
+	form, err := readExactForm(
+		response,
+		request,
+		maxEnrollmentBodyBytes,
+		"csrf_token",
+		"target_version",
+	)
+	if err != nil ||
+		!h.access.AuthorizeCSRF(sessionToken, form.Get("csrf_token")) {
+		http.Error(response, "request was not authorized", http.StatusForbidden)
+		return
+	}
+	session, err := h.access.Authenticate(sessionToken)
+	if err != nil {
+		h.redirectToLogin(response, request)
+		return
+	}
+	snapshot, ok := h.agentSnapshot(request.PathValue("agent_id"))
+	if !ok {
+		http.NotFound(response, request)
+		return
+	}
+	targetVersion := strings.TrimSpace(form.Get("target_version"))
+	message := ""
+	statusCode := http.StatusBadRequest
+	if !singboxupdate.ValidVersion(targetVersion) {
+		message = "Choose an exact sing-box 1.14+ stable or testing release."
+	} else if snapshot.State != identity.AgentStateEnrolled ||
+		!h.controller.CanUpdateSingBox(snapshot.ID) {
+		message = "sing-box update control is unavailable until this server is online with a compatible agent."
+		statusCode = http.StatusConflict
+	} else {
+		requestID, randomErr := randomOpaqueID("singbox")
+		if randomErr != nil {
+			http.Error(
+				response,
+				"sing-box update could not be prepared",
+				http.StatusInternalServerError,
+			)
+			return
+		}
+		if queueErr := h.controller.QueueSingBoxUpdate(
+			request.Context(),
+			snapshot.ID,
+			requestID,
+			targetVersion,
+		); queueErr != nil {
+			statusCode = http.StatusConflict
+			message = "The agent could not accept the sing-box update request."
+			if !errors.Is(queueErr, singboxupdate.ErrUpdatePending) &&
+				!errors.Is(queueErr, control.ErrAgentOffline) {
+				h.logger.Error(
+					"queue sing-box update",
+					"agent_id", snapshot.ID,
+					"error", queueErr,
+				)
+				statusCode = http.StatusInternalServerError
+			}
+		}
+	}
+	if message != "" {
+		data, dataErr := h.serverPageData(
+			context.Background(),
+			session,
+			snapshot,
+			"",
+		)
+		if dataErr != nil {
+			http.Error(
+				response,
+				"server details could not be loaded",
+				http.StatusInternalServerError,
+			)
+			return
+		}
+		data.Error = message
+		data.ErrorField = "sing_box_target_version"
+		data.Agent.SingBoxUpdateTarget = targetVersion
+		h.render(response, statusCode, "server.html", data)
+		return
+	}
+	http.Redirect(
+		response,
+		request,
+		"/servers/"+url.PathEscape(snapshot.ID)+"/manage",
+		http.StatusSeeOther,
+	)
+}
+
 func (h *Handler) updateMaster(response http.ResponseWriter, request *http.Request) {
 	sessionToken, ok := h.sessionToken(request)
 	if !ok {
@@ -1011,6 +1128,7 @@ func (h *Handler) serverPageData(
 	}
 	if info, exists := h.sessions.AgentInfo(snapshot.ID); exists {
 		detail.AgentVersion = info.Version
+		detail.SingBoxVersion = info.SingBoxVersion
 		detail.OperatingSystem = info.OperatingSystem
 		detail.Architecture = info.Architecture
 	}
@@ -1040,6 +1158,14 @@ func (h *Handler) serverPageData(
 		} else {
 			detail.UpdateHint = "The agent must be online before an update can be requested."
 		}
+		if h.controller.CanUpdateSingBox(snapshot.ID) {
+			detail.SingBoxUpdateEnabled = true
+			detail.SingBoxUpdateHint = "Choose any published sing-box 1.14+ stable or testing release. The official GitHub asset digest is verified before installation."
+		} else if online {
+			detail.SingBoxUpdateHint = "Rerun the current agent installer once to enable secure sing-box installation and updates."
+		} else {
+			detail.SingBoxUpdateHint = "The agent must be online before sing-box can be installed or updated."
+		}
 	}
 
 	record, err := h.controller.LatestDeployment(ctx, snapshot.ID)
@@ -1061,9 +1187,17 @@ func (h *Handler) serverPageData(
 	if update, exists := h.controller.LatestAgentUpdate(snapshot.ID); exists {
 		detail.Update = agentUpdateViewFor(update)
 	}
+	if update, exists := h.controller.LatestSingBoxUpdate(snapshot.ID); exists {
+		detail.SingBoxUpdate = singBoxUpdateViewFor(update)
+	}
 	versions, latestVersion, catalogWarning := h.releaseVersions(ctx)
+	singBoxVersions, latestSingBoxVersion, singBoxCatalogWarning :=
+		h.releaseVersionsFor(ctx, h.singBoxReleases, "sing-box")
 	if detail.UpdateTarget == "" {
 		detail.UpdateTarget = latestVersion
+	}
+	if detail.SingBoxUpdateTarget == "" {
+		detail.SingBoxUpdateTarget = latestSingBoxVersion
 	}
 	var masterUpdate *agentUpdateView
 	if h.masterUpdater != nil {
@@ -1078,6 +1212,9 @@ func (h *Handler) serverPageData(
 		AgentVersions:         versions,
 		ReleaseCatalogWarning: catalogWarning,
 		LatestVersion:         latestVersion,
+		SingBoxVersions:       singBoxVersions,
+		SingBoxCatalogWarning: singBoxCatalogWarning,
+		LatestSingBoxVersion:  latestSingBoxVersion,
 		MasterVersion:         h.version,
 		MasterUpdateEnabled: h.masterUpdater != nil &&
 			latestVersion != "" &&
@@ -1089,12 +1226,20 @@ func (h *Handler) serverPageData(
 func (h *Handler) releaseVersions(
 	ctx context.Context,
 ) ([]agentVersionView, string, string) {
-	if h.releases == nil {
+	return h.releaseVersionsFor(ctx, h.releases, "Theatropolis")
+}
+
+func (h *Handler) releaseVersionsFor(
+	ctx context.Context,
+	catalog ReleaseCatalog,
+	component string,
+) ([]agentVersionView, string, string) {
+	if catalog == nil {
 		return nil, "", "The release catalog is unavailable; enter an exact tag manually."
 	}
-	releases, err := h.releases.Versions(ctx)
+	releases, err := catalog.Versions(ctx)
 	if err != nil {
-		h.logger.Warn("load agent release catalog", "error", err)
+		h.logger.Warn("load release catalog", "component", component, "error", err)
 		return nil, "", "GitHub releases could not be loaded; enter an exact tag manually."
 	}
 	versions := make([]agentVersionView, 0, len(releases))
@@ -1113,6 +1258,18 @@ func (h *Handler) releaseVersions(
 		latest = releases[0].Tag
 	}
 	return versions, latest, ""
+}
+
+func singBoxUpdateViewFor(
+	state control.SingBoxUpdateState,
+) *agentUpdateView {
+	return agentUpdateViewFor(control.AgentUpdateState{
+		TargetVersion:  state.TargetVersion,
+		RunningVersion: state.RunningVersion,
+		Status:         state.Status,
+		Diagnostic:     state.Diagnostic,
+		UpdatedAt:      state.UpdatedAt,
+	})
 }
 
 func agentUpdateViewFor(state control.AgentUpdateState) *agentUpdateView {

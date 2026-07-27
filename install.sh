@@ -22,6 +22,8 @@ MASTER_UPDATE_SERVICE_FILE="/etc/systemd/system/theatropolis-master-update.servi
 MASTER_UPDATE_PATH_FILE="/etc/systemd/system/theatropolis-master-update.path"
 AGENT_UPDATE_SERVICE_FILE="/etc/systemd/system/theatropolis-agent-update.service"
 AGENT_UPDATE_PATH_FILE="/etc/systemd/system/theatropolis-agent-update.path"
+SING_BOX_UPDATE_SERVICE_FILE="/etc/systemd/system/theatropolis-sing-box-update.service"
+SING_BOX_UPDATE_PATH_FILE="/etc/systemd/system/theatropolis-sing-box-update.path"
 INSTALL_LOCK_FILE="/run/theatropolis-installer.lock"
 DEFAULT_HTTPS_PORT="8443"
 
@@ -1128,6 +1130,9 @@ Group=${AGENT_USER}
 UMask=0077
 EnvironmentFile=${CONFIG_DIRECTORY}/agent.env
 Environment=LD_LIBRARY_PATH=${SING_BOX_LIBRARY_DIRECTORY}
+Environment=HOME=${AGENT_STATE_DIRECTORY}
+Environment=XDG_DATA_HOME=${AGENT_STATE_DIRECTORY}/data
+WorkingDirectory=${AGENT_STATE_DIRECTORY}
 ExecStart=${INSTALL_DIRECTORY}/theatropolis-agent --master=\${THEATROPOLIS_MASTER} --state-dir=${AGENT_STATE_DIRECTORY} --enrollment-token-file=${AGENT_STATE_DIRECTORY}/enrollment.token --ca-file=\${THEATROPOLIS_CA_FILE}
 Restart=on-failure
 RestartSec=5s
@@ -1190,10 +1195,51 @@ Unit=theatropolis-agent-update.service
 [Install]
 WantedBy=multi-user.target
 EOF
+	cat >"$SING_BOX_UPDATE_SERVICE_FILE" <<EOF
+[Unit]
+Description=Apply a verified sing-box update requested by Theatropolis
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=root
+Group=root
+UMask=0077
+ExecStart=${INSTALL_DIRECTORY}/theatropolis-agent apply-sing-box-update --state-dir=${AGENT_STATE_DIRECTORY} --install-path=${INSTALL_DIRECTORY}/sing-box --library-path=${SING_BOX_LIBRARY_DIRECTORY}/libcronet.so
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ProtectClock=true
+ProtectHostname=true
+ProtectKernelLogs=true
+ProtectKernelModules=true
+ProtectKernelTunables=true
+LockPersonality=true
+MemoryDenyWriteExecute=true
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+RestrictRealtime=true
+CapabilityBoundingSet=CAP_DAC_OVERRIDE CAP_FOWNER
+ReadWritePaths=${INSTALL_DIRECTORY} ${SING_BOX_LIBRARY_DIRECTORY} ${AGENT_STATE_DIRECTORY}
+EOF
+	cat >"$SING_BOX_UPDATE_PATH_FILE" <<EOF
+[Unit]
+Description=Watch for verified sing-box update requests
+
+[Path]
+PathExists=${AGENT_STATE_DIRECTORY}/sing-box-update-request.json
+Unit=theatropolis-sing-box-update.service
+
+[Install]
+WantedBy=multi-user.target
+EOF
 	chmod 0644 /etc/systemd/system/theatropolis-agent.service
 	chmod 0644 "$AGENT_UPDATE_SERVICE_FILE" "$AGENT_UPDATE_PATH_FILE"
+	chmod 0644 "$SING_BOX_UPDATE_SERVICE_FILE" "$SING_BOX_UPDATE_PATH_FILE"
 	systemctl daemon-reload
 	systemctl enable --now theatropolis-agent-update.path
+	systemctl enable --now theatropolis-sing-box-update.path
 	systemctl enable --now theatropolis-agent
 	systemctl restart theatropolis-agent
 	AGENT_STOPPED="no"

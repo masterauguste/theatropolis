@@ -190,15 +190,16 @@ func serve(arguments []string) error {
 		return fmt.Errorf("configure master updater: %w", err)
 	}
 	webHandler, err := webui.New(webui.Options{
-		Registry:      identities,
-		Sessions:      server.Sessions,
-		Controller:    server,
-		Access:        access,
-		Releases:      webui.NewGitHubReleaseCatalog(nil),
-		MasterUpdater: masterUpdater,
-		PublicURL:     *publicURL,
-		Version:       version,
-		Logger:        logger,
+		Registry:        identities,
+		Sessions:        server.Sessions,
+		Controller:      server,
+		Access:          access,
+		Releases:        webui.NewGitHubReleaseCatalog(nil),
+		SingBoxReleases: webui.NewSingBoxReleaseCatalog(nil),
+		MasterUpdater:   masterUpdater,
+		PublicURL:       *publicURL,
+		Version:         version,
+		Logger:          logger,
 	})
 	if err != nil {
 		return fmt.Errorf("configure web interface: %w", err)

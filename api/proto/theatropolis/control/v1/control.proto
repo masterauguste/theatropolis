@@ -36,6 +36,7 @@ message AgentFrame {
     ConfigDeploymentReport config_deployment_report = 14;
     ConfigRuntimeReport config_runtime_report = 15;
     AgentUpdateReport agent_update_report = 16;
+    SingBoxUpdateReport sing_box_update_report = 17;
   }
 }
 
@@ -48,6 +49,7 @@ message MasterFrame {
     ValidateConfigCommand validate_config = 12;
     DeployConfigCommand deploy_config = 13;
     AgentUpdateCommand update_agent = 14;
+    SingBoxUpdateCommand update_sing_box = 15;
   }
 }
 
@@ -58,6 +60,7 @@ message AgentHello {
   string operating_system = 4;
   string architecture = 5;
   repeated string capabilities = 6;
+  string sing_box_version = 7;
 }
 
 message AgentChallenge {
@@ -167,6 +170,28 @@ message AgentUpdateReport {
   string target_version = 2;
   string running_version = 3;
   AgentUpdateStatus status = 4;
+  string diagnostic = 5;
+  int64 observed_at_unix = 6;
+}
+
+message SingBoxUpdateCommand {
+  string request_id = 1;
+  string target_version = 2;
+}
+
+enum SingBoxUpdateStatus {
+  SING_BOX_UPDATE_STATUS_UNSPECIFIED = 0;
+  SING_BOX_UPDATE_STATUS_SCHEDULED = 1;
+  SING_BOX_UPDATE_STATUS_APPLIED = 2;
+  SING_BOX_UPDATE_STATUS_FAILED = 3;
+  SING_BOX_UPDATE_STATUS_REJECTED = 4;
+}
+
+message SingBoxUpdateReport {
+  string request_id = 1;
+  string target_version = 2;
+  string running_version = 3;
+  SingBoxUpdateStatus status = 4;
   string diagnostic = 5;
   int64 observed_at_unix = 6;
 }

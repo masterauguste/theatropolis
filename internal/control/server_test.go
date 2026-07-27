@@ -357,6 +357,61 @@ func TestQueueAgentUpdateSendsExactVersionAndAcceptsMatchingReport(t *testing.T)
 	}
 }
 
+func TestQueueSingBoxUpdateSupportsExactPrerelease(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	server := newTestServer(deployment.NewMemoryStore(), nil)
+	const agentID = "edge-sing-box-update"
+	const requestID = "singbox_0123456789abcdef"
+	const targetVersion = "v1.14.0-alpha.27"
+	enrollTestIdentity(t, server.Identities, agentID)
+	session := newSession(agentID)
+	session.capabilities[SingBoxUpdateCapability] = struct{}{}
+	session.info.SingBoxVersion = "v1.14.0-beta.2"
+	if err := server.Sessions.Register(session); err != nil {
+		t.Fatal(err)
+	}
+	defer server.Sessions.Unregister(session)
+
+	if err := server.QueueSingBoxUpdate(
+		ctx,
+		agentID,
+		requestID,
+		targetVersion,
+	); err != nil {
+		t.Fatal(err)
+	}
+	command := <-session.commands
+	if command.GetUpdateSingBox().GetRequestId() != requestID ||
+		command.GetUpdateSingBox().GetTargetVersion() != targetVersion {
+		t.Fatalf(
+			"queued sing-box update command = %+v",
+			command.GetUpdateSingBox(),
+		)
+	}
+	if err := server.handleSingBoxUpdateReport(
+		agentID,
+		&controlv1.SingBoxUpdateReport{
+			RequestId:      requestID,
+			TargetVersion:  targetVersion,
+			RunningVersion: targetVersion,
+			Status:         controlv1.SingBoxUpdateStatus_SING_BOX_UPDATE_STATUS_APPLIED,
+			ObservedAtUnix: time.Now().Unix(),
+		},
+	); err != nil {
+		t.Fatal(err)
+	}
+	state, exists := server.LatestSingBoxUpdate(agentID)
+	if !exists || state.Status != "applied" ||
+		state.RunningVersion != targetVersion {
+		t.Fatalf(
+			"reported sing-box update state = %+v, exists=%v",
+			state,
+			exists,
+		)
+	}
+}
+
 func TestDeploymentReportCannotCrossAgentBoundary(t *testing.T) {
 	t.Parallel()
 

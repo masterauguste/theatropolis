@@ -17,6 +17,7 @@ import (
 	"github.com/masterauguste/theatropolis/internal/deployment"
 	"github.com/masterauguste/theatropolis/internal/identity"
 	"github.com/masterauguste/theatropolis/internal/singbox"
+	"github.com/masterauguste/theatropolis/internal/singboxupdate"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 )
@@ -25,6 +26,7 @@ const (
 	ProtocolVersion         = 1
 	ConfigDeployCapability  = "config-deploy-v1"
 	AgentUpdateCapability   = "agent-update-v1"
+	SingBoxUpdateCapability = "sing-box-update-v1"
 	HeartbeatCapability     = "heartbeat-v1"
 	DefaultChallengeTTL     = 30 * time.Second
 	DefaultCommandQueue     = 16
@@ -58,6 +60,7 @@ type Server struct {
 	authorizationMu sync.Mutex
 	updateMu        sync.RWMutex
 	updates         map[string]AgentUpdateState
+	singBoxUpdates  map[string]SingBoxUpdateState
 }
 
 func NewServer(
@@ -81,6 +84,7 @@ func NewServer(
 		Now:              time.Now,
 		HeartbeatTimeout: DefaultHeartbeatTimeout,
 		updates:          make(map[string]AgentUpdateState),
+		singBoxUpdates:   make(map[string]SingBoxUpdateState),
 	}
 }
 
@@ -631,6 +635,10 @@ func (s *Server) handleAgentFrame(
 		if payload.Heartbeat.GetObservedAtUnix() == 0 {
 			return status.Error(codes.InvalidArgument, "invalid heartbeat")
 		}
+		s.Sessions.SetSingBoxVersion(
+			agentID,
+			payload.Heartbeat.GetSingBoxVersion(),
+		)
 		return nil
 	case *controlv1.AgentFrame_ConfigValidationReport:
 		return s.handleValidationReport(ctx, agentID, payload.ConfigValidationReport)
@@ -640,9 +648,133 @@ func (s *Server) handleAgentFrame(
 		return s.handleRuntimeReport(ctx, agentID, payload.ConfigRuntimeReport)
 	case *controlv1.AgentFrame_AgentUpdateReport:
 		return s.handleAgentUpdateReport(agentID, payload.AgentUpdateReport)
+	case *controlv1.AgentFrame_SingBoxUpdateReport:
+		return s.handleSingBoxUpdateReport(
+			agentID,
+			payload.SingBoxUpdateReport,
+		)
 	default:
 		return status.Error(codes.InvalidArgument, "unexpected agent frame")
 	}
+}
+
+type SingBoxUpdateState struct {
+	RequestID      string
+	TargetVersion  string
+	RunningVersion string
+	Status         string
+	Diagnostic     string
+	UpdatedAt      time.Time
+}
+
+func (s *Server) QueueSingBoxUpdate(
+	ctx context.Context,
+	agentID string,
+	requestID string,
+	targetVersion string,
+) error {
+	if !singboxupdate.ValidVersion(targetVersion) {
+		return errors.New("target sing-box version is invalid")
+	}
+	if !singboxupdate.ValidRequestID(requestID) {
+		return errors.New("sing-box update request ID is invalid")
+	}
+	s.authorizationMu.Lock()
+	defer s.authorizationMu.Unlock()
+	if _, err := s.Identities.PublicKey(ctx, agentID); err != nil {
+		return err
+	}
+	if !s.Sessions.Supports(agentID, SingBoxUpdateCapability) {
+		return ErrAgentOffline
+	}
+	info, _ := s.Sessions.AgentInfo(agentID)
+	state := SingBoxUpdateState{
+		RequestID:      requestID,
+		TargetVersion:  targetVersion,
+		RunningVersion: info.SingBoxVersion,
+		Status:         "requested",
+		UpdatedAt:      s.now(),
+	}
+	s.updateMu.Lock()
+	previous, hadPrevious := s.singBoxUpdates[agentID]
+	if hadPrevious &&
+		(previous.Status == "requested" || previous.Status == "scheduled") {
+		s.updateMu.Unlock()
+		return singboxupdate.ErrUpdatePending
+	}
+	s.singBoxUpdates[agentID] = state
+	s.updateMu.Unlock()
+	err := s.Sessions.Send(ctx, agentID, &controlv1.MasterFrame{
+		Payload: &controlv1.MasterFrame_UpdateSingBox{
+			UpdateSingBox: &controlv1.SingBoxUpdateCommand{
+				RequestId:     requestID,
+				TargetVersion: targetVersion,
+			},
+		},
+	})
+	if err != nil {
+		s.updateMu.Lock()
+		if hadPrevious {
+			s.singBoxUpdates[agentID] = previous
+		} else {
+			delete(s.singBoxUpdates, agentID)
+		}
+		s.updateMu.Unlock()
+		return err
+	}
+	return nil
+}
+
+func (s *Server) LatestSingBoxUpdate(
+	agentID string,
+) (SingBoxUpdateState, bool) {
+	s.updateMu.RLock()
+	defer s.updateMu.RUnlock()
+	state, exists := s.singBoxUpdates[agentID]
+	return state, exists
+}
+
+func (s *Server) handleSingBoxUpdateReport(
+	agentID string,
+	report *controlv1.SingBoxUpdateReport,
+) error {
+	if report == nil ||
+		!singboxupdate.ValidRequestID(report.GetRequestId()) ||
+		!singboxupdate.ValidVersion(report.GetTargetVersion()) ||
+		report.GetObservedAtUnix() <= 0 ||
+		len(report.GetDiagnostic()) > MaxDiagnosticBytes*4 {
+		return status.Error(codes.InvalidArgument, "invalid sing-box update report")
+	}
+	s.updateMu.Lock()
+	defer s.updateMu.Unlock()
+	current, exists := s.singBoxUpdates[agentID]
+	if !exists || current.RequestID != report.GetRequestId() ||
+		current.TargetVersion != report.GetTargetVersion() {
+		return status.Error(
+			codes.PermissionDenied,
+			"sing-box update report does not match its request",
+		)
+	}
+	switch report.GetStatus() {
+	case controlv1.SingBoxUpdateStatus_SING_BOX_UPDATE_STATUS_SCHEDULED:
+		current.Status = "scheduled"
+	case controlv1.SingBoxUpdateStatus_SING_BOX_UPDATE_STATUS_APPLIED:
+		current.Status = "applied"
+	case controlv1.SingBoxUpdateStatus_SING_BOX_UPDATE_STATUS_FAILED:
+		current.Status = "failed"
+	case controlv1.SingBoxUpdateStatus_SING_BOX_UPDATE_STATUS_REJECTED:
+		current.Status = "rejected"
+	default:
+		return status.Error(codes.InvalidArgument, "unknown sing-box update status")
+	}
+	current.RunningVersion = report.GetRunningVersion()
+	current.Diagnostic = sanitizeAgentDiagnostic(report.GetDiagnostic())
+	current.UpdatedAt = time.Unix(report.GetObservedAtUnix(), 0).UTC()
+	s.singBoxUpdates[agentID] = current
+	if report.GetRunningVersion() != "" {
+		s.Sessions.SetSingBoxVersion(agentID, report.GetRunningVersion())
+	}
+	return nil
 }
 
 type AgentUpdateState struct {
@@ -1027,6 +1159,7 @@ type session struct {
 
 type AgentInfo struct {
 	Version         string
+	SingBoxVersion  string
 	OperatingSystem string
 	Architecture    string
 }
@@ -1044,6 +1177,7 @@ func newSessionFromHello(hello *controlv1.AgentHello) *session {
 	session := newSession(hello.GetAgentId())
 	session.info = AgentInfo{
 		Version:         hello.GetAgentVersion(),
+		SingBoxVersion:  hello.GetSingBoxVersion(),
 		OperatingSystem: hello.GetOperatingSystem(),
 		Architecture:    hello.GetArchitecture(),
 	}
@@ -1058,6 +1192,14 @@ func (r *SessionRegistry) AgentInfo(agentID string) (AgentInfo, bool) {
 		return AgentInfo{}, false
 	}
 	return session.info, true
+}
+
+func (r *SessionRegistry) SetSingBoxVersion(agentID, version string) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if session, exists := r.sessions[agentID]; exists {
+		session.info.SingBoxVersion = version
+	}
 }
 
 type SessionRegistry struct {
@@ -1162,6 +1304,10 @@ func (s *Server) CanDeployConfiguration(agentID string) bool {
 
 func (s *Server) CanUpdateAgent(agentID string) bool {
 	return s.Sessions.Supports(agentID, AgentUpdateCapability)
+}
+
+func (s *Server) CanUpdateSingBox(agentID string) bool {
+	return s.Sessions.Supports(agentID, SingBoxUpdateCapability)
 }
 
 func validCapabilities(capabilities []string) bool {

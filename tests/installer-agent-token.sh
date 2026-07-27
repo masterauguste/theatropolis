@@ -306,13 +306,23 @@ AGENT_UNIT="$TEST_ROOT/etc/systemd/system/theatropolis-agent.service"
 	fail "agent systemd unit was not generated"
 UPDATE_SERVICE="$TEST_ROOT/etc/systemd/system/theatropolis-agent-update.service"
 UPDATE_PATH="$TEST_ROOT/etc/systemd/system/theatropolis-agent-update.path"
+SING_BOX_UPDATE_SERVICE="$TEST_ROOT/etc/systemd/system/theatropolis-sing-box-update.service"
+SING_BOX_UPDATE_PATH="$TEST_ROOT/etc/systemd/system/theatropolis-sing-box-update.path"
 if [ ! -f "$UPDATE_SERVICE" ] || [ ! -f "$UPDATE_PATH" ]; then
 	fail "root update helper units were not generated"
+fi
+if [ ! -f "$SING_BOX_UPDATE_SERVICE" ] ||
+	[ ! -f "$SING_BOX_UPDATE_PATH" ]; then
+	fail "root sing-box update helper units were not generated"
 fi
 grep -Fq ' apply-update ' "$UPDATE_SERVICE" ||
 	fail "update helper does not invoke the isolated apply-update command"
 grep -Fqx "PathExists=$AGENT_STATE_DIRECTORY/update-request.json" "$UPDATE_PATH" ||
 	fail "update watcher does not monitor the agent request file"
+grep -Fq ' apply-sing-box-update ' "$SING_BOX_UPDATE_SERVICE" ||
+	fail "sing-box update helper does not invoke its isolated command"
+grep -Fqx "PathExists=$AGENT_STATE_DIRECTORY/sing-box-update-request.json" "$SING_BOX_UPDATE_PATH" ||
+	fail "sing-box update watcher does not monitor its request file"
 if grep -Fq -- '--agent-id' "$AGENT_UNIT"; then
 	fail "agent systemd unit still requires a master-assigned agent ID"
 fi
@@ -322,6 +332,10 @@ grep -Fqx 'AmbientCapabilities=CAP_NET_BIND_SERVICE' "$AGENT_UNIT" ||
 	fail "agent unit does not grant sing-box low-port binding capability"
 grep -Fqx "Environment=LD_LIBRARY_PATH=$TEST_ROOT/usr/local/lib/theatropolis/sing-box" "$AGENT_UNIT" ||
 	fail "agent unit does not configure the trusted sing-box library path"
+grep -Fqx "Environment=HOME=$AGENT_STATE_DIRECTORY" "$AGENT_UNIT" ||
+	fail "agent unit does not give ACME a writable home"
+grep -Fqx "Environment=XDG_DATA_HOME=$AGENT_STATE_DIRECTORY/data" "$AGENT_UNIT" ||
+	fail "agent unit does not give ACME a writable data directory"
 [ -x "$TEST_ROOT/usr/local/bin/sing-box" ] ||
 	fail "pinned sing-box binary was not installed"
 [ -f "$TEST_ROOT/usr/local/lib/theatropolis/sing-box/libcronet.so" ] ||

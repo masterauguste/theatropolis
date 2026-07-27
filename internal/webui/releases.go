@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/masterauguste/theatropolis/internal/agentupdate"
+	"github.com/masterauguste/theatropolis/internal/singboxupdate"
 )
 
 const (
@@ -31,12 +32,13 @@ type ReleaseCatalog interface {
 }
 
 type GitHubReleaseCatalog struct {
-	client    *http.Client
-	now       func() time.Time
-	mu        sync.Mutex
-	cached    []AgentRelease
-	expiresAt time.Time
-	apiURL    string
+	client       *http.Client
+	now          func() time.Time
+	mu           sync.Mutex
+	cached       []AgentRelease
+	expiresAt    time.Time
+	apiURL       string
+	validVersion func(string) bool
 }
 
 func NewGitHubReleaseCatalog(client *http.Client) *GitHubReleaseCatalog {
@@ -53,10 +55,18 @@ func NewGitHubReleaseCatalog(client *http.Client) *GitHubReleaseCatalog {
 		}
 	}
 	return &GitHubReleaseCatalog{
-		client: client,
-		now:    time.Now,
-		apiURL: "https://api.github.com/repos/masterauguste/theatropolis/releases",
+		client:       client,
+		now:          time.Now,
+		apiURL:       "https://api.github.com/repos/masterauguste/theatropolis/releases",
+		validVersion: agentupdate.ValidVersion,
 	}
+}
+
+func NewSingBoxReleaseCatalog(client *http.Client) *GitHubReleaseCatalog {
+	catalog := NewGitHubReleaseCatalog(client)
+	catalog.apiURL = "https://api.github.com/repos/SagerNet/sing-box/releases"
+	catalog.validVersion = singboxupdate.ValidVersion
+	return catalog
 }
 
 func (c *GitHubReleaseCatalog) Versions(ctx context.Context) ([]AgentRelease, error) {
@@ -102,7 +112,7 @@ func (c *GitHubReleaseCatalog) fetch(ctx context.Context) ([]AgentRelease, error
 			return nil, decodeErr
 		}
 		for _, release := range pageReleases {
-			if release.Draft || !agentupdate.ValidVersion(release.TagName) {
+			if release.Draft || !c.validVersion(release.TagName) {
 				continue
 			}
 			releases = append(releases, AgentRelease{

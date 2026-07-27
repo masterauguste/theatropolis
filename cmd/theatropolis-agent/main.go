@@ -25,6 +25,7 @@ import (
 	"github.com/masterauguste/theatropolis/internal/control"
 	"github.com/masterauguste/theatropolis/internal/identity"
 	"github.com/masterauguste/theatropolis/internal/singbox"
+	"github.com/masterauguste/theatropolis/internal/singboxupdate"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/backoff"
 	"google.golang.org/grpc/credentials"
@@ -55,6 +56,9 @@ func main() {
 func run(arguments []string) error {
 	if len(arguments) > 0 && arguments[0] == "apply-update" {
 		return runApplyUpdate(arguments[1:])
+	}
+	if len(arguments) > 0 && arguments[0] == "apply-sing-box-update" {
+		return runApplySingBoxUpdate(arguments[1:])
 	}
 	flags := flag.NewFlagSet("theatropolis-agent", flag.ContinueOnError)
 	flags.SetOutput(io.Discard)
@@ -144,14 +148,15 @@ func run(arguments []string) error {
 		StateDirectory: *stateDirectory,
 	}
 	var manager *singbox.Manager
-	if err := singbox.CheckSupportedExecutable(
+	singBoxVersion, singBoxErr := singbox.ExecutableVersion(
 		context.Background(),
 		*singBoxPath,
-	); err != nil {
+	)
+	if singBoxErr != nil {
 		slog.Warn(
 			"sing-box configuration control is unavailable",
 			"error",
-			err,
+			singBoxErr,
 		)
 	} else {
 		manager, err = singbox.NewManager(singbox.ManagerOptions{
@@ -162,16 +167,28 @@ func run(arguments []string) error {
 		}
 	}
 	runner := &agent.Runner{
-		AgentID:      storedAgentID,
-		AgentVersion: version,
-		PrivateKey:   privateKey,
-		Validator:    validator,
+		AgentID:        storedAgentID,
+		AgentVersion:   version,
+		SingBoxVersion: singBoxVersion,
+		PrivateKey:     privateKey,
+		Validator:      validator,
 	}
 	updater, err := agentupdate.NewScheduler(*stateDirectory)
 	if err != nil {
 		return fmt.Errorf("configure agent updater: %w", err)
 	}
 	runner.Updater = updater
+	if singBoxUpdateHelperAvailable() {
+		singBoxUpdater, err := singboxupdate.NewScheduler(*stateDirectory)
+		if err != nil {
+			return fmt.Errorf("configure sing-box updater: %w", err)
+		}
+		runner.SingBoxUpdater = singBoxUpdater
+	} else {
+		slog.Warn(
+			"sing-box update control is unavailable; rerun the installer to add the root update helper",
+		)
+	}
 	if manager != nil {
 		runner.Manager = manager
 	}
@@ -211,6 +228,54 @@ func run(arguments []string) error {
 		"master", *masterAddress,
 	)
 	return runner.Run(ctx, client)
+}
+
+func singBoxUpdateHelperAvailable() bool {
+	if runtime.GOOS != "linux" {
+		return false
+	}
+	info, err := os.Lstat(
+		"/etc/systemd/system/theatropolis-sing-box-update.path",
+	)
+	return err == nil && info.Mode().IsRegular()
+}
+
+func runApplySingBoxUpdate(arguments []string) error {
+	flags := flag.NewFlagSet(
+		"theatropolis-agent apply-sing-box-update",
+		flag.ContinueOnError,
+	)
+	flags.SetOutput(io.Discard)
+	stateDirectory := flags.String(
+		"state-dir", "/var/lib/theatropolis/agent", "agent state directory",
+	)
+	installPath := flags.String(
+		"install-path", "/usr/local/bin/sing-box", "installed sing-box binary",
+	)
+	libraryPath := flags.String(
+		"library-path",
+		"/usr/local/lib/theatropolis/sing-box/libcronet.so",
+		"installed sing-box library",
+	)
+	if err := flags.Parse(arguments); err != nil {
+		return err
+	}
+	if flags.NArg() != 0 {
+		return errors.New("apply-sing-box-update does not accept positional arguments")
+	}
+	runningVersion, _ := singbox.ExecutableVersion(
+		context.Background(),
+		*installPath,
+	)
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
+	defer cancel()
+	return singboxupdate.Apply(ctx, singboxupdate.ApplyOptions{
+		StateDirectory: *stateDirectory,
+		InstallPath:    *installPath,
+		LibraryPath:    *libraryPath,
+		Architecture:   runtime.GOARCH,
+		RunningVersion: runningVersion,
+	})
 }
 
 func runApplyUpdate(arguments []string) error {

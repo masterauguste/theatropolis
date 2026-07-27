@@ -47,20 +47,22 @@ func (s testSessions) AgentInfo(agentID string) (control.AgentInfo, bool) {
 	}
 	return control.AgentInfo{
 		Version:         "v0.0.9",
+		SingBoxVersion:  "v1.14.0-beta.2",
 		OperatingSystem: "linux",
 		Architecture:    "amd64",
 	}, true
 }
 
 type testAgentController struct {
-	registry   *identity.Registry
-	sessions   testSessions
-	store      deployment.Store
-	deployable map[string]bool
-	updatable  map[string]bool
-	updates    map[string]control.AgentUpdateState
-	queueErr   error
-	revokeErr  error
+	registry       *identity.Registry
+	sessions       testSessions
+	store          deployment.Store
+	deployable     map[string]bool
+	updatable      map[string]bool
+	updates        map[string]control.AgentUpdateState
+	singBoxUpdates map[string]control.SingBoxUpdateState
+	queueErr       error
+	revokeErr      error
 }
 
 func (c *testAgentController) CanUpdateAgent(agentID string) bool {
@@ -68,6 +70,39 @@ func (c *testAgentController) CanUpdateAgent(agentID string) bool {
 		return c.updatable[agentID]
 	}
 	return c.sessions[agentID]
+}
+
+func (c *testAgentController) CanUpdateSingBox(agentID string) bool {
+	return c.CanUpdateAgent(agentID)
+}
+
+func (c *testAgentController) LatestSingBoxUpdate(
+	agentID string,
+) (control.SingBoxUpdateState, bool) {
+	state, exists := c.singBoxUpdates[agentID]
+	return state, exists
+}
+
+func (c *testAgentController) QueueSingBoxUpdate(
+	_ context.Context,
+	agentID string,
+	requestID string,
+	targetVersion string,
+) error {
+	if c.queueErr != nil {
+		return c.queueErr
+	}
+	if c.singBoxUpdates == nil {
+		c.singBoxUpdates = make(map[string]control.SingBoxUpdateState)
+	}
+	c.singBoxUpdates[agentID] = control.SingBoxUpdateState{
+		RequestID:      requestID,
+		TargetVersion:  targetVersion,
+		RunningVersion: "v1.14.0-beta.2",
+		Status:         "requested",
+		UpdatedAt:      time.Now().UTC(),
+	}
+	return nil
 }
 
 func (c *testAgentController) LatestAgentUpdate(
@@ -1024,6 +1059,68 @@ func TestAgentUpdateRejectsUnversionedTarget(t *testing.T) {
 	}
 	if _, exists := fixture.controller.updates["edge-online"]; exists {
 		t.Fatal("invalid update was queued")
+	}
+}
+
+func TestSingBoxUpdateQueuesExactPrerelease(t *testing.T) {
+	t.Parallel()
+	fixture := newWebFixture(t)
+	enrollAgent(t, fixture.registry, "edge-online")
+	form := url.Values{
+		"csrf_token":     {fixture.session.CSRFToken},
+		"target_version": {"v1.14.0-alpha.27"},
+	}.Encode()
+	request := fixture.authenticatedMutationRequest(
+		http.MethodPost,
+		"/servers/edge-online/sing-box-update",
+		form,
+	)
+	response := httptest.NewRecorder()
+	fixture.handler.ServeHTTP(response, request)
+	if response.Code != http.StatusSeeOther {
+		t.Fatalf(
+			"sing-box update response = %d %q",
+			response.Code,
+			response.Body.String(),
+		)
+	}
+	state, exists := fixture.controller.singBoxUpdates["edge-online"]
+	if !exists || state.TargetVersion != "v1.14.0-alpha.27" {
+		t.Fatalf("queued sing-box update = %+v, exists=%v", state, exists)
+	}
+}
+
+func TestServerPageRendersSingBoxStableAndTestingSelector(t *testing.T) {
+	t.Parallel()
+	fixture := newWebFixture(t)
+	enrollAgent(t, fixture.registry, "edge-online")
+	fixture.handler.(*Handler).singBoxReleases = testReleaseCatalog{
+		releases: []AgentRelease{
+			{Tag: "v1.14.0-alpha.27", Prerelease: true},
+			{Tag: "v1.14.0", Prerelease: false},
+		},
+	}
+	request := fixture.authenticatedRequest(
+		http.MethodGet,
+		"/servers/edge-online/manage",
+		"",
+	)
+	response := httptest.NewRecorder()
+	fixture.handler.ServeHTTP(response, request)
+	body := response.Body.String()
+	if response.Code != http.StatusOK ||
+		!strings.Contains(
+			body,
+			`action="/servers/edge-online/sing-box-update"`,
+		) ||
+		!strings.Contains(body, `value="v1.14.0-alpha.27">Testing`) ||
+		!strings.Contains(body, `value="v1.14.0">Stable`) ||
+		!strings.Contains(body, "Running v1.14.0-beta.2") {
+		t.Fatalf(
+			"sing-box selector response = %d %q",
+			response.Code,
+			body,
+		)
 	}
 }
 

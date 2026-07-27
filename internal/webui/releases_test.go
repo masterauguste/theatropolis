@@ -62,3 +62,29 @@ func TestGitHubReleaseCatalogRejectsOversizedResponse(t *testing.T) {
 		t.Fatal("oversized release response was accepted")
 	}
 }
+
+func TestSingBoxReleaseCatalogIncludesStableAndTestingFrom114(t *testing.T) {
+	t.Parallel()
+	server := httptest.NewServer(http.HandlerFunc(
+		func(response http.ResponseWriter, _ *http.Request) {
+			response.Header().Set("Content-Type", "application/json")
+			fmt.Fprint(response, `[
+				{"tag_name":"v1.14.0-alpha.27","draft":false,"prerelease":true,"published_at":"2026-07-27T00:00:00Z"},
+				{"tag_name":"v1.14.0","draft":false,"prerelease":false,"published_at":"2026-07-26T00:00:00Z"},
+				{"tag_name":"v1.13.12","draft":false,"prerelease":false,"published_at":"2026-07-25T00:00:00Z"}
+			]`)
+		},
+	))
+	defer server.Close()
+	catalog := NewSingBoxReleaseCatalog(server.Client())
+	catalog.apiURL = server.URL
+	releases, err := catalog.Versions(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(releases) != 2 ||
+		releases[0].Tag != "v1.14.0-alpha.27" ||
+		releases[1].Tag != "v1.14.0" {
+		t.Fatalf("unexpected sing-box releases: %+v", releases)
+	}
+}

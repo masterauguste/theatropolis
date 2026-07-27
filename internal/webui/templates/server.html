@@ -309,6 +309,47 @@
             </header>
             <div class="modal__body actions-list">
               <details class="action-section" open>
+                <summary><span><strong>sing-box runtime</strong><small>Running {{if .Agent.SingBoxVersion}}{{.Agent.SingBoxVersion}}{{else}}not detected{{end}}</small></span></summary>
+                <div class="action-section__body">
+                  {{if .Agent.SingBoxUpdate}}
+                  <dl class="detail-list detail-list--compact">
+                    <div><dt>Update status</dt><dd><span class="status status--{{.Agent.SingBoxUpdate.StatusClass}}"><span aria-hidden="true"></span>{{.Agent.SingBoxUpdate.StatusLabel}}</span></dd></div>
+                    <div><dt>Target</dt><dd><code>{{.Agent.SingBoxUpdate.TargetVersion}}</code></dd></div>
+                    <div><dt>Reported running</dt><dd><code>{{.Agent.SingBoxUpdate.RunningVersion}}</code></dd></div>
+                    <div><dt>Updated</dt><dd>{{.Agent.SingBoxUpdate.UpdatedAt}}</dd></div>
+                  </dl>
+                  {{if .Agent.SingBoxUpdate.Diagnostic}}<div class="diagnostic"><strong>sing-box update diagnostic</strong><pre>{{.Agent.SingBoxUpdate.Diagnostic}}</pre></div>{{end}}
+                  {{end}}
+                  <form action="/servers/{{.Agent.ID}}/sing-box-update" method="post" class="stack stack--compact">
+                    <input type="hidden" name="csrf_token" value="{{.CSRFToken}}">
+                    <label class="field">
+                      <span>sing-box release</span>
+                      <input
+                        type="text"
+                        name="target_version"
+                        value="{{.Agent.SingBoxUpdateTarget}}"
+                        list="sing-box-version-options"
+                        placeholder="{{if .LatestSingBoxVersion}}{{.LatestSingBoxVersion}}{{else}}v1.14.0-alpha.1{{end}}"
+                        pattern="v([2-9][0-9]*\.[0-9]+|1\.(1[4-9]|[2-9][0-9]))\.[0-9]+(-(alpha|beta|rc)\.[0-9]+)?"
+                        maxlength="64"
+                        required
+                        {{if not .Agent.SingBoxUpdateEnabled}}disabled{{end}}
+                        {{if eq .ErrorField "sing_box_target_version"}}autofocus aria-invalid="true"{{else}}aria-invalid="false"{{end}}
+                      >
+                      <datalist id="sing-box-version-options">
+                        {{range .SingBoxVersions}}
+                        <option value="{{.Tag}}">{{.Branch}}</option>
+                        {{end}}
+                      </datalist>
+                      <small>{{.Agent.SingBoxUpdateHint}}</small>
+                      {{if .SingBoxCatalogWarning}}<small class="field-warning">{{.SingBoxCatalogWarning}}</small>{{else}}<small>Stable and prerelease builds are loaded from the official SagerNet GitHub releases.</small>{{end}}
+                    </label>
+                    <button class="button button--secondary button--full" type="submit" data-submit-button data-submit-label="Scheduling…" {{if not .Agent.SingBoxUpdateEnabled}}disabled{{end}}>Install selected sing-box version</button>
+                  </form>
+                </div>
+              </details>
+
+              <details class="action-section" open>
                 <summary><span><strong>Agent software</strong><small>Running {{if .Agent.AgentVersion}}{{.Agent.AgentVersion}}{{else}}unknown version{{end}}</small></span></summary>
                 <div class="action-section__body">
               {{if .Agent.Update}}

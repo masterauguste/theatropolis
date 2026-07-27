@@ -247,6 +247,61 @@ func (AgentUpdateStatus) EnumDescriptor() ([]byte, []int) {
 	return file_theatropolis_control_v1_control_proto_rawDescGZIP(), []int{3}
 }
 
+type SingBoxUpdateStatus int32
+
+const (
+	SingBoxUpdateStatus_SING_BOX_UPDATE_STATUS_UNSPECIFIED SingBoxUpdateStatus = 0
+	SingBoxUpdateStatus_SING_BOX_UPDATE_STATUS_SCHEDULED   SingBoxUpdateStatus = 1
+	SingBoxUpdateStatus_SING_BOX_UPDATE_STATUS_APPLIED     SingBoxUpdateStatus = 2
+	SingBoxUpdateStatus_SING_BOX_UPDATE_STATUS_FAILED      SingBoxUpdateStatus = 3
+	SingBoxUpdateStatus_SING_BOX_UPDATE_STATUS_REJECTED    SingBoxUpdateStatus = 4
+)
+
+// Enum value maps for SingBoxUpdateStatus.
+var (
+	SingBoxUpdateStatus_name = map[int32]string{
+		0: "SING_BOX_UPDATE_STATUS_UNSPECIFIED",
+		1: "SING_BOX_UPDATE_STATUS_SCHEDULED",
+		2: "SING_BOX_UPDATE_STATUS_APPLIED",
+		3: "SING_BOX_UPDATE_STATUS_FAILED",
+		4: "SING_BOX_UPDATE_STATUS_REJECTED",
+	}
+	SingBoxUpdateStatus_value = map[string]int32{
+		"SING_BOX_UPDATE_STATUS_UNSPECIFIED": 0,
+		"SING_BOX_UPDATE_STATUS_SCHEDULED":   1,
+		"SING_BOX_UPDATE_STATUS_APPLIED":     2,
+		"SING_BOX_UPDATE_STATUS_FAILED":      3,
+		"SING_BOX_UPDATE_STATUS_REJECTED":    4,
+	}
+)
+
+func (x SingBoxUpdateStatus) Enum() *SingBoxUpdateStatus {
+	p := new(SingBoxUpdateStatus)
+	*p = x
+	return p
+}
+
+func (x SingBoxUpdateStatus) String() string {
+	return protoimpl.X.EnumStringOf(x.Descriptor(), protoreflect.EnumNumber(x))
+}
+
+func (SingBoxUpdateStatus) Descriptor() protoreflect.EnumDescriptor {
+	return file_theatropolis_control_v1_control_proto_enumTypes[4].Descriptor()
+}
+
+func (SingBoxUpdateStatus) Type() protoreflect.EnumType {
+	return &file_theatropolis_control_v1_control_proto_enumTypes[4]
+}
+
+func (x SingBoxUpdateStatus) Number() protoreflect.EnumNumber {
+	return protoreflect.EnumNumber(x)
+}
+
+// Deprecated: Use SingBoxUpdateStatus.Descriptor instead.
+func (SingBoxUpdateStatus) EnumDescriptor() ([]byte, []int) {
+	return file_theatropolis_control_v1_control_proto_rawDescGZIP(), []int{4}
+}
+
 type EnrollRequest struct {
 	state           protoimpl.MessageState `protogen:"open.v1"`
 	AgentId         string                 `protobuf:"bytes,1,opt,name=agent_id,json=agentId,proto3" json:"agent_id,omitempty"`
@@ -371,6 +426,7 @@ type AgentFrame struct {
 	//	*AgentFrame_ConfigDeploymentReport
 	//	*AgentFrame_ConfigRuntimeReport
 	//	*AgentFrame_AgentUpdateReport
+	//	*AgentFrame_SingBoxUpdateReport
 	Payload       isAgentFrame_Payload `protobuf_oneof:"payload"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
@@ -483,6 +539,15 @@ func (x *AgentFrame) GetAgentUpdateReport() *AgentUpdateReport {
 	return nil
 }
 
+func (x *AgentFrame) GetSingBoxUpdateReport() *SingBoxUpdateReport {
+	if x != nil {
+		if x, ok := x.Payload.(*AgentFrame_SingBoxUpdateReport); ok {
+			return x.SingBoxUpdateReport
+		}
+	}
+	return nil
+}
+
 type isAgentFrame_Payload interface {
 	isAgentFrame_Payload()
 }
@@ -515,6 +580,10 @@ type AgentFrame_AgentUpdateReport struct {
 	AgentUpdateReport *AgentUpdateReport `protobuf:"bytes,16,opt,name=agent_update_report,json=agentUpdateReport,proto3,oneof"`
 }
 
+type AgentFrame_SingBoxUpdateReport struct {
+	SingBoxUpdateReport *SingBoxUpdateReport `protobuf:"bytes,17,opt,name=sing_box_update_report,json=singBoxUpdateReport,proto3,oneof"`
+}
+
 func (*AgentFrame_Hello) isAgentFrame_Payload() {}
 
 func (*AgentFrame_Proof) isAgentFrame_Payload() {}
@@ -529,6 +598,8 @@ func (*AgentFrame_ConfigRuntimeReport) isAgentFrame_Payload() {}
 
 func (*AgentFrame_AgentUpdateReport) isAgentFrame_Payload() {}
 
+func (*AgentFrame_SingBoxUpdateReport) isAgentFrame_Payload() {}
+
 type MasterFrame struct {
 	state    protoimpl.MessageState `protogen:"open.v1"`
 	Sequence uint64                 `protobuf:"varint,1,opt,name=sequence,proto3" json:"sequence,omitempty"`
@@ -539,6 +610,7 @@ type MasterFrame struct {
 	//	*MasterFrame_ValidateConfig
 	//	*MasterFrame_DeployConfig
 	//	*MasterFrame_UpdateAgent
+	//	*MasterFrame_UpdateSingBox
 	Payload       isMasterFrame_Payload `protobuf_oneof:"payload"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
@@ -633,6 +705,15 @@ func (x *MasterFrame) GetUpdateAgent() *AgentUpdateCommand {
 	return nil
 }
 
+func (x *MasterFrame) GetUpdateSingBox() *SingBoxUpdateCommand {
+	if x != nil {
+		if x, ok := x.Payload.(*MasterFrame_UpdateSingBox); ok {
+			return x.UpdateSingBox
+		}
+	}
+	return nil
+}
+
 type isMasterFrame_Payload interface {
 	isMasterFrame_Payload()
 }
@@ -657,6 +738,10 @@ type MasterFrame_UpdateAgent struct {
 	UpdateAgent *AgentUpdateCommand `protobuf:"bytes,14,opt,name=update_agent,json=updateAgent,proto3,oneof"`
 }
 
+type MasterFrame_UpdateSingBox struct {
+	UpdateSingBox *SingBoxUpdateCommand `protobuf:"bytes,15,opt,name=update_sing_box,json=updateSingBox,proto3,oneof"`
+}
+
 func (*MasterFrame_Challenge) isMasterFrame_Payload() {}
 
 func (*MasterFrame_AuthenticationResult) isMasterFrame_Payload() {}
@@ -667,6 +752,8 @@ func (*MasterFrame_DeployConfig) isMasterFrame_Payload() {}
 
 func (*MasterFrame_UpdateAgent) isMasterFrame_Payload() {}
 
+func (*MasterFrame_UpdateSingBox) isMasterFrame_Payload() {}
+
 type AgentHello struct {
 	state           protoimpl.MessageState `protogen:"open.v1"`
 	AgentId         string                 `protobuf:"bytes,1,opt,name=agent_id,json=agentId,proto3" json:"agent_id,omitempty"`
@@ -675,6 +762,7 @@ type AgentHello struct {
 	OperatingSystem string                 `protobuf:"bytes,4,opt,name=operating_system,json=operatingSystem,proto3" json:"operating_system,omitempty"`
 	Architecture    string                 `protobuf:"bytes,5,opt,name=architecture,proto3" json:"architecture,omitempty"`
 	Capabilities    []string               `protobuf:"bytes,6,rep,name=capabilities,proto3" json:"capabilities,omitempty"`
+	SingBoxVersion  string                 `protobuf:"bytes,7,opt,name=sing_box_version,json=singBoxVersion,proto3" json:"sing_box_version,omitempty"`
 	unknownFields   protoimpl.UnknownFields
 	sizeCache       protoimpl.SizeCache
 }
@@ -749,6 +837,13 @@ func (x *AgentHello) GetCapabilities() []string {
 		return x.Capabilities
 	}
 	return nil
+}
+
+func (x *AgentHello) GetSingBoxVersion() string {
+	if x != nil {
+		return x.SingBoxVersion
+	}
+	return ""
 }
 
 type AgentChallenge struct {
@@ -1499,6 +1594,142 @@ func (x *AgentUpdateReport) GetObservedAtUnix() int64 {
 	return 0
 }
 
+type SingBoxUpdateCommand struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	RequestId     string                 `protobuf:"bytes,1,opt,name=request_id,json=requestId,proto3" json:"request_id,omitempty"`
+	TargetVersion string                 `protobuf:"bytes,2,opt,name=target_version,json=targetVersion,proto3" json:"target_version,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *SingBoxUpdateCommand) Reset() {
+	*x = SingBoxUpdateCommand{}
+	mi := &file_theatropolis_control_v1_control_proto_msgTypes[16]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *SingBoxUpdateCommand) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*SingBoxUpdateCommand) ProtoMessage() {}
+
+func (x *SingBoxUpdateCommand) ProtoReflect() protoreflect.Message {
+	mi := &file_theatropolis_control_v1_control_proto_msgTypes[16]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use SingBoxUpdateCommand.ProtoReflect.Descriptor instead.
+func (*SingBoxUpdateCommand) Descriptor() ([]byte, []int) {
+	return file_theatropolis_control_v1_control_proto_rawDescGZIP(), []int{16}
+}
+
+func (x *SingBoxUpdateCommand) GetRequestId() string {
+	if x != nil {
+		return x.RequestId
+	}
+	return ""
+}
+
+func (x *SingBoxUpdateCommand) GetTargetVersion() string {
+	if x != nil {
+		return x.TargetVersion
+	}
+	return ""
+}
+
+type SingBoxUpdateReport struct {
+	state          protoimpl.MessageState `protogen:"open.v1"`
+	RequestId      string                 `protobuf:"bytes,1,opt,name=request_id,json=requestId,proto3" json:"request_id,omitempty"`
+	TargetVersion  string                 `protobuf:"bytes,2,opt,name=target_version,json=targetVersion,proto3" json:"target_version,omitempty"`
+	RunningVersion string                 `protobuf:"bytes,3,opt,name=running_version,json=runningVersion,proto3" json:"running_version,omitempty"`
+	Status         SingBoxUpdateStatus    `protobuf:"varint,4,opt,name=status,proto3,enum=theatropolis.control.v1.SingBoxUpdateStatus" json:"status,omitempty"`
+	Diagnostic     string                 `protobuf:"bytes,5,opt,name=diagnostic,proto3" json:"diagnostic,omitempty"`
+	ObservedAtUnix int64                  `protobuf:"varint,6,opt,name=observed_at_unix,json=observedAtUnix,proto3" json:"observed_at_unix,omitempty"`
+	unknownFields  protoimpl.UnknownFields
+	sizeCache      protoimpl.SizeCache
+}
+
+func (x *SingBoxUpdateReport) Reset() {
+	*x = SingBoxUpdateReport{}
+	mi := &file_theatropolis_control_v1_control_proto_msgTypes[17]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *SingBoxUpdateReport) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*SingBoxUpdateReport) ProtoMessage() {}
+
+func (x *SingBoxUpdateReport) ProtoReflect() protoreflect.Message {
+	mi := &file_theatropolis_control_v1_control_proto_msgTypes[17]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use SingBoxUpdateReport.ProtoReflect.Descriptor instead.
+func (*SingBoxUpdateReport) Descriptor() ([]byte, []int) {
+	return file_theatropolis_control_v1_control_proto_rawDescGZIP(), []int{17}
+}
+
+func (x *SingBoxUpdateReport) GetRequestId() string {
+	if x != nil {
+		return x.RequestId
+	}
+	return ""
+}
+
+func (x *SingBoxUpdateReport) GetTargetVersion() string {
+	if x != nil {
+		return x.TargetVersion
+	}
+	return ""
+}
+
+func (x *SingBoxUpdateReport) GetRunningVersion() string {
+	if x != nil {
+		return x.RunningVersion
+	}
+	return ""
+}
+
+func (x *SingBoxUpdateReport) GetStatus() SingBoxUpdateStatus {
+	if x != nil {
+		return x.Status
+	}
+	return SingBoxUpdateStatus_SING_BOX_UPDATE_STATUS_UNSPECIFIED
+}
+
+func (x *SingBoxUpdateReport) GetDiagnostic() string {
+	if x != nil {
+		return x.Diagnostic
+	}
+	return ""
+}
+
+func (x *SingBoxUpdateReport) GetObservedAtUnix() int64 {
+	if x != nil {
+		return x.ObservedAtUnix
+	}
+	return 0
+}
+
 var File_theatropolis_control_v1_control_proto protoreflect.FileDescriptor
 
 const file_theatropolis_control_v1_control_proto_rawDesc = "" +
@@ -1511,7 +1742,7 @@ const file_theatropolis_control_v1_control_proto_rawDesc = "" +
 	"public_key\x18\x03 \x01(\fR\tpublicKey\"U\n" +
 	"\x0eEnrollResponse\x12\x19\n" +
 	"\bagent_id\x18\x01 \x01(\tR\aagentId\x12(\n" +
-	"\x10enrolled_at_unix\x18\x02 \x01(\x03R\x0eenrolledAtUnix\"\x92\x05\n" +
+	"\x10enrolled_at_unix\x18\x02 \x01(\x03R\x0eenrolledAtUnix\"\xf7\x05\n" +
 	"\n" +
 	"AgentFrame\x12\x1a\n" +
 	"\bsequence\x18\x01 \x01(\x04R\bsequence\x12;\n" +
@@ -1522,8 +1753,9 @@ const file_theatropolis_control_v1_control_proto_rawDesc = "" +
 	"\x18config_validation_report\x18\r \x01(\v2/.theatropolis.control.v1.ConfigValidationReportH\x00R\x16configValidationReport\x12k\n" +
 	"\x18config_deployment_report\x18\x0e \x01(\v2/.theatropolis.control.v1.ConfigDeploymentReportH\x00R\x16configDeploymentReport\x12b\n" +
 	"\x15config_runtime_report\x18\x0f \x01(\v2,.theatropolis.control.v1.ConfigRuntimeReportH\x00R\x13configRuntimeReport\x12\\\n" +
-	"\x13agent_update_report\x18\x10 \x01(\v2*.theatropolis.control.v1.AgentUpdateReportH\x00R\x11agentUpdateReportB\t\n" +
-	"\apayload\"\xe5\x03\n" +
+	"\x13agent_update_report\x18\x10 \x01(\v2*.theatropolis.control.v1.AgentUpdateReportH\x00R\x11agentUpdateReport\x12c\n" +
+	"\x16sing_box_update_report\x18\x11 \x01(\v2,.theatropolis.control.v1.SingBoxUpdateReportH\x00R\x13singBoxUpdateReportB\t\n" +
+	"\apayload\"\xbe\x04\n" +
 	"\vMasterFrame\x12\x1a\n" +
 	"\bsequence\x18\x01 \x01(\x04R\bsequence\x12G\n" +
 	"\tchallenge\x18\n" +
@@ -1531,8 +1763,9 @@ const file_theatropolis_control_v1_control_proto_rawDesc = "" +
 	"\x15authentication_result\x18\v \x01(\v2-.theatropolis.control.v1.AuthenticationResultH\x00R\x14authenticationResult\x12Y\n" +
 	"\x0fvalidate_config\x18\f \x01(\v2..theatropolis.control.v1.ValidateConfigCommandH\x00R\x0evalidateConfig\x12S\n" +
 	"\rdeploy_config\x18\r \x01(\v2,.theatropolis.control.v1.DeployConfigCommandH\x00R\fdeployConfig\x12P\n" +
-	"\fupdate_agent\x18\x0e \x01(\v2+.theatropolis.control.v1.AgentUpdateCommandH\x00R\vupdateAgentB\t\n" +
-	"\apayload\"\xea\x01\n" +
+	"\fupdate_agent\x18\x0e \x01(\v2+.theatropolis.control.v1.AgentUpdateCommandH\x00R\vupdateAgent\x12W\n" +
+	"\x0fupdate_sing_box\x18\x0f \x01(\v2-.theatropolis.control.v1.SingBoxUpdateCommandH\x00R\rupdateSingBoxB\t\n" +
+	"\apayload\"\x94\x02\n" +
 	"\n" +
 	"AgentHello\x12\x19\n" +
 	"\bagent_id\x18\x01 \x01(\tR\aagentId\x12)\n" +
@@ -1540,7 +1773,8 @@ const file_theatropolis_control_v1_control_proto_rawDesc = "" +
 	"\ragent_version\x18\x03 \x01(\tR\fagentVersion\x12)\n" +
 	"\x10operating_system\x18\x04 \x01(\tR\x0foperatingSystem\x12\"\n" +
 	"\farchitecture\x18\x05 \x01(\tR\farchitecture\x12\"\n" +
-	"\fcapabilities\x18\x06 \x03(\tR\fcapabilities\"N\n" +
+	"\fcapabilities\x18\x06 \x03(\tR\fcapabilities\x12(\n" +
+	"\x10sing_box_version\x18\a \x01(\tR\x0esingBoxVersion\"N\n" +
 	"\x0eAgentChallenge\x12\x14\n" +
 	"\x05nonce\x18\x01 \x01(\fR\x05nonce\x12&\n" +
 	"\x0fexpires_at_unix\x18\x02 \x01(\x03R\rexpiresAtUnix\"*\n" +
@@ -1613,6 +1847,20 @@ const file_theatropolis_control_v1_control_proto_rawDesc = "" +
 	"\n" +
 	"diagnostic\x18\x05 \x01(\tR\n" +
 	"diagnostic\x12(\n" +
+	"\x10observed_at_unix\x18\x06 \x01(\x03R\x0eobservedAtUnix\"\\\n" +
+	"\x14SingBoxUpdateCommand\x12\x1d\n" +
+	"\n" +
+	"request_id\x18\x01 \x01(\tR\trequestId\x12%\n" +
+	"\x0etarget_version\x18\x02 \x01(\tR\rtargetVersion\"\x94\x02\n" +
+	"\x13SingBoxUpdateReport\x12\x1d\n" +
+	"\n" +
+	"request_id\x18\x01 \x01(\tR\trequestId\x12%\n" +
+	"\x0etarget_version\x18\x02 \x01(\tR\rtargetVersion\x12'\n" +
+	"\x0frunning_version\x18\x03 \x01(\tR\x0erunningVersion\x12D\n" +
+	"\x06status\x18\x04 \x01(\x0e2,.theatropolis.control.v1.SingBoxUpdateStatusR\x06status\x12\x1e\n" +
+	"\n" +
+	"diagnostic\x18\x05 \x01(\tR\n" +
+	"diagnostic\x12(\n" +
 	"\x10observed_at_unix\x18\x06 \x01(\x03R\x0eobservedAtUnix*\xb9\x01\n" +
 	"\x16ConfigValidationStatus\x12(\n" +
 	"$CONFIG_VALIDATION_STATUS_UNSPECIFIED\x10\x00\x12\"\n" +
@@ -1639,7 +1887,13 @@ const file_theatropolis_control_v1_control_proto_rawDesc = "" +
 	"\x1dAGENT_UPDATE_STATUS_SCHEDULED\x10\x01\x12\x1f\n" +
 	"\x1bAGENT_UPDATE_STATUS_APPLIED\x10\x02\x12\x1e\n" +
 	"\x1aAGENT_UPDATE_STATUS_FAILED\x10\x03\x12 \n" +
-	"\x1cAGENT_UPDATE_STATUS_REJECTED\x10\x042\xca\x01\n" +
+	"\x1cAGENT_UPDATE_STATUS_REJECTED\x10\x04*\xcf\x01\n" +
+	"\x13SingBoxUpdateStatus\x12&\n" +
+	"\"SING_BOX_UPDATE_STATUS_UNSPECIFIED\x10\x00\x12$\n" +
+	" SING_BOX_UPDATE_STATUS_SCHEDULED\x10\x01\x12\"\n" +
+	"\x1eSING_BOX_UPDATE_STATUS_APPLIED\x10\x02\x12!\n" +
+	"\x1dSING_BOX_UPDATE_STATUS_FAILED\x10\x03\x12#\n" +
+	"\x1fSING_BOX_UPDATE_STATUS_REJECTED\x10\x042\xca\x01\n" +
 	"\x13AgentControlService\x12Y\n" +
 	"\x06Enroll\x12&.theatropolis.control.v1.EnrollRequest\x1a'.theatropolis.control.v1.EnrollResponse\x12X\n" +
 	"\aConnect\x12#.theatropolis.control.v1.AgentFrame\x1a$.theatropolis.control.v1.MasterFrame(\x010\x01BQZOgithub.com/masterauguste/theatropolis/api/gen/theatropolis/control/v1;controlv1b\x06proto3"
@@ -1656,56 +1910,62 @@ func file_theatropolis_control_v1_control_proto_rawDescGZIP() []byte {
 	return file_theatropolis_control_v1_control_proto_rawDescData
 }
 
-var file_theatropolis_control_v1_control_proto_enumTypes = make([]protoimpl.EnumInfo, 4)
-var file_theatropolis_control_v1_control_proto_msgTypes = make([]protoimpl.MessageInfo, 16)
+var file_theatropolis_control_v1_control_proto_enumTypes = make([]protoimpl.EnumInfo, 5)
+var file_theatropolis_control_v1_control_proto_msgTypes = make([]protoimpl.MessageInfo, 18)
 var file_theatropolis_control_v1_control_proto_goTypes = []any{
 	(ConfigValidationStatus)(0),    // 0: theatropolis.control.v1.ConfigValidationStatus
 	(ConfigDeploymentStatus)(0),    // 1: theatropolis.control.v1.ConfigDeploymentStatus
 	(ConfigRuntimeStatus)(0),       // 2: theatropolis.control.v1.ConfigRuntimeStatus
 	(AgentUpdateStatus)(0),         // 3: theatropolis.control.v1.AgentUpdateStatus
-	(*EnrollRequest)(nil),          // 4: theatropolis.control.v1.EnrollRequest
-	(*EnrollResponse)(nil),         // 5: theatropolis.control.v1.EnrollResponse
-	(*AgentFrame)(nil),             // 6: theatropolis.control.v1.AgentFrame
-	(*MasterFrame)(nil),            // 7: theatropolis.control.v1.MasterFrame
-	(*AgentHello)(nil),             // 8: theatropolis.control.v1.AgentHello
-	(*AgentChallenge)(nil),         // 9: theatropolis.control.v1.AgentChallenge
-	(*AgentProof)(nil),             // 10: theatropolis.control.v1.AgentProof
-	(*AuthenticationResult)(nil),   // 11: theatropolis.control.v1.AuthenticationResult
-	(*AgentHeartbeat)(nil),         // 12: theatropolis.control.v1.AgentHeartbeat
-	(*ValidateConfigCommand)(nil),  // 13: theatropolis.control.v1.ValidateConfigCommand
-	(*ConfigValidationReport)(nil), // 14: theatropolis.control.v1.ConfigValidationReport
-	(*DeployConfigCommand)(nil),    // 15: theatropolis.control.v1.DeployConfigCommand
-	(*ConfigDeploymentReport)(nil), // 16: theatropolis.control.v1.ConfigDeploymentReport
-	(*ConfigRuntimeReport)(nil),    // 17: theatropolis.control.v1.ConfigRuntimeReport
-	(*AgentUpdateCommand)(nil),     // 18: theatropolis.control.v1.AgentUpdateCommand
-	(*AgentUpdateReport)(nil),      // 19: theatropolis.control.v1.AgentUpdateReport
+	(SingBoxUpdateStatus)(0),       // 4: theatropolis.control.v1.SingBoxUpdateStatus
+	(*EnrollRequest)(nil),          // 5: theatropolis.control.v1.EnrollRequest
+	(*EnrollResponse)(nil),         // 6: theatropolis.control.v1.EnrollResponse
+	(*AgentFrame)(nil),             // 7: theatropolis.control.v1.AgentFrame
+	(*MasterFrame)(nil),            // 8: theatropolis.control.v1.MasterFrame
+	(*AgentHello)(nil),             // 9: theatropolis.control.v1.AgentHello
+	(*AgentChallenge)(nil),         // 10: theatropolis.control.v1.AgentChallenge
+	(*AgentProof)(nil),             // 11: theatropolis.control.v1.AgentProof
+	(*AuthenticationResult)(nil),   // 12: theatropolis.control.v1.AuthenticationResult
+	(*AgentHeartbeat)(nil),         // 13: theatropolis.control.v1.AgentHeartbeat
+	(*ValidateConfigCommand)(nil),  // 14: theatropolis.control.v1.ValidateConfigCommand
+	(*ConfigValidationReport)(nil), // 15: theatropolis.control.v1.ConfigValidationReport
+	(*DeployConfigCommand)(nil),    // 16: theatropolis.control.v1.DeployConfigCommand
+	(*ConfigDeploymentReport)(nil), // 17: theatropolis.control.v1.ConfigDeploymentReport
+	(*ConfigRuntimeReport)(nil),    // 18: theatropolis.control.v1.ConfigRuntimeReport
+	(*AgentUpdateCommand)(nil),     // 19: theatropolis.control.v1.AgentUpdateCommand
+	(*AgentUpdateReport)(nil),      // 20: theatropolis.control.v1.AgentUpdateReport
+	(*SingBoxUpdateCommand)(nil),   // 21: theatropolis.control.v1.SingBoxUpdateCommand
+	(*SingBoxUpdateReport)(nil),    // 22: theatropolis.control.v1.SingBoxUpdateReport
 }
 var file_theatropolis_control_v1_control_proto_depIdxs = []int32{
-	8,  // 0: theatropolis.control.v1.AgentFrame.hello:type_name -> theatropolis.control.v1.AgentHello
-	10, // 1: theatropolis.control.v1.AgentFrame.proof:type_name -> theatropolis.control.v1.AgentProof
-	12, // 2: theatropolis.control.v1.AgentFrame.heartbeat:type_name -> theatropolis.control.v1.AgentHeartbeat
-	14, // 3: theatropolis.control.v1.AgentFrame.config_validation_report:type_name -> theatropolis.control.v1.ConfigValidationReport
-	16, // 4: theatropolis.control.v1.AgentFrame.config_deployment_report:type_name -> theatropolis.control.v1.ConfigDeploymentReport
-	17, // 5: theatropolis.control.v1.AgentFrame.config_runtime_report:type_name -> theatropolis.control.v1.ConfigRuntimeReport
-	19, // 6: theatropolis.control.v1.AgentFrame.agent_update_report:type_name -> theatropolis.control.v1.AgentUpdateReport
-	9,  // 7: theatropolis.control.v1.MasterFrame.challenge:type_name -> theatropolis.control.v1.AgentChallenge
-	11, // 8: theatropolis.control.v1.MasterFrame.authentication_result:type_name -> theatropolis.control.v1.AuthenticationResult
-	13, // 9: theatropolis.control.v1.MasterFrame.validate_config:type_name -> theatropolis.control.v1.ValidateConfigCommand
-	15, // 10: theatropolis.control.v1.MasterFrame.deploy_config:type_name -> theatropolis.control.v1.DeployConfigCommand
-	18, // 11: theatropolis.control.v1.MasterFrame.update_agent:type_name -> theatropolis.control.v1.AgentUpdateCommand
-	0,  // 12: theatropolis.control.v1.ConfigValidationReport.status:type_name -> theatropolis.control.v1.ConfigValidationStatus
-	1,  // 13: theatropolis.control.v1.ConfigDeploymentReport.status:type_name -> theatropolis.control.v1.ConfigDeploymentStatus
-	2,  // 14: theatropolis.control.v1.ConfigRuntimeReport.status:type_name -> theatropolis.control.v1.ConfigRuntimeStatus
-	3,  // 15: theatropolis.control.v1.AgentUpdateReport.status:type_name -> theatropolis.control.v1.AgentUpdateStatus
-	4,  // 16: theatropolis.control.v1.AgentControlService.Enroll:input_type -> theatropolis.control.v1.EnrollRequest
-	6,  // 17: theatropolis.control.v1.AgentControlService.Connect:input_type -> theatropolis.control.v1.AgentFrame
-	5,  // 18: theatropolis.control.v1.AgentControlService.Enroll:output_type -> theatropolis.control.v1.EnrollResponse
-	7,  // 19: theatropolis.control.v1.AgentControlService.Connect:output_type -> theatropolis.control.v1.MasterFrame
-	18, // [18:20] is the sub-list for method output_type
-	16, // [16:18] is the sub-list for method input_type
-	16, // [16:16] is the sub-list for extension type_name
-	16, // [16:16] is the sub-list for extension extendee
-	0,  // [0:16] is the sub-list for field type_name
+	9,  // 0: theatropolis.control.v1.AgentFrame.hello:type_name -> theatropolis.control.v1.AgentHello
+	11, // 1: theatropolis.control.v1.AgentFrame.proof:type_name -> theatropolis.control.v1.AgentProof
+	13, // 2: theatropolis.control.v1.AgentFrame.heartbeat:type_name -> theatropolis.control.v1.AgentHeartbeat
+	15, // 3: theatropolis.control.v1.AgentFrame.config_validation_report:type_name -> theatropolis.control.v1.ConfigValidationReport
+	17, // 4: theatropolis.control.v1.AgentFrame.config_deployment_report:type_name -> theatropolis.control.v1.ConfigDeploymentReport
+	18, // 5: theatropolis.control.v1.AgentFrame.config_runtime_report:type_name -> theatropolis.control.v1.ConfigRuntimeReport
+	20, // 6: theatropolis.control.v1.AgentFrame.agent_update_report:type_name -> theatropolis.control.v1.AgentUpdateReport
+	22, // 7: theatropolis.control.v1.AgentFrame.sing_box_update_report:type_name -> theatropolis.control.v1.SingBoxUpdateReport
+	10, // 8: theatropolis.control.v1.MasterFrame.challenge:type_name -> theatropolis.control.v1.AgentChallenge
+	12, // 9: theatropolis.control.v1.MasterFrame.authentication_result:type_name -> theatropolis.control.v1.AuthenticationResult
+	14, // 10: theatropolis.control.v1.MasterFrame.validate_config:type_name -> theatropolis.control.v1.ValidateConfigCommand
+	16, // 11: theatropolis.control.v1.MasterFrame.deploy_config:type_name -> theatropolis.control.v1.DeployConfigCommand
+	19, // 12: theatropolis.control.v1.MasterFrame.update_agent:type_name -> theatropolis.control.v1.AgentUpdateCommand
+	21, // 13: theatropolis.control.v1.MasterFrame.update_sing_box:type_name -> theatropolis.control.v1.SingBoxUpdateCommand
+	0,  // 14: theatropolis.control.v1.ConfigValidationReport.status:type_name -> theatropolis.control.v1.ConfigValidationStatus
+	1,  // 15: theatropolis.control.v1.ConfigDeploymentReport.status:type_name -> theatropolis.control.v1.ConfigDeploymentStatus
+	2,  // 16: theatropolis.control.v1.ConfigRuntimeReport.status:type_name -> theatropolis.control.v1.ConfigRuntimeStatus
+	3,  // 17: theatropolis.control.v1.AgentUpdateReport.status:type_name -> theatropolis.control.v1.AgentUpdateStatus
+	4,  // 18: theatropolis.control.v1.SingBoxUpdateReport.status:type_name -> theatropolis.control.v1.SingBoxUpdateStatus
+	5,  // 19: theatropolis.control.v1.AgentControlService.Enroll:input_type -> theatropolis.control.v1.EnrollRequest
+	7,  // 20: theatropolis.control.v1.AgentControlService.Connect:input_type -> theatropolis.control.v1.AgentFrame
+	6,  // 21: theatropolis.control.v1.AgentControlService.Enroll:output_type -> theatropolis.control.v1.EnrollResponse
+	8,  // 22: theatropolis.control.v1.AgentControlService.Connect:output_type -> theatropolis.control.v1.MasterFrame
+	21, // [21:23] is the sub-list for method output_type
+	19, // [19:21] is the sub-list for method input_type
+	19, // [19:19] is the sub-list for extension type_name
+	19, // [19:19] is the sub-list for extension extendee
+	0,  // [0:19] is the sub-list for field type_name
 }
 
 func init() { file_theatropolis_control_v1_control_proto_init() }
@@ -1721,6 +1981,7 @@ func file_theatropolis_control_v1_control_proto_init() {
 		(*AgentFrame_ConfigDeploymentReport)(nil),
 		(*AgentFrame_ConfigRuntimeReport)(nil),
 		(*AgentFrame_AgentUpdateReport)(nil),
+		(*AgentFrame_SingBoxUpdateReport)(nil),
 	}
 	file_theatropolis_control_v1_control_proto_msgTypes[3].OneofWrappers = []any{
 		(*MasterFrame_Challenge)(nil),
@@ -1728,14 +1989,15 @@ func file_theatropolis_control_v1_control_proto_init() {
 		(*MasterFrame_ValidateConfig)(nil),
 		(*MasterFrame_DeployConfig)(nil),
 		(*MasterFrame_UpdateAgent)(nil),
+		(*MasterFrame_UpdateSingBox)(nil),
 	}
 	type x struct{}
 	out := protoimpl.TypeBuilder{
 		File: protoimpl.DescBuilder{
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_theatropolis_control_v1_control_proto_rawDesc), len(file_theatropolis_control_v1_control_proto_rawDesc)),
-			NumEnums:      4,
-			NumMessages:   16,
+			NumEnums:      5,
+			NumMessages:   18,
 			NumExtensions: 0,
 			NumServices:   1,
 		},
