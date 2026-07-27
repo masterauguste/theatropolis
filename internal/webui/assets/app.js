@@ -144,3 +144,97 @@ if (pendingDeployment) {
 
   window.setTimeout(pollDeployment, 2000);
 }
+
+const versionCatalogURL = document.body.dataset.versionCatalogUrl;
+if (versionCatalogURL) {
+  const fetchCatalog = async (catalog) => {
+    const response = await fetch(
+      `${versionCatalogURL}?catalog=${encodeURIComponent(catalog)}`,
+      {
+        cache: "no-store",
+        credentials: "same-origin",
+        headers: { Accept: "application/json" },
+      },
+    );
+    if (!response.ok) {
+      throw new Error(`version catalog returned ${response.status}`);
+    }
+    return response.json();
+  };
+
+  fetchCatalog("agent").then((data) => {
+    const latest = data.latest_version || "";
+    const agentInput = document.querySelector("[data-latest-agent-version]");
+    const agentLabel = document.querySelector("[data-latest-agent-version-label]");
+    const agentWarning = document.querySelector("[data-agent-catalog-warning]");
+    if (agentInput) agentInput.value = latest;
+    if (agentLabel) agentLabel.textContent = latest || "unavailable";
+    if (agentWarning && data.agent_catalog_warning) {
+      agentWarning.textContent = data.agent_catalog_warning;
+      agentWarning.hidden = false;
+    }
+
+    const masterLabel = document.querySelector("[data-master-latest-label]");
+    const masterButton = document.querySelector("[data-master-update-button]");
+    const masterButtonText = document.querySelector("[data-master-button-text]");
+    if (masterLabel) masterLabel.textContent = latest || "unavailable";
+    if (masterButton && masterButtonText && latest) {
+      if (latest === document.body.dataset.masterVersion) {
+        masterButton.disabled = true;
+        masterButtonText.textContent = "Master is up to date";
+      } else {
+        masterButton.disabled = false;
+        masterButtonText.textContent = `Update master to ${latest}`;
+      }
+    } else if (masterButton && masterButtonText) {
+      masterButton.disabled = true;
+      masterButtonText.textContent = "Latest version unavailable";
+    }
+  }).catch(() => {
+    const agentLabel = document.querySelector("[data-latest-agent-version-label]");
+    const masterLabel = document.querySelector("[data-master-latest-label]");
+    const masterButtonText = document.querySelector("[data-master-button-text]");
+    if (agentLabel) agentLabel.textContent = "unavailable";
+    if (masterLabel) masterLabel.textContent = "unavailable";
+    if (masterButtonText) masterButtonText.textContent = "Latest version unavailable";
+  });
+
+  fetchCatalog("sing-box").then((data) => {
+    const select = document.querySelector("[data-sing-box-version-select]");
+    if (select) {
+      select.innerHTML = "";
+      for (const version of data.sing_box_versions || []) {
+        const option = document.createElement("option");
+        option.value = version.Tag;
+        option.textContent = `${version.Tag} (${version.Branch})`;
+        select.appendChild(option);
+      }
+      if (data.latest_sing_box_version) {
+        select.value = data.latest_sing_box_version;
+      }
+      if (select.options.length === 0) {
+        const option = document.createElement("option");
+        option.value = "";
+        option.textContent = "No versions available";
+        select.appendChild(option);
+      }
+    }
+    const warning = document.querySelector("[data-sing-box-catalog-warning]");
+    const info = document.querySelector("[data-sing-box-catalog-info]");
+    if (warning && data.sing_box_catalog_warning) {
+      warning.textContent = data.sing_box_catalog_warning;
+      warning.hidden = false;
+      if (info) info.hidden = true;
+    }
+  }).catch(() => {
+    const select = document.querySelector("[data-sing-box-version-select]");
+    if (select) {
+      select.innerHTML = '<option value="">Versions unavailable</option>';
+    }
+    const warning = document.querySelector("[data-sing-box-catalog-warning]");
+    if (warning) {
+      warning.textContent = "GitHub releases could not be loaded.";
+      warning.hidden = false;
+    }
+  });
+}

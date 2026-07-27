@@ -1122,7 +1122,7 @@ func TestServerPageRendersSingBoxUpdateForm(t *testing.T) {
 	}
 }
 
-func TestServerVersionsEndpointReturnsSingBoxAndAgentReleases(t *testing.T) {
+func TestServerVersionsEndpointReturnsIndependentCatalogs(t *testing.T) {
 	t.Parallel()
 	fixture := newWebFixture(t)
 	enrollAgent(t, fixture.registry, "edge-online")
@@ -1136,21 +1136,33 @@ func TestServerVersionsEndpointReturnsSingBoxAndAgentReleases(t *testing.T) {
 			{Tag: "v1.14.0", Prerelease: false},
 		},
 	}
-	request := fixture.authenticatedRequest(
-		http.MethodGet,
-		"/servers/edge-online/versions",
-		"",
-	)
-	response := httptest.NewRecorder()
-	fixture.handler.ServeHTTP(response, request)
-	if response.Code != http.StatusOK {
-		t.Fatalf("versions response = %d %q", response.Code, response.Body.String())
-	}
-	body := response.Body.String()
-	if !strings.Contains(body, "v1.14.0-beta.7") ||
-		!strings.Contains(body, "v1.14.0-alpha.27") ||
-		!strings.Contains(body, "v1.14.0") {
-		t.Fatalf("versions response missing expected tags: %q", body)
+	for _, test := range []struct {
+		catalog string
+		want    []string
+		reject  string
+	}{
+		{catalog: "agent", want: []string{"v1.14.0-beta.7", "v1.13.2"}, reject: "v1.14.0-alpha.27"},
+		{catalog: "sing-box", want: []string{"v1.14.0-alpha.27", "v1.14.0"}, reject: "v1.13.2"},
+	} {
+		request := fixture.authenticatedRequest(
+			http.MethodGet,
+			"/servers/edge-online/versions?catalog="+test.catalog,
+			"",
+		)
+		response := httptest.NewRecorder()
+		fixture.handler.ServeHTTP(response, request)
+		if response.Code != http.StatusOK {
+			t.Fatalf("%s versions response = %d %q", test.catalog, response.Code, response.Body.String())
+		}
+		body := response.Body.String()
+		for _, want := range test.want {
+			if !strings.Contains(body, want) {
+				t.Fatalf("%s versions response missing %q: %q", test.catalog, want, body)
+			}
+		}
+		if strings.Contains(body, test.reject) {
+			t.Fatalf("%s versions response unexpectedly contains %q: %q", test.catalog, test.reject, body)
+		}
 	}
 }
 
@@ -1173,7 +1185,9 @@ func TestServerPageRendersAgentUpdateForm(t *testing.T) {
 	body := response.Body.String()
 	if response.Code != http.StatusOK ||
 		!strings.Contains(body, "Update agent to latest") ||
-		!strings.Contains(body, "data-latest-agent-version") {
+		!strings.Contains(body, "data-latest-agent-version") ||
+		!strings.Contains(body, `data-version-catalog-url="/servers/edge-online/versions"`) ||
+		strings.Contains(body, "fetch(versionURL") {
 		t.Fatalf("agent update form response = %d %q", response.Code, body)
 	}
 }

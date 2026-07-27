@@ -1211,6 +1211,7 @@ func (h *Handler) serverPageData(
 type versionCatalogResponse struct {
 	LatestVersion         string             `json:"latest_version"`
 	AgentVersions         []agentVersionView `json:"agent_versions"`
+	AgentCatalogWarning   string             `json:"agent_catalog_warning,omitempty"`
 	LatestSingBoxVersion  string             `json:"latest_sing_box_version"`
 	SingBoxVersions       []agentVersionView `json:"sing_box_versions"`
 	SingBoxCatalogWarning string             `json:"sing_box_catalog_warning,omitempty"`
@@ -1221,22 +1222,30 @@ func (h *Handler) serverVersions(response http.ResponseWriter, request *http.Req
 		http.Error(response, "unauthorized", http.StatusUnauthorized)
 		return
 	}
-	agentVersions, latestVersion, _ := h.releaseVersions(request.Context())
-	singBoxVersions, latestSingBoxVersion, singBoxWarning :=
-		h.releaseVersionsFor(request.Context(), h.singBoxReleases, "sing-box")
-	body, err := json.Marshal(versionCatalogResponse{
-		LatestVersion:         latestVersion,
-		AgentVersions:         agentVersions,
-		LatestSingBoxVersion:  latestSingBoxVersion,
-		SingBoxVersions:       singBoxVersions,
-		SingBoxCatalogWarning: singBoxWarning,
-	})
-	if err != nil {
-		http.Error(response, "version catalog could not be encoded", http.StatusInternalServerError)
+	if _, exists := h.agentSnapshot(request.PathValue("agent_id")); !exists {
+		http.NotFound(response, request)
+		return
+	}
+	result := versionCatalogResponse{}
+	switch request.URL.Query().Get("catalog") {
+	case "agent":
+		result.AgentVersions, result.LatestVersion, result.AgentCatalogWarning =
+			h.releaseVersions(request.Context())
+	case "sing-box":
+		result.SingBoxVersions, result.LatestSingBoxVersion,
+			result.SingBoxCatalogWarning = h.releaseVersionsFor(
+			request.Context(),
+			h.singBoxReleases,
+			"sing-box",
+		)
+	default:
+		http.Error(response, "unknown version catalog", http.StatusBadRequest)
 		return
 	}
 	response.Header().Set("Content-Type", "application/json")
-	response.Write(body)
+	if err := json.NewEncoder(response).Encode(result); err != nil {
+		h.logger.Warn("encode version catalog", "error", err)
+	}
 }
 
 func (h *Handler) releaseVersions(

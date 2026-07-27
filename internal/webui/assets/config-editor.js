@@ -146,6 +146,44 @@ if (configTextarea && configurationForm && configurationEditor) {
     return null;
   }
 
+  function fallbackCopyText(value) {
+    const textarea = document.createElement("textarea");
+    textarea.value = value;
+    textarea.setAttribute("readonly", "");
+    textarea.style.position = "fixed";
+    textarea.style.inset = "0 auto auto -9999px";
+    document.body.append(textarea);
+    textarea.select();
+    textarea.setSelectionRange(0, textarea.value.length);
+    let copied = false;
+    try {
+      copied = document.execCommand("copy");
+    } finally {
+      textarea.remove();
+    }
+    return copied;
+  }
+
+  async function copyText(value) {
+    if (window.isSecureContext && navigator.clipboard?.writeText) {
+      try {
+        await navigator.clipboard.writeText(value);
+        return true;
+      } catch (_) {
+        // Some browsers expose Clipboard API but deny it by policy.
+      }
+    }
+    return fallbackCopyText(value);
+  }
+
+  function showCopyResult(button, copied) {
+    const original = button.textContent;
+    button.textContent = copied ? "Copied!" : "Copy failed";
+    window.setTimeout(() => {
+      button.textContent = original;
+    }, 1500);
+  }
+
   function findACMEProvider(inbound) {
     const providerTag = inbound?.tls?.certificate_provider;
     if (!providerTag) {
@@ -583,15 +621,7 @@ if (configTextarea && configurationForm && configurationEditor) {
       const row = button.closest("[data-user-row]");
       const uri = buildShareURI(card, row);
       if (uri) {
-        navigator.clipboard.writeText(uri).then(function () {
-          var original = button.textContent;
-          button.textContent = "Copied!";
-          setTimeout(function () { button.textContent = original; }, 1500);
-        }).catch(function () {
-          var original = button.textContent;
-          button.textContent = "Copy failed";
-          setTimeout(function () { button.textContent = original; }, 1500);
-        });
+        copyText(uri).then((copied) => showCopyResult(button, copied));
       }
     }
   });

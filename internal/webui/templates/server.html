@@ -2,7 +2,7 @@
 <!doctype html>
 <html lang="en">
 {{template "document-head" .}}
-<body{{if and .Agent.Deployment .Agent.Deployment.Pending}} data-deployment-refresh-url="{{.Agent.URL}}" data-deployment-status-url="{{.Agent.DeploymentStatusURL}}"{{end}}>
+<body data-version-catalog-url="/servers/{{.Agent.ID}}/versions" data-master-version="{{.MasterVersion}}"{{if and .Agent.Deployment .Agent.Deployment.Pending}} data-deployment-refresh-url="{{.Agent.URL}}" data-deployment-status-url="{{.Agent.DeploymentStatusURL}}"{{end}}>
   <a class="skip-link" href="#main">Skip to content</a>
   {{template "mobile-header" .}}
   <div class="app-shell">
@@ -262,7 +262,7 @@
             <div class="user-row" data-user-row>
               <label class="field"><span>Name</span><input type="text" data-user-field="name" maxlength="128" placeholder="user"></label>
               <label class="field"><span>Password / key</span><span class="field-with-action"><input type="password" data-user-field="password" autocomplete="new-password" required><button type="button" class="button button--secondary button--small" data-generate-user-secret>Generate</button></span></label>
-              <button class="button button--secondary button--small" type="button" data-copy-uri title="Copy import URI for this user">Copy URI</button>
+              <button class="button button--secondary button--small user-row__copy" type="button" data-copy-uri title="Copy import URI for this user">Copy URI</button>
               <button class="button-link button-link--danger user-row__remove" type="button" data-remove-user>Remove</button>
             </div>
           </template>
@@ -479,70 +479,6 @@
   </div>
   <script src="/assets/config-editor.js?v={{.AssetVersion}}" defer></script>
   <script src="/assets/app.js?v={{.AssetVersion}}" defer></script>
-  <script>
-    (function () {
-      var versionURL = "/servers/{{.Agent.ID}}/versions";
-      fetch(versionURL, { credentials: "same-origin" })
-        .then(function (r) { return r.json(); })
-        .then(function (data) {
-          var sbSelect = document.querySelector("[data-sing-box-version-select]");
-          if (sbSelect && data.sing_box_versions) {
-            sbSelect.innerHTML = "";
-            data.sing_box_versions.forEach(function (v) {
-              var opt = document.createElement("option");
-              opt.value = v.Tag;
-              opt.textContent = v.Tag + " (" + v.Branch + ")";
-              sbSelect.appendChild(opt);
-            });
-            if (data.latest_sing_box_version) {
-              sbSelect.value = data.latest_sing_box_version;
-            }
-          }
-          var sbWarn = document.querySelector("[data-sing-box-catalog-warning]");
-          if (sbWarn && data.sing_box_catalog_warning) {
-            sbWarn.textContent = data.sing_box_catalog_warning;
-            sbWarn.hidden = false;
-          }
-          var sbInfo = document.querySelector("[data-sing-box-catalog-info]");
-          if (sbInfo && data.sing_box_catalog_warning) { sbInfo.hidden = true; }
-
-          var agentLatestInput = document.querySelector("[data-latest-agent-version]");
-          var agentLatestLabel = document.querySelector("[data-latest-agent-version-label]");
-          if (agentLatestInput && data.latest_version) {
-            agentLatestInput.value = data.latest_version;
-          }
-          if (agentLatestLabel) {
-            agentLatestLabel.textContent = data.latest_version || "unavailable";
-          }
-
-          var masterLabel = document.querySelector("[data-master-latest-label]");
-          var masterButton = document.querySelector("[data-master-update-button]");
-          var masterButtonText = document.querySelector("[data-master-button-text]");
-          var masterVersion = "{{.MasterVersion}}";
-          if (masterLabel) {
-            masterLabel.textContent = data.latest_version || "unavailable";
-          }
-          if (masterButton && masterButtonText && data.latest_version) {
-            if (data.latest_version === masterVersion) {
-              masterButton.disabled = true;
-              masterButtonText.textContent = "Master is up to date";
-            } else {
-              masterButton.disabled = false;
-              masterButtonText.textContent = "Update master to " + data.latest_version;
-            }
-          } else if (masterButton && masterButtonText) {
-            masterButton.disabled = true;
-            masterButtonText.textContent = "Latest version unavailable";
-          }
-        })
-        .catch(function () {
-          var agentLatestLabel = document.querySelector("[data-latest-agent-version-label]");
-          if (agentLatestLabel) { agentLatestLabel.textContent = "unavailable"; }
-          var masterLabel = document.querySelector("[data-master-latest-label]");
-          if (masterLabel) { masterLabel.textContent = "unavailable"; }
-        });
-    })();
-  </script>
 </body>
 </html>
 {{end}}

@@ -1331,10 +1331,18 @@ body:has(dialog[open]) {
   padding: 0.75rem;
   align-items: end;
   gap: 0.65rem;
-  grid-template-columns: minmax(100px, 0.7fr) minmax(180px, 1.3fr) auto;
+  grid-template-columns: minmax(100px, 0.7fr) minmax(180px, 1.3fr) auto auto;
   background: var(--white);
   border: 1px solid var(--ink-100);
   border-radius: var(--radius-sm);
+}
+
+.user-row__copy {
+  width: auto;
+  min-width: 82px;
+  min-height: 46px;
+  padding-inline: 0.65rem;
+  white-space: nowrap;
 }
 
 .user-row__remove {
@@ -2041,7 +2049,9 @@ body:has(dialog[open]) {
     grid-template-columns: 1fr;
   }
 
+  .user-row__copy,
   .user-row__remove {
+    width: auto;
     min-height: auto;
     justify-self: start;
   }
