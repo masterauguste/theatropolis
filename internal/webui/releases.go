@@ -8,6 +8,7 @@ import (
 	"io"
 	"net/http"
 	"sort"
+	"strings"
 	"sync"
 	"time"
 
@@ -42,6 +43,7 @@ type GitHubReleaseCatalog struct {
 	validVersion    func(string) bool
 	perPage         int
 	maxResponseSize int64
+	tagsOnly        bool
 }
 
 func NewGitHubReleaseCatalog(client *http.Client) *GitHubReleaseCatalog {
@@ -69,10 +71,11 @@ func NewGitHubReleaseCatalog(client *http.Client) *GitHubReleaseCatalog {
 
 func NewSingBoxReleaseCatalog(client *http.Client) *GitHubReleaseCatalog {
 	catalog := NewGitHubReleaseCatalog(client)
-	catalog.apiURL = "https://api.github.com/repos/SagerNet/sing-box/releases"
+	catalog.apiURL = "https://api.github.com/repos/SagerNet/sing-box/tags"
 	catalog.validVersion = singboxupdate.ValidVersion
-	catalog.perPage = 8
-	catalog.maxResponseSize = maxReleaseResponseSizeWide
+	catalog.perPage = 100
+	catalog.maxResponseSize = maxReleaseResponseSize
+	catalog.tagsOnly = true
 	return catalog
 }
 
@@ -114,7 +117,13 @@ func (c *GitHubReleaseCatalog) fetch(ctx context.Context) ([]AgentRelease, error
 		if err != nil {
 			return nil, fmt.Errorf("fetch GitHub releases: %w", err)
 		}
-		pageReleases, decodeErr := decodeReleasePage(response, c.maxResponseSize)
+		var pageReleases []githubRelease
+		var decodeErr error
+		if c.tagsOnly {
+			pageReleases, decodeErr = decodeTagPage(response, c.maxResponseSize)
+		} else {
+			pageReleases, decodeErr = decodeReleasePage(response, c.maxResponseSize)
+		}
 		response.Body.Close()
 		if decodeErr != nil {
 			return nil, decodeErr
@@ -136,6 +145,33 @@ func (c *GitHubReleaseCatalog) fetch(ctx context.Context) ([]AgentRelease, error
 	sort.SliceStable(releases, func(left, right int) bool {
 		return releases[left].PublishedAt.After(releases[right].PublishedAt)
 	})
+	return releases, nil
+}
+
+func decodeTagPage(response *http.Response, maxBytes int64) ([]githubRelease, error) {
+	if response.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf(
+			"GitHub tags returned status %d",
+			response.StatusCode,
+		)
+	}
+	if response.ContentLength > maxBytes {
+		return nil, errors.New("GitHub tags response exceeds the size limit")
+	}
+	decoder := json.NewDecoder(io.LimitReader(response.Body, maxBytes+1))
+	var tags []struct {
+		Name string `json:"name"`
+	}
+	if err := decoder.Decode(&tags); err != nil {
+		return nil, fmt.Errorf("decode GitHub tags: %w", err)
+	}
+	releases := make([]githubRelease, 0, len(tags))
+	for _, tag := range tags {
+		releases = append(releases, githubRelease{
+			TagName:    tag.Name,
+			Prerelease: strings.Contains(tag.Name, "-"),
+		})
+	}
 	return releases, nil
 }
 

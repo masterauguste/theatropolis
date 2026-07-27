@@ -61,11 +61,19 @@ jobs:
       - name: Publish GitHub release
         env:
           GH_TOKEN: ${{ github.token }}
-        run: >-
-          gh release create "$GITHUB_REF_NAME"
-          dist/theatropolis_linux_amd64.tar.gz
-          dist/theatropolis_linux_arm64.tar.gz
-          dist/checksums.txt
-          --verify-tag
-          --title "$GITHUB_REF_NAME"
-          --generate-notes
+        shell: bash
+        run: |
+          set -euo pipefail
+          assets=(
+            dist/theatropolis_linux_amd64.tar.gz
+            dist/theatropolis_linux_arm64.tar.gz
+            dist/checksums.txt
+          )
+          if gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1; then
+            gh release upload "$GITHUB_REF_NAME" "${assets[@]}" --clobber
+          else
+            gh release create "$GITHUB_REF_NAME" "${assets[@]}" \
+              --verify-tag \
+              --title "$GITHUB_REF_NAME" \
+              --generate-notes
+          fi

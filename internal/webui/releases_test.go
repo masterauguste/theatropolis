@@ -74,9 +74,10 @@ func TestSingBoxReleaseCatalogIncludesStableAndTestingFrom114(t *testing.T) {
 			switch requests.Load() {
 			case 1:
 				fmt.Fprint(response, `[
-					{"tag_name":"v1.14.0-alpha.27","draft":false,"prerelease":true,"published_at":"2026-07-27T00:00:00Z"},
-					{"tag_name":"v1.14.0","draft":false,"prerelease":false,"published_at":"2026-07-26T00:00:00Z"},
-					{"tag_name":"v1.13.12","draft":false,"prerelease":false,"published_at":"2026-07-25T00:00:00Z"}
+					{"name":"v1.14.0-beta.2"},
+					{"name":"v1.14.0-alpha.27"},
+					{"name":"v1.14.0"},
+					{"name":"v1.13.12"}
 				]`)
 			default:
 				fmt.Fprint(response, `[]`)
@@ -90,9 +91,13 @@ func TestSingBoxReleaseCatalogIncludesStableAndTestingFrom114(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(releases) != 2 ||
-		releases[0].Tag != "v1.14.0-alpha.27" ||
-		releases[1].Tag != "v1.14.0" {
+	if len(releases) != 3 ||
+		releases[0].Tag != "v1.14.0-beta.2" ||
+		!releases[0].Prerelease ||
+		releases[1].Tag != "v1.14.0-alpha.27" ||
+		!releases[1].Prerelease ||
+		releases[2].Tag != "v1.14.0" ||
+		releases[2].Prerelease {
 		t.Fatalf("unexpected sing-box releases: %+v", releases)
 	}
 }
