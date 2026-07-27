@@ -351,9 +351,10 @@ func TestRevocationDisconnectsAuthenticatedControlStream(t *testing.T) {
 		t.Fatal(err)
 	}
 	runner := &agent.Runner{
-		AgentID:      agentID,
-		AgentVersion: "test",
-		PrivateKey:   privateKey,
+		AgentID:         agentID,
+		AgentVersion:    "test",
+		PrivateKey:      privateKey,
+		HeartbeatPeriod: 20 * time.Millisecond,
 	}
 	if err := runner.Enroll(ctx, client, token); err != nil {
 		t.Fatal(err)
@@ -394,5 +395,105 @@ func TestRevocationDisconnectsAuthenticatedControlStream(t *testing.T) {
 	case <-runResult:
 	case <-time.After(time.Second):
 		t.Fatal("agent runner did not stop after context cancellation")
+	}
+}
+
+func TestAgentReconnectsAfterControlStreamDisconnect(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 6*time.Second)
+	defer cancel()
+
+	listener := bufconn.Listen(1 << 20)
+	identities := identity.NewRegistry()
+	controlServer := control.NewServer(
+		identities,
+		deployment.NewMemoryStore(),
+		nil,
+		slog.New(slog.NewTextHandler(io.Discard, nil)),
+	)
+	controlServer.HeartbeatTimeout = 100 * time.Millisecond
+	grpcServer := grpc.NewServer()
+	controlv1.RegisterAgentControlServiceServer(grpcServer, controlServer)
+	go func() {
+		_ = grpcServer.Serve(listener)
+	}()
+	defer grpcServer.Stop()
+
+	connection, err := grpc.NewClient(
+		"passthrough:///theatropolis-reconnect-test",
+		grpc.WithContextDialer(func(context.Context, string) (net.Conn, error) {
+			return listener.Dial()
+		}),
+		grpc.WithTransportCredentials(insecure.NewCredentials()),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer connection.Close()
+	client := controlv1.NewAgentControlServiceClient(connection)
+
+	const agentID = "edge-reconnect"
+	token, err := identities.CreateEnrollment(
+		ctx,
+		agentID,
+		time.Now().Add(time.Minute),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, privateKey, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	runner := &agent.Runner{
+		AgentID:         agentID,
+		AgentVersion:    "test",
+		PrivateKey:      privateKey,
+		HeartbeatPeriod: 20 * time.Millisecond,
+	}
+	if err := runner.Enroll(ctx, client, token); err != nil {
+		t.Fatal(err)
+	}
+
+	runResult := make(chan error, 1)
+	go func() {
+		runResult <- runner.Run(ctx, client)
+	}()
+	waitForAgentState(t, controlServer, agentID, true, 2*time.Second)
+
+	if !controlServer.Sessions.Disconnect(agentID) {
+		t.Fatal("active control stream was not disconnected")
+	}
+	waitForAgentState(t, controlServer, agentID, true, 3*time.Second)
+	time.Sleep(200 * time.Millisecond)
+	if !controlServer.Sessions.IsOnline(agentID) {
+		t.Fatal("active heartbeats did not preserve the reconnected session")
+	}
+
+	cancel()
+	select {
+	case <-runResult:
+	case <-time.After(time.Second):
+		t.Fatal("agent runner did not stop after context cancellation")
+	}
+}
+
+func waitForAgentState(
+	t *testing.T,
+	server *control.Server,
+	agentID string,
+	online bool,
+	timeout time.Duration,
+) {
+	t.Helper()
+	deadline := time.NewTimer(timeout)
+	defer deadline.Stop()
+	ticker := time.NewTicker(5 * time.Millisecond)
+	defer ticker.Stop()
+	for server.Sessions.IsOnline(agentID) != online {
+		select {
+		case <-ticker.C:
+		case <-deadline.C:
+			t.Fatalf("agent online state did not become %v", online)
+		}
 	}
 }

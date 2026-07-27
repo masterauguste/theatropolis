@@ -26,12 +26,17 @@ import (
 	"github.com/masterauguste/theatropolis/internal/identity"
 	"github.com/masterauguste/theatropolis/internal/singbox"
 	"google.golang.org/grpc"
+	"google.golang.org/grpc/backoff"
 	"google.golang.org/grpc/credentials"
+	"google.golang.org/grpc/keepalive"
 )
 
 const (
-	maxWireMessageBytes = control.DefaultMaxConfigBytes + 64<<10
-	maxCAFileBytes      = 1 << 20
+	maxWireMessageBytes      = control.DefaultMaxConfigBytes + 64<<10
+	maxCAFileBytes           = 1 << 20
+	controlKeepaliveTime     = 30 * time.Second
+	controlKeepaliveTimeout  = 10 * time.Second
+	controlConnectMaxBackoff = 30 * time.Second
 )
 
 var (
@@ -87,6 +92,20 @@ func run(arguments []string) error {
 	connection, err := grpc.NewClient(
 		"dns:///"+*masterAddress,
 		grpc.WithTransportCredentials(credentials.NewTLS(tlsConfig)),
+		grpc.WithConnectParams(grpc.ConnectParams{
+			Backoff: backoff.Config{
+				BaseDelay:  time.Second,
+				Multiplier: 1.6,
+				Jitter:     0.2,
+				MaxDelay:   controlConnectMaxBackoff,
+			},
+			MinConnectTimeout: 10 * time.Second,
+		}),
+		grpc.WithKeepaliveParams(keepalive.ClientParameters{
+			Time:                controlKeepaliveTime,
+			Timeout:             controlKeepaliveTimeout,
+			PermitWithoutStream: false,
+		}),
 		grpc.WithDefaultCallOptions(
 			grpc.MaxCallRecvMsgSize(maxWireMessageBytes),
 			grpc.MaxCallSendMsgSize(maxWireMessageBytes),

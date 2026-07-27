@@ -29,11 +29,15 @@ import (
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/health"
 	healthv1 "google.golang.org/grpc/health/grpc_health_v1"
+	"google.golang.org/grpc/keepalive"
 )
 
 const (
-	maxWireMessageBytes   = control.DefaultMaxConfigBytes + 64<<10
-	maxAdminPasswordBytes = 512
+	maxWireMessageBytes     = control.DefaultMaxConfigBytes + 64<<10
+	maxAdminPasswordBytes   = 512
+	controlKeepaliveTime    = 30 * time.Second
+	controlKeepaliveTimeout = 10 * time.Second
+	controlKeepaliveMinTime = 20 * time.Second
 )
 
 var (
@@ -203,6 +207,14 @@ func serve(arguments []string) error {
 	grpcServer := grpc.NewServer(
 		grpc.MaxRecvMsgSize(maxWireMessageBytes),
 		grpc.MaxSendMsgSize(maxWireMessageBytes),
+		grpc.KeepaliveEnforcementPolicy(keepalive.EnforcementPolicy{
+			MinTime:             controlKeepaliveMinTime,
+			PermitWithoutStream: false,
+		}),
+		grpc.KeepaliveParams(keepalive.ServerParameters{
+			Time:    controlKeepaliveTime,
+			Timeout: controlKeepaliveTimeout,
+		}),
 	)
 	controlv1.RegisterAgentControlServiceServer(grpcServer, server)
 	healthServer := health.NewServer()

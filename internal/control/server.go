@@ -22,15 +22,17 @@ import (
 )
 
 const (
-	ProtocolVersion        = 1
-	ConfigDeployCapability = "config-deploy-v1"
-	AgentUpdateCapability  = "agent-update-v1"
-	DefaultChallengeTTL    = 30 * time.Second
-	DefaultCommandQueue    = 16
-	DefaultMaxConfigBytes  = 4 << 20
-	DefaultValidationLimit = 60 * time.Second
-	DeploymentReportGrace  = 2 * time.Minute
-	MaxDiagnosticBytes     = 8 << 10
+	ProtocolVersion         = 1
+	ConfigDeployCapability  = "config-deploy-v1"
+	AgentUpdateCapability   = "agent-update-v1"
+	HeartbeatCapability     = "heartbeat-v1"
+	DefaultChallengeTTL     = 30 * time.Second
+	DefaultCommandQueue     = 16
+	DefaultMaxConfigBytes   = 4 << 20
+	DefaultValidationLimit  = 60 * time.Second
+	DeploymentReportGrace   = 2 * time.Minute
+	MaxDiagnosticBytes      = 8 << 10
+	DefaultHeartbeatTimeout = 75 * time.Second
 )
 
 var (
@@ -41,12 +43,13 @@ var (
 type Server struct {
 	controlv1.UnimplementedAgentControlServiceServer
 
-	Identities  *identity.Registry
-	Deployments deployment.Store
-	Notifier    deployment.Notifier
-	Sessions    *SessionRegistry
-	Logger      *slog.Logger
-	Now         func() time.Time
+	Identities       *identity.Registry
+	Deployments      deployment.Store
+	Notifier         deployment.Notifier
+	Sessions         *SessionRegistry
+	Logger           *slog.Logger
+	Now              func() time.Time
+	HeartbeatTimeout time.Duration
 
 	// authorizationMu linearizes enrollment, the final Connect authorization
 	// check/session registration, and revocation. Without this barrier a
@@ -70,13 +73,14 @@ func NewServer(
 		logger = slog.Default()
 	}
 	return &Server{
-		Identities:  identities,
-		Deployments: deployments,
-		Notifier:    notifier,
-		Sessions:    NewSessionRegistry(),
-		Logger:      logger,
-		Now:         time.Now,
-		updates:     make(map[string]AgentUpdateState),
+		Identities:       identities,
+		Deployments:      deployments,
+		Notifier:         notifier,
+		Sessions:         NewSessionRegistry(),
+		Logger:           logger,
+		Now:              time.Now,
+		HeartbeatTimeout: DefaultHeartbeatTimeout,
+		updates:          make(map[string]AgentUpdateState),
 	}
 }
 
@@ -255,6 +259,13 @@ func (s *Server) Connect(stream controlv1.AgentControlService_ConnectServer) err
 	incoming := make(chan receivedFrame, 1)
 	go receiveFrames(stream, incoming)
 	lastAgentSequence := proofFrame.GetSequence()
+	var heartbeatTimer *time.Timer
+	var heartbeatDeadline <-chan time.Time
+	if _, supported := session.capabilities[HeartbeatCapability]; supported {
+		heartbeatTimer = time.NewTimer(s.heartbeatTimeout())
+		defer heartbeatTimer.Stop()
+		heartbeatDeadline = heartbeatTimer.C
+	}
 
 	for {
 		select {
@@ -262,6 +273,8 @@ func (s *Server) Connect(stream controlv1.AgentControlService_ConnectServer) err
 			return ctx.Err()
 		case <-session.done:
 			return status.Error(codes.Unauthenticated, "agent authorization was revoked")
+		case <-heartbeatDeadline:
+			return status.Error(codes.DeadlineExceeded, "agent heartbeat timed out")
 		case frame := <-session.commands:
 			select {
 			case <-session.done:
@@ -292,11 +305,32 @@ func (s *Server) Connect(stream controlv1.AgentControlService_ConnectServer) err
 				return status.Error(codes.InvalidArgument, "agent sequence is not monotonic")
 			}
 			lastAgentSequence = received.frame.GetSequence()
+			resetTimer(heartbeatTimer, s.heartbeatTimeout())
 			if err := s.handleAgentFrame(ctx, hello.GetAgentId(), received.frame); err != nil {
 				return err
 			}
 		}
 	}
+}
+
+func resetTimer(timer *time.Timer, duration time.Duration) {
+	if timer == nil {
+		return
+	}
+	if !timer.Stop() {
+		select {
+		case <-timer.C:
+		default:
+		}
+	}
+	timer.Reset(duration)
+}
+
+func (s *Server) heartbeatTimeout() time.Duration {
+	if s.HeartbeatTimeout <= 0 {
+		return DefaultHeartbeatTimeout
+	}
+	return s.HeartbeatTimeout
 }
 
 type masterFrameSender interface {

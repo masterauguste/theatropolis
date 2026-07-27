@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"runtime"
 	"strings"
 	"time"
@@ -20,11 +21,12 @@ import (
 )
 
 const (
-	ProtocolVersion     = 1
-	MaxValidationPeriod = 60 * time.Second
-	managerStopPeriod   = 10 * time.Second
-	reconnectMinBackoff = time.Second
-	reconnectMaxBackoff = 30 * time.Second
+	ProtocolVersion        = 1
+	MaxValidationPeriod    = 60 * time.Second
+	managerStopPeriod      = 10 * time.Second
+	reconnectMinBackoff    = time.Second
+	reconnectMaxBackoff    = 30 * time.Second
+	defaultHeartbeatPeriod = 20 * time.Second
 )
 
 type ConfigurationManager interface {
@@ -35,13 +37,14 @@ type ConfigurationManager interface {
 }
 
 type Runner struct {
-	AgentID      string
-	AgentVersion string
-	PrivateKey   ed25519.PrivateKey
-	Validator    singbox.Validator
-	Manager      ConfigurationManager
-	Updater      *agentupdate.Scheduler
-	Now          func() time.Time
+	AgentID         string
+	AgentVersion    string
+	PrivateKey      ed25519.PrivateKey
+	Validator       singbox.Validator
+	Manager         ConfigurationManager
+	Updater         *agentupdate.Scheduler
+	HeartbeatPeriod time.Duration
+	Now             func() time.Time
 }
 
 func (r *Runner) Enroll(
@@ -106,13 +109,18 @@ func (r *Runner) Run(
 	reconnectBackoff := reconnectMinBackoff
 	for {
 		connectedAt := r.now()
-		_ = r.runControlSession(ctx, client)
+		sessionErr := r.runControlSession(ctx, client)
 		if err := ctx.Err(); err != nil {
 			return err
 		}
 		if r.now().Sub(connectedAt) >= time.Minute {
 			reconnectBackoff = reconnectMinBackoff
 		}
+		slog.Warn(
+			"agent control session ended; reconnecting",
+			"error", sessionErr,
+			"retry_in", reconnectBackoff,
+		)
 		timer := time.NewTimer(reconnectBackoff)
 		select {
 		case <-timer.C:
@@ -161,6 +169,10 @@ func (r *Runner) runControlSession(
 			control.AgentUpdateCapability,
 		)
 	}
+	hello.Capabilities = append(
+		hello.Capabilities,
+		control.HeartbeatCapability,
+	)
 	if err := stream.Send(&controlv1.AgentFrame{
 		Sequence: agentSequence,
 		Payload: &controlv1.AgentFrame_Hello{
@@ -224,6 +236,8 @@ func (r *Runner) runControlSession(
 		defer updateTicker.Stop()
 		updateTicks = updateTicker.C
 	}
+	heartbeatTicker := time.NewTicker(r.heartbeatPeriod())
+	defer heartbeatTicker.Stop()
 	for {
 		select {
 		case <-ctx.Done():
@@ -281,6 +295,18 @@ func (r *Runner) runControlSession(
 				&agentSequence,
 			); err != nil {
 				return err
+			}
+		case <-heartbeatTicker.C:
+			agentSequence++
+			if err := stream.Send(&controlv1.AgentFrame{
+				Sequence: agentSequence,
+				Payload: &controlv1.AgentFrame_Heartbeat{
+					Heartbeat: &controlv1.AgentHeartbeat{
+						ObservedAtUnix: r.now().Unix(),
+					},
+				},
+			}); err != nil {
+				return fmt.Errorf("send agent heartbeat: %w", err)
 			}
 		case event := <-runtimeEvents:
 			agentSequence++
@@ -528,4 +554,11 @@ func (r *Runner) now() time.Time {
 		return time.Now().UTC()
 	}
 	return r.Now().UTC()
+}
+
+func (r *Runner) heartbeatPeriod() time.Duration {
+	if r.HeartbeatPeriod <= 0 {
+		return defaultHeartbeatPeriod
+	}
+	return r.HeartbeatPeriod
 }
