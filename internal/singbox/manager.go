@@ -16,6 +16,7 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"unicode"
 )
 
 const (
@@ -27,6 +28,8 @@ const (
 	defaultRestartMinBackoff  = time.Second
 	defaultRestartMaxBackoff  = 30 * time.Second
 	defaultStablePeriod       = 30 * time.Second
+
+	maxStartupDiagnosticBytes = 4096
 )
 
 var (
@@ -177,7 +180,8 @@ type runningProcess struct {
 }
 
 type commandProcess struct {
-	command *exec.Cmd
+	command    *exec.Cmd
+	stderrBuf  *boundedBuffer
 }
 
 func (p *commandProcess) Start() error                  { return p.command.Start() }
@@ -253,8 +257,9 @@ func NewManager(options ManagerOptions) (*Manager, error) {
 		// A validation or runtime error must not accidentally copy credentials
 		// from a configuration into the agent's journal.
 		command.Stdout = io.Discard
-		command.Stderr = io.Discard
-		return &commandProcess{command: command}
+		stderrBuf := newBoundedBuffer(maxStartupDiagnosticBytes)
+		command.Stderr = stderrBuf
+		return &commandProcess{command: command, stderrBuf: stderrBuf}
 	}
 	return manager, nil
 }
@@ -340,7 +345,11 @@ func (m *Manager) Start(ctx context.Context) (StartupResult, error) {
 					state.restart = runContext.Err() == nil
 					state.restartFailed = 1
 					startup.Status = StartupActivationFailed
-					startup.Diagnostic = "sing-box could not activate the persisted configuration"
+					if !errors.Is(launchErr, errProcessExitedEarly) {
+						startup.Diagnostic = sanitizeStartupOutput(launchErr.Error())
+					} else {
+						startup.Diagnostic = "sing-box could not activate the persisted configuration"
+					}
 					m.emitRuntimeEvent(
 						RuntimeStatusActivationFailed,
 						activeConfig,
@@ -788,6 +797,9 @@ func (m *Manager) applyCandidate(
 	state.child = rollbackChild
 	result.Status = ApplyStatusActivationFailed
 	result.Diagnostic = "sing-box exited before the candidate configuration became active"
+	if launchErr != nil && !errors.Is(launchErr, errProcessExitedEarly) {
+		result.Diagnostic = sanitizeStartupOutput(launchErr.Error())
+	}
 	result.RolledBack = hadPrevious
 	result.Active = rollbackRunning
 	if restartPrevious && !rollbackRunning {
@@ -1026,6 +1038,16 @@ func (m *Manager) launchProcess(ctx context.Context) (*runningProcess, error) {
 	defer timer.Stop()
 	select {
 	case <-exit:
+		stderr := ""
+		if cp, ok := process.(*commandProcess); ok {
+			stderr = strings.TrimSpace(cp.stderrBuf.String())
+		}
+		if stderr != "" {
+			return nil, fmt.Errorf(
+				"sing-box exited during startup: %s",
+				sanitizeStartupOutput(stderr),
+			)
+		}
 		return nil, errProcessExitedEarly
 	case <-timer.C:
 		return running, nil
@@ -1255,4 +1277,45 @@ func (m *Manager) closeRuntimeEvents() {
 	m.eventsOnce.Do(func() {
 		close(m.events)
 	})
+}
+
+type boundedBuffer struct {
+	buf      []byte
+	maxBytes int
+}
+
+func newBoundedBuffer(maxBytes int) *boundedBuffer {
+	return &boundedBuffer{maxBytes: maxBytes}
+}
+
+func (b *boundedBuffer) Write(p []byte) (int, error) {
+	remaining := b.maxBytes - len(b.buf)
+	if remaining <= 0 {
+		return len(p), nil
+	}
+	if len(p) > remaining {
+		b.buf = append(b.buf, p[:remaining]...)
+		b.buf = append(b.buf, []byte("\n<output truncated>")...)
+		return len(p), nil
+	}
+	b.buf = append(b.buf, p...)
+	return len(p), nil
+}
+
+func (b *boundedBuffer) String() string {
+	return string(b.buf)
+}
+
+func sanitizeStartupOutput(raw string) string {
+	clean := strings.Map(func(r rune) rune {
+		if r == '\n' || r == '\t' || r == ' ' || !unicode.IsControl(r) {
+			return r
+		}
+		return -1
+	}, raw)
+	clean = strings.TrimSpace(clean)
+	if len(clean) > maxStartupDiagnosticBytes {
+		clean = clean[:maxStartupDiagnosticBytes] + "\n<output truncated>"
+	}
+	return clean
 }

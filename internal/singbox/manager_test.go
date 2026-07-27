@@ -246,8 +246,14 @@ func TestManagerBuildsExactRunCommandAndDiscardsOutput(t *testing.T) {
 	if !reflect.DeepEqual(process.command.Args, expected) {
 		t.Fatalf("sing-box command args = %#v, want %#v", process.command.Args, expected)
 	}
-	if process.command.Stdout != io.Discard || process.command.Stderr != io.Discard {
-		t.Fatal("managed sing-box output was not discarded")
+	if process.command.Stdout != io.Discard {
+		t.Fatal("managed sing-box stdout was not discarded")
+	}
+	if process.stderrBuf == nil {
+		t.Fatal("managed sing-box stderr was not captured")
+	}
+	if process.command.Stderr != process.stderrBuf {
+		t.Fatal("managed sing-box stderr was not routed to the capture buffer")
 	}
 }
 

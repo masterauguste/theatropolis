@@ -16,9 +16,10 @@ import (
 )
 
 const (
-	releaseCatalogTTL      = 10 * time.Minute
-	maxReleaseResponseSize = 2 << 20
-	maxReleasePages        = 20
+	releaseCatalogTTL          = 10 * time.Minute
+	maxReleaseResponseSize     = 2 << 20
+	maxReleaseResponseSizeWide = 4 << 20
+	maxReleasePages            = 40
 )
 
 type AgentRelease struct {
@@ -32,13 +33,15 @@ type ReleaseCatalog interface {
 }
 
 type GitHubReleaseCatalog struct {
-	client       *http.Client
-	now          func() time.Time
-	mu           sync.Mutex
-	cached       []AgentRelease
-	expiresAt    time.Time
-	apiURL       string
-	validVersion func(string) bool
+	client          *http.Client
+	now             func() time.Time
+	mu              sync.Mutex
+	cached          []AgentRelease
+	expiresAt       time.Time
+	apiURL          string
+	validVersion    func(string) bool
+	perPage         int
+	maxResponseSize int64
 }
 
 func NewGitHubReleaseCatalog(client *http.Client) *GitHubReleaseCatalog {
@@ -55,10 +58,12 @@ func NewGitHubReleaseCatalog(client *http.Client) *GitHubReleaseCatalog {
 		}
 	}
 	return &GitHubReleaseCatalog{
-		client:       client,
-		now:          time.Now,
-		apiURL:       "https://api.github.com/repos/masterauguste/theatropolis/releases",
-		validVersion: agentupdate.ValidVersion,
+		client:          client,
+		now:             time.Now,
+		apiURL:          "https://api.github.com/repos/masterauguste/theatropolis/releases",
+		validVersion:    agentupdate.ValidVersion,
+		perPage:         100,
+		maxResponseSize: maxReleaseResponseSize,
 	}
 }
 
@@ -66,6 +71,8 @@ func NewSingBoxReleaseCatalog(client *http.Client) *GitHubReleaseCatalog {
 	catalog := NewGitHubReleaseCatalog(client)
 	catalog.apiURL = "https://api.github.com/repos/SagerNet/sing-box/releases"
 	catalog.validVersion = singboxupdate.ValidVersion
+	catalog.perPage = 3
+	catalog.maxResponseSize = maxReleaseResponseSizeWide
 	return catalog
 }
 
@@ -92,8 +99,9 @@ func (c *GitHubReleaseCatalog) fetch(ctx context.Context) ([]AgentRelease, error
 	releases := make([]AgentRelease, 0, 32)
 	for page := 1; page <= maxReleasePages; page++ {
 		endpoint := fmt.Sprintf(
-			"%s?per_page=100&page=%d",
+			"%s?per_page=%d&page=%d",
 			c.apiURL,
+			c.perPage,
 			page,
 		)
 		request, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
@@ -106,7 +114,7 @@ func (c *GitHubReleaseCatalog) fetch(ctx context.Context) ([]AgentRelease, error
 		if err != nil {
 			return nil, fmt.Errorf("fetch GitHub releases: %w", err)
 		}
-		pageReleases, decodeErr := decodeReleasePage(response)
+		pageReleases, decodeErr := decodeReleasePage(response, c.maxResponseSize)
 		response.Body.Close()
 		if decodeErr != nil {
 			return nil, decodeErr
@@ -121,7 +129,7 @@ func (c *GitHubReleaseCatalog) fetch(ctx context.Context) ([]AgentRelease, error
 				PublishedAt: release.PublishedAt.UTC(),
 			})
 		}
-		if len(pageReleases) < 100 {
+		if len(pageReleases) < c.perPage {
 			break
 		}
 	}
@@ -138,19 +146,19 @@ type githubRelease struct {
 	PublishedAt time.Time `json:"published_at"`
 }
 
-func decodeReleasePage(response *http.Response) ([]githubRelease, error) {
+func decodeReleasePage(response *http.Response, maxBytes int64) ([]githubRelease, error) {
 	if response.StatusCode != http.StatusOK {
 		return nil, fmt.Errorf(
 			"GitHub releases returned status %d",
 			response.StatusCode,
 		)
 	}
-	if response.ContentLength > maxReleaseResponseSize {
+	if response.ContentLength > maxBytes {
 		return nil, errors.New("GitHub releases response exceeds the size limit")
 	}
 	decoder := json.NewDecoder(io.LimitReader(
 		response.Body,
-		maxReleaseResponseSize+1,
+		maxBytes+1,
 	))
 	decoder.DisallowUnknownFields()
 	// GitHub adds fields over time, so decode through raw objects and then

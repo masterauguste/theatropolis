@@ -58,6 +58,7 @@ func TestGitHubReleaseCatalogRejectsOversizedResponse(t *testing.T) {
 	defer server.Close()
 	catalog := NewGitHubReleaseCatalog(server.Client())
 	catalog.apiURL = server.URL
+	catalog.maxResponseSize = maxReleaseResponseSize
 	if _, err := catalog.Versions(context.Background()); err == nil {
 		t.Fatal("oversized release response was accepted")
 	}
@@ -65,14 +66,21 @@ func TestGitHubReleaseCatalogRejectsOversizedResponse(t *testing.T) {
 
 func TestSingBoxReleaseCatalogIncludesStableAndTestingFrom114(t *testing.T) {
 	t.Parallel()
+	var requests atomic.Int32
 	server := httptest.NewServer(http.HandlerFunc(
-		func(response http.ResponseWriter, _ *http.Request) {
+		func(response http.ResponseWriter, request *http.Request) {
+			requests.Add(1)
 			response.Header().Set("Content-Type", "application/json")
-			fmt.Fprint(response, `[
-				{"tag_name":"v1.14.0-alpha.27","draft":false,"prerelease":true,"published_at":"2026-07-27T00:00:00Z"},
-				{"tag_name":"v1.14.0","draft":false,"prerelease":false,"published_at":"2026-07-26T00:00:00Z"},
-				{"tag_name":"v1.13.12","draft":false,"prerelease":false,"published_at":"2026-07-25T00:00:00Z"}
-			]`)
+			switch requests.Load() {
+			case 1:
+				fmt.Fprint(response, `[
+					{"tag_name":"v1.14.0-alpha.27","draft":false,"prerelease":true,"published_at":"2026-07-27T00:00:00Z"},
+					{"tag_name":"v1.14.0","draft":false,"prerelease":false,"published_at":"2026-07-26T00:00:00Z"},
+					{"tag_name":"v1.13.12","draft":false,"prerelease":false,"published_at":"2026-07-25T00:00:00Z"}
+				]`)
+			default:
+				fmt.Fprint(response, `[]`)
+			}
 		},
 	))
 	defer server.Close()
