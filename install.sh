@@ -18,6 +18,8 @@ CONFIG_DIRECTORY="/etc/theatropolis"
 MASTER_ADMIN_SOCKET="/run/theatropolis/master-admin.sock"
 WEB_AUTH_FILE="${CONFIG_DIRECTORY}/web-auth.json"
 MASTER_UNIT_FILE="/etc/systemd/system/theatropolis-master.service"
+AGENT_UPDATE_SERVICE_FILE="/etc/systemd/system/theatropolis-agent-update.service"
+AGENT_UPDATE_PATH_FILE="/etc/systemd/system/theatropolis-agent-update.path"
 INSTALL_LOCK_FILE="/run/theatropolis-installer.lock"
 DEFAULT_HTTPS_PORT="8443"
 
@@ -51,6 +53,7 @@ INSTALL_SUCCEEDED="no"
 CLEANUP_STARTED="no"
 TTY_SETTINGS=""
 ENROLLMENT_TOKEN_TEMP=""
+AGENT_ID_TEMP=""
 AGENT_WAS_ACTIVE="no"
 AGENT_STOPPED="no"
 
@@ -58,7 +61,7 @@ usage() {
 	printf '%s\n' \
 		"Usage:" \
 		"  install.sh master --domain <name> [--https-port <port>] [--version <tag>] [--admin-username <name> [--admin-password-file <path>]]" \
-		"  install.sh agent --master <host:port> --agent-id <id> [--token <token>] [--ca-file <path>]" \
+		"  install.sh agent --master <host:port> [--token <token>] [--ca-file <path>] [--agent-id <legacy-id>]" \
 		"  install.sh all --domain <name> --agent-id <id> [--https-port <port>] [--admin-username <name> [--admin-password-file <path>]]" \
 		"" \
 		"Installs precompiled Linux amd64/arm64 release binaries. It never compiles locally."
@@ -162,6 +165,11 @@ cleanup() {
 		[ -f "$ENROLLMENT_TOKEN_TEMP" ] &&
 		[ ! -L "$ENROLLMENT_TOKEN_TEMP" ]; then
 		rm -f -- "$ENROLLMENT_TOKEN_TEMP"
+	fi
+	if [ -n "$AGENT_ID_TEMP" ] &&
+		[ -f "$AGENT_ID_TEMP" ] &&
+		[ ! -L "$AGENT_ID_TEMP" ]; then
+		rm -f -- "$AGENT_ID_TEMP"
 	fi
 	if [ "$INSTALL_SUCCEEDED" != "yes" ] &&
 		[ "$AGENT_WAS_ACTIVE" = "yes" ] &&
@@ -450,9 +458,30 @@ fi
 
 case "$ROLE" in
 agent | all)
-	printf '%s' "$AGENT_ID" |
-		grep -Eq '^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$' ||
-		fail "--agent-id is invalid"
+	if [ "$ROLE" = "agent" ] && [ -z "$AGENT_ID" ] &&
+		{ [ -e "$CONFIG_DIRECTORY/agent.env" ] ||
+			[ -L "$CONFIG_DIRECTORY/agent.env" ]; }; then
+		if [ -L "$CONFIG_DIRECTORY/agent.env" ] ||
+			[ ! -f "$CONFIG_DIRECTORY/agent.env" ]; then
+			fail "the existing agent configuration is not a regular file"
+		fi
+		AGENT_ID="$(
+			awk -F= '
+				$1 == "THEATROPOLIS_AGENT_ID" {
+					count++
+					value = substr($0, index($0, "=") + 1)
+				}
+				END {
+					if (count == 1) print value
+				}
+			' "$CONFIG_DIRECTORY/agent.env"
+		)"
+	fi
+	if [ "$ROLE" = "all" ] || [ -n "$AGENT_ID" ]; then
+		printf '%s' "$AGENT_ID" |
+			grep -Eq '^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$' ||
+			fail "--agent-id is invalid"
+	fi
 	if [ "$ROLE" = "all" ] && [ -z "$MASTER_ADDRESS" ]; then
 		MASTER_ADDRESS="${DOMAIN}:${HTTPS_PORT}"
 	fi
@@ -967,6 +996,21 @@ write_enrollment_token() {
 	ENROLLMENT_TOKEN_TEMP=""
 }
 
+write_agent_identity_hint() {
+	[ -n "$AGENT_ID" ] || return 0
+	AGENT_ID_TARGET="$AGENT_STATE_DIRECTORY/agent-id"
+	if [ -L "$AGENT_ID_TARGET" ] ||
+		{ [ -e "$AGENT_ID_TARGET" ] && [ ! -f "$AGENT_ID_TARGET" ]; }; then
+		fail "the existing agent ID path is not a regular file"
+	fi
+	AGENT_ID_TEMP="$(mktemp "$AGENT_STATE_DIRECTORY/.agent-id.XXXXXX")"
+	printf '%s\n' "$AGENT_ID" >"$AGENT_ID_TEMP"
+	chown "root:$AGENT_USER" "$AGENT_ID_TEMP"
+	chmod 0640 "$AGENT_ID_TEMP"
+	mv -fT -- "$AGENT_ID_TEMP" "$AGENT_ID_TARGET"
+	AGENT_ID_TEMP=""
+}
+
 write_agent_configuration() {
 	install -d -o root -g root -m 0755 "$CONFIG_DIRECTORY"
 	CONFIGURED_CA_FILE=""
@@ -975,7 +1019,6 @@ write_agent_configuration() {
 	fi
 	cat >"$CONFIG_DIRECTORY/agent.env" <<EOF
 THEATROPOLIS_MASTER=${MASTER_ADDRESS}
-THEATROPOLIS_AGENT_ID=${AGENT_ID}
 THEATROPOLIS_CA_FILE=${CONFIGURED_CA_FILE}
 EOF
 	chmod 0600 "$CONFIG_DIRECTORY/agent.env"
@@ -1006,6 +1049,7 @@ install_agent() {
 	install_binary agent
 	install -d -o root -g root -m 0755 "$STATE_DIRECTORY"
 	ensure_service_user "$AGENT_USER" "$AGENT_STATE_DIRECTORY"
+	write_agent_identity_hint
 	if [ -z "$ENROLLMENT_TOKEN" ] && [ "$ROLE" = "all" ]; then
 		wait_for_master_socket
 		ENROLLMENT_TOKEN="$(
@@ -1032,7 +1076,7 @@ Group=${AGENT_USER}
 UMask=0077
 EnvironmentFile=${CONFIG_DIRECTORY}/agent.env
 Environment=LD_LIBRARY_PATH=${SING_BOX_LIBRARY_DIRECTORY}
-ExecStart=${INSTALL_DIRECTORY}/theatropolis-agent --master=\${THEATROPOLIS_MASTER} --agent-id=\${THEATROPOLIS_AGENT_ID} --state-dir=${AGENT_STATE_DIRECTORY} --enrollment-token-file=${AGENT_STATE_DIRECTORY}/enrollment.token --ca-file=\${THEATROPOLIS_CA_FILE}
+ExecStart=${INSTALL_DIRECTORY}/theatropolis-agent --master=\${THEATROPOLIS_MASTER} --state-dir=${AGENT_STATE_DIRECTORY} --enrollment-token-file=${AGENT_STATE_DIRECTORY}/enrollment.token --ca-file=\${THEATROPOLIS_CA_FILE}
 Restart=on-failure
 RestartSec=5s
 NoNewPrivileges=true
@@ -1055,8 +1099,49 @@ ReadWritePaths=${AGENT_STATE_DIRECTORY}
 [Install]
 WantedBy=multi-user.target
 EOF
+	cat >"$AGENT_UPDATE_SERVICE_FILE" <<EOF
+[Unit]
+Description=Apply a verified Theatropolis agent update
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=root
+Group=root
+UMask=0077
+ExecStart=${INSTALL_DIRECTORY}/theatropolis-agent apply-update --state-dir=${AGENT_STATE_DIRECTORY} --install-path=${INSTALL_DIRECTORY}/theatropolis-agent
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ProtectClock=true
+ProtectHostname=true
+ProtectKernelLogs=true
+ProtectKernelModules=true
+ProtectKernelTunables=true
+LockPersonality=true
+MemoryDenyWriteExecute=true
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+RestrictRealtime=true
+CapabilityBoundingSet=CAP_DAC_OVERRIDE CAP_FOWNER
+ReadWritePaths=${INSTALL_DIRECTORY} ${AGENT_STATE_DIRECTORY}
+EOF
+	cat >"$AGENT_UPDATE_PATH_FILE" <<EOF
+[Unit]
+Description=Watch for verified Theatropolis agent update requests
+
+[Path]
+PathExists=${AGENT_STATE_DIRECTORY}/update-request.json
+Unit=theatropolis-agent-update.service
+
+[Install]
+WantedBy=multi-user.target
+EOF
 	chmod 0644 /etc/systemd/system/theatropolis-agent.service
+	chmod 0644 "$AGENT_UPDATE_SERVICE_FILE" "$AGENT_UPDATE_PATH_FILE"
 	systemctl daemon-reload
+	systemctl enable --now theatropolis-agent-update.path
 	systemctl enable --now theatropolis-agent
 	systemctl restart theatropolis-agent
 	AGENT_STOPPED="no"

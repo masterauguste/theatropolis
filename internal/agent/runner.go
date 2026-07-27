@@ -12,6 +12,7 @@ import (
 	"time"
 
 	controlv1 "github.com/masterauguste/theatropolis/api/gen/theatropolis/control/v1"
+	"github.com/masterauguste/theatropolis/internal/agentupdate"
 	"github.com/masterauguste/theatropolis/internal/control"
 	"github.com/masterauguste/theatropolis/internal/identity"
 	"github.com/masterauguste/theatropolis/internal/singbox"
@@ -39,6 +40,7 @@ type Runner struct {
 	PrivateKey   ed25519.PrivateKey
 	Validator    singbox.Validator
 	Manager      ConfigurationManager
+	Updater      *agentupdate.Scheduler
 	Now          func() time.Time
 }
 
@@ -47,8 +49,11 @@ func (r *Runner) Enroll(
 	client controlv1.AgentControlServiceClient,
 	token []byte,
 ) error {
-	if err := r.validateIdentity(); err != nil {
-		return err
+	if len(r.PrivateKey) != ed25519.PrivateKeySize {
+		return errors.New("agent private key is invalid")
+	}
+	if r.AgentID != "" && !identity.ValidAgentID(r.AgentID) {
+		return errors.New("agent ID is invalid")
 	}
 	if len(token) != identity.EnrollmentTokenBytes {
 		return errors.New("enrollment token has an invalid length")
@@ -65,9 +70,14 @@ func (r *Runner) Enroll(
 	if err != nil {
 		return fmt.Errorf("enroll agent: %w", err)
 	}
-	if response.GetAgentId() != r.AgentID {
+	assignedAgentID := response.GetAgentId()
+	if !identity.ValidAgentID(assignedAgentID) {
+		return errors.New("master returned an invalid agent identity")
+	}
+	if r.AgentID != "" && assignedAgentID != r.AgentID {
 		return errors.New("master returned an unexpected agent identity")
 	}
+	r.AgentID = assignedAgentID
 	return nil
 }
 
@@ -140,7 +150,16 @@ func (r *Runner) runControlSession(
 		Architecture:    runtime.GOARCH,
 	}
 	if r.Manager != nil {
-		hello.Capabilities = []string{control.ConfigDeployCapability}
+		hello.Capabilities = append(
+			hello.Capabilities,
+			control.ConfigDeployCapability,
+		)
+	}
+	if r.Updater != nil {
+		hello.Capabilities = append(
+			hello.Capabilities,
+			control.AgentUpdateCapability,
+		)
 	}
 	if err := stream.Send(&controlv1.AgentFrame{
 		Sequence: agentSequence,
@@ -188,6 +207,9 @@ func (r *Runner) runControlSession(
 		return errors.New("master rejected the agent identity")
 	}
 	lastMasterSequence := authFrame.GetSequence()
+	if err := r.sendPendingUpdateResult(stream, &agentSequence); err != nil {
+		return err
+	}
 
 	var runtimeEvents <-chan singbox.RuntimeEvent
 	if r.Manager != nil {
@@ -195,6 +217,13 @@ func (r *Runner) runControlSession(
 	}
 	incoming := make(chan receivedMasterFrame, 1)
 	go receiveMasterFrames(stream, incoming)
+	var updateTicker *time.Ticker
+	var updateTicks <-chan time.Time
+	if r.Updater != nil {
+		updateTicker = time.NewTicker(2 * time.Second)
+		defer updateTicker.Stop()
+		updateTicks = updateTicker.C
+	}
 	for {
 		select {
 		case <-ctx.Done():
@@ -234,11 +263,24 @@ func (r *Runner) runControlSession(
 						command.DeployConfig,
 					),
 				}
+			case *controlv1.MasterFrame_UpdateAgent:
+				response.Payload = &controlv1.AgentFrame_AgentUpdateReport{
+					AgentUpdateReport: r.scheduleAgentUpdate(
+						command.UpdateAgent,
+					),
+				}
 			default:
 				return errors.New("master sent an unsupported command")
 			}
 			if err := stream.Send(response); err != nil {
 				return fmt.Errorf("send configuration report: %w", err)
+			}
+		case <-updateTicks:
+			if err := r.sendPendingUpdateResult(
+				stream,
+				&agentSequence,
+			); err != nil {
+				return err
 			}
 		case event := <-runtimeEvents:
 			agentSequence++
@@ -252,6 +294,75 @@ func (r *Runner) runControlSession(
 			}
 		}
 	}
+}
+
+func (r *Runner) scheduleAgentUpdate(
+	command *controlv1.AgentUpdateCommand,
+) *controlv1.AgentUpdateReport {
+	report := &controlv1.AgentUpdateReport{
+		RequestId:      command.GetRequestId(),
+		TargetVersion:  command.GetTargetVersion(),
+		RunningVersion: r.AgentVersion,
+		Status:         controlv1.AgentUpdateStatus_AGENT_UPDATE_STATUS_REJECTED,
+		ObservedAtUnix: r.now().Unix(),
+	}
+	if r.Updater == nil || command == nil {
+		report.Diagnostic = "agent update control is unavailable"
+		return report
+	}
+	if err := r.Updater.Schedule(
+		command.GetRequestId(),
+		command.GetTargetVersion(),
+	); err != nil {
+		if errors.Is(err, agentupdate.ErrUpdatePending) {
+			report.Diagnostic = "another agent update is already pending"
+		} else {
+			report.Diagnostic = "agent rejected the update request"
+		}
+		return report
+	}
+	report.Status = controlv1.AgentUpdateStatus_AGENT_UPDATE_STATUS_SCHEDULED
+	return report
+}
+
+func (r *Runner) sendPendingUpdateResult(
+	stream controlv1.AgentControlService_ConnectClient,
+	agentSequence *uint64,
+) error {
+	if r.Updater == nil {
+		return nil
+	}
+	result, exists, err := r.Updater.LoadResult()
+	if err != nil {
+		return fmt.Errorf("load agent update result: %w", err)
+	}
+	if !exists {
+		return nil
+	}
+	status := controlv1.AgentUpdateStatus_AGENT_UPDATE_STATUS_FAILED
+	if result.Status == "applied" {
+		status = controlv1.AgentUpdateStatus_AGENT_UPDATE_STATUS_APPLIED
+	}
+	(*agentSequence)++
+	if err := stream.Send(&controlv1.AgentFrame{
+		Sequence: *agentSequence,
+		Payload: &controlv1.AgentFrame_AgentUpdateReport{
+			AgentUpdateReport: &controlv1.AgentUpdateReport{
+				RequestId:      result.RequestID,
+				TargetVersion:  result.TargetVersion,
+				RunningVersion: r.AgentVersion,
+				Status:         status,
+				Diagnostic:     result.Diagnostic,
+				ObservedAtUnix: result.ObservedAt.Unix(),
+			},
+		},
+	}); err != nil {
+		return fmt.Errorf("send agent update result: %w", err)
+	}
+	if err := r.Updater.AcknowledgeResult(result.RequestID); err != nil {
+		return fmt.Errorf("acknowledge agent update result: %w", err)
+	}
+	return nil
 }
 
 type receivedMasterFrame struct {

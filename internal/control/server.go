@@ -13,6 +13,7 @@ import (
 	"unicode"
 
 	controlv1 "github.com/masterauguste/theatropolis/api/gen/theatropolis/control/v1"
+	"github.com/masterauguste/theatropolis/internal/agentupdate"
 	"github.com/masterauguste/theatropolis/internal/deployment"
 	"github.com/masterauguste/theatropolis/internal/identity"
 	"github.com/masterauguste/theatropolis/internal/singbox"
@@ -23,6 +24,7 @@ import (
 const (
 	ProtocolVersion        = 1
 	ConfigDeployCapability = "config-deploy-v1"
+	AgentUpdateCapability  = "agent-update-v1"
 	DefaultChallengeTTL    = 30 * time.Second
 	DefaultCommandQueue    = 16
 	DefaultMaxConfigBytes  = 4 << 20
@@ -51,6 +53,8 @@ type Server struct {
 	// Connect call could authenticate with a public key fetched just before
 	// that key was revoked, then register a live session afterward.
 	authorizationMu sync.Mutex
+	updateMu        sync.RWMutex
+	updates         map[string]AgentUpdateState
 }
 
 func NewServer(
@@ -72,6 +76,7 @@ func NewServer(
 		Sessions:    NewSessionRegistry(),
 		Logger:      logger,
 		Now:         time.Now,
+		updates:     make(map[string]AgentUpdateState),
 	}
 }
 
@@ -80,7 +85,6 @@ func (s *Server) Enroll(
 	request *controlv1.EnrollRequest,
 ) (*controlv1.EnrollResponse, error) {
 	if request == nil ||
-		request.GetAgentId() == "" ||
 		len(request.GetEnrollmentToken()) != identity.EnrollmentTokenBytes ||
 		len(request.GetPublicKey()) == 0 {
 		return nil, status.Error(codes.InvalidArgument, "invalid enrollment request")
@@ -88,13 +92,24 @@ func (s *Server) Enroll(
 
 	now := s.now()
 	s.authorizationMu.Lock()
-	err := s.Identities.Enroll(
-		ctx,
-		request.GetAgentId(),
-		request.GetEnrollmentToken(),
-		request.GetPublicKey(),
-		now,
-	)
+	agentID := request.GetAgentId()
+	var err error
+	if agentID == "" {
+		agentID, err = s.Identities.EnrollByToken(
+			ctx,
+			request.GetEnrollmentToken(),
+			request.GetPublicKey(),
+			now,
+		)
+	} else {
+		err = s.Identities.Enroll(
+			ctx,
+			agentID,
+			request.GetEnrollmentToken(),
+			request.GetPublicKey(),
+			now,
+		)
+	}
 	s.authorizationMu.Unlock()
 	if err != nil {
 		if errors.Is(err, identity.ErrInvalidAgentID) ||
@@ -104,9 +119,9 @@ func (s *Server) Enroll(
 		return nil, status.Error(codes.PermissionDenied, "enrollment was not accepted")
 	}
 
-	s.Logger.Info("agent enrolled", "agent_id", request.GetAgentId())
+	s.Logger.Info("agent enrolled", "agent_id", agentID)
 	return &controlv1.EnrollResponse{
-		AgentId:        request.GetAgentId(),
+		AgentId:        agentID,
 		EnrolledAtUnix: now.Unix(),
 	}, nil
 }
@@ -145,7 +160,8 @@ func (s *Server) Connect(stream controlv1.AgentControlService_ConnectServer) err
 		firstFrame.GetSequence() == 0 ||
 		hello.GetAgentId() == "" ||
 		hello.GetProtocolVersion() != ProtocolVersion ||
-		!validCapabilities(hello.GetCapabilities()) {
+		!validCapabilities(hello.GetCapabilities()) ||
+		!validAgentMetadata(hello) {
 		return status.Error(codes.InvalidArgument, "expected a compatible agent hello")
 	}
 
@@ -196,7 +212,7 @@ func (s *Server) Connect(stream controlv1.AgentControlService_ConnectServer) err
 		return status.Error(codes.Unauthenticated, "agent authentication failed")
 	}
 
-	session := newSession(hello.GetAgentId())
+	session := newSessionFromHello(hello)
 	for _, capability := range hello.GetCapabilities() {
 		session.capabilities[capability] = struct{}{}
 	}
@@ -588,9 +604,126 @@ func (s *Server) handleAgentFrame(
 		return s.handleDeploymentReport(ctx, agentID, payload.ConfigDeploymentReport)
 	case *controlv1.AgentFrame_ConfigRuntimeReport:
 		return s.handleRuntimeReport(ctx, agentID, payload.ConfigRuntimeReport)
+	case *controlv1.AgentFrame_AgentUpdateReport:
+		return s.handleAgentUpdateReport(agentID, payload.AgentUpdateReport)
 	default:
 		return status.Error(codes.InvalidArgument, "unexpected agent frame")
 	}
+}
+
+type AgentUpdateState struct {
+	RequestID      string
+	TargetVersion  string
+	RunningVersion string
+	Status         string
+	Diagnostic     string
+	UpdatedAt      time.Time
+}
+
+func (s *Server) QueueAgentUpdate(
+	ctx context.Context,
+	agentID string,
+	requestID string,
+	targetVersion string,
+) error {
+	if !agentupdate.ValidVersion(targetVersion) {
+		return errors.New("target agent version is invalid")
+	}
+	if !agentupdate.ValidRequestID(requestID) {
+		return errors.New("agent update request ID is invalid")
+	}
+	s.authorizationMu.Lock()
+	defer s.authorizationMu.Unlock()
+	if _, err := s.Identities.PublicKey(ctx, agentID); err != nil {
+		return err
+	}
+	if !s.Sessions.Supports(agentID, AgentUpdateCapability) {
+		return ErrAgentOffline
+	}
+	info, _ := s.Sessions.AgentInfo(agentID)
+	state := AgentUpdateState{
+		RequestID:      requestID,
+		TargetVersion:  targetVersion,
+		RunningVersion: info.Version,
+		Status:         "requested",
+		UpdatedAt:      s.now(),
+	}
+	s.updateMu.Lock()
+	previous, hadPrevious := s.updates[agentID]
+	if hadPrevious &&
+		(previous.Status == "requested" || previous.Status == "scheduled") {
+		s.updateMu.Unlock()
+		return agentupdate.ErrUpdatePending
+	}
+	s.updates[agentID] = state
+	s.updateMu.Unlock()
+	err := s.Sessions.Send(ctx, agentID, &controlv1.MasterFrame{
+		Payload: &controlv1.MasterFrame_UpdateAgent{
+			UpdateAgent: &controlv1.AgentUpdateCommand{
+				RequestId:     requestID,
+				TargetVersion: targetVersion,
+			},
+		},
+	})
+	if err != nil {
+		s.updateMu.Lock()
+		if current, exists := s.updates[agentID]; exists &&
+			current.RequestID == requestID {
+			if hadPrevious {
+				s.updates[agentID] = previous
+			} else {
+				delete(s.updates, agentID)
+			}
+		}
+		s.updateMu.Unlock()
+		return err
+	}
+	return nil
+}
+
+func (s *Server) LatestAgentUpdate(agentID string) (AgentUpdateState, bool) {
+	s.updateMu.RLock()
+	defer s.updateMu.RUnlock()
+	state, exists := s.updates[agentID]
+	return state, exists
+}
+
+func (s *Server) handleAgentUpdateReport(
+	agentID string,
+	report *controlv1.AgentUpdateReport,
+) error {
+	if report == nil ||
+		!agentupdate.ValidRequestID(report.GetRequestId()) ||
+		!agentupdate.ValidVersion(report.GetTargetVersion()) ||
+		report.GetObservedAtUnix() <= 0 ||
+		len(report.GetDiagnostic()) > MaxDiagnosticBytes*4 {
+		return status.Error(codes.InvalidArgument, "invalid agent update report")
+	}
+	s.updateMu.Lock()
+	defer s.updateMu.Unlock()
+	current, exists := s.updates[agentID]
+	if !exists ||
+		current.RequestID != report.GetRequestId() ||
+		current.TargetVersion != report.GetTargetVersion() {
+		return status.Error(codes.PermissionDenied, "agent update report does not match its request")
+	}
+	switch report.GetStatus() {
+	case controlv1.AgentUpdateStatus_AGENT_UPDATE_STATUS_SCHEDULED:
+		current.Status = "scheduled"
+	case controlv1.AgentUpdateStatus_AGENT_UPDATE_STATUS_APPLIED:
+		current.Status = "applied"
+	case controlv1.AgentUpdateStatus_AGENT_UPDATE_STATUS_FAILED:
+		current.Status = "failed"
+	case controlv1.AgentUpdateStatus_AGENT_UPDATE_STATUS_REJECTED:
+		current.Status = "rejected"
+	default:
+		return status.Error(codes.InvalidArgument, "unknown agent update status")
+	}
+	current.RunningVersion = report.GetRunningVersion()
+	current.Diagnostic = sanitizeAgentDiagnostic(report.GetDiagnostic())
+	current.UpdatedAt = time.Unix(report.GetObservedAtUnix(), 0).UTC()
+	s.updates[agentID] = current
+	return nil
 }
 
 func (s *Server) handleValidationReport(
@@ -855,6 +988,13 @@ type session struct {
 	commands     chan *controlv1.MasterFrame
 	done         chan struct{}
 	capabilities map[string]struct{}
+	info         AgentInfo
+}
+
+type AgentInfo struct {
+	Version         string
+	OperatingSystem string
+	Architecture    string
 }
 
 func newSession(agentID string) *session {
@@ -864,6 +1004,26 @@ func newSession(agentID string) *session {
 		done:         make(chan struct{}),
 		capabilities: make(map[string]struct{}),
 	}
+}
+
+func newSessionFromHello(hello *controlv1.AgentHello) *session {
+	session := newSession(hello.GetAgentId())
+	session.info = AgentInfo{
+		Version:         hello.GetAgentVersion(),
+		OperatingSystem: hello.GetOperatingSystem(),
+		Architecture:    hello.GetArchitecture(),
+	}
+	return session
+}
+
+func (r *SessionRegistry) AgentInfo(agentID string) (AgentInfo, bool) {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	session, exists := r.sessions[agentID]
+	if !exists {
+		return AgentInfo{}, false
+	}
+	return session.info, true
 }
 
 type SessionRegistry struct {
@@ -966,6 +1126,10 @@ func (s *Server) CanDeployConfiguration(agentID string) bool {
 	return s.Sessions.Supports(agentID, ConfigDeployCapability)
 }
 
+func (s *Server) CanUpdateAgent(agentID string) bool {
+	return s.Sessions.Supports(agentID, AgentUpdateCapability)
+}
+
 func validCapabilities(capabilities []string) bool {
 	if len(capabilities) > 32 {
 		return false
@@ -989,6 +1153,24 @@ func validCapabilities(capabilities []string) bool {
 			return false
 		}
 		seen[capability] = struct{}{}
+	}
+	return true
+}
+
+func validAgentMetadata(hello *controlv1.AgentHello) bool {
+	for value, limit := range map[string]int{
+		hello.GetAgentVersion():    64,
+		hello.GetOperatingSystem(): 16,
+		hello.GetArchitecture():    16,
+	} {
+		if len(value) > limit {
+			return false
+		}
+		for _, character := range value {
+			if character < 0x20 || character > 0x7e {
+				return false
+			}
+		}
 	}
 	return true
 }

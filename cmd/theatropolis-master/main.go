@@ -153,6 +153,7 @@ func serve(arguments []string) error {
 		Sessions:   server.Sessions,
 		Controller: server,
 		Access:     access,
+		Releases:   webui.NewGitHubReleaseCatalog(nil),
 		PublicURL:  *publicURL,
 		Version:    version,
 		Logger:     logger,

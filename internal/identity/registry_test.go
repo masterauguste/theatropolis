@@ -49,6 +49,47 @@ func TestEnrollmentIsSingleUseAndProofRequiresPrivateKey(t *testing.T) {
 	}
 }
 
+func TestEnrollmentTokenResolvesAgentIdentity(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	path := filepath.Join(t.TempDir(), "master", "identities.json")
+	registry, err := OpenRegistry(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	token, err := registry.CreateEnrollment(
+		ctx,
+		"edge-token-only",
+		time.Now().Add(time.Minute),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	publicKey, _, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	agentID, err := registry.EnrollByToken(ctx, token, publicKey, time.Now())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if agentID != "edge-token-only" {
+		t.Fatalf("resolved agent ID = %q", agentID)
+	}
+	reopened, err := OpenRegistry(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	storedKey, err := reopened.PublicKey(ctx, agentID)
+	if err != nil || !bytes.Equal(storedKey, publicKey) {
+		t.Fatalf("persisted public key = %x, %v", storedKey, err)
+	}
+	if _, err := registry.EnrollByToken(ctx, token, publicKey, time.Now()); !errors.Is(err, ErrEnrollmentUnavailable) {
+		t.Fatalf("reused token error = %v", err)
+	}
+}
+
 func TestLoadOrCreatePrivateKeyPersistsIdentity(t *testing.T) {
 	t.Parallel()
 

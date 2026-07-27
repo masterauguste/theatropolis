@@ -310,6 +310,53 @@ func TestQueueDeploymentRequiresCapabilityAndAppliesMatchingReport(t *testing.T)
 	}
 }
 
+func TestQueueAgentUpdateSendsExactVersionAndAcceptsMatchingReport(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	server := newTestServer(deployment.NewMemoryStore(), nil)
+	const agentID = "edge-update"
+	const requestID = "update_0123456789abcdef"
+	const targetVersion = "v1.14.0-beta.7"
+	enrollTestIdentity(t, server.Identities, agentID)
+	session := newSession(agentID)
+	session.capabilities[AgentUpdateCapability] = struct{}{}
+	session.info.Version = "v0.0.9"
+	if err := server.Sessions.Register(session); err != nil {
+		t.Fatal(err)
+	}
+	defer server.Sessions.Unregister(session)
+
+	if err := server.QueueAgentUpdate(
+		ctx,
+		agentID,
+		requestID,
+		targetVersion,
+	); err != nil {
+		t.Fatal(err)
+	}
+	command := <-session.commands
+	if command.GetUpdateAgent().GetRequestId() != requestID ||
+		command.GetUpdateAgent().GetTargetVersion() != targetVersion {
+		t.Fatalf("queued update command = %+v", command.GetUpdateAgent())
+	}
+	if err := server.handleAgentUpdateReport(agentID, &controlv1.AgentUpdateReport{
+		RequestId:      requestID,
+		TargetVersion:  targetVersion,
+		RunningVersion: targetVersion,
+		Status:         controlv1.AgentUpdateStatus_AGENT_UPDATE_STATUS_APPLIED,
+		ObservedAtUnix: time.Now().Unix(),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	state, exists := server.LatestAgentUpdate(agentID)
+	if !exists || state.Status != "applied" ||
+		state.TargetVersion != targetVersion ||
+		state.RunningVersion != targetVersion {
+		t.Fatalf("reported update state = %+v, exists=%v", state, exists)
+	}
+}
+
 func TestDeploymentReportCannotCrossAgentBoundary(t *testing.T) {
 	t.Parallel()
 

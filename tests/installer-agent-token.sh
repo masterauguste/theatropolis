@@ -278,7 +278,6 @@ run_installer() {
 		TEST_SYSTEMCTL_LOG="$SYSTEMCTL_LOG" \
 		sh "$TEST_DIRECTORY/install.sh" agent \
 		--master master.example.com:8443 \
-		--agent-id edge-1 \
 		--token "$VALID_TOKEN" \
 		--version "$RELEASE_TAG"
 }
@@ -305,6 +304,17 @@ set -e
 AGENT_UNIT="$TEST_ROOT/etc/systemd/system/theatropolis-agent.service"
 [ -f "$AGENT_UNIT" ] ||
 	fail "agent systemd unit was not generated"
+UPDATE_SERVICE="$TEST_ROOT/etc/systemd/system/theatropolis-agent-update.service"
+UPDATE_PATH="$TEST_ROOT/etc/systemd/system/theatropolis-agent-update.path"
+[ -f "$UPDATE_SERVICE" ] && [ -f "$UPDATE_PATH" ] ||
+	fail "root update helper units were not generated"
+grep -Fq ' apply-update ' "$UPDATE_SERVICE" ||
+	fail "update helper does not invoke the isolated apply-update command"
+grep -Fqx "PathExists=$AGENT_STATE_DIRECTORY/update-request.json" "$UPDATE_PATH" ||
+	fail "update watcher does not monitor the agent request file"
+if grep -Fq -- '--agent-id' "$AGENT_UNIT"; then
+	fail "agent systemd unit still requires a master-assigned agent ID"
+fi
 grep -Fqx 'CapabilityBoundingSet=CAP_NET_BIND_SERVICE' "$AGENT_UNIT" ||
 	fail "agent unit does not bound low-port access to CAP_NET_BIND_SERVICE"
 grep -Fqx 'AmbientCapabilities=CAP_NET_BIND_SERVICE' "$AGENT_UNIT" ||

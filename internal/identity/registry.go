@@ -38,6 +38,10 @@ var (
 
 var agentIDPattern = regexp.MustCompile(`\A[a-zA-Z0-9][a-zA-Z0-9._-]{0,127}\z`)
 
+func ValidAgentID(agentID string) bool {
+	return agentIDPattern.MatchString(agentID)
+}
+
 type pendingEnrollment struct {
 	tokenSHA256 [sha256.Size]byte
 	expiresAt   time.Time
@@ -227,6 +231,58 @@ func (r *Registry) Enroll(
 		return fmt.Errorf("persist enrollment: %w", err)
 	}
 	return nil
+}
+
+// EnrollByToken resolves the pending agent record from its single-use token.
+// New agents therefore do not need to be told the master's internal agent ID.
+// Every pending digest is compared so a token lookup does not reveal which
+// record, if any, matched through an early return.
+func (r *Registry) EnrollByToken(
+	_ context.Context,
+	token []byte,
+	publicKey []byte,
+	now time.Time,
+) (string, error) {
+	if len(publicKey) != ed25519.PublicKeySize {
+		return "", ErrInvalidPublicKey
+	}
+
+	tokenHash := sha256.Sum256(token)
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	matchedAgentID := ""
+	for agentID, pending := range r.pending {
+		matches := subtle.ConstantTimeCompare(
+			tokenHash[:],
+			pending.tokenSHA256[:],
+		)
+		if matches == 1 && !now.After(pending.expiresAt) {
+			if matchedAgentID != "" {
+				return "", ErrEnrollmentUnavailable
+			}
+			matchedAgentID = agentID
+		}
+	}
+	if matchedAgentID == "" {
+		return "", ErrEnrollmentUnavailable
+	}
+	if _, exists := r.enrolled[matchedAgentID]; exists {
+		return "", ErrAgentAlreadyEnrolled
+	}
+
+	pending := r.pending[matchedAgentID]
+	r.enrolled[matchedAgentID] = append(
+		ed25519.PublicKey(nil),
+		publicKey...,
+	)
+	delete(r.pending, matchedAgentID)
+	if err := r.persistLocked(); err != nil {
+		delete(r.enrolled, matchedAgentID)
+		r.pending[matchedAgentID] = pending
+		return "", fmt.Errorf("persist enrollment: %w", err)
+	}
+	return matchedAgentID, nil
 }
 
 func (r *Registry) PublicKey(_ context.Context, agentID string) (ed25519.PublicKey, error) {

@@ -59,12 +59,17 @@ if (errorSummary && !document.querySelector('[aria-invalid="true"]')) {
 }
 
 for (const form of document.querySelectorAll("form")) {
-  form.addEventListener("submit", () => {
-    const button = form.querySelector("[data-submit-button]");
-    if (button) {
-      button.disabled = true;
-      button.textContent = button.dataset.submitLabel || "Creating…";
-    }
+  form.addEventListener("submit", (event) => {
+    window.setTimeout(() => {
+      if (event.defaultPrevented) {
+        return;
+      }
+      const button = form.querySelector("[data-submit-button]");
+      if (button) {
+        button.disabled = true;
+        button.textContent = button.dataset.submitLabel || "Creating…";
+      }
+    }, 0);
   });
 }
 

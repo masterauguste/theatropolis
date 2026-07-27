@@ -50,6 +50,16 @@
           <strong class="summary-card__value">Unavailable</strong>
           {{end}}
         </article>
+        <article class="summary-card">
+          <span class="summary-card__label">Agent version</span>
+          {{if .Agent.AgentVersion}}
+          <strong class="summary-card__value">{{.Agent.AgentVersion}}</strong>
+          <small>{{.Agent.OperatingSystem}} / {{.Agent.Architecture}}</small>
+          {{else}}
+          <strong class="summary-card__value">Unknown</strong>
+          <small>Connect the agent to inspect its version.</small>
+          {{end}}
+        </article>
       </section>
 
       <div class="management-grid">
@@ -78,26 +88,71 @@
             >{{.Error}}</div>
             {{end}}
 
-            <label class="field field--editor">
-              <span>Configuration JSON</span>
-              <textarea
-                id="config-json"
-                name="config_json"
-                rows="24"
-                maxlength="4194304"
-                autocomplete="off"
-                autocapitalize="off"
-                spellcheck="false"
-                wrap="off"
-                required
-                {{if not .Agent.ConfigurationEditable}}readonly{{end}}
-                {{if eq .ErrorField "config_json"}}autofocus aria-invalid="true" aria-describedby="configuration-help configuration-form-error"{{else}}aria-invalid="false" aria-describedby="configuration-help"{{end}}
-              >{{.Agent.Configuration}}</textarea>
-              <small id="configuration-help">{{.Agent.ConfigurationHint}}</small>
-            </label>
+            <div class="config-mode-tabs" role="tablist" aria-label="Configuration editor mode">
+              <button class="config-mode-tab is-active" type="button" role="tab" aria-selected="true" data-config-tab="guided">Guided editor</button>
+              <button class="config-mode-tab" type="button" role="tab" aria-selected="false" data-config-tab="advanced">Advanced JSON</button>
+            </div>
+
+            <section class="guided-config" data-config-panel="guided">
+              <div class="notice notice--warning guided-config__notice" data-guided-warning hidden></div>
+              <section class="builder-section" aria-labelledby="inbound-builder-heading">
+                <div class="builder-section__header">
+                  <div><h3 id="inbound-builder-heading">Inbounds and users</h3><p>Shadowsocks 2022, AnyTLS, and Hysteria2 listeners.</p></div>
+                  <button class="button button--secondary button--small" type="button" data-add-inbound {{if not .Agent.ConfigurationEditable}}disabled{{end}}>Add inbound</button>
+                </div>
+                <div class="builder-list" data-inbound-list></div>
+              </section>
+              <section class="builder-section" aria-labelledby="outbound-builder-heading">
+                <div class="builder-section__header">
+                  <div><h3 id="outbound-builder-heading">Outbounds</h3><p>Direct, block, or externally supplied outbound JSON.</p></div>
+                  <button class="button button--secondary button--small" type="button" data-add-outbound {{if not .Agent.ConfigurationEditable}}disabled{{end}}>Add outbound</button>
+                </div>
+                <div class="builder-list" data-outbound-list></div>
+              </section>
+              <section class="builder-section" aria-labelledby="ruleset-builder-heading">
+                <div class="builder-section__header">
+                  <div><h3 id="ruleset-builder-heading">Geo rule sets</h3><p>Official SagerNet geosite/geoip rule sets or a custom remote SRS URL.</p></div>
+                  <button class="button button--secondary button--small" type="button" data-add-rule-set {{if not .Agent.ConfigurationEditable}}disabled{{end}}>Add rule set</button>
+                </div>
+                <div class="builder-list" data-rule-set-list></div>
+              </section>
+              <section class="builder-section" aria-labelledby="route-builder-heading">
+                <div class="builder-section__header">
+                  <div><h3 id="route-builder-heading">Routing rules</h3><p>Route by inbound, protocol, domain, IP, user, network, or rule set.</p></div>
+                  <button class="button button--secondary button--small" type="button" data-add-route-rule {{if not .Agent.ConfigurationEditable}}disabled{{end}}>Add rule</button>
+                </div>
+                <div class="builder-list" data-route-rule-list></div>
+                <label class="field builder-final-outbound">
+                  <span>Default outbound</span>
+                  <input type="text" data-route-final list="outbound-tags" placeholder="direct-out" {{if not .Agent.ConfigurationEditable}}disabled{{end}}>
+                  <small>Used when no routing rule matches.</small>
+                </label>
+              </section>
+            </section>
+
+            <section data-config-panel="advanced" hidden>
+              <label class="field field--editor">
+                <span>Configuration JSON</span>
+                <textarea
+                  id="config-json"
+                  name="config_json"
+                  rows="28"
+                  maxlength="4194304"
+                  autocomplete="off"
+                  autocapitalize="off"
+                  spellcheck="false"
+                  wrap="off"
+                  required
+                  {{if not .Agent.ConfigurationEditable}}readonly{{end}}
+                  {{if eq .ErrorField "config_json"}}autofocus aria-invalid="true" aria-describedby="configuration-help configuration-form-error"{{else}}aria-invalid="false" aria-describedby="configuration-help"{{end}}
+                >{{.Agent.Configuration}}</textarea>
+                <small id="configuration-help">{{.Agent.ConfigurationHint}}</small>
+              </label>
+            </section>
+            <datalist id="outbound-tags" data-outbound-tags></datalist>
 
             <div class="configuration-form__actions">
-              <span class="muted">Maximum size: 4 MiB</span>
+              <span class="muted" data-config-summary>Maximum size: 4 MiB</span>
               <button
                 class="button button--primary"
                 type="submit"
@@ -107,9 +162,164 @@
               >Validate and deploy</button>
             </div>
           </form>
+
+          <template id="inbound-card-template">
+            <article class="builder-card" data-inbound-card>
+              <div class="builder-card__header">
+                <strong data-card-title>New inbound</strong>
+                <button class="button-link button-link--danger" type="button" data-remove-card>Remove</button>
+              </div>
+              <div class="builder-fields builder-fields--three">
+                <label class="field"><span>Protocol</span><select data-inbound-field="type"><option value="shadowsocks">Shadowsocks 2022</option><option value="anytls">AnyTLS</option><option value="hysteria2">Hysteria2</option></select></label>
+                <label class="field"><span>Tag</span><input type="text" data-inbound-field="tag" placeholder="proxy-in" maxlength="128" required></label>
+                <label class="field"><span>Listen port</span><input type="number" data-inbound-field="listen_port" min="1" max="65535" placeholder="8443" required></label>
+                <label class="field"><span>Listen address</span><input type="text" data-inbound-field="listen" value="::" placeholder="::"></label>
+                <label class="field" data-ss-field><span>2022 method</span><select data-inbound-field="method"><option value="2022-blake3-aes-128-gcm">AES-128-GCM</option><option value="2022-blake3-aes-256-gcm">AES-256-GCM</option><option value="2022-blake3-chacha20-poly1305">ChaCha20-Poly1305</option></select></label>
+                <label class="field" data-ss-field><span>Server key</span><span class="field-with-action"><input type="password" data-inbound-field="password" autocomplete="new-password" required><button type="button" class="button button--secondary button--small" data-generate-secret="server">Generate</button></span></label>
+                <label class="field" data-hy2-field hidden><span>Upload Mbps</span><input type="number" data-inbound-field="up_mbps" min="1" max="1000000" placeholder="100"></label>
+                <label class="field" data-hy2-field hidden><span>Download Mbps</span><input type="number" data-inbound-field="down_mbps" min="1" max="1000000" placeholder="100"></label>
+                <label class="field" data-hy2-field hidden><span>Obfuscation</span><select data-inbound-field="obfs_type"><option value="">Disabled</option><option value="salamander">Salamander</option><option value="gecko">Gecko</option></select></label>
+                <label class="field" data-hy2-field hidden><span>Obfuscation password</span><span class="field-with-action"><input type="password" data-inbound-field="obfs_password" autocomplete="new-password"><button type="button" class="button button--secondary button--small" data-generate-secret="obfs">Generate</button></span></label>
+              </div>
+              <fieldset class="builder-subsection" data-tls-fields>
+                <legend>TLS certificate</legend>
+                <div class="builder-fields builder-fields--three">
+                  <label class="field"><span>Certificate mode</span><select data-inbound-field="tls_mode"><option value="acme">ACME HTTP-01 (Let's Encrypt)</option><option value="files">Certificate files / self-signed</option></select></label>
+                  <label class="field" data-acme-field><span>Domain</span><input type="text" data-inbound-field="tls_domain" placeholder="proxy.example.com"></label>
+                  <label class="field" data-acme-field><span>ACME email</span><input type="email" data-inbound-field="tls_email" placeholder="admin@example.com"></label>
+                  <label class="field" data-certificate-file-field hidden><span>Certificate path</span><input type="text" data-inbound-field="certificate_path" placeholder="/etc/theatropolis/certs/server.pem"></label>
+                  <label class="field" data-certificate-file-field hidden><span>Private key path</span><input type="text" data-inbound-field="key_path" placeholder="/etc/theatropolis/certs/server.key"></label>
+                </div>
+                <small>HTTP-01 reserves port 80. Proxy inbounds cannot listen on that port.</small>
+              </fieldset>
+              <fieldset class="builder-subsection">
+                <div class="builder-subsection__header"><legend>Users</legend><button class="button-link" type="button" data-add-user>Add user</button></div>
+                <div class="user-list" data-user-list></div>
+              </fieldset>
+            </article>
+          </template>
+
+          <template id="user-row-template">
+            <div class="user-row" data-user-row>
+              <label class="field"><span>Name</span><input type="text" data-user-field="name" maxlength="128" placeholder="user"></label>
+              <label class="field"><span>Password / key</span><span class="field-with-action"><input type="password" data-user-field="password" autocomplete="new-password" required><button type="button" class="button button--secondary button--small" data-generate-user-secret>Generate</button></span></label>
+              <button class="button-link button-link--danger user-row__remove" type="button" data-remove-user>Remove</button>
+            </div>
+          </template>
+
+          <template id="outbound-card-template">
+            <article class="builder-card" data-outbound-card>
+              <div class="builder-card__header"><strong data-card-title>New outbound</strong><button class="button-link button-link--danger" type="button" data-remove-card>Remove</button></div>
+              <div class="builder-fields">
+                <label class="field"><span>Kind</span><select data-outbound-field="kind"><option value="direct">Direct</option><option value="block">Block</option><option value="external">External outbound JSON</option></select></label>
+                <label class="field"><span>Tag</span><input type="text" data-outbound-field="tag" placeholder="direct-out" maxlength="128" required></label>
+              </div>
+              <label class="field" data-external-outbound-field hidden><span>Outbound JSON object</span><textarea data-outbound-field="json" rows="8" spellcheck="false" placeholder='{"type":"socks","server":"127.0.0.1","server_port":1080}'></textarea><small>The tag above is authoritative and will be merged into this object.</small></label>
+            </article>
+          </template>
+
+          <template id="rule-set-card-template">
+            <article class="builder-card" data-rule-set-card>
+              <div class="builder-card__header"><strong data-card-title>New rule set</strong><button class="button-link button-link--danger" type="button" data-remove-card>Remove</button></div>
+              <div class="builder-fields builder-fields--three">
+                <label class="field"><span>Source</span><select data-rule-set-field="kind"><option value="geosite">SagerNet geosite</option><option value="geoip">SagerNet geoip</option><option value="custom">Custom SRS URL</option></select></label>
+                <label class="field"><span>Name / tag</span><input type="text" data-rule-set-field="name" placeholder="openai" maxlength="128" required></label>
+                <label class="field" data-rule-set-url-field hidden><span>HTTPS URL</span><input type="url" data-rule-set-field="url" placeholder="https://example.com/rules.srs"></label>
+              </div>
+            </article>
+          </template>
+
+          <template id="route-rule-card-template">
+            <article class="builder-card" data-route-rule-card>
+              <div class="builder-card__header"><strong>Routing rule</strong><button class="button-link button-link--danger" type="button" data-remove-card>Remove</button></div>
+              <div class="builder-fields builder-fields--three">
+                <label class="field"><span>Inbound tags</span><input type="text" data-route-field="inbound" placeholder="proxy-in, another-in"></label>
+                <label class="field"><span>Match</span><select data-route-field="match_type"><option value="protocol">Protocol</option><option value="domain">Exact domain</option><option value="domain_suffix">Domain suffix</option><option value="domain_keyword">Domain keyword</option><option value="ip_cidr">IP/CIDR</option><option value="rule_set">Geo/custom rule set</option><option value="network">Network</option><option value="auth_user">Authenticated user</option></select></label>
+                <label class="field"><span>Match values</span><textarea data-route-field="match_values" rows="3" placeholder="tls, quic"></textarea></label>
+                <label class="field"><span>Outbound</span><input type="text" data-route-field="outbound" list="outbound-tags" placeholder="direct-out" required></label>
+              </div>
+            </article>
+          </template>
         </section>
 
         <aside class="management-aside">
+          <section class="panel update-card" aria-labelledby="agent-update-heading">
+            <div class="panel__header">
+              <div>
+                <h2 id="agent-update-heading">Agent software</h2>
+                <p>Remotely install a verified release.</p>
+              </div>
+            </div>
+            <div class="update-card__body">
+              {{if .Agent.Update}}
+              <dl class="detail-list detail-list--compact">
+                <div>
+                  <dt>Update status</dt>
+                  <dd>
+                    <span class="status status--{{.Agent.Update.StatusClass}}">
+                      <span aria-hidden="true"></span>{{.Agent.Update.StatusLabel}}
+                    </span>
+                  </dd>
+                </div>
+                <div>
+                  <dt>Target</dt>
+                  <dd><code>{{.Agent.Update.TargetVersion}}</code></dd>
+                </div>
+                <div>
+                  <dt>Reported running</dt>
+                  <dd><code>{{.Agent.Update.RunningVersion}}</code></dd>
+                </div>
+                <div>
+                  <dt>Updated</dt>
+                  <dd>{{.Agent.Update.UpdatedAt}}</dd>
+                </div>
+              </dl>
+              {{if .Agent.Update.Diagnostic}}
+              <div class="diagnostic">
+                <strong>Update diagnostic</strong>
+                <pre>{{.Agent.Update.Diagnostic}}</pre>
+              </div>
+              {{end}}
+              {{end}}
+              <form action="/servers/{{.Agent.ID}}/agent-update" method="post" class="stack stack--compact">
+                <input type="hidden" name="csrf_token" value="{{.CSRFToken}}">
+                <label class="field">
+                  <span>Target release</span>
+                  <input
+                    type="text"
+                    name="target_version"
+                    value="{{.Agent.UpdateTarget}}"
+                    list="agent-version-options"
+                    placeholder="v0.0.10"
+                    pattern="v[0-9]+\.[0-9]+\.[0-9]+([.-][A-Za-z0-9][A-Za-z0-9.-]*)?"
+                    maxlength="64"
+                    required
+                    {{if not .Agent.UpdateEnabled}}disabled{{end}}
+                    {{if eq .ErrorField "target_version"}}autofocus aria-invalid="true"{{else}}aria-invalid="false"{{end}}
+                  >
+                  <datalist id="agent-version-options">
+                    {{range .AgentVersions}}
+                    <option value="{{.Tag}}">{{.Branch}}</option>
+                    {{end}}
+                  </datalist>
+                  <small>{{.Agent.UpdateHint}}</small>
+                  {{if .ReleaseCatalogWarning}}
+                  <small class="field-warning">{{.ReleaseCatalogWarning}}</small>
+                  {{else}}
+                  <small>Published stable and testing releases are loaded from GitHub and cached by the master.</small>
+                  {{end}}
+                </label>
+                <button
+                  class="button button--secondary button--full"
+                  type="submit"
+                  data-submit-button
+                  data-submit-label="Requesting…"
+                  {{if not .Agent.UpdateEnabled}}disabled{{end}}
+                >Update agent</button>
+              </form>
+            </div>
+          </section>
+
           <section class="panel deployment-card" aria-labelledby="deployment-heading">
             <div class="panel__header">
               <div>
@@ -180,6 +390,7 @@
       </div>
     </main>
   </div>
+  <script src="/assets/config-editor.js?v={{.AssetVersion}}" defer></script>
   <script src="/assets/app.js?v={{.AssetVersion}}" defer></script>
 </body>
 </html>

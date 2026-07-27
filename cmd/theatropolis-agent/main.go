@@ -14,12 +14,14 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"syscall"
 	"time"
 
 	controlv1 "github.com/masterauguste/theatropolis/api/gen/theatropolis/control/v1"
 	"github.com/masterauguste/theatropolis/internal/agent"
+	"github.com/masterauguste/theatropolis/internal/agentupdate"
 	"github.com/masterauguste/theatropolis/internal/control"
 	"github.com/masterauguste/theatropolis/internal/identity"
 	"github.com/masterauguste/theatropolis/internal/singbox"
@@ -46,6 +48,9 @@ func main() {
 }
 
 func run(arguments []string) error {
+	if len(arguments) > 0 && arguments[0] == "apply-update" {
+		return runApplyUpdate(arguments[1:])
+	}
 	flags := flag.NewFlagSet("theatropolis-agent", flag.ContinueOnError)
 	flags.SetOutput(io.Discard)
 	masterAddress := flags.String("master", "", "master host and port")
@@ -67,9 +72,8 @@ func run(arguments []string) error {
 		return nil
 	}
 	if flags.NArg() != 0 ||
-		strings.TrimSpace(*masterAddress) == "" ||
-		strings.TrimSpace(*agentID) == "" {
-		return errors.New("--master and --agent-id are required")
+		strings.TrimSpace(*masterAddress) == "" {
+		return errors.New("--master is required")
 	}
 
 	host, _, err := net.SplitHostPort(*masterAddress)
@@ -93,9 +97,26 @@ func run(arguments []string) error {
 	}
 	defer connection.Close()
 
-	privateKey, err := identity.LoadOrCreatePrivateKey(
-		filepath.Join(*stateDirectory, "identity.pem"),
-	)
+	identityPath := filepath.Join(*stateDirectory, "identity.pem")
+	agentIDPath := filepath.Join(*stateDirectory, "agent-id")
+	storedAgentID, err := identity.LoadAgentID(agentIDPath)
+	if err != nil {
+		return err
+	}
+	configuredAgentID := strings.TrimSpace(*agentID)
+	if configuredAgentID != "" && !identity.ValidAgentID(configuredAgentID) {
+		return errors.New("--agent-id is invalid")
+	}
+	if storedAgentID != "" &&
+		configuredAgentID != "" &&
+		storedAgentID != configuredAgentID {
+		return errors.New("--agent-id does not match the stored agent identity")
+	}
+	if storedAgentID == "" {
+		storedAgentID = configuredAgentID
+	}
+
+	privateKey, err := identity.LoadOrCreatePrivateKey(identityPath)
 	if err != nil {
 		return err
 	}
@@ -122,18 +143,39 @@ func run(arguments []string) error {
 		}
 	}
 	runner := &agent.Runner{
-		AgentID:      *agentID,
+		AgentID:      storedAgentID,
 		AgentVersion: version,
 		PrivateKey:   privateKey,
 		Validator:    validator,
 	}
+	updater, err := agentupdate.NewScheduler(*stateDirectory)
+	if err != nil {
+		return fmt.Errorf("configure agent updater: %w", err)
+	}
+	runner.Updater = updater
 	if manager != nil {
 		runner.Manager = manager
 	}
 	client := controlv1.NewAgentControlServiceClient(connection)
 	if strings.TrimSpace(*tokenFile) != "" {
-		if err := enrollFromFile(context.Background(), runner, client, *tokenFile); err != nil {
+		if err := enrollFromFile(
+			context.Background(),
+			runner,
+			client,
+			*tokenFile,
+			agentIDPath,
+		); err != nil {
 			return err
+		}
+	}
+	if runner.AgentID == "" {
+		return errors.New(
+			"agent identity is unavailable; enroll with a token or upgrade using the existing installer configuration",
+		)
+	}
+	if storedAgentID == "" || configuredAgentID != "" {
+		if err := identity.StoreAgentID(agentIDPath, runner.AgentID); err != nil {
+			return fmt.Errorf("persist agent identity: %w", err)
 		}
 	}
 
@@ -146,10 +188,39 @@ func run(arguments []string) error {
 	slog.Info(
 		"theatropolis agent starting",
 		"version", version,
-		"agent_id", *agentID,
+		"agent_id", runner.AgentID,
 		"master", *masterAddress,
 	)
 	return runner.Run(ctx, client)
+}
+
+func runApplyUpdate(arguments []string) error {
+	flags := flag.NewFlagSet("theatropolis-agent apply-update", flag.ContinueOnError)
+	flags.SetOutput(io.Discard)
+	stateDirectory := flags.String(
+		"state-dir",
+		"/var/lib/theatropolis/agent",
+		"agent state directory",
+	)
+	installPath := flags.String(
+		"install-path",
+		"/usr/local/bin/theatropolis-agent",
+		"installed agent binary",
+	)
+	if err := flags.Parse(arguments); err != nil {
+		return err
+	}
+	if flags.NArg() != 0 {
+		return errors.New("apply-update does not accept positional arguments")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
+	defer cancel()
+	return agentupdate.Apply(ctx, agentupdate.ApplyOptions{
+		StateDirectory: *stateDirectory,
+		InstallPath:    *installPath,
+		Architecture:   runtime.GOARCH,
+		RunningVersion: version,
+	})
 }
 
 func secureTLSConfig(serverName, caFile string) (*tls.Config, error) {
@@ -187,6 +258,7 @@ func enrollFromFile(
 	runner *agent.Runner,
 	client controlv1.AgentControlServiceClient,
 	path string,
+	agentIDPath string,
 ) error {
 	info, err := os.Lstat(path)
 	if errors.Is(err, os.ErrNotExist) {
@@ -210,6 +282,9 @@ func enrollFromFile(
 	defer cancel()
 	if err := runner.Enroll(enrollCtx, client, token); err != nil {
 		return err
+	}
+	if err := identity.StoreAgentID(agentIDPath, runner.AgentID); err != nil {
+		return fmt.Errorf("persist enrolled agent identity: %w", err)
 	}
 	for index := range token {
 		token[index] = 0

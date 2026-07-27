@@ -25,6 +25,8 @@ import (
 	"sync"
 	"time"
 
+	"github.com/masterauguste/theatropolis/internal/agentupdate"
+	"github.com/masterauguste/theatropolis/internal/control"
 	"github.com/masterauguste/theatropolis/internal/deployment"
 	"github.com/masterauguste/theatropolis/internal/identity"
 	"github.com/masterauguste/theatropolis/internal/singbox"
@@ -58,10 +60,14 @@ var (
 
 type SessionRegistry interface {
 	IsOnline(agentID string) bool
+	AgentInfo(agentID string) (control.AgentInfo, bool)
 }
 
 type AgentController interface {
 	CanDeployConfiguration(agentID string) bool
+	CanUpdateAgent(agentID string) bool
+	LatestAgentUpdate(agentID string) (control.AgentUpdateState, bool)
+	QueueAgentUpdate(context.Context, string, string, string) error
 	LatestDeployment(context.Context, string) (deployment.Record, error)
 	QueueDeployment(
 		context.Context,
@@ -79,6 +85,7 @@ type Options struct {
 	Sessions   SessionRegistry
 	Controller AgentController
 	Access     *AccessManager
+	Releases   ReleaseCatalog
 	PublicURL  string
 	Version    string
 	Logger     *slog.Logger
@@ -90,6 +97,7 @@ type Handler struct {
 	sessions      SessionRegistry
 	controller    AgentController
 	access        *AccessManager
+	releases      ReleaseCatalog
 	publicURL     string
 	publicScheme  string
 	publicHost    string
@@ -116,21 +124,23 @@ type Handler struct {
 }
 
 type pageData struct {
-	Title         string
-	AssetVersion  string
-	PublicURL     string
-	MasterAddress string
-	CSRFToken     string
-	Error         string
-	ErrorField    string
-	Username      string
-	LegacyLogin   bool
-	AgentID       string
-	TTLSeconds    int64
-	Stats         fleetStats
-	Agents        []agentView
-	Agent         *agentDetailView
-	Created       *createdServerView
+	Title                 string
+	AssetVersion          string
+	PublicURL             string
+	MasterAddress         string
+	CSRFToken             string
+	Error                 string
+	ErrorField            string
+	Username              string
+	LegacyLogin           bool
+	AgentID               string
+	TTLSeconds            int64
+	Stats                 fleetStats
+	Agents                []agentView
+	Agent                 *agentDetailView
+	Created               *createdServerView
+	AgentVersions         []agentVersionView
+	ReleaseCatalogWarning string
 }
 
 type fleetStats struct {
@@ -165,7 +175,28 @@ type agentDetailView struct {
 	ConfigurationEditable bool
 	ConfigurationHint     string
 	Deployment            *deploymentView
+	AgentVersion          string
+	OperatingSystem       string
+	Architecture          string
+	UpdateEnabled         bool
+	UpdateHint            string
+	UpdateTarget          string
+	Update                *agentUpdateView
 	RevokeLabel           string
+}
+
+type agentUpdateView struct {
+	TargetVersion  string
+	RunningVersion string
+	StatusLabel    string
+	StatusClass    string
+	Diagnostic     string
+	UpdatedAt      string
+}
+
+type agentVersionView struct {
+	Tag    string
+	Branch string
 }
 
 type deploymentView struct {
@@ -232,6 +263,7 @@ func New(options Options) (http.Handler, error) {
 		sessions:      options.Sessions,
 		controller:    options.Controller,
 		access:        options.Access,
+		releases:      options.Releases,
 		publicURL:     public.origin,
 		publicScheme:  public.scheme,
 		publicHost:    public.hostname,
@@ -268,6 +300,7 @@ func (h *Handler) routes() {
 		h.deployServerConfiguration,
 	)
 	h.mux.HandleFunc("POST /servers/{agent_id}/revoke", h.revokeServer)
+	h.mux.HandleFunc("POST /servers/{agent_id}/agent-update", h.updateAgent)
 	h.mux.HandleFunc("POST /servers", h.createServer)
 	h.mux.HandleFunc("GET /", h.root)
 }
@@ -753,6 +786,119 @@ func (h *Handler) revokeServer(response http.ResponseWriter, request *http.Reque
 	http.Redirect(response, request, "/servers", http.StatusSeeOther)
 }
 
+func (h *Handler) updateAgent(response http.ResponseWriter, request *http.Request) {
+	sessionToken, ok := h.sessionToken(request)
+	if !ok {
+		h.redirectToLogin(response, request)
+		return
+	}
+	if h.rejectInvalidMutationOrigin(response, request) {
+		return
+	}
+	form, err := readExactForm(
+		response,
+		request,
+		maxEnrollmentBodyBytes,
+		"csrf_token",
+		"target_version",
+	)
+	if err != nil || !h.access.AuthorizeCSRF(sessionToken, form.Get("csrf_token")) {
+		http.Error(response, "request was not authorized", http.StatusForbidden)
+		return
+	}
+	session, err := h.access.Authenticate(sessionToken)
+	if err != nil {
+		h.redirectToLogin(response, request)
+		return
+	}
+	snapshot, ok := h.agentSnapshot(request.PathValue("agent_id"))
+	if !ok {
+		http.NotFound(response, request)
+		return
+	}
+	targetVersion := strings.TrimSpace(form.Get("target_version"))
+	if !agentupdate.ValidVersion(targetVersion) {
+		h.renderAgentUpdateError(
+			response,
+			http.StatusBadRequest,
+			session,
+			snapshot,
+			targetVersion,
+			"Enter an exact release such as v0.0.10.",
+		)
+		return
+	}
+	if snapshot.State != identity.AgentStateEnrolled ||
+		!h.controller.CanUpdateAgent(snapshot.ID) {
+		h.renderAgentUpdateError(
+			response,
+			http.StatusConflict,
+			session,
+			snapshot,
+			targetVersion,
+			"Update control is unavailable until this server is online with a compatible agent.",
+		)
+		return
+	}
+	requestID, err := randomOpaqueID("update")
+	if err != nil {
+		h.logger.Error("generate agent update ID", "agent_id", snapshot.ID, "error", err)
+		http.Error(response, "agent update could not be prepared", http.StatusInternalServerError)
+		return
+	}
+	if err := h.controller.QueueAgentUpdate(
+		request.Context(),
+		snapshot.ID,
+		requestID,
+		targetVersion,
+	); err != nil {
+		status := http.StatusConflict
+		message := "The agent could not accept the update request."
+		if errors.Is(err, control.ErrAgentOffline) {
+			message = "The agent went offline before the update request could be delivered."
+		}
+		if !errors.Is(err, agentupdate.ErrUpdatePending) &&
+			!errors.Is(err, control.ErrAgentOffline) {
+			h.logger.Error("queue agent update", "agent_id", snapshot.ID, "error", err)
+			status = http.StatusInternalServerError
+		}
+		h.renderAgentUpdateError(
+			response,
+			status,
+			session,
+			snapshot,
+			targetVersion,
+			message,
+		)
+		return
+	}
+	http.Redirect(response, request, "/servers/"+url.PathEscape(snapshot.ID)+"/manage", http.StatusSeeOther)
+}
+
+func (h *Handler) renderAgentUpdateError(
+	response http.ResponseWriter,
+	status int,
+	session Session,
+	snapshot identity.AgentSnapshot,
+	targetVersion string,
+	message string,
+) {
+	data, err := h.serverPageData(
+		context.Background(),
+		session,
+		snapshot,
+		"",
+	)
+	if err != nil {
+		http.Error(response, "server details could not be loaded", http.StatusInternalServerError)
+		return
+	}
+	data.Error = message
+	data.ErrorField = "target_version"
+	data.Agent.UpdateTarget = targetVersion
+	h.render(response, status, "server.html", data)
+}
+
 func (h *Handler) serverPageData(
 	ctx context.Context,
 	session Session,
@@ -775,6 +921,11 @@ func (h *Handler) serverPageData(
 		Configuration:       defaultConfigurationJSON,
 		RevokeLabel:         "Remove server entry",
 	}
+	if info, exists := h.sessions.AgentInfo(snapshot.ID); exists {
+		detail.AgentVersion = info.Version
+		detail.OperatingSystem = info.OperatingSystem
+		detail.Architecture = info.Architecture
+	}
 	switch snapshot.State {
 	case identity.AgentStatePending:
 		detail.ConfigurationHint = "The server must enroll before it can receive configuration."
@@ -792,6 +943,14 @@ func (h *Handler) serverPageData(
 			detail.ConfigurationEnabled = true
 			detail.ConfigurationEditable = true
 			detail.ConfigurationHint = "The agent checks the JSON with sing-box, atomically activates it, and rolls back if startup fails."
+		}
+		if h.controller.CanUpdateAgent(snapshot.ID) {
+			detail.UpdateEnabled = true
+			detail.UpdateHint = "Choose an exact published Theatropolis release. The agent verifies the official checksum before replacing itself."
+		} else if online {
+			detail.UpdateHint = "Install the current agent once manually to enable secure remote updates."
+		} else {
+			detail.UpdateHint = "The agent must be online before an update can be requested."
 		}
 	}
 
@@ -811,11 +970,63 @@ func (h *Handler) serverPageData(
 	if configurationOverride != "" {
 		detail.Configuration = configurationOverride
 	}
+	if update, exists := h.controller.LatestAgentUpdate(snapshot.ID); exists {
+		detail.Update = agentUpdateViewFor(update)
+		detail.UpdateTarget = update.TargetVersion
+	}
+	versions, catalogWarning := h.agentVersions(ctx)
 	return pageData{
-		Title:     snapshot.ID,
-		CSRFToken: session.CSRFToken,
-		Agent:     detail,
+		Title:                 snapshot.ID,
+		CSRFToken:             session.CSRFToken,
+		Agent:                 detail,
+		AgentVersions:         versions,
+		ReleaseCatalogWarning: catalogWarning,
 	}, nil
+}
+
+func (h *Handler) agentVersions(ctx context.Context) ([]agentVersionView, string) {
+	if h.releases == nil {
+		return nil, "The release catalog is unavailable; enter an exact tag manually."
+	}
+	releases, err := h.releases.Versions(ctx)
+	if err != nil {
+		h.logger.Warn("load agent release catalog", "error", err)
+		return nil, "GitHub releases could not be loaded; enter an exact tag manually."
+	}
+	versions := make([]agentVersionView, 0, len(releases))
+	for _, release := range releases {
+		branch := "Stable"
+		if release.Prerelease {
+			branch = "Testing"
+		}
+		versions = append(versions, agentVersionView{
+			Tag:    release.Tag,
+			Branch: branch,
+		})
+	}
+	return versions, ""
+}
+
+func agentUpdateViewFor(state control.AgentUpdateState) *agentUpdateView {
+	label := "Unknown"
+	if state.Status != "" {
+		label = strings.ToUpper(state.Status[:1]) + state.Status[1:]
+	}
+	class := "pending"
+	switch state.Status {
+	case "applied":
+		class = "enrolled"
+	case "failed", "rejected":
+		class = "expired"
+	}
+	return &agentUpdateView{
+		TargetVersion:  state.TargetVersion,
+		RunningVersion: state.RunningVersion,
+		StatusLabel:    label,
+		StatusClass:    class,
+		Diagnostic:     state.Diagnostic,
+		UpdatedAt:      state.UpdatedAt.UTC().Format("2 Jan 2006, 15:04:05 UTC"),
+	}
 }
 
 func (h *Handler) renderServerError(
@@ -989,7 +1200,7 @@ func (h *Handler) createServer(response http.ResponseWriter, request *http.Reque
 	defer clear(token)
 	created := createdServerView{
 		AgentID:        agentID,
-		InstallCommand: h.installCommand(agentID, encodedToken),
+		InstallCommand: h.installCommand(encodedToken),
 		ExpiresAt:      expiresAt.UTC().Format("2 Jan 2006, 15:04 UTC"),
 		ExpiresAtISO:   expiresAt.UTC().Format(time.RFC3339),
 	}
@@ -1223,11 +1434,10 @@ func randomOpaqueID(prefix string) (string, error) {
 	return prefix + "_" + encoded, nil
 }
 
-func (h *Handler) installCommand(agentID, token string) string {
+func (h *Handler) installCommand(token string) string {
 	return "curl --proto '=https' --tlsv1.2 -fsSL " +
 		"https://raw.githubusercontent.com/masterauguste/theatropolis/main/install.sh" +
 		" | sudo sh -s -- agent --master " + shellQuote(h.masterAddress) +
-		" --agent-id " + shellQuote(agentID) +
 		" --token " + shellQuote(token)
 }
 

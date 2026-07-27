@@ -17,6 +17,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/masterauguste/theatropolis/internal/control"
 	"github.com/masterauguste/theatropolis/internal/deployment"
 	"github.com/masterauguste/theatropolis/internal/identity"
 )
@@ -29,13 +30,71 @@ func (s testSessions) IsOnline(agentID string) bool {
 	return s[agentID]
 }
 
+type testReleaseCatalog struct {
+	releases []AgentRelease
+	err      error
+}
+
+func (c testReleaseCatalog) Versions(context.Context) ([]AgentRelease, error) {
+	return append([]AgentRelease(nil), c.releases...), c.err
+}
+
+func (s testSessions) AgentInfo(agentID string) (control.AgentInfo, bool) {
+	if !s[agentID] {
+		return control.AgentInfo{}, false
+	}
+	return control.AgentInfo{
+		Version:         "v0.0.9",
+		OperatingSystem: "linux",
+		Architecture:    "amd64",
+	}, true
+}
+
 type testAgentController struct {
 	registry   *identity.Registry
 	sessions   testSessions
 	store      deployment.Store
 	deployable map[string]bool
+	updatable  map[string]bool
+	updates    map[string]control.AgentUpdateState
 	queueErr   error
 	revokeErr  error
+}
+
+func (c *testAgentController) CanUpdateAgent(agentID string) bool {
+	if c.updatable != nil {
+		return c.updatable[agentID]
+	}
+	return c.sessions[agentID]
+}
+
+func (c *testAgentController) LatestAgentUpdate(
+	agentID string,
+) (control.AgentUpdateState, bool) {
+	state, exists := c.updates[agentID]
+	return state, exists
+}
+
+func (c *testAgentController) QueueAgentUpdate(
+	_ context.Context,
+	agentID string,
+	requestID string,
+	targetVersion string,
+) error {
+	if c.queueErr != nil {
+		return c.queueErr
+	}
+	if c.updates == nil {
+		c.updates = make(map[string]control.AgentUpdateState)
+	}
+	c.updates[agentID] = control.AgentUpdateState{
+		RequestID:      requestID,
+		TargetVersion:  targetVersion,
+		RunningVersion: "v0.0.9",
+		Status:         "requested",
+		UpdatedAt:      time.Now().UTC(),
+	}
+	return nil
 }
 
 func (c *testAgentController) CanDeployConfiguration(agentID string) bool {
@@ -913,6 +972,83 @@ func TestConfigurationDeploymentRejectsOfflineOrOutdatedAgent(t *testing.T) {
 	}
 }
 
+func TestAgentUpdateQueuesExactSelectedVersion(t *testing.T) {
+	t.Parallel()
+
+	fixture := newWebFixture(t)
+	enrollAgent(t, fixture.registry, "edge-online")
+	form := url.Values{
+		"csrf_token":     {fixture.session.CSRFToken},
+		"target_version": {"v1.14.0-beta.7"},
+	}.Encode()
+	request := fixture.authenticatedMutationRequest(
+		http.MethodPost,
+		"/servers/edge-online/agent-update",
+		form,
+	)
+	response := httptest.NewRecorder()
+	fixture.handler.ServeHTTP(response, request)
+	if response.Code != http.StatusSeeOther {
+		t.Fatalf("update response = %d %q", response.Code, response.Body.String())
+	}
+	state, exists := fixture.controller.updates["edge-online"]
+	if !exists || state.TargetVersion != "v1.14.0-beta.7" {
+		t.Fatalf("queued update = %+v, exists=%v", state, exists)
+	}
+	if !regexp.MustCompile(`\Aupdate_[A-Za-z0-9_-]+\z`).MatchString(state.RequestID) {
+		t.Fatalf("generated update request ID = %q", state.RequestID)
+	}
+}
+
+func TestAgentUpdateRejectsUnversionedTarget(t *testing.T) {
+	t.Parallel()
+
+	fixture := newWebFixture(t)
+	enrollAgent(t, fixture.registry, "edge-online")
+	form := url.Values{
+		"csrf_token":     {fixture.session.CSRFToken},
+		"target_version": {"latest"},
+	}.Encode()
+	request := fixture.authenticatedMutationRequest(
+		http.MethodPost,
+		"/servers/edge-online/agent-update",
+		form,
+	)
+	response := httptest.NewRecorder()
+	fixture.handler.ServeHTTP(response, request)
+	if response.Code != http.StatusBadRequest ||
+		!strings.Contains(response.Body.String(), "Enter an exact release") {
+		t.Fatalf("invalid update response = %d %q", response.Code, response.Body.String())
+	}
+	if _, exists := fixture.controller.updates["edge-online"]; exists {
+		t.Fatal("invalid update was queued")
+	}
+}
+
+func TestServerPageListsStableAndTestingAgentReleases(t *testing.T) {
+	t.Parallel()
+
+	fixture := newWebFixture(t)
+	enrollAgent(t, fixture.registry, "edge-online")
+	fixture.handler.(*Handler).releases = testReleaseCatalog{releases: []AgentRelease{
+		{Tag: "v1.14.0-beta.7", Prerelease: true},
+		{Tag: "v1.13.2", Prerelease: false},
+	}}
+	request := fixture.authenticatedRequest(
+		http.MethodGet,
+		"/servers/edge-online/manage",
+		"",
+	)
+	response := httptest.NewRecorder()
+	fixture.handler.ServeHTTP(response, request)
+	body := response.Body.String()
+	if response.Code != http.StatusOK ||
+		!strings.Contains(body, `value="v1.14.0-beta.7">Testing`) ||
+		!strings.Contains(body, `value="v1.13.2">Stable`) {
+		t.Fatalf("release options response = %d %q", response.Code, body)
+	}
+}
+
 func TestRevokeServerRequiresOriginCSRFAndMatchingIdentity(t *testing.T) {
 	t.Parallel()
 
@@ -1062,12 +1198,14 @@ func TestCreateServerRequiresCSRFAndRevealsCommandOnce(t *testing.T) {
 	for _, expected := range []string{
 		"Install edge-paris-1",
 		"--master &#39;master.example.com:8443&#39;",
-		"--agent-id &#39;edge-paris-1&#39;",
 		"Shown once.",
 	} {
 		if !strings.Contains(body, expected) {
 			t.Errorf("created page does not contain %q", expected)
 		}
+	}
+	if strings.Contains(body, "--agent-id") {
+		t.Fatal("token-only enrollment command redundantly contains an agent ID")
 	}
 	tokenPattern := regexp.MustCompile(`--token &#39;([A-Za-z0-9_-]{43})&#39;`)
 	match := tokenPattern.FindStringSubmatch(body)

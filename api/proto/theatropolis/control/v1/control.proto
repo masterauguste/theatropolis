@@ -35,6 +35,7 @@ message AgentFrame {
     ConfigValidationReport config_validation_report = 13;
     ConfigDeploymentReport config_deployment_report = 14;
     ConfigRuntimeReport config_runtime_report = 15;
+    AgentUpdateReport agent_update_report = 16;
   }
 }
 
@@ -46,6 +47,7 @@ message MasterFrame {
     AuthenticationResult authentication_result = 11;
     ValidateConfigCommand validate_config = 12;
     DeployConfigCommand deploy_config = 13;
+    AgentUpdateCommand update_agent = 14;
   }
 }
 
@@ -145,4 +147,26 @@ message ConfigRuntimeReport {
   ConfigRuntimeStatus status = 2;
   string diagnostic = 3;
   int64 observed_at_unix = 4;
+}
+
+message AgentUpdateCommand {
+  string request_id = 1;
+  string target_version = 2;
+}
+
+enum AgentUpdateStatus {
+  AGENT_UPDATE_STATUS_UNSPECIFIED = 0;
+  AGENT_UPDATE_STATUS_SCHEDULED = 1;
+  AGENT_UPDATE_STATUS_APPLIED = 2;
+  AGENT_UPDATE_STATUS_FAILED = 3;
+  AGENT_UPDATE_STATUS_REJECTED = 4;
+}
+
+message AgentUpdateReport {
+  string request_id = 1;
+  string target_version = 2;
+  string running_version = 3;
+  AgentUpdateStatus status = 4;
+  string diagnostic = 5;
+  int64 observed_at_unix = 6;
 }
