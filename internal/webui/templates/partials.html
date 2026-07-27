@@ -30,13 +30,9 @@
     </a>
   </nav>
   <div class="sidebar__footer">
-    <div class="endpoint-card">
-      <span>Master endpoint</span>
-      <strong>{{.PublicURL}}</strong>
-    </div>
     <form action="/logout" method="post">
       <input type="hidden" name="csrf_token" value="{{.CSRFToken}}">
-      <button class="button button--quiet button--full" type="submit">Sign out</button>
+      <button class="button button--quiet button--full button--small" type="submit">Sign out</button>
     </form>
   </div>
 </aside>

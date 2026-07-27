@@ -99,14 +99,36 @@ func run(arguments []string) error {
 	if err != nil {
 		return err
 	}
+	validator := singbox.Validator{
+		BinaryPath:     *singBoxPath,
+		StateDirectory: *stateDirectory,
+	}
+	var manager *singbox.Manager
+	if err := singbox.CheckSupportedExecutable(
+		context.Background(),
+		*singBoxPath,
+	); err != nil {
+		slog.Warn(
+			"sing-box configuration control is unavailable",
+			"error",
+			err,
+		)
+	} else {
+		manager, err = singbox.NewManager(singbox.ManagerOptions{
+			Validator: validator,
+		})
+		if err != nil {
+			return fmt.Errorf("configure sing-box manager: %w", err)
+		}
+	}
 	runner := &agent.Runner{
 		AgentID:      *agentID,
 		AgentVersion: version,
 		PrivateKey:   privateKey,
-		Validator: singbox.Validator{
-			BinaryPath:     *singBoxPath,
-			StateDirectory: *stateDirectory,
-		},
+		Validator:    validator,
+	}
+	if manager != nil {
+		runner.Manager = manager
 	}
 	client := controlv1.NewAgentControlServiceClient(connection)
 	if strings.TrimSpace(*tokenFile) != "" {

@@ -15,16 +15,19 @@ import (
 	controlv1 "github.com/masterauguste/theatropolis/api/gen/theatropolis/control/v1"
 	"github.com/masterauguste/theatropolis/internal/deployment"
 	"github.com/masterauguste/theatropolis/internal/identity"
+	"github.com/masterauguste/theatropolis/internal/singbox"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 )
 
 const (
 	ProtocolVersion        = 1
+	ConfigDeployCapability = "config-deploy-v1"
 	DefaultChallengeTTL    = 30 * time.Second
 	DefaultCommandQueue    = 16
 	DefaultMaxConfigBytes  = 4 << 20
 	DefaultValidationLimit = 60 * time.Second
+	DeploymentReportGrace  = 2 * time.Minute
 	MaxDiagnosticBytes     = 8 << 10
 )
 
@@ -42,6 +45,12 @@ type Server struct {
 	Sessions    *SessionRegistry
 	Logger      *slog.Logger
 	Now         func() time.Time
+
+	// authorizationMu linearizes enrollment, the final Connect authorization
+	// check/session registration, and revocation. Without this barrier a
+	// Connect call could authenticate with a public key fetched just before
+	// that key was revoked, then register a live session afterward.
+	authorizationMu sync.Mutex
 }
 
 func NewServer(
@@ -78,13 +87,16 @@ func (s *Server) Enroll(
 	}
 
 	now := s.now()
-	if err := s.Identities.Enroll(
+	s.authorizationMu.Lock()
+	err := s.Identities.Enroll(
 		ctx,
 		request.GetAgentId(),
 		request.GetEnrollmentToken(),
 		request.GetPublicKey(),
 		now,
-	); err != nil {
+	)
+	s.authorizationMu.Unlock()
+	if err != nil {
 		if errors.Is(err, identity.ErrInvalidAgentID) ||
 			errors.Is(err, identity.ErrInvalidPublicKey) {
 			return nil, status.Error(codes.InvalidArgument, "invalid enrollment request")
@@ -99,6 +111,29 @@ func (s *Server) Enroll(
 	}, nil
 }
 
+// RevokeAgent durably revokes every enrollment credential for agentID and
+// invalidates its active control session before returning. It is the
+// revocation entry point for master-local callers such as the web interface.
+func (s *Server) RevokeAgent(ctx context.Context, agentID string) error {
+	s.authorizationMu.Lock()
+	defer s.authorizationMu.Unlock()
+
+	if err := s.Deployments.RemoveAgent(ctx, agentID); err != nil &&
+		!errors.Is(err, deployment.ErrNotFound) {
+		return fmt.Errorf("remove agent deployment data: %w", err)
+	}
+	if err := s.Identities.Revoke(ctx, agentID); err != nil {
+		return err
+	}
+	connected := s.Sessions.Disconnect(agentID)
+	s.Logger.Info(
+		"agent revoked",
+		"agent_id", agentID,
+		"was_connected", connected,
+	)
+	return nil
+}
+
 func (s *Server) Connect(stream controlv1.AgentControlService_ConnectServer) error {
 	ctx := stream.Context()
 	firstFrame, err := stream.Recv()
@@ -109,7 +144,8 @@ func (s *Server) Connect(stream controlv1.AgentControlService_ConnectServer) err
 	if hello == nil ||
 		firstFrame.GetSequence() == 0 ||
 		hello.GetAgentId() == "" ||
-		hello.GetProtocolVersion() != ProtocolVersion {
+		hello.GetProtocolVersion() != ProtocolVersion ||
+		!validCapabilities(hello.GetCapabilities()) {
 		return status.Error(codes.InvalidArgument, "expected a compatible agent hello")
 	}
 
@@ -159,15 +195,44 @@ func (s *Server) Connect(stream controlv1.AgentControlService_ConnectServer) err
 		_ = stream.Send(authResult)
 		return status.Error(codes.Unauthenticated, "agent authentication failed")
 	}
-	if err := stream.Send(authResult); err != nil {
-		return err
-	}
 
 	session := newSession(hello.GetAgentId())
-	if err := s.Sessions.Register(session); err != nil {
+	for _, capability := range hello.GetCapabilities() {
+		session.capabilities[capability] = struct{}{}
+	}
+	s.authorizationMu.Lock()
+	currentPublicKey, currentKeyErr := s.Identities.PublicKey(ctx, hello.GetAgentId())
+	stillAuthorized := currentKeyErr == nil && bytes.Equal(currentPublicKey, publicKey)
+	var registerErr error
+	if stillAuthorized {
+		registerErr = s.Sessions.Register(session)
+	}
+	s.authorizationMu.Unlock()
+	if !stillAuthorized {
+		authResult.GetAuthenticationResult().Authenticated = false
+		authResult.GetAuthenticationResult().ErrorCode = "authentication_failed"
+		_ = stream.Send(authResult)
+		return status.Error(codes.Unauthenticated, "agent authentication failed")
+	}
+	if registerErr != nil {
+		authResult.GetAuthenticationResult().Authenticated = false
+		authResult.GetAuthenticationResult().ErrorCode = "already_connected"
+		_ = stream.Send(authResult)
 		return status.Error(codes.AlreadyExists, "agent already has an active session")
 	}
 	defer s.Sessions.Unregister(session)
+	outgoing := make(chan *controlv1.MasterFrame)
+	sendResults := make(chan error, 1)
+	go sendMasterFrames(stream, outgoing, sendResults)
+	if err := sendAuthorizedMasterFrame(
+		stream.Context(),
+		session.done,
+		outgoing,
+		sendResults,
+		authResult,
+	); err != nil {
+		return err
+	}
 	s.Logger.Info("agent connected", "agent_id", hello.GetAgentId())
 	defer s.Logger.Info("agent disconnected", "agent_id", hello.GetAgentId())
 
@@ -179,13 +244,31 @@ func (s *Server) Connect(stream controlv1.AgentControlService_ConnectServer) err
 		select {
 		case <-ctx.Done():
 			return ctx.Err()
+		case <-session.done:
+			return status.Error(codes.Unauthenticated, "agent authorization was revoked")
 		case frame := <-session.commands:
+			select {
+			case <-session.done:
+				return status.Error(codes.Unauthenticated, "agent authorization was revoked")
+			default:
+			}
 			masterSequence++
 			frame.Sequence = masterSequence
-			if err := stream.Send(frame); err != nil {
+			if err := sendAuthorizedMasterFrame(
+				ctx,
+				session.done,
+				outgoing,
+				sendResults,
+				frame,
+			); err != nil {
 				return err
 			}
 		case received := <-incoming:
+			select {
+			case <-session.done:
+				return status.Error(codes.Unauthenticated, "agent authorization was revoked")
+			default:
+			}
 			if received.err != nil {
 				return received.err
 			}
@@ -200,6 +283,72 @@ func (s *Server) Connect(stream controlv1.AgentControlService_ConnectServer) err
 	}
 }
 
+type masterFrameSender interface {
+	Send(*controlv1.MasterFrame) error
+	Context() context.Context
+}
+
+func sendMasterFrames(
+	stream masterFrameSender,
+	input <-chan *controlv1.MasterFrame,
+	results chan<- error,
+) {
+	for {
+		var frame *controlv1.MasterFrame
+		select {
+		case <-stream.Context().Done():
+			return
+		case frame = <-input:
+		}
+		err := stream.Send(frame)
+		select {
+		case results <- err:
+		case <-stream.Context().Done():
+			return
+		}
+		if err != nil {
+			return
+		}
+	}
+}
+
+func sendAuthorizedMasterFrame(
+	ctx context.Context,
+	authorizationDone <-chan struct{},
+	output chan<- *controlv1.MasterFrame,
+	results <-chan error,
+	frame *controlv1.MasterFrame,
+) error {
+	select {
+	case <-authorizationDone:
+		return status.Error(codes.Unauthenticated, "agent authorization was revoked")
+	default:
+	}
+	select {
+	case output <- frame:
+	case <-authorizationDone:
+		return status.Error(codes.Unauthenticated, "agent authorization was revoked")
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+	select {
+	case err := <-results:
+		if err != nil {
+			return err
+		}
+		select {
+		case <-authorizationDone:
+			return status.Error(codes.Unauthenticated, "agent authorization was revoked")
+		default:
+			return nil
+		}
+	case <-authorizationDone:
+		return status.Error(codes.Unauthenticated, "agent authorization was revoked")
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+}
+
 func (s *Server) QueueValidation(
 	ctx context.Context,
 	agentID string,
@@ -211,6 +360,11 @@ func (s *Server) QueueValidation(
 	if len(config) == 0 || len(config) > DefaultMaxConfigBytes {
 		return deployment.Record{}, errors.New("candidate configuration is empty or exceeds the size limit")
 	}
+	if err := singbox.ValidateManagedConfig(config); err != nil {
+		return deployment.Record{}, err
+	}
+	s.authorizationMu.Lock()
+	defer s.authorizationMu.Unlock()
 	now := s.now()
 	record, err := deployment.New(deploymentID, agentID, revisionID, config, now)
 	if err != nil {
@@ -267,6 +421,156 @@ func (s *Server) QueueValidation(
 	return validating, nil
 }
 
+func (s *Server) QueueDeployment(
+	ctx context.Context,
+	agentID string,
+	deploymentID string,
+	revisionID string,
+	config []byte,
+	timeout time.Duration,
+) (deployment.Record, error) {
+	if len(config) == 0 || len(config) > DefaultMaxConfigBytes {
+		return deployment.Record{}, errors.New("candidate configuration is empty or exceeds the size limit")
+	}
+	if err := singbox.ValidateManagedConfig(config); err != nil {
+		return deployment.Record{}, err
+	}
+	s.authorizationMu.Lock()
+	defer s.authorizationMu.Unlock()
+	if _, err := s.Identities.PublicKey(ctx, agentID); err != nil {
+		return deployment.Record{}, err
+	}
+	if !s.CanDeployConfiguration(agentID) {
+		return deployment.Record{}, ErrAgentOffline
+	}
+	if current, err := s.Deployments.LatestForAgent(ctx, agentID); err == nil {
+		switch current.Status {
+		case deployment.StatusQueued,
+			deployment.StatusValidating,
+			deployment.StatusDeploying:
+			if s.now().Before(current.UpdatedAt.Add(DeploymentReportGrace)) {
+				return deployment.Record{}, deployment.ErrDeploymentInProgress
+			}
+			if _, err := s.Deployments.Transition(
+				ctx,
+				current.ID,
+				deployment.StatusDeliveryFailed,
+				"agent did not report a result before the deployment deadline",
+				s.now(),
+			); err != nil {
+				return deployment.Record{}, err
+			}
+		}
+	} else if !errors.Is(err, deployment.ErrNotFound) {
+		return deployment.Record{}, err
+	}
+
+	now := s.now()
+	record, err := deployment.New(deploymentID, agentID, revisionID, config, now)
+	if err != nil {
+		return deployment.Record{}, err
+	}
+	if err := s.Deployments.Create(ctx, record); err != nil {
+		return deployment.Record{}, err
+	}
+	deploying, err := s.Deployments.Transition(
+		ctx,
+		record.ID,
+		deployment.StatusDeploying,
+		"",
+		s.now(),
+	)
+	if err != nil {
+		return deployment.Record{}, err
+	}
+	if timeout <= 0 {
+		timeout = 15 * time.Second
+	}
+	if timeout > DefaultValidationLimit {
+		timeout = DefaultValidationLimit
+	}
+	command := &controlv1.MasterFrame{
+		Payload: &controlv1.MasterFrame_DeployConfig{
+			DeployConfig: &controlv1.DeployConfigCommand{
+				DeploymentId:   record.ID,
+				RevisionId:     record.RevisionID,
+				ConfigSha256:   record.ConfigSHA256[:],
+				ConfigJson:     append([]byte(nil), config...),
+				TimeoutSeconds: uint32(max(1, int(timeout/time.Second))),
+			},
+		},
+	}
+	if err := s.Sessions.Send(ctx, agentID, command); err != nil {
+		failed, transitionErr := s.Deployments.Transition(
+			ctx,
+			record.ID,
+			deployment.StatusDeliveryFailed,
+			"agent is not connected",
+			s.now(),
+		)
+		if transitionErr == nil {
+			_ = s.Notifier.Notify(ctx, deployment.Event{
+				Deployment: failed,
+				Message:    "Configuration could not be delivered because the agent is offline.",
+			})
+			record = failed
+		}
+		return record, err
+	}
+	return deploying, nil
+}
+
+func (s *Server) LatestDeployment(
+	ctx context.Context,
+	agentID string,
+) (deployment.Record, error) {
+	record, err := s.Deployments.LatestForAgent(ctx, agentID)
+	if err != nil {
+		return deployment.Record{}, err
+	}
+	if !awaitingDeploymentReport(record.Status) ||
+		s.now().Before(record.UpdatedAt.Add(DeploymentReportGrace)) {
+		return record, nil
+	}
+
+	failed, err := s.Deployments.Transition(
+		ctx,
+		record.ID,
+		deployment.StatusDeliveryFailed,
+		"agent did not report a result before the deployment deadline",
+		s.now(),
+	)
+	if errors.Is(err, deployment.ErrInvalidTransition) {
+		return s.Deployments.LatestForAgent(ctx, agentID)
+	}
+	if err != nil {
+		return deployment.Record{}, err
+	}
+	if err := s.Notifier.Notify(ctx, deployment.Event{
+		Deployment: failed,
+		Message:    "The agent did not report a configuration result before the deadline.",
+	}); err != nil {
+		s.Logger.Error(
+			"stale deployment notification failed",
+			"deployment_id", record.ID,
+			"agent_id", agentID,
+			"error", err,
+		)
+	}
+	return failed, nil
+}
+
+func awaitingDeploymentReport(status deployment.Status) bool {
+	switch status {
+	case deployment.StatusQueued,
+		deployment.StatusValidating,
+		deployment.StatusDeploying:
+		return true
+	default:
+		return false
+	}
+}
+
 func (s *Server) handleAgentFrame(
 	ctx context.Context,
 	agentID string,
@@ -280,6 +584,10 @@ func (s *Server) handleAgentFrame(
 		return nil
 	case *controlv1.AgentFrame_ConfigValidationReport:
 		return s.handleValidationReport(ctx, agentID, payload.ConfigValidationReport)
+	case *controlv1.AgentFrame_ConfigDeploymentReport:
+		return s.handleDeploymentReport(ctx, agentID, payload.ConfigDeploymentReport)
+	case *controlv1.AgentFrame_ConfigRuntimeReport:
+		return s.handleRuntimeReport(ctx, agentID, payload.ConfigRuntimeReport)
 	default:
 		return status.Error(codes.InvalidArgument, "unexpected agent frame")
 	}
@@ -350,7 +658,173 @@ func (s *Server) handleValidationReport(
 		"agent_id", agentID,
 		"deployment_id", record.ID,
 		"status", next,
-		"diagnostic", diagnostic,
+	)
+	return nil
+}
+
+func (s *Server) handleDeploymentReport(
+	ctx context.Context,
+	agentID string,
+	report *controlv1.ConfigDeploymentReport,
+) error {
+	if report == nil {
+		return status.Error(codes.InvalidArgument, "missing deployment report")
+	}
+	if len(report.GetDiagnostic()) > MaxDiagnosticBytes*4 {
+		return status.Error(codes.InvalidArgument, "deployment diagnostic exceeds the wire limit")
+	}
+	record, err := s.Deployments.Get(ctx, report.GetDeploymentId())
+	if err != nil {
+		return status.Error(codes.NotFound, "deployment not found")
+	}
+	if record.AgentID != agentID ||
+		record.RevisionID != report.GetRevisionId() ||
+		!bytes.Equal(record.ConfigSHA256[:], report.GetConfigSha256()) {
+		return status.Error(codes.PermissionDenied, "deployment report does not match its request")
+	}
+
+	var next deployment.Status
+	var userMessage string
+	switch report.GetStatus() {
+	case controlv1.ConfigDeploymentStatus_CONFIG_DEPLOYMENT_STATUS_APPLIED:
+		next = deployment.StatusApplied
+		userMessage = "Agent activated the configuration."
+	case controlv1.ConfigDeploymentStatus_CONFIG_DEPLOYMENT_STATUS_VALIDATION_FAILED:
+		next = deployment.StatusValidationFailed
+		userMessage = "Agent rejected the candidate configuration. Review the validation diagnostic."
+	case controlv1.ConfigDeploymentStatus_CONFIG_DEPLOYMENT_STATUS_ACTIVATION_FAILED:
+		next = deployment.StatusActivationFailed
+		userMessage = "sing-box could not activate the candidate configuration; the agent rolled back where possible."
+	case controlv1.ConfigDeploymentStatus_CONFIG_DEPLOYMENT_STATUS_INTERNAL_ERROR:
+		next = deployment.StatusInternalError
+		userMessage = "Agent could not complete the configuration deployment."
+	default:
+		return status.Error(codes.InvalidArgument, "unknown deployment status")
+	}
+
+	diagnostic := sanitizeAgentDiagnostic(report.GetDiagnostic())
+	updated, err := s.Deployments.Transition(ctx, record.ID, next, diagnostic, s.now())
+	if err != nil {
+		return status.Error(codes.FailedPrecondition, "deployment is not awaiting a report")
+	}
+	if err := s.Notifier.Notify(ctx, deployment.Event{
+		Deployment: updated,
+		Message:    userMessage,
+	}); err != nil {
+		s.Logger.Error(
+			"deployment notification failed",
+			"deployment_id", record.ID,
+			"agent_id", agentID,
+			"error", err,
+		)
+	}
+	level := slog.LevelInfo
+	if next != deployment.StatusApplied {
+		level = slog.LevelWarn
+	}
+	s.Logger.Log(
+		ctx,
+		level,
+		"agent configuration deployment completed",
+		"agent_id", agentID,
+		"deployment_id", record.ID,
+		"status", next,
+	)
+	return nil
+}
+
+func (s *Server) handleRuntimeReport(
+	ctx context.Context,
+	agentID string,
+	report *controlv1.ConfigRuntimeReport,
+) error {
+	if report == nil ||
+		len(report.GetConfigSha256()) != sha256.Size ||
+		report.GetObservedAtUnix() <= 0 {
+		return status.Error(codes.InvalidArgument, "invalid sing-box runtime report")
+	}
+	if len(report.GetDiagnostic()) > MaxDiagnosticBytes*4 {
+		return status.Error(codes.InvalidArgument, "runtime diagnostic exceeds the wire limit")
+	}
+	record, err := s.Deployments.LatestForAgent(ctx, agentID)
+	if errors.Is(err, deployment.ErrNotFound) {
+		return nil
+	}
+	if err != nil {
+		return status.Error(codes.Internal, "deployment state could not be loaded")
+	}
+	if !bytes.Equal(record.ConfigSHA256[:], report.GetConfigSha256()) {
+		// A buffered event for the previously active configuration can arrive
+		// after a newer candidate becomes the latest master record.
+		return nil
+	}
+
+	var (
+		next        deployment.Status
+		message     string
+		shouldStore bool
+	)
+	switch report.GetStatus() {
+	case controlv1.ConfigRuntimeStatus_CONFIG_RUNTIME_STATUS_RUNNING:
+		if record.Status == deployment.StatusRuntimeFailed {
+			next = deployment.StatusApplied
+			message = "sing-box recovered and is running the managed configuration."
+			shouldStore = true
+		}
+	case controlv1.ConfigRuntimeStatus_CONFIG_RUNTIME_STATUS_EXITED,
+		controlv1.ConfigRuntimeStatus_CONFIG_RUNTIME_STATUS_RESTART_FAILED,
+		controlv1.ConfigRuntimeStatus_CONFIG_RUNTIME_STATUS_VALIDATION_FAILED,
+		controlv1.ConfigRuntimeStatus_CONFIG_RUNTIME_STATUS_ACTIVATION_FAILED,
+		controlv1.ConfigRuntimeStatus_CONFIG_RUNTIME_STATUS_STOP_FAILED:
+		if record.Status == deployment.StatusApplied {
+			next = deployment.StatusRuntimeFailed
+			message = "The managed sing-box process is not running correctly."
+			shouldStore = true
+		}
+	case controlv1.ConfigRuntimeStatus_CONFIG_RUNTIME_STATUS_STOPPED:
+		return nil
+	default:
+		return status.Error(codes.InvalidArgument, "unknown sing-box runtime status")
+	}
+	if !shouldStore {
+		return nil
+	}
+
+	diagnostic := sanitizeAgentDiagnostic(report.GetDiagnostic())
+	updated, err := s.Deployments.Transition(
+		ctx,
+		record.ID,
+		next,
+		diagnostic,
+		s.now(),
+	)
+	if err != nil {
+		// A deployment report can race this asynchronous runtime event. The
+		// latest authoritative state will be reported again by the supervisor.
+		return nil
+	}
+	if err := s.Notifier.Notify(ctx, deployment.Event{
+		Deployment: updated,
+		Message:    message,
+	}); err != nil {
+		s.Logger.Error(
+			"runtime notification failed",
+			"deployment_id", record.ID,
+			"agent_id", agentID,
+			"error", err,
+		)
+	}
+	level := slog.LevelInfo
+	if next == deployment.StatusRuntimeFailed {
+		level = slog.LevelWarn
+	}
+	s.Logger.Log(
+		ctx,
+		level,
+		"managed sing-box runtime changed",
+		"agent_id", agentID,
+		"deployment_id", record.ID,
+		"status", next,
 	)
 	return nil
 }
@@ -377,14 +851,18 @@ func (s *Server) now() time.Time {
 }
 
 type session struct {
-	agentID  string
-	commands chan *controlv1.MasterFrame
+	agentID      string
+	commands     chan *controlv1.MasterFrame
+	done         chan struct{}
+	capabilities map[string]struct{}
 }
 
 func newSession(agentID string) *session {
 	return &session{
-		agentID:  agentID,
-		commands: make(chan *controlv1.MasterFrame, DefaultCommandQueue),
+		agentID:      agentID,
+		commands:     make(chan *controlv1.MasterFrame, DefaultCommandQueue),
+		done:         make(chan struct{}),
+		capabilities: make(map[string]struct{}),
 	}
 }
 
@@ -414,7 +892,24 @@ func (r *SessionRegistry) Unregister(session *session) {
 
 	if existing := r.sessions[session.agentID]; existing == session {
 		delete(r.sessions, session.agentID)
+		close(session.done)
 	}
+}
+
+// Disconnect immediately makes agentID appear offline and signals its Connect
+// handler to close the authenticated control stream. The commands channel is
+// intentionally left open so concurrent senders cannot panic.
+func (r *SessionRegistry) Disconnect(agentID string) bool {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	session, exists := r.sessions[agentID]
+	if !exists {
+		return false
+	}
+	delete(r.sessions, agentID)
+	close(session.done)
+	return true
 }
 
 func (r *SessionRegistry) Send(
@@ -430,8 +925,20 @@ func (r *SessionRegistry) Send(
 	}
 
 	select {
+	case <-session.done:
+		return ErrAgentOffline
+	default:
+	}
+	select {
 	case session.commands <- frame:
-		return nil
+		select {
+		case <-session.done:
+			return ErrAgentOffline
+		default:
+			return nil
+		}
+	case <-session.done:
+		return ErrAgentOffline
 	case <-ctx.Done():
 		return ctx.Err()
 	}
@@ -442,6 +949,48 @@ func (r *SessionRegistry) IsOnline(agentID string) bool {
 	defer r.mu.RUnlock()
 	_, exists := r.sessions[agentID]
 	return exists
+}
+
+func (r *SessionRegistry) Supports(agentID, capability string) bool {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	session, exists := r.sessions[agentID]
+	if !exists {
+		return false
+	}
+	_, supported := session.capabilities[capability]
+	return supported
+}
+
+func (s *Server) CanDeployConfiguration(agentID string) bool {
+	return s.Sessions.Supports(agentID, ConfigDeployCapability)
+}
+
+func validCapabilities(capabilities []string) bool {
+	if len(capabilities) > 32 {
+		return false
+	}
+	seen := make(map[string]struct{}, len(capabilities))
+	for _, capability := range capabilities {
+		if len(capability) == 0 || len(capability) > 64 {
+			return false
+		}
+		for _, character := range capability {
+			if character > unicode.MaxASCII ||
+				!(unicode.IsLetter(character) ||
+					unicode.IsDigit(character) ||
+					character == '-' ||
+					character == '_' ||
+					character == '.') {
+				return false
+			}
+		}
+		if _, duplicate := seen[capability]; duplicate {
+			return false
+		}
+		seen[capability] = struct{}{}
+	}
+	return true
 }
 
 type receivedFrame struct {

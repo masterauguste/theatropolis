@@ -73,6 +73,125 @@ func (ConfigValidationStatus) EnumDescriptor() ([]byte, []int) {
 	return file_theatropolis_control_v1_control_proto_rawDescGZIP(), []int{0}
 }
 
+type ConfigDeploymentStatus int32
+
+const (
+	ConfigDeploymentStatus_CONFIG_DEPLOYMENT_STATUS_UNSPECIFIED       ConfigDeploymentStatus = 0
+	ConfigDeploymentStatus_CONFIG_DEPLOYMENT_STATUS_APPLIED           ConfigDeploymentStatus = 1
+	ConfigDeploymentStatus_CONFIG_DEPLOYMENT_STATUS_VALIDATION_FAILED ConfigDeploymentStatus = 2
+	ConfigDeploymentStatus_CONFIG_DEPLOYMENT_STATUS_ACTIVATION_FAILED ConfigDeploymentStatus = 3
+	ConfigDeploymentStatus_CONFIG_DEPLOYMENT_STATUS_INTERNAL_ERROR    ConfigDeploymentStatus = 4
+)
+
+// Enum value maps for ConfigDeploymentStatus.
+var (
+	ConfigDeploymentStatus_name = map[int32]string{
+		0: "CONFIG_DEPLOYMENT_STATUS_UNSPECIFIED",
+		1: "CONFIG_DEPLOYMENT_STATUS_APPLIED",
+		2: "CONFIG_DEPLOYMENT_STATUS_VALIDATION_FAILED",
+		3: "CONFIG_DEPLOYMENT_STATUS_ACTIVATION_FAILED",
+		4: "CONFIG_DEPLOYMENT_STATUS_INTERNAL_ERROR",
+	}
+	ConfigDeploymentStatus_value = map[string]int32{
+		"CONFIG_DEPLOYMENT_STATUS_UNSPECIFIED":       0,
+		"CONFIG_DEPLOYMENT_STATUS_APPLIED":           1,
+		"CONFIG_DEPLOYMENT_STATUS_VALIDATION_FAILED": 2,
+		"CONFIG_DEPLOYMENT_STATUS_ACTIVATION_FAILED": 3,
+		"CONFIG_DEPLOYMENT_STATUS_INTERNAL_ERROR":    4,
+	}
+)
+
+func (x ConfigDeploymentStatus) Enum() *ConfigDeploymentStatus {
+	p := new(ConfigDeploymentStatus)
+	*p = x
+	return p
+}
+
+func (x ConfigDeploymentStatus) String() string {
+	return protoimpl.X.EnumStringOf(x.Descriptor(), protoreflect.EnumNumber(x))
+}
+
+func (ConfigDeploymentStatus) Descriptor() protoreflect.EnumDescriptor {
+	return file_theatropolis_control_v1_control_proto_enumTypes[1].Descriptor()
+}
+
+func (ConfigDeploymentStatus) Type() protoreflect.EnumType {
+	return &file_theatropolis_control_v1_control_proto_enumTypes[1]
+}
+
+func (x ConfigDeploymentStatus) Number() protoreflect.EnumNumber {
+	return protoreflect.EnumNumber(x)
+}
+
+// Deprecated: Use ConfigDeploymentStatus.Descriptor instead.
+func (ConfigDeploymentStatus) EnumDescriptor() ([]byte, []int) {
+	return file_theatropolis_control_v1_control_proto_rawDescGZIP(), []int{1}
+}
+
+type ConfigRuntimeStatus int32
+
+const (
+	ConfigRuntimeStatus_CONFIG_RUNTIME_STATUS_UNSPECIFIED       ConfigRuntimeStatus = 0
+	ConfigRuntimeStatus_CONFIG_RUNTIME_STATUS_RUNNING           ConfigRuntimeStatus = 1
+	ConfigRuntimeStatus_CONFIG_RUNTIME_STATUS_EXITED            ConfigRuntimeStatus = 2
+	ConfigRuntimeStatus_CONFIG_RUNTIME_STATUS_RESTART_FAILED    ConfigRuntimeStatus = 3
+	ConfigRuntimeStatus_CONFIG_RUNTIME_STATUS_VALIDATION_FAILED ConfigRuntimeStatus = 4
+	ConfigRuntimeStatus_CONFIG_RUNTIME_STATUS_ACTIVATION_FAILED ConfigRuntimeStatus = 5
+	ConfigRuntimeStatus_CONFIG_RUNTIME_STATUS_STOPPED           ConfigRuntimeStatus = 6
+	ConfigRuntimeStatus_CONFIG_RUNTIME_STATUS_STOP_FAILED       ConfigRuntimeStatus = 7
+)
+
+// Enum value maps for ConfigRuntimeStatus.
+var (
+	ConfigRuntimeStatus_name = map[int32]string{
+		0: "CONFIG_RUNTIME_STATUS_UNSPECIFIED",
+		1: "CONFIG_RUNTIME_STATUS_RUNNING",
+		2: "CONFIG_RUNTIME_STATUS_EXITED",
+		3: "CONFIG_RUNTIME_STATUS_RESTART_FAILED",
+		4: "CONFIG_RUNTIME_STATUS_VALIDATION_FAILED",
+		5: "CONFIG_RUNTIME_STATUS_ACTIVATION_FAILED",
+		6: "CONFIG_RUNTIME_STATUS_STOPPED",
+		7: "CONFIG_RUNTIME_STATUS_STOP_FAILED",
+	}
+	ConfigRuntimeStatus_value = map[string]int32{
+		"CONFIG_RUNTIME_STATUS_UNSPECIFIED":       0,
+		"CONFIG_RUNTIME_STATUS_RUNNING":           1,
+		"CONFIG_RUNTIME_STATUS_EXITED":            2,
+		"CONFIG_RUNTIME_STATUS_RESTART_FAILED":    3,
+		"CONFIG_RUNTIME_STATUS_VALIDATION_FAILED": 4,
+		"CONFIG_RUNTIME_STATUS_ACTIVATION_FAILED": 5,
+		"CONFIG_RUNTIME_STATUS_STOPPED":           6,
+		"CONFIG_RUNTIME_STATUS_STOP_FAILED":       7,
+	}
+)
+
+func (x ConfigRuntimeStatus) Enum() *ConfigRuntimeStatus {
+	p := new(ConfigRuntimeStatus)
+	*p = x
+	return p
+}
+
+func (x ConfigRuntimeStatus) String() string {
+	return protoimpl.X.EnumStringOf(x.Descriptor(), protoreflect.EnumNumber(x))
+}
+
+func (ConfigRuntimeStatus) Descriptor() protoreflect.EnumDescriptor {
+	return file_theatropolis_control_v1_control_proto_enumTypes[2].Descriptor()
+}
+
+func (ConfigRuntimeStatus) Type() protoreflect.EnumType {
+	return &file_theatropolis_control_v1_control_proto_enumTypes[2]
+}
+
+func (x ConfigRuntimeStatus) Number() protoreflect.EnumNumber {
+	return protoreflect.EnumNumber(x)
+}
+
+// Deprecated: Use ConfigRuntimeStatus.Descriptor instead.
+func (ConfigRuntimeStatus) EnumDescriptor() ([]byte, []int) {
+	return file_theatropolis_control_v1_control_proto_rawDescGZIP(), []int{2}
+}
+
 type EnrollRequest struct {
 	state           protoimpl.MessageState `protogen:"open.v1"`
 	AgentId         string                 `protobuf:"bytes,1,opt,name=agent_id,json=agentId,proto3" json:"agent_id,omitempty"`
@@ -194,6 +313,8 @@ type AgentFrame struct {
 	//	*AgentFrame_Proof
 	//	*AgentFrame_Heartbeat
 	//	*AgentFrame_ConfigValidationReport
+	//	*AgentFrame_ConfigDeploymentReport
+	//	*AgentFrame_ConfigRuntimeReport
 	Payload       isAgentFrame_Payload `protobuf_oneof:"payload"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
@@ -279,6 +400,24 @@ func (x *AgentFrame) GetConfigValidationReport() *ConfigValidationReport {
 	return nil
 }
 
+func (x *AgentFrame) GetConfigDeploymentReport() *ConfigDeploymentReport {
+	if x != nil {
+		if x, ok := x.Payload.(*AgentFrame_ConfigDeploymentReport); ok {
+			return x.ConfigDeploymentReport
+		}
+	}
+	return nil
+}
+
+func (x *AgentFrame) GetConfigRuntimeReport() *ConfigRuntimeReport {
+	if x != nil {
+		if x, ok := x.Payload.(*AgentFrame_ConfigRuntimeReport); ok {
+			return x.ConfigRuntimeReport
+		}
+	}
+	return nil
+}
+
 type isAgentFrame_Payload interface {
 	isAgentFrame_Payload()
 }
@@ -299,6 +438,14 @@ type AgentFrame_ConfigValidationReport struct {
 	ConfigValidationReport *ConfigValidationReport `protobuf:"bytes,13,opt,name=config_validation_report,json=configValidationReport,proto3,oneof"`
 }
 
+type AgentFrame_ConfigDeploymentReport struct {
+	ConfigDeploymentReport *ConfigDeploymentReport `protobuf:"bytes,14,opt,name=config_deployment_report,json=configDeploymentReport,proto3,oneof"`
+}
+
+type AgentFrame_ConfigRuntimeReport struct {
+	ConfigRuntimeReport *ConfigRuntimeReport `protobuf:"bytes,15,opt,name=config_runtime_report,json=configRuntimeReport,proto3,oneof"`
+}
+
 func (*AgentFrame_Hello) isAgentFrame_Payload() {}
 
 func (*AgentFrame_Proof) isAgentFrame_Payload() {}
@@ -306,6 +453,10 @@ func (*AgentFrame_Proof) isAgentFrame_Payload() {}
 func (*AgentFrame_Heartbeat) isAgentFrame_Payload() {}
 
 func (*AgentFrame_ConfigValidationReport) isAgentFrame_Payload() {}
+
+func (*AgentFrame_ConfigDeploymentReport) isAgentFrame_Payload() {}
+
+func (*AgentFrame_ConfigRuntimeReport) isAgentFrame_Payload() {}
 
 type MasterFrame struct {
 	state    protoimpl.MessageState `protogen:"open.v1"`
@@ -315,6 +466,7 @@ type MasterFrame struct {
 	//	*MasterFrame_Challenge
 	//	*MasterFrame_AuthenticationResult
 	//	*MasterFrame_ValidateConfig
+	//	*MasterFrame_DeployConfig
 	Payload       isMasterFrame_Payload `protobuf_oneof:"payload"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
@@ -391,6 +543,15 @@ func (x *MasterFrame) GetValidateConfig() *ValidateConfigCommand {
 	return nil
 }
 
+func (x *MasterFrame) GetDeployConfig() *DeployConfigCommand {
+	if x != nil {
+		if x, ok := x.Payload.(*MasterFrame_DeployConfig); ok {
+			return x.DeployConfig
+		}
+	}
+	return nil
+}
+
 type isMasterFrame_Payload interface {
 	isMasterFrame_Payload()
 }
@@ -407,11 +568,17 @@ type MasterFrame_ValidateConfig struct {
 	ValidateConfig *ValidateConfigCommand `protobuf:"bytes,12,opt,name=validate_config,json=validateConfig,proto3,oneof"`
 }
 
+type MasterFrame_DeployConfig struct {
+	DeployConfig *DeployConfigCommand `protobuf:"bytes,13,opt,name=deploy_config,json=deployConfig,proto3,oneof"`
+}
+
 func (*MasterFrame_Challenge) isMasterFrame_Payload() {}
 
 func (*MasterFrame_AuthenticationResult) isMasterFrame_Payload() {}
 
 func (*MasterFrame_ValidateConfig) isMasterFrame_Payload() {}
+
+func (*MasterFrame_DeployConfig) isMasterFrame_Payload() {}
 
 type AgentHello struct {
 	state           protoimpl.MessageState `protogen:"open.v1"`
@@ -420,6 +587,7 @@ type AgentHello struct {
 	AgentVersion    string                 `protobuf:"bytes,3,opt,name=agent_version,json=agentVersion,proto3" json:"agent_version,omitempty"`
 	OperatingSystem string                 `protobuf:"bytes,4,opt,name=operating_system,json=operatingSystem,proto3" json:"operating_system,omitempty"`
 	Architecture    string                 `protobuf:"bytes,5,opt,name=architecture,proto3" json:"architecture,omitempty"`
+	Capabilities    []string               `protobuf:"bytes,6,rep,name=capabilities,proto3" json:"capabilities,omitempty"`
 	unknownFields   protoimpl.UnknownFields
 	sizeCache       protoimpl.SizeCache
 }
@@ -487,6 +655,13 @@ func (x *AgentHello) GetArchitecture() string {
 		return x.Architecture
 	}
 	return ""
+}
+
+func (x *AgentHello) GetCapabilities() []string {
+	if x != nil {
+		return x.Capabilities
+	}
+	return nil
 }
 
 type AgentChallenge struct {
@@ -865,6 +1040,242 @@ func (x *ConfigValidationReport) GetDurationMilliseconds() uint64 {
 	return 0
 }
 
+type DeployConfigCommand struct {
+	state          protoimpl.MessageState `protogen:"open.v1"`
+	DeploymentId   string                 `protobuf:"bytes,1,opt,name=deployment_id,json=deploymentId,proto3" json:"deployment_id,omitempty"`
+	RevisionId     string                 `protobuf:"bytes,2,opt,name=revision_id,json=revisionId,proto3" json:"revision_id,omitempty"`
+	ConfigSha256   []byte                 `protobuf:"bytes,3,opt,name=config_sha256,json=configSha256,proto3" json:"config_sha256,omitempty"`
+	ConfigJson     []byte                 `protobuf:"bytes,4,opt,name=config_json,json=configJson,proto3" json:"config_json,omitempty"`
+	TimeoutSeconds uint32                 `protobuf:"varint,5,opt,name=timeout_seconds,json=timeoutSeconds,proto3" json:"timeout_seconds,omitempty"`
+	unknownFields  protoimpl.UnknownFields
+	sizeCache      protoimpl.SizeCache
+}
+
+func (x *DeployConfigCommand) Reset() {
+	*x = DeployConfigCommand{}
+	mi := &file_theatropolis_control_v1_control_proto_msgTypes[11]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *DeployConfigCommand) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*DeployConfigCommand) ProtoMessage() {}
+
+func (x *DeployConfigCommand) ProtoReflect() protoreflect.Message {
+	mi := &file_theatropolis_control_v1_control_proto_msgTypes[11]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use DeployConfigCommand.ProtoReflect.Descriptor instead.
+func (*DeployConfigCommand) Descriptor() ([]byte, []int) {
+	return file_theatropolis_control_v1_control_proto_rawDescGZIP(), []int{11}
+}
+
+func (x *DeployConfigCommand) GetDeploymentId() string {
+	if x != nil {
+		return x.DeploymentId
+	}
+	return ""
+}
+
+func (x *DeployConfigCommand) GetRevisionId() string {
+	if x != nil {
+		return x.RevisionId
+	}
+	return ""
+}
+
+func (x *DeployConfigCommand) GetConfigSha256() []byte {
+	if x != nil {
+		return x.ConfigSha256
+	}
+	return nil
+}
+
+func (x *DeployConfigCommand) GetConfigJson() []byte {
+	if x != nil {
+		return x.ConfigJson
+	}
+	return nil
+}
+
+func (x *DeployConfigCommand) GetTimeoutSeconds() uint32 {
+	if x != nil {
+		return x.TimeoutSeconds
+	}
+	return 0
+}
+
+type ConfigDeploymentReport struct {
+	state                protoimpl.MessageState `protogen:"open.v1"`
+	DeploymentId         string                 `protobuf:"bytes,1,opt,name=deployment_id,json=deploymentId,proto3" json:"deployment_id,omitempty"`
+	RevisionId           string                 `protobuf:"bytes,2,opt,name=revision_id,json=revisionId,proto3" json:"revision_id,omitempty"`
+	ConfigSha256         []byte                 `protobuf:"bytes,3,opt,name=config_sha256,json=configSha256,proto3" json:"config_sha256,omitempty"`
+	Status               ConfigDeploymentStatus `protobuf:"varint,4,opt,name=status,proto3,enum=theatropolis.control.v1.ConfigDeploymentStatus" json:"status,omitempty"`
+	Diagnostic           string                 `protobuf:"bytes,5,opt,name=diagnostic,proto3" json:"diagnostic,omitempty"`
+	CompletedAtUnix      int64                  `protobuf:"varint,6,opt,name=completed_at_unix,json=completedAtUnix,proto3" json:"completed_at_unix,omitempty"`
+	DurationMilliseconds uint64                 `protobuf:"varint,7,opt,name=duration_milliseconds,json=durationMilliseconds,proto3" json:"duration_milliseconds,omitempty"`
+	unknownFields        protoimpl.UnknownFields
+	sizeCache            protoimpl.SizeCache
+}
+
+func (x *ConfigDeploymentReport) Reset() {
+	*x = ConfigDeploymentReport{}
+	mi := &file_theatropolis_control_v1_control_proto_msgTypes[12]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *ConfigDeploymentReport) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*ConfigDeploymentReport) ProtoMessage() {}
+
+func (x *ConfigDeploymentReport) ProtoReflect() protoreflect.Message {
+	mi := &file_theatropolis_control_v1_control_proto_msgTypes[12]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use ConfigDeploymentReport.ProtoReflect.Descriptor instead.
+func (*ConfigDeploymentReport) Descriptor() ([]byte, []int) {
+	return file_theatropolis_control_v1_control_proto_rawDescGZIP(), []int{12}
+}
+
+func (x *ConfigDeploymentReport) GetDeploymentId() string {
+	if x != nil {
+		return x.DeploymentId
+	}
+	return ""
+}
+
+func (x *ConfigDeploymentReport) GetRevisionId() string {
+	if x != nil {
+		return x.RevisionId
+	}
+	return ""
+}
+
+func (x *ConfigDeploymentReport) GetConfigSha256() []byte {
+	if x != nil {
+		return x.ConfigSha256
+	}
+	return nil
+}
+
+func (x *ConfigDeploymentReport) GetStatus() ConfigDeploymentStatus {
+	if x != nil {
+		return x.Status
+	}
+	return ConfigDeploymentStatus_CONFIG_DEPLOYMENT_STATUS_UNSPECIFIED
+}
+
+func (x *ConfigDeploymentReport) GetDiagnostic() string {
+	if x != nil {
+		return x.Diagnostic
+	}
+	return ""
+}
+
+func (x *ConfigDeploymentReport) GetCompletedAtUnix() int64 {
+	if x != nil {
+		return x.CompletedAtUnix
+	}
+	return 0
+}
+
+func (x *ConfigDeploymentReport) GetDurationMilliseconds() uint64 {
+	if x != nil {
+		return x.DurationMilliseconds
+	}
+	return 0
+}
+
+type ConfigRuntimeReport struct {
+	state          protoimpl.MessageState `protogen:"open.v1"`
+	ConfigSha256   []byte                 `protobuf:"bytes,1,opt,name=config_sha256,json=configSha256,proto3" json:"config_sha256,omitempty"`
+	Status         ConfigRuntimeStatus    `protobuf:"varint,2,opt,name=status,proto3,enum=theatropolis.control.v1.ConfigRuntimeStatus" json:"status,omitempty"`
+	Diagnostic     string                 `protobuf:"bytes,3,opt,name=diagnostic,proto3" json:"diagnostic,omitempty"`
+	ObservedAtUnix int64                  `protobuf:"varint,4,opt,name=observed_at_unix,json=observedAtUnix,proto3" json:"observed_at_unix,omitempty"`
+	unknownFields  protoimpl.UnknownFields
+	sizeCache      protoimpl.SizeCache
+}
+
+func (x *ConfigRuntimeReport) Reset() {
+	*x = ConfigRuntimeReport{}
+	mi := &file_theatropolis_control_v1_control_proto_msgTypes[13]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *ConfigRuntimeReport) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*ConfigRuntimeReport) ProtoMessage() {}
+
+func (x *ConfigRuntimeReport) ProtoReflect() protoreflect.Message {
+	mi := &file_theatropolis_control_v1_control_proto_msgTypes[13]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use ConfigRuntimeReport.ProtoReflect.Descriptor instead.
+func (*ConfigRuntimeReport) Descriptor() ([]byte, []int) {
+	return file_theatropolis_control_v1_control_proto_rawDescGZIP(), []int{13}
+}
+
+func (x *ConfigRuntimeReport) GetConfigSha256() []byte {
+	if x != nil {
+		return x.ConfigSha256
+	}
+	return nil
+}
+
+func (x *ConfigRuntimeReport) GetStatus() ConfigRuntimeStatus {
+	if x != nil {
+		return x.Status
+	}
+	return ConfigRuntimeStatus_CONFIG_RUNTIME_STATUS_UNSPECIFIED
+}
+
+func (x *ConfigRuntimeReport) GetDiagnostic() string {
+	if x != nil {
+		return x.Diagnostic
+	}
+	return ""
+}
+
+func (x *ConfigRuntimeReport) GetObservedAtUnix() int64 {
+	if x != nil {
+		return x.ObservedAtUnix
+	}
+	return 0
+}
+
 var File_theatropolis_control_v1_control_proto protoreflect.FileDescriptor
 
 const file_theatropolis_control_v1_control_proto_rawDesc = "" +
@@ -877,7 +1288,7 @@ const file_theatropolis_control_v1_control_proto_rawDesc = "" +
 	"public_key\x18\x03 \x01(\fR\tpublicKey\"U\n" +
 	"\x0eEnrollResponse\x12\x19\n" +
 	"\bagent_id\x18\x01 \x01(\tR\aagentId\x12(\n" +
-	"\x10enrolled_at_unix\x18\x02 \x01(\x03R\x0eenrolledAtUnix\"\xe3\x02\n" +
+	"\x10enrolled_at_unix\x18\x02 \x01(\x03R\x0eenrolledAtUnix\"\xb4\x04\n" +
 	"\n" +
 	"AgentFrame\x12\x1a\n" +
 	"\bsequence\x18\x01 \x01(\x04R\bsequence\x12;\n" +
@@ -885,22 +1296,26 @@ const file_theatropolis_control_v1_control_proto_rawDesc = "" +
 	" \x01(\v2#.theatropolis.control.v1.AgentHelloH\x00R\x05hello\x12;\n" +
 	"\x05proof\x18\v \x01(\v2#.theatropolis.control.v1.AgentProofH\x00R\x05proof\x12G\n" +
 	"\theartbeat\x18\f \x01(\v2'.theatropolis.control.v1.AgentHeartbeatH\x00R\theartbeat\x12k\n" +
-	"\x18config_validation_report\x18\r \x01(\v2/.theatropolis.control.v1.ConfigValidationReportH\x00R\x16configValidationReportB\t\n" +
-	"\apayload\"\xbe\x02\n" +
+	"\x18config_validation_report\x18\r \x01(\v2/.theatropolis.control.v1.ConfigValidationReportH\x00R\x16configValidationReport\x12k\n" +
+	"\x18config_deployment_report\x18\x0e \x01(\v2/.theatropolis.control.v1.ConfigDeploymentReportH\x00R\x16configDeploymentReport\x12b\n" +
+	"\x15config_runtime_report\x18\x0f \x01(\v2,.theatropolis.control.v1.ConfigRuntimeReportH\x00R\x13configRuntimeReportB\t\n" +
+	"\apayload\"\x93\x03\n" +
 	"\vMasterFrame\x12\x1a\n" +
 	"\bsequence\x18\x01 \x01(\x04R\bsequence\x12G\n" +
 	"\tchallenge\x18\n" +
 	" \x01(\v2'.theatropolis.control.v1.AgentChallengeH\x00R\tchallenge\x12d\n" +
 	"\x15authentication_result\x18\v \x01(\v2-.theatropolis.control.v1.AuthenticationResultH\x00R\x14authenticationResult\x12Y\n" +
-	"\x0fvalidate_config\x18\f \x01(\v2..theatropolis.control.v1.ValidateConfigCommandH\x00R\x0evalidateConfigB\t\n" +
-	"\apayload\"\xc6\x01\n" +
+	"\x0fvalidate_config\x18\f \x01(\v2..theatropolis.control.v1.ValidateConfigCommandH\x00R\x0evalidateConfig\x12S\n" +
+	"\rdeploy_config\x18\r \x01(\v2,.theatropolis.control.v1.DeployConfigCommandH\x00R\fdeployConfigB\t\n" +
+	"\apayload\"\xea\x01\n" +
 	"\n" +
 	"AgentHello\x12\x19\n" +
 	"\bagent_id\x18\x01 \x01(\tR\aagentId\x12)\n" +
 	"\x10protocol_version\x18\x02 \x01(\rR\x0fprotocolVersion\x12#\n" +
 	"\ragent_version\x18\x03 \x01(\tR\fagentVersion\x12)\n" +
 	"\x10operating_system\x18\x04 \x01(\tR\x0foperatingSystem\x12\"\n" +
-	"\farchitecture\x18\x05 \x01(\tR\farchitecture\"N\n" +
+	"\farchitecture\x18\x05 \x01(\tR\farchitecture\x12\"\n" +
+	"\fcapabilities\x18\x06 \x03(\tR\fcapabilities\"N\n" +
 	"\x0eAgentChallenge\x12\x14\n" +
 	"\x05nonce\x18\x01 \x01(\fR\x05nonce\x12&\n" +
 	"\x0fexpires_at_unix\x18\x02 \x01(\x03R\rexpiresAtUnix\"*\n" +
@@ -933,12 +1348,53 @@ const file_theatropolis_control_v1_control_proto_rawDesc = "" +
 	"diagnostic\x18\x05 \x01(\tR\n" +
 	"diagnostic\x12&\n" +
 	"\x0fchecked_at_unix\x18\x06 \x01(\x03R\rcheckedAtUnix\x123\n" +
-	"\x15duration_milliseconds\x18\a \x01(\x04R\x14durationMilliseconds*\xb9\x01\n" +
+	"\x15duration_milliseconds\x18\a \x01(\x04R\x14durationMilliseconds\"\xca\x01\n" +
+	"\x13DeployConfigCommand\x12#\n" +
+	"\rdeployment_id\x18\x01 \x01(\tR\fdeploymentId\x12\x1f\n" +
+	"\vrevision_id\x18\x02 \x01(\tR\n" +
+	"revisionId\x12#\n" +
+	"\rconfig_sha256\x18\x03 \x01(\fR\fconfigSha256\x12\x1f\n" +
+	"\vconfig_json\x18\x04 \x01(\fR\n" +
+	"configJson\x12'\n" +
+	"\x0ftimeout_seconds\x18\x05 \x01(\rR\x0etimeoutSeconds\"\xcd\x02\n" +
+	"\x16ConfigDeploymentReport\x12#\n" +
+	"\rdeployment_id\x18\x01 \x01(\tR\fdeploymentId\x12\x1f\n" +
+	"\vrevision_id\x18\x02 \x01(\tR\n" +
+	"revisionId\x12#\n" +
+	"\rconfig_sha256\x18\x03 \x01(\fR\fconfigSha256\x12G\n" +
+	"\x06status\x18\x04 \x01(\x0e2/.theatropolis.control.v1.ConfigDeploymentStatusR\x06status\x12\x1e\n" +
+	"\n" +
+	"diagnostic\x18\x05 \x01(\tR\n" +
+	"diagnostic\x12*\n" +
+	"\x11completed_at_unix\x18\x06 \x01(\x03R\x0fcompletedAtUnix\x123\n" +
+	"\x15duration_milliseconds\x18\a \x01(\x04R\x14durationMilliseconds\"\xca\x01\n" +
+	"\x13ConfigRuntimeReport\x12#\n" +
+	"\rconfig_sha256\x18\x01 \x01(\fR\fconfigSha256\x12D\n" +
+	"\x06status\x18\x02 \x01(\x0e2,.theatropolis.control.v1.ConfigRuntimeStatusR\x06status\x12\x1e\n" +
+	"\n" +
+	"diagnostic\x18\x03 \x01(\tR\n" +
+	"diagnostic\x12(\n" +
+	"\x10observed_at_unix\x18\x04 \x01(\x03R\x0eobservedAtUnix*\xb9\x01\n" +
 	"\x16ConfigValidationStatus\x12(\n" +
 	"$CONFIG_VALIDATION_STATUS_UNSPECIFIED\x10\x00\x12\"\n" +
 	"\x1eCONFIG_VALIDATION_STATUS_VALID\x10\x01\x12$\n" +
 	" CONFIG_VALIDATION_STATUS_INVALID\x10\x02\x12+\n" +
-	"'CONFIG_VALIDATION_STATUS_INTERNAL_ERROR\x10\x032\xca\x01\n" +
+	"'CONFIG_VALIDATION_STATUS_INTERNAL_ERROR\x10\x03*\xf5\x01\n" +
+	"\x16ConfigDeploymentStatus\x12(\n" +
+	"$CONFIG_DEPLOYMENT_STATUS_UNSPECIFIED\x10\x00\x12$\n" +
+	" CONFIG_DEPLOYMENT_STATUS_APPLIED\x10\x01\x12.\n" +
+	"*CONFIG_DEPLOYMENT_STATUS_VALIDATION_FAILED\x10\x02\x12.\n" +
+	"*CONFIG_DEPLOYMENT_STATUS_ACTIVATION_FAILED\x10\x03\x12+\n" +
+	"'CONFIG_DEPLOYMENT_STATUS_INTERNAL_ERROR\x10\x04*\xcf\x02\n" +
+	"\x13ConfigRuntimeStatus\x12%\n" +
+	"!CONFIG_RUNTIME_STATUS_UNSPECIFIED\x10\x00\x12!\n" +
+	"\x1dCONFIG_RUNTIME_STATUS_RUNNING\x10\x01\x12 \n" +
+	"\x1cCONFIG_RUNTIME_STATUS_EXITED\x10\x02\x12(\n" +
+	"$CONFIG_RUNTIME_STATUS_RESTART_FAILED\x10\x03\x12+\n" +
+	"'CONFIG_RUNTIME_STATUS_VALIDATION_FAILED\x10\x04\x12+\n" +
+	"'CONFIG_RUNTIME_STATUS_ACTIVATION_FAILED\x10\x05\x12!\n" +
+	"\x1dCONFIG_RUNTIME_STATUS_STOPPED\x10\x06\x12%\n" +
+	"!CONFIG_RUNTIME_STATUS_STOP_FAILED\x10\a2\xca\x01\n" +
 	"\x13AgentControlService\x12Y\n" +
 	"\x06Enroll\x12&.theatropolis.control.v1.EnrollRequest\x1a'.theatropolis.control.v1.EnrollResponse\x12X\n" +
 	"\aConnect\x12#.theatropolis.control.v1.AgentFrame\x1a$.theatropolis.control.v1.MasterFrame(\x010\x01BQZOgithub.com/masterauguste/theatropolis/api/gen/theatropolis/control/v1;controlv1b\x06proto3"
@@ -955,40 +1411,50 @@ func file_theatropolis_control_v1_control_proto_rawDescGZIP() []byte {
 	return file_theatropolis_control_v1_control_proto_rawDescData
 }
 
-var file_theatropolis_control_v1_control_proto_enumTypes = make([]protoimpl.EnumInfo, 1)
-var file_theatropolis_control_v1_control_proto_msgTypes = make([]protoimpl.MessageInfo, 11)
+var file_theatropolis_control_v1_control_proto_enumTypes = make([]protoimpl.EnumInfo, 3)
+var file_theatropolis_control_v1_control_proto_msgTypes = make([]protoimpl.MessageInfo, 14)
 var file_theatropolis_control_v1_control_proto_goTypes = []any{
 	(ConfigValidationStatus)(0),    // 0: theatropolis.control.v1.ConfigValidationStatus
-	(*EnrollRequest)(nil),          // 1: theatropolis.control.v1.EnrollRequest
-	(*EnrollResponse)(nil),         // 2: theatropolis.control.v1.EnrollResponse
-	(*AgentFrame)(nil),             // 3: theatropolis.control.v1.AgentFrame
-	(*MasterFrame)(nil),            // 4: theatropolis.control.v1.MasterFrame
-	(*AgentHello)(nil),             // 5: theatropolis.control.v1.AgentHello
-	(*AgentChallenge)(nil),         // 6: theatropolis.control.v1.AgentChallenge
-	(*AgentProof)(nil),             // 7: theatropolis.control.v1.AgentProof
-	(*AuthenticationResult)(nil),   // 8: theatropolis.control.v1.AuthenticationResult
-	(*AgentHeartbeat)(nil),         // 9: theatropolis.control.v1.AgentHeartbeat
-	(*ValidateConfigCommand)(nil),  // 10: theatropolis.control.v1.ValidateConfigCommand
-	(*ConfigValidationReport)(nil), // 11: theatropolis.control.v1.ConfigValidationReport
+	(ConfigDeploymentStatus)(0),    // 1: theatropolis.control.v1.ConfigDeploymentStatus
+	(ConfigRuntimeStatus)(0),       // 2: theatropolis.control.v1.ConfigRuntimeStatus
+	(*EnrollRequest)(nil),          // 3: theatropolis.control.v1.EnrollRequest
+	(*EnrollResponse)(nil),         // 4: theatropolis.control.v1.EnrollResponse
+	(*AgentFrame)(nil),             // 5: theatropolis.control.v1.AgentFrame
+	(*MasterFrame)(nil),            // 6: theatropolis.control.v1.MasterFrame
+	(*AgentHello)(nil),             // 7: theatropolis.control.v1.AgentHello
+	(*AgentChallenge)(nil),         // 8: theatropolis.control.v1.AgentChallenge
+	(*AgentProof)(nil),             // 9: theatropolis.control.v1.AgentProof
+	(*AuthenticationResult)(nil),   // 10: theatropolis.control.v1.AuthenticationResult
+	(*AgentHeartbeat)(nil),         // 11: theatropolis.control.v1.AgentHeartbeat
+	(*ValidateConfigCommand)(nil),  // 12: theatropolis.control.v1.ValidateConfigCommand
+	(*ConfigValidationReport)(nil), // 13: theatropolis.control.v1.ConfigValidationReport
+	(*DeployConfigCommand)(nil),    // 14: theatropolis.control.v1.DeployConfigCommand
+	(*ConfigDeploymentReport)(nil), // 15: theatropolis.control.v1.ConfigDeploymentReport
+	(*ConfigRuntimeReport)(nil),    // 16: theatropolis.control.v1.ConfigRuntimeReport
 }
 var file_theatropolis_control_v1_control_proto_depIdxs = []int32{
-	5,  // 0: theatropolis.control.v1.AgentFrame.hello:type_name -> theatropolis.control.v1.AgentHello
-	7,  // 1: theatropolis.control.v1.AgentFrame.proof:type_name -> theatropolis.control.v1.AgentProof
-	9,  // 2: theatropolis.control.v1.AgentFrame.heartbeat:type_name -> theatropolis.control.v1.AgentHeartbeat
-	11, // 3: theatropolis.control.v1.AgentFrame.config_validation_report:type_name -> theatropolis.control.v1.ConfigValidationReport
-	6,  // 4: theatropolis.control.v1.MasterFrame.challenge:type_name -> theatropolis.control.v1.AgentChallenge
-	8,  // 5: theatropolis.control.v1.MasterFrame.authentication_result:type_name -> theatropolis.control.v1.AuthenticationResult
-	10, // 6: theatropolis.control.v1.MasterFrame.validate_config:type_name -> theatropolis.control.v1.ValidateConfigCommand
-	0,  // 7: theatropolis.control.v1.ConfigValidationReport.status:type_name -> theatropolis.control.v1.ConfigValidationStatus
-	1,  // 8: theatropolis.control.v1.AgentControlService.Enroll:input_type -> theatropolis.control.v1.EnrollRequest
-	3,  // 9: theatropolis.control.v1.AgentControlService.Connect:input_type -> theatropolis.control.v1.AgentFrame
-	2,  // 10: theatropolis.control.v1.AgentControlService.Enroll:output_type -> theatropolis.control.v1.EnrollResponse
-	4,  // 11: theatropolis.control.v1.AgentControlService.Connect:output_type -> theatropolis.control.v1.MasterFrame
-	10, // [10:12] is the sub-list for method output_type
-	8,  // [8:10] is the sub-list for method input_type
-	8,  // [8:8] is the sub-list for extension type_name
-	8,  // [8:8] is the sub-list for extension extendee
-	0,  // [0:8] is the sub-list for field type_name
+	7,  // 0: theatropolis.control.v1.AgentFrame.hello:type_name -> theatropolis.control.v1.AgentHello
+	9,  // 1: theatropolis.control.v1.AgentFrame.proof:type_name -> theatropolis.control.v1.AgentProof
+	11, // 2: theatropolis.control.v1.AgentFrame.heartbeat:type_name -> theatropolis.control.v1.AgentHeartbeat
+	13, // 3: theatropolis.control.v1.AgentFrame.config_validation_report:type_name -> theatropolis.control.v1.ConfigValidationReport
+	15, // 4: theatropolis.control.v1.AgentFrame.config_deployment_report:type_name -> theatropolis.control.v1.ConfigDeploymentReport
+	16, // 5: theatropolis.control.v1.AgentFrame.config_runtime_report:type_name -> theatropolis.control.v1.ConfigRuntimeReport
+	8,  // 6: theatropolis.control.v1.MasterFrame.challenge:type_name -> theatropolis.control.v1.AgentChallenge
+	10, // 7: theatropolis.control.v1.MasterFrame.authentication_result:type_name -> theatropolis.control.v1.AuthenticationResult
+	12, // 8: theatropolis.control.v1.MasterFrame.validate_config:type_name -> theatropolis.control.v1.ValidateConfigCommand
+	14, // 9: theatropolis.control.v1.MasterFrame.deploy_config:type_name -> theatropolis.control.v1.DeployConfigCommand
+	0,  // 10: theatropolis.control.v1.ConfigValidationReport.status:type_name -> theatropolis.control.v1.ConfigValidationStatus
+	1,  // 11: theatropolis.control.v1.ConfigDeploymentReport.status:type_name -> theatropolis.control.v1.ConfigDeploymentStatus
+	2,  // 12: theatropolis.control.v1.ConfigRuntimeReport.status:type_name -> theatropolis.control.v1.ConfigRuntimeStatus
+	3,  // 13: theatropolis.control.v1.AgentControlService.Enroll:input_type -> theatropolis.control.v1.EnrollRequest
+	5,  // 14: theatropolis.control.v1.AgentControlService.Connect:input_type -> theatropolis.control.v1.AgentFrame
+	4,  // 15: theatropolis.control.v1.AgentControlService.Enroll:output_type -> theatropolis.control.v1.EnrollResponse
+	6,  // 16: theatropolis.control.v1.AgentControlService.Connect:output_type -> theatropolis.control.v1.MasterFrame
+	15, // [15:17] is the sub-list for method output_type
+	13, // [13:15] is the sub-list for method input_type
+	13, // [13:13] is the sub-list for extension type_name
+	13, // [13:13] is the sub-list for extension extendee
+	0,  // [0:13] is the sub-list for field type_name
 }
 
 func init() { file_theatropolis_control_v1_control_proto_init() }
@@ -1001,19 +1467,22 @@ func file_theatropolis_control_v1_control_proto_init() {
 		(*AgentFrame_Proof)(nil),
 		(*AgentFrame_Heartbeat)(nil),
 		(*AgentFrame_ConfigValidationReport)(nil),
+		(*AgentFrame_ConfigDeploymentReport)(nil),
+		(*AgentFrame_ConfigRuntimeReport)(nil),
 	}
 	file_theatropolis_control_v1_control_proto_msgTypes[3].OneofWrappers = []any{
 		(*MasterFrame_Challenge)(nil),
 		(*MasterFrame_AuthenticationResult)(nil),
 		(*MasterFrame_ValidateConfig)(nil),
+		(*MasterFrame_DeployConfig)(nil),
 	}
 	type x struct{}
 	out := protoimpl.TypeBuilder{
 		File: protoimpl.DescBuilder{
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_theatropolis_control_v1_control_proto_rawDesc), len(file_theatropolis_control_v1_control_proto_rawDesc)),
-			NumEnums:      1,
-			NumMessages:   11,
+			NumEnums:      3,
+			NumMessages:   14,
 			NumExtensions: 0,
 			NumServices:   1,
 		},

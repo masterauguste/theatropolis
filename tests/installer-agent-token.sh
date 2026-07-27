@@ -13,6 +13,10 @@ TEST_ROOT="$TEST_DIRECTORY/root"
 MOCK_BIN="$TEST_DIRECTORY/bin"
 RELEASE_DIRECTORY="$TEST_DIRECTORY/release"
 RELEASE_STAGE="$TEST_DIRECTORY/release-stage"
+SING_BOX_VERSION="1.14.0-beta.2"
+SING_BOX_PACKAGE="sing-box-${SING_BOX_VERSION}-linux-amd64"
+SING_BOX_ARCHIVE="${SING_BOX_PACKAGE}.tar.gz"
+SING_BOX_STAGE="$TEST_DIRECTORY/sing-box-stage"
 MV_LOG="$TEST_DIRECTORY/mv.log"
 CHOWN_LOG="$TEST_DIRECTORY/chown.log"
 SYSTEMCTL_LOG="$TEST_DIRECTORY/systemctl.log"
@@ -36,6 +40,7 @@ mkdir -p \
 	"$MOCK_BIN" \
 	"$RELEASE_DIRECTORY" \
 	"$RELEASE_STAGE" \
+	"$SING_BOX_STAGE/$SING_BOX_PACKAGE" \
 	"$TEST_ROOT/etc/systemd/system" \
 	"$TEST_ROOT/run" \
 	"$TEST_ROOT/usr/local/bin" \
@@ -70,10 +75,23 @@ chmod +x \
 	"$RELEASE_STAGE/theatropolis-master" \
 	"$RELEASE_STAGE/theatropolis-agent"
 
+cat >"$SING_BOX_STAGE/$SING_BOX_PACKAGE/sing-box" <<'EOF'
+#!/bin/sh
+exit 0
+EOF
+printf '%s\n' 'mock cronet library' \
+	>"$SING_BOX_STAGE/$SING_BOX_PACKAGE/libcronet.so"
+printf '%s\n' 'mock sing-box license' \
+	>"$SING_BOX_STAGE/$SING_BOX_PACKAGE/LICENSE"
+chmod +x "$SING_BOX_STAGE/$SING_BOX_PACKAGE/sing-box"
+
 tar -czf "$RELEASE_DIRECTORY/theatropolis_linux_amd64.tar.gz" \
 	-C "$RELEASE_STAGE" \
 	theatropolis-master \
 	theatropolis-agent
+tar -czf "$RELEASE_DIRECTORY/$SING_BOX_ARCHIVE" \
+	-C "$SING_BOX_STAGE" \
+	"$SING_BOX_PACKAGE"
 (
 	cd "$RELEASE_DIRECTORY"
 	ARCHIVE_CHECKSUM="$(
@@ -139,10 +157,25 @@ case "$SOURCE" in
 */checksums.txt)
 	cp "$TEST_RELEASE_DIRECTORY/checksums.txt" "$OUTPUT"
 	;;
+*/sing-box-1.14.0-beta.2-linux-amd64.tar.gz)
+	cp "$TEST_RELEASE_DIRECTORY/sing-box-1.14.0-beta.2-linux-amd64.tar.gz" "$OUTPUT"
+	;;
 *)
 	printf 'unexpected mock curl source: %s\n' "$SOURCE" >&2
 	exit 65
 	;;
+esac
+EOF
+
+cat >"$MOCK_BIN/sha256sum" <<'EOF'
+#!/bin/sh
+case "${1:-}" in
+*"/sing-box-1.14.0-beta.2-linux-amd64.tar.gz")
+	printf '%s  %s\n' \
+		'f68715815741e59f25e32904cabcd5924a0461a910d8e9c9612512b957709ef4' \
+		"$1"
+	;;
+*) exec /usr/bin/sha256sum "$@" ;;
 esac
 EOF
 
@@ -269,6 +302,23 @@ set -e
 
 [ "$NORMAL_STATUS" -eq 0 ] ||
 	fail "normal token installation failed (status $NORMAL_STATUS): $NORMAL_OUTPUT"
+AGENT_UNIT="$TEST_ROOT/etc/systemd/system/theatropolis-agent.service"
+[ -f "$AGENT_UNIT" ] ||
+	fail "agent systemd unit was not generated"
+grep -Fqx 'CapabilityBoundingSet=CAP_NET_BIND_SERVICE' "$AGENT_UNIT" ||
+	fail "agent unit does not bound low-port access to CAP_NET_BIND_SERVICE"
+grep -Fqx 'AmbientCapabilities=CAP_NET_BIND_SERVICE' "$AGENT_UNIT" ||
+	fail "agent unit does not grant sing-box low-port binding capability"
+grep -Fqx "Environment=LD_LIBRARY_PATH=$TEST_ROOT/usr/local/lib/theatropolis/sing-box" "$AGENT_UNIT" ||
+	fail "agent unit does not configure the trusted sing-box library path"
+[ -x "$TEST_ROOT/usr/local/bin/sing-box" ] ||
+	fail "pinned sing-box binary was not installed"
+[ -f "$TEST_ROOT/usr/local/lib/theatropolis/sing-box/libcronet.so" ] ||
+	fail "pinned sing-box libcronet library was not installed"
+[ "$(stat -c '%a' "$TEST_ROOT/usr/local/bin/sing-box")" = "755" ] ||
+	fail "installed sing-box binary does not have mode 0755"
+[ "$(stat -c '%a' "$TEST_ROOT/usr/local/lib/theatropolis/sing-box/libcronet.so")" = "644" ] ||
+	fail "installed sing-box libcronet library does not have mode 0644"
 if [ ! -f "$TOKEN_PATH" ] || [ -L "$TOKEN_PATH" ]; then
 	fail "normal token installation did not leave a regular file"
 fi
@@ -315,6 +365,25 @@ fi
 case "$TEST_PLATFORM" in
 MINGW* | MSYS*) exit 0 ;;
 esac
+
+# The pinned upstream archive is rejected before extraction if any expected
+# member is a symbolic link, even when its path and checksum otherwise pass.
+rm -f -- "$SING_BOX_STAGE/$SING_BOX_PACKAGE/libcronet.so"
+ln -s /etc/shadow "$SING_BOX_STAGE/$SING_BOX_PACKAGE/libcronet.so"
+tar -czf "$RELEASE_DIRECTORY/$SING_BOX_ARCHIVE" \
+	-C "$SING_BOX_STAGE" \
+	"$SING_BOX_PACKAGE"
+
+set +e
+SING_BOX_SYMLINK_OUTPUT="$(run_installer 2>&1)"
+SING_BOX_SYMLINK_STATUS="$?"
+set -e
+
+[ "$SING_BOX_SYMLINK_STATUS" -ne 0 ] ||
+	fail "installer unexpectedly accepted a symlink in the sing-box archive"
+printf '%s' "$SING_BOX_SYMLINK_OUTPUT" |
+	grep -Eiq '(unsafe entry type|sing-box archive)' ||
+	fail "sing-box archive symlink rejection did not provide a useful diagnostic"
 
 # A pre-existing symlink must be rejected without touching its referent or
 # reaching the atomic move.

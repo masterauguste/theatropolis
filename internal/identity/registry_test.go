@@ -5,6 +5,8 @@ import (
 	"context"
 	"crypto/ed25519"
 	"crypto/rand"
+	"encoding/base64"
+	"encoding/json"
 	"errors"
 	"os"
 	"path/filepath"
@@ -282,6 +284,200 @@ func TestCreateEnrollmentReplacesExpiredPendingCredential(t *testing.T) {
 		time.Now(),
 	); err != nil {
 		t.Fatalf("new token was not accepted: %v", err)
+	}
+}
+
+func TestRevokeInvalidatesPendingAndEnrolledCredentials(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	now := time.Now().UTC()
+	publicKey, _, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	t.Run("pending", func(t *testing.T) {
+		registry := NewRegistry()
+		token, err := registry.CreateEnrollment(ctx, "edge-pending-revoke", now.Add(time.Hour))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := registry.Revoke(ctx, "edge-pending-revoke"); err != nil {
+			t.Fatal(err)
+		}
+		if snapshot := registry.Snapshot(now); len(snapshot) != 0 {
+			t.Fatalf("revoked pending identity remained in snapshot: %+v", snapshot)
+		}
+		if err := registry.Enroll(
+			ctx,
+			"edge-pending-revoke",
+			token,
+			publicKey,
+			now,
+		); !errors.Is(err, ErrEnrollmentUnavailable) {
+			t.Fatalf("revoked enrollment token error = %v, want ErrEnrollmentUnavailable", err)
+		}
+		if err := registry.Revoke(ctx, "edge-pending-revoke"); !errors.Is(err, ErrAgentNotFound) {
+			t.Fatalf("second Revoke() error = %v, want ErrAgentNotFound", err)
+		}
+	})
+
+	t.Run("enrolled", func(t *testing.T) {
+		registry := NewRegistry()
+		token, err := registry.CreateEnrollment(ctx, "edge-enrolled-revoke", now.Add(time.Hour))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := registry.Enroll(
+			ctx,
+			"edge-enrolled-revoke",
+			token,
+			publicKey,
+			now,
+		); err != nil {
+			t.Fatal(err)
+		}
+		if err := registry.Revoke(ctx, "edge-enrolled-revoke"); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := registry.PublicKey(
+			ctx,
+			"edge-enrolled-revoke",
+		); !errors.Is(err, ErrAgentNotFound) {
+			t.Fatalf("PublicKey() error = %v, want ErrAgentNotFound", err)
+		}
+		if _, err := registry.CreateEnrollment(
+			ctx,
+			"edge-enrolled-revoke",
+			now.Add(time.Hour),
+		); err != nil {
+			t.Fatalf("recreate enrollment after revocation: %v", err)
+		}
+	})
+
+	if err := NewRegistry().Revoke(ctx, "../invalid"); !errors.Is(err, ErrInvalidAgentID) {
+		t.Fatalf("invalid agent ID error = %v, want ErrInvalidAgentID", err)
+	}
+}
+
+func TestPersistentRevocationSurvivesReload(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	now := time.Now().UTC()
+	path := filepath.Join(t.TempDir(), "master", "identities.json")
+	registry, err := OpenRegistry(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	token, err := registry.CreateEnrollment(ctx, "edge-revoked-persistent", now.Add(time.Hour))
+	if err != nil {
+		t.Fatal(err)
+	}
+	publicKey, _, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := registry.Enroll(
+		ctx,
+		"edge-revoked-persistent",
+		token,
+		publicKey,
+		now,
+	); err != nil {
+		t.Fatal(err)
+	}
+	if err := registry.Revoke(ctx, "edge-revoked-persistent"); err != nil {
+		t.Fatal(err)
+	}
+
+	reopened, err := OpenRegistry(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := reopened.PublicKey(
+		ctx,
+		"edge-revoked-persistent",
+	); !errors.Is(err, ErrAgentNotFound) {
+		t.Fatalf("reloaded PublicKey() error = %v, want ErrAgentNotFound", err)
+	}
+	if snapshot := reopened.Snapshot(now); len(snapshot) != 0 {
+		t.Fatalf("reloaded registry retained revoked identity: %+v", snapshot)
+	}
+}
+
+func TestRevokeRollsBackWhenPersistenceFails(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	now := time.Now().UTC()
+	registry := NewRegistry()
+	token, err := registry.CreateEnrollment(ctx, "edge-revoke-rollback", now.Add(time.Hour))
+	if err != nil {
+		t.Fatal(err)
+	}
+	publicKey, _, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := registry.Enroll(
+		ctx,
+		"edge-revoke-rollback",
+		token,
+		publicKey,
+		now,
+	); err != nil {
+		t.Fatal(err)
+	}
+
+	parentFile := filepath.Join(t.TempDir(), "not-a-directory")
+	if err := os.WriteFile(parentFile, []byte("occupied"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	registry.persistPath = filepath.Join(parentFile, "identities.json")
+	if err := registry.Revoke(ctx, "edge-revoke-rollback"); err == nil {
+		t.Fatal("Revoke() unexpectedly succeeded when persistence failed")
+	}
+	actualPublicKey, err := registry.PublicKey(ctx, "edge-revoke-rollback")
+	if err != nil {
+		t.Fatalf("credential was not restored: %v", err)
+	}
+	if !bytes.Equal(actualPublicKey, publicKey) {
+		t.Fatal("Revoke() restored a different public key")
+	}
+}
+
+func TestRegistryRejectsConflictingAgentStates(t *testing.T) {
+	t.Parallel()
+
+	publicKey, _, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var tokenDigest [32]byte
+	stored := diskRegistry{
+		Version: 1,
+		Pending: map[string]diskPending{
+			"edge-conflict": {
+				TokenSHA256: base64.RawURLEncoding.EncodeToString(tokenDigest[:]),
+				ExpiresAt:   time.Now().Add(time.Hour),
+			},
+		},
+		Enrolled: map[string]string{
+			"edge-conflict": base64.RawURLEncoding.EncodeToString(publicKey),
+		},
+	}
+	encoded, err := json.Marshal(stored)
+	if err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(t.TempDir(), "identities.json")
+	if err := os.WriteFile(path, encoded, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := OpenRegistry(path); err == nil {
+		t.Fatal("OpenRegistry() accepted conflicting pending and enrolled states")
 	}
 }
 

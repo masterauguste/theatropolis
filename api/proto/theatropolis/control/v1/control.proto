@@ -33,6 +33,8 @@ message AgentFrame {
     AgentProof proof = 11;
     AgentHeartbeat heartbeat = 12;
     ConfigValidationReport config_validation_report = 13;
+    ConfigDeploymentReport config_deployment_report = 14;
+    ConfigRuntimeReport config_runtime_report = 15;
   }
 }
 
@@ -43,6 +45,7 @@ message MasterFrame {
     AgentChallenge challenge = 10;
     AuthenticationResult authentication_result = 11;
     ValidateConfigCommand validate_config = 12;
+    DeployConfigCommand deploy_config = 13;
   }
 }
 
@@ -52,6 +55,7 @@ message AgentHello {
   string agent_version = 3;
   string operating_system = 4;
   string architecture = 5;
+  repeated string capabilities = 6;
 }
 
 message AgentChallenge {
@@ -97,4 +101,48 @@ message ConfigValidationReport {
   string diagnostic = 5;
   int64 checked_at_unix = 6;
   uint64 duration_milliseconds = 7;
+}
+
+message DeployConfigCommand {
+  string deployment_id = 1;
+  string revision_id = 2;
+  bytes config_sha256 = 3;
+  bytes config_json = 4;
+  uint32 timeout_seconds = 5;
+}
+
+enum ConfigDeploymentStatus {
+  CONFIG_DEPLOYMENT_STATUS_UNSPECIFIED = 0;
+  CONFIG_DEPLOYMENT_STATUS_APPLIED = 1;
+  CONFIG_DEPLOYMENT_STATUS_VALIDATION_FAILED = 2;
+  CONFIG_DEPLOYMENT_STATUS_ACTIVATION_FAILED = 3;
+  CONFIG_DEPLOYMENT_STATUS_INTERNAL_ERROR = 4;
+}
+
+message ConfigDeploymentReport {
+  string deployment_id = 1;
+  string revision_id = 2;
+  bytes config_sha256 = 3;
+  ConfigDeploymentStatus status = 4;
+  string diagnostic = 5;
+  int64 completed_at_unix = 6;
+  uint64 duration_milliseconds = 7;
+}
+
+enum ConfigRuntimeStatus {
+  CONFIG_RUNTIME_STATUS_UNSPECIFIED = 0;
+  CONFIG_RUNTIME_STATUS_RUNNING = 1;
+  CONFIG_RUNTIME_STATUS_EXITED = 2;
+  CONFIG_RUNTIME_STATUS_RESTART_FAILED = 3;
+  CONFIG_RUNTIME_STATUS_VALIDATION_FAILED = 4;
+  CONFIG_RUNTIME_STATUS_ACTIVATION_FAILED = 5;
+  CONFIG_RUNTIME_STATUS_STOPPED = 6;
+  CONFIG_RUNTIME_STATUS_STOP_FAILED = 7;
+}
+
+message ConfigRuntimeReport {
+  bytes config_sha256 = 1;
+  ConfigRuntimeStatus status = 2;
+  string diagnostic = 3;
+  int64 observed_at_unix = 4;
 }

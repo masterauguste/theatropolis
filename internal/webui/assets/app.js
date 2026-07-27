@@ -63,7 +63,52 @@ for (const form of document.querySelectorAll("form")) {
     const button = form.querySelector("[data-submit-button]");
     if (button) {
       button.disabled = true;
-      button.textContent = "Creating…";
+      button.textContent = button.dataset.submitLabel || "Creating…";
     }
   });
+}
+
+const pendingDeployment = document.querySelector("[data-deployment-refresh-url]");
+if (pendingDeployment) {
+  let lastInteraction = Date.now();
+  for (const eventName of ["keydown", "pointerdown", "focusin"]) {
+    document.addEventListener(eventName, () => {
+      lastInteraction = Date.now();
+    }, { passive: true });
+  }
+
+  const refreshWhenIdle = () => {
+    if (document.hidden || Date.now() - lastInteraction < 3000) {
+      window.setTimeout(refreshWhenIdle, 1000);
+      return;
+    }
+    window.location.replace(pendingDeployment.dataset.deploymentRefreshUrl);
+  };
+
+  const pollDeployment = async () => {
+    try {
+      const response = await fetch(
+        pendingDeployment.dataset.deploymentStatusUrl,
+        {
+          cache: "no-store",
+          credentials: "same-origin",
+          headers: { Accept: "application/json" },
+        },
+      );
+      if (!response.ok) {
+        window.setTimeout(pollDeployment, 5000);
+        return;
+      }
+      const status = await response.json();
+      if (status.pending === true) {
+        window.setTimeout(pollDeployment, 2000);
+        return;
+      }
+      refreshWhenIdle();
+    } catch {
+      window.setTimeout(pollDeployment, 5000);
+    }
+  };
+
+  window.setTimeout(pollDeployment, 2000);
 }

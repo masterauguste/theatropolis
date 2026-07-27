@@ -6,6 +6,9 @@ umask 077
 
 REPOSITORY="masterauguste/theatropolis"
 INSTALL_DIRECTORY="/usr/local/bin"
+SING_BOX_VERSION="1.14.0-beta.2"
+SING_BOX_REPOSITORY="SagerNet/sing-box"
+SING_BOX_LIBRARY_DIRECTORY="/usr/local/lib/theatropolis/sing-box"
 MASTER_USER="theatropolis-master"
 AGENT_USER="theatropolis-agent"
 STATE_DIRECTORY="/var/lib/theatropolis"
@@ -401,8 +404,14 @@ flock -n 9 ||
 	fail "another Theatropolis installer is already running"
 
 case "$(uname -m)" in
-x86_64 | amd64) ARCHITECTURE="amd64" ;;
-aarch64 | arm64) ARCHITECTURE="arm64" ;;
+x86_64 | amd64)
+	ARCHITECTURE="amd64"
+	SING_BOX_SHA256="f68715815741e59f25e32904cabcd5924a0461a910d8e9c9612512b957709ef4"
+	;;
+aarch64 | arm64)
+	ARCHITECTURE="arm64"
+	SING_BOX_SHA256="0f20254efb5218086d1c8458c524b73eae1461aaa966db1adb1526b1b0599165"
+	;;
 *) fail "only amd64 and arm64 are supported" ;;
 esac
 
@@ -517,6 +526,81 @@ for COMPONENT in master agent; do
 	fi
 done
 
+prepare_sing_box() {
+	SING_BOX_PACKAGE="sing-box-${SING_BOX_VERSION}-linux-${ARCHITECTURE}"
+	SING_BOX_ARCHIVE="${SING_BOX_PACKAGE}.tar.gz"
+	SING_BOX_RELEASE_BASE="https://github.com/${SING_BOX_REPOSITORY}/releases/download/v${SING_BOX_VERSION}"
+	SING_BOX_ARCHIVE_PATH="$TEMP_DIRECTORY/$SING_BOX_ARCHIVE"
+	# Word splitting is intentional for the constant curl option list.
+	# shellcheck disable=SC2086
+	curl $CURL_OPTIONS \
+		-o "$SING_BOX_ARCHIVE_PATH" \
+		"$SING_BOX_RELEASE_BASE/$SING_BOX_ARCHIVE"
+
+	SING_BOX_ACTUAL_SHA256="$(
+		sha256sum "$SING_BOX_ARCHIVE_PATH" |
+			awk '{ print $1 }'
+	)"
+	[ "$SING_BOX_ACTUAL_SHA256" = "$SING_BOX_SHA256" ] ||
+		fail "sing-box archive checksum verification failed"
+
+	SING_BOX_ENTRY_COUNT=0
+	while IFS= read -r SING_BOX_ENTRY; do
+		case "$SING_BOX_ENTRY" in
+		"$SING_BOX_PACKAGE/" | \
+			"$SING_BOX_PACKAGE/sing-box" | \
+			"$SING_BOX_PACKAGE/libcronet.so" | \
+			"$SING_BOX_PACKAGE/LICENSE") ;;
+		*) fail "sing-box archive contains an unexpected path: $SING_BOX_ENTRY" ;;
+		esac
+		SING_BOX_ENTRY_COUNT=$((SING_BOX_ENTRY_COUNT + 1))
+	done <<EOF
+$(tar --quoting-style=escape -tzf "$SING_BOX_ARCHIVE_PATH")
+EOF
+	[ "$SING_BOX_ENTRY_COUNT" -eq 4 ] ||
+		fail "sing-box archive does not contain exactly the expected files"
+
+	SING_BOX_TYPED_ENTRY_COUNT=0
+	while IFS=' ' read -r SING_BOX_ENTRY_TYPE SING_BOX_ENTRY_PATH; do
+		case "$SING_BOX_ENTRY_TYPE:$SING_BOX_ENTRY_PATH" in
+		"d:$SING_BOX_PACKAGE/" | \
+			"-:$SING_BOX_PACKAGE/sing-box" | \
+			"-:$SING_BOX_PACKAGE/libcronet.so" | \
+			"-:$SING_BOX_PACKAGE/LICENSE") ;;
+		*) fail "sing-box archive contains an unsafe entry type" ;;
+		esac
+		SING_BOX_TYPED_ENTRY_COUNT=$((SING_BOX_TYPED_ENTRY_COUNT + 1))
+	done <<EOF
+$(tar --quoting-style=escape -tvzf "$SING_BOX_ARCHIVE_PATH" |
+		awk '{ print substr($1, 1, 1), $NF }')
+EOF
+	[ "$SING_BOX_TYPED_ENTRY_COUNT" -eq 4 ] ||
+		fail "sing-box archive does not contain exactly the expected entry types"
+
+	SING_BOX_EXTRACT_DIRECTORY="$TEMP_DIRECTORY/sing-box"
+	mkdir "$SING_BOX_EXTRACT_DIRECTORY"
+	tar \
+		--no-same-owner \
+		--no-same-permissions \
+		--keep-directory-symlink \
+		-xzf "$SING_BOX_ARCHIVE_PATH" \
+		-C "$SING_BOX_EXTRACT_DIRECTORY" \
+		"$SING_BOX_PACKAGE/sing-box" \
+		"$SING_BOX_PACKAGE/libcronet.so" \
+		"$SING_BOX_PACKAGE/LICENSE"
+	for SING_BOX_COMPONENT in sing-box libcronet.so LICENSE; do
+		SING_BOX_COMPONENT_PATH="$SING_BOX_EXTRACT_DIRECTORY/$SING_BOX_PACKAGE/$SING_BOX_COMPONENT"
+		if [ ! -f "$SING_BOX_COMPONENT_PATH" ] ||
+			[ -L "$SING_BOX_COMPONENT_PATH" ]; then
+			fail "sing-box archive did not extract a regular $SING_BOX_COMPONENT file"
+		fi
+	done
+}
+
+case "$ROLE" in
+agent | all) prepare_sing_box ;;
+esac
+
 case "$ROLE" in
 master | all)
 	COMPATIBILITY_STATE="$TEMP_DIRECTORY/master-compatibility"
@@ -556,6 +640,33 @@ install_binary() {
 	install -o root -g root -m 0755 \
 		"$TEMP_DIRECTORY/extracted/theatropolis-$COMPONENT" \
 		"$INSTALL_DIRECTORY/theatropolis-$COMPONENT"
+}
+
+install_sing_box() {
+	SING_BOX_LIBRARY_PARENT="${SING_BOX_LIBRARY_DIRECTORY%/*}"
+	for SING_BOX_DIRECTORY in \
+		"$SING_BOX_LIBRARY_PARENT" \
+		"$SING_BOX_LIBRARY_DIRECTORY"; do
+		if [ -L "$SING_BOX_DIRECTORY" ] ||
+			{ [ -e "$SING_BOX_DIRECTORY" ] && [ ! -d "$SING_BOX_DIRECTORY" ]; }; then
+			fail "sing-box library path is not a directory: $SING_BOX_DIRECTORY"
+		fi
+	done
+	for SING_BOX_TARGET in \
+		"$SING_BOX_LIBRARY_DIRECTORY/libcronet.so" \
+		"$INSTALL_DIRECTORY/sing-box"; do
+		if [ -L "$SING_BOX_TARGET" ] ||
+			{ [ -e "$SING_BOX_TARGET" ] && [ ! -f "$SING_BOX_TARGET" ]; }; then
+			fail "sing-box install target is not a regular file: $SING_BOX_TARGET"
+		fi
+	done
+	install -d -o root -g root -m 0755 "$SING_BOX_LIBRARY_DIRECTORY"
+	install -o root -g root -m 0644 \
+		"$SING_BOX_EXTRACT_DIRECTORY/$SING_BOX_PACKAGE/libcronet.so" \
+		"$SING_BOX_LIBRARY_DIRECTORY/libcronet.so"
+	install -o root -g root -m 0755 \
+		"$SING_BOX_EXTRACT_DIRECTORY/$SING_BOX_PACKAGE/sing-box" \
+		"$INSTALL_DIRECTORY/sing-box"
 }
 
 ensure_service_user() {
@@ -891,6 +1002,7 @@ install_agent() {
 		AGENT_STOPPED="yes"
 		systemctl stop theatropolis-agent
 	fi
+	install_sing_box
 	install_binary agent
 	install -d -o root -g root -m 0755 "$STATE_DIRECTORY"
 	ensure_service_user "$AGENT_USER" "$AGENT_STATE_DIRECTORY"
@@ -919,6 +1031,7 @@ User=${AGENT_USER}
 Group=${AGENT_USER}
 UMask=0077
 EnvironmentFile=${CONFIG_DIRECTORY}/agent.env
+Environment=LD_LIBRARY_PATH=${SING_BOX_LIBRARY_DIRECTORY}
 ExecStart=${INSTALL_DIRECTORY}/theatropolis-agent --master=\${THEATROPOLIS_MASTER} --agent-id=\${THEATROPOLIS_AGENT_ID} --state-dir=${AGENT_STATE_DIRECTORY} --enrollment-token-file=${AGENT_STATE_DIRECTORY}/enrollment.token --ca-file=\${THEATROPOLIS_CA_FILE}
 Restart=on-failure
 RestartSec=5s
@@ -935,8 +1048,8 @@ LockPersonality=true
 MemoryDenyWriteExecute=true
 RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
 RestrictRealtime=true
-CapabilityBoundingSet=
-AmbientCapabilities=
+CapabilityBoundingSet=CAP_NET_BIND_SERVICE
+AmbientCapabilities=CAP_NET_BIND_SERVICE
 ReadWritePaths=${AGENT_STATE_DIRECTORY}
 
 [Install]

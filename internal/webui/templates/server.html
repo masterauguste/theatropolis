@@ -1,0 +1,186 @@
+{{define "server.html"}}
+<!doctype html>
+<html lang="en">
+{{template "document-head" .}}
+<body{{if and .Agent.Deployment .Agent.Deployment.Pending}} data-deployment-refresh-url="{{.Agent.URL}}" data-deployment-status-url="{{.Agent.DeploymentStatusURL}}"{{end}}>
+  <a class="skip-link" href="#main">Skip to content</a>
+  {{template "mobile-header" .}}
+  <div class="app-shell">
+    {{template "sidebar" .}}
+    <main class="main main--narrow" id="main">
+      <nav class="breadcrumbs" aria-label="Breadcrumb">
+        <a href="/servers">Servers</a>
+        <span aria-hidden="true">/</span>
+        <span aria-current="page">{{.Agent.ID}}</span>
+      </nav>
+
+      <header class="page-header">
+        <div>
+          <p class="eyebrow">Server management</p>
+          <h1>{{.Agent.ID}}</h1>
+          <p class="page-header__description">Inspect access and deploy the complete sing-box configuration for this agent.</p>
+        </div>
+        <div class="page-header__actions">
+          <a class="button button--secondary button--icon" href="{{.Agent.URL}}" aria-label="Refresh server status">
+            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M20 11a8 8 0 1 0-2.3 5.7M20 5v6h-6"/></svg>
+            Refresh
+          </a>
+        </div>
+      </header>
+
+      <section class="server-summary" aria-label="Server status">
+        <article class="summary-card">
+          <span class="summary-card__label">Enrollment</span>
+          <span class="status status--{{.Agent.EnrollmentClass}}">
+            <span aria-hidden="true"></span>{{.Agent.EnrollmentLabel}}
+          </span>
+        </article>
+        <article class="summary-card">
+          <span class="summary-card__label">Control connection</span>
+          <span class="status status--{{.Agent.ConnectionClass}}">
+            <span aria-hidden="true"></span>{{.Agent.ConnectionLabel}}
+          </span>
+          <small>{{.Agent.ConnectionDetail}}</small>
+        </article>
+        <article class="summary-card">
+          <span class="summary-card__label">Configuration control</span>
+          {{if .Agent.ConfigurationEnabled}}
+          <strong class="summary-card__value summary-card__value--positive">Ready</strong>
+          {{else}}
+          <strong class="summary-card__value">Unavailable</strong>
+          {{end}}
+        </article>
+      </section>
+
+      <div class="management-grid">
+        <section class="panel configuration-panel" aria-labelledby="configuration-heading">
+          <div class="panel__header">
+            <div>
+              <h2 id="configuration-heading">sing-box configuration</h2>
+              <p>Raw JSON for sing-box 1.14 and newer.</p>
+            </div>
+            {{if .Agent.Deployment}}
+            <span class="status status--{{.Agent.Deployment.StatusClass}}">
+              <span aria-hidden="true"></span>{{.Agent.Deployment.StatusLabel}}
+            </span>
+            {{end}}
+          </div>
+
+          <form action="/servers/{{.Agent.ID}}/configuration" method="post" class="configuration-form">
+            <input type="hidden" name="csrf_token" value="{{.CSRFToken}}">
+            {{if .Error}}
+            <div
+              class="notice notice--error"
+              id="configuration-form-error"
+              role="alert"
+              tabindex="-1"
+              data-error-summary
+            >{{.Error}}</div>
+            {{end}}
+
+            <label class="field field--editor">
+              <span>Configuration JSON</span>
+              <textarea
+                id="config-json"
+                name="config_json"
+                rows="24"
+                maxlength="4194304"
+                autocomplete="off"
+                autocapitalize="off"
+                spellcheck="false"
+                wrap="off"
+                required
+                {{if not .Agent.ConfigurationEditable}}readonly{{end}}
+                {{if eq .ErrorField "config_json"}}autofocus aria-invalid="true" aria-describedby="configuration-help configuration-form-error"{{else}}aria-invalid="false" aria-describedby="configuration-help"{{end}}
+              >{{.Agent.Configuration}}</textarea>
+              <small id="configuration-help">{{.Agent.ConfigurationHint}}</small>
+            </label>
+
+            <div class="configuration-form__actions">
+              <span class="muted">Maximum size: 4 MiB</span>
+              <button
+                class="button button--primary"
+                type="submit"
+                data-submit-button
+                data-submit-label="Deploying…"
+                {{if not .Agent.ConfigurationEditable}}disabled{{end}}
+              >Validate and deploy</button>
+            </div>
+          </form>
+        </section>
+
+        <aside class="management-aside">
+          <section class="panel deployment-card" aria-labelledby="deployment-heading">
+            <div class="panel__header">
+              <div>
+                <h2 id="deployment-heading">Latest deployment</h2>
+                <p>Agent-reported activation result.</p>
+              </div>
+            </div>
+            {{if .Agent.Deployment}}
+            <dl class="detail-list">
+              <div>
+                <dt>Status</dt>
+                <dd>
+                  <span class="status status--{{.Agent.Deployment.StatusClass}}">
+                    <span aria-hidden="true"></span>{{.Agent.Deployment.StatusLabel}}
+                  </span>
+                </dd>
+              </div>
+              <div>
+                <dt>Revision</dt>
+                <dd><code>{{.Agent.Deployment.RevisionID}}</code></dd>
+              </div>
+              <div>
+                <dt>SHA-256</dt>
+                <dd><code>{{.Agent.Deployment.Digest}}</code></dd>
+              </div>
+              <div>
+                <dt>Updated</dt>
+                <dd>{{.Agent.Deployment.UpdatedAt}}</dd>
+              </div>
+            </dl>
+            {{if .Agent.Deployment.Diagnostic}}
+            <div class="diagnostic">
+              <strong>Agent diagnostic</strong>
+              <pre>{{.Agent.Deployment.Diagnostic}}</pre>
+            </div>
+            {{end}}
+            {{else}}
+            <div class="panel__empty">
+              <p>No configuration has been sent to this agent yet.</p>
+            </div>
+            {{end}}
+          </section>
+
+          <section class="panel danger-card" aria-labelledby="danger-heading">
+            <div class="panel__header">
+              <div>
+                <h2 id="danger-heading">Revoke access</h2>
+                <p>Remove this identity from the master.</p>
+              </div>
+            </div>
+            <div class="danger-card__body">
+              <p>This immediately closes an active control session and invalidates enrollment credentials. It does not uninstall the remote agent or stop its current sing-box process.</p>
+              <form
+                action="/servers/{{.Agent.ID}}/revoke"
+                method="post"
+              >
+                <input type="hidden" name="csrf_token" value="{{.CSRFToken}}">
+                <input type="hidden" name="agent_id" value="{{.Agent.ID}}">
+                <label class="danger-confirm">
+                  <input type="checkbox" name="confirm_revoke" value="yes" required>
+                  <span>I understand that this agent will need a new enrollment credential to reconnect.</span>
+                </label>
+                <button class="button button--danger button--full" type="submit">{{.Agent.RevokeLabel}}</button>
+              </form>
+            </div>
+          </section>
+        </aside>
+      </div>
+    </main>
+  </div>
+  <script src="/assets/app.js?v={{.AssetVersion}}" defer></script>
+</body>
+</html>
+{{end}}

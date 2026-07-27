@@ -128,7 +128,12 @@ func serve(arguments []string) error {
 	}
 	logger := slog.New(slog.NewJSONHandler(os.Stderr, nil))
 	slog.SetDefault(logger)
-	deployments := deployment.NewMemoryStore()
+	deployments, err := deployment.NewDiskStore(
+		filepath.Join(*stateDirectory, "deployments"),
+	)
+	if err != nil {
+		return fmt.Errorf("open deployment storage: %w", err)
+	}
 	server := control.NewServer(
 		identities,
 		deployments,
@@ -144,12 +149,13 @@ func serve(arguments []string) error {
 		return fmt.Errorf("load web operator access: %w", err)
 	}
 	webHandler, err := webui.New(webui.Options{
-		Registry:  identities,
-		Sessions:  server.Sessions,
-		Access:    access,
-		PublicURL: *publicURL,
-		Version:   version,
-		Logger:    logger,
+		Registry:   identities,
+		Sessions:   server.Sessions,
+		Controller: server,
+		Access:     access,
+		PublicURL:  *publicURL,
+		Version:    version,
+		Logger:     logger,
 	})
 	if err != nil {
 		return fmt.Errorf("configure web interface: %w", err)

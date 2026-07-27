@@ -67,6 +67,7 @@
                 <th scope="col">Enrollment</th>
                 <th scope="col">Connection</th>
                 <th scope="col">Details</th>
+                <th scope="col"><span class="visually-hidden">Actions</span></th>
               </tr>
             </thead>
             <tbody>
@@ -76,7 +77,7 @@
                   <div class="server-name">
                     <span class="server-name__avatar" aria-hidden="true">{{.Initial}}</span>
                     <div>
-                      <strong>{{.ID}}</strong>
+                      <strong><a class="server-link" href="{{.URL}}">{{.ID}}</a></strong>
                       <small>Agent-managed server</small>
                     </div>
                   </div>
@@ -93,6 +94,9 @@
                 </td>
                 <td data-label="Details">
                   <span class="muted">{{.Detail}}</span>
+                </td>
+                <td data-label="Actions">
+                  <a class="button button--secondary button--small" href="{{.URL}}">Manage</a>
                 </td>
               </tr>
               {{end}}

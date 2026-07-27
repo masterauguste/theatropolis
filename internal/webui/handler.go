@@ -2,10 +2,13 @@ package webui
 
 import (
 	"bytes"
+	"context"
 	"crypto/rand"
 	"crypto/sha256"
 	"embed"
 	"encoding/base64"
+	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"html/template"
@@ -22,16 +25,23 @@ import (
 	"sync"
 	"time"
 
+	"github.com/masterauguste/theatropolis/internal/deployment"
 	"github.com/masterauguste/theatropolis/internal/identity"
+	"github.com/masterauguste/theatropolis/internal/singbox"
 )
 
 const (
-	maxLoginBodyBytes      = 8 << 10
-	maxEnrollmentBodyBytes = 4 << 10
-	enrollmentLimit        = 30
-	enrollmentWindow       = time.Minute
-	enrollmentResultLimit  = 64
-	enrollmentResultTTL    = 5 * time.Minute
+	maxLoginBodyBytes             = 8 << 10
+	maxEnrollmentBodyBytes        = 4 << 10
+	maxConfigurationBytes         = 4 << 20
+	maxConfigurationFormBytes     = 3*maxConfigurationBytes + 8<<10
+	maxConfigurationJSONDepth     = 128
+	enrollmentLimit               = 30
+	enrollmentWindow              = time.Minute
+	enrollmentResultLimit         = 64
+	enrollmentResultTTL           = 5 * time.Minute
+	configurationDeploymentPeriod = 60 * time.Second
+	defaultConfigurationJSON      = "{\n  \"inbounds\": [],\n  \"outbounds\": []\n}\n"
 )
 
 var (
@@ -50,19 +60,35 @@ type SessionRegistry interface {
 	IsOnline(agentID string) bool
 }
 
+type AgentController interface {
+	CanDeployConfiguration(agentID string) bool
+	LatestDeployment(context.Context, string) (deployment.Record, error)
+	QueueDeployment(
+		context.Context,
+		string,
+		string,
+		string,
+		[]byte,
+		time.Duration,
+	) (deployment.Record, error)
+	RevokeAgent(context.Context, string) error
+}
+
 type Options struct {
-	Registry  *identity.Registry
-	Sessions  SessionRegistry
-	Access    *AccessManager
-	PublicURL string
-	Version   string
-	Logger    *slog.Logger
-	Now       func() time.Time
+	Registry   *identity.Registry
+	Sessions   SessionRegistry
+	Controller AgentController
+	Access     *AccessManager
+	PublicURL  string
+	Version    string
+	Logger     *slog.Logger
+	Now        func() time.Time
 }
 
 type Handler struct {
 	registry      *identity.Registry
 	sessions      SessionRegistry
+	controller    AgentController
 	access        *AccessManager
 	publicURL     string
 	publicScheme  string
@@ -81,6 +107,12 @@ type Handler struct {
 
 	resultMu sync.Mutex
 	results  map[string]enrollmentResult
+
+	// agentMutationMu keeps web-originated enrollment creation/result storage
+	// and revocation/result removal in one order. Without it, a concurrent
+	// revoke could leave the browser holding a newly stored but already
+	// invalid installation command.
+	agentMutationMu sync.Mutex
 }
 
 type pageData struct {
@@ -97,6 +129,7 @@ type pageData struct {
 	TTLSeconds    int64
 	Stats         fleetStats
 	Agents        []agentView
+	Agent         *agentDetailView
 	Created       *createdServerView
 }
 
@@ -115,6 +148,35 @@ type agentView struct {
 	ConnectionLabel string
 	ConnectionClass string
 	Detail          string
+	URL             string
+}
+
+type agentDetailView struct {
+	ID                    string
+	URL                   string
+	DeploymentStatusURL   string
+	EnrollmentLabel       string
+	EnrollmentClass       string
+	ConnectionLabel       string
+	ConnectionClass       string
+	ConnectionDetail      string
+	Configuration         string
+	ConfigurationEnabled  bool
+	ConfigurationEditable bool
+	ConfigurationHint     string
+	Deployment            *deploymentView
+	RevokeLabel           string
+}
+
+type deploymentView struct {
+	ID          string
+	RevisionID  string
+	StatusLabel string
+	StatusClass string
+	Diagnostic  string
+	Digest      string
+	UpdatedAt   string
+	Pending     bool
 }
 
 type createdServerView struct {
@@ -136,6 +198,9 @@ func New(options Options) (http.Handler, error) {
 	}
 	if options.Sessions == nil {
 		return nil, errors.New("web UI session registry is required")
+	}
+	if options.Controller == nil {
+		return nil, errors.New("web UI agent controller is required")
 	}
 	if options.Access == nil {
 		return nil, errors.New("web UI access manager is required")
@@ -165,6 +230,7 @@ func New(options Options) (http.Handler, error) {
 	handler := &Handler{
 		registry:      options.Registry,
 		sessions:      options.Sessions,
+		controller:    options.Controller,
 		access:        options.Access,
 		publicURL:     public.origin,
 		publicScheme:  public.scheme,
@@ -192,6 +258,16 @@ func (h *Handler) routes() {
 	h.mux.HandleFunc("GET /servers", h.serversPage)
 	h.mux.HandleFunc("GET /servers/new", h.newServerPage)
 	h.mux.HandleFunc("GET /servers/enrollment-result", h.enrollmentResultPage)
+	h.mux.HandleFunc(
+		"GET /servers/{agent_id}/deployment-status",
+		h.deploymentStatus,
+	)
+	h.mux.HandleFunc("GET /servers/{agent_id}/manage", h.serverPage)
+	h.mux.HandleFunc(
+		"POST /servers/{agent_id}/configuration",
+		h.deployServerConfiguration,
+	)
+	h.mux.HandleFunc("POST /servers/{agent_id}/revoke", h.revokeServer)
 	h.mux.HandleFunc("POST /servers", h.createServer)
 	h.mux.HandleFunc("GET /", h.root)
 }
@@ -377,6 +453,402 @@ func (h *Handler) serversPage(response http.ResponseWriter, request *http.Reques
 	})
 }
 
+func (h *Handler) serverPage(response http.ResponseWriter, request *http.Request) {
+	session, ok := h.requireAuthentication(response, request)
+	if !ok {
+		return
+	}
+	if request.URL.RawQuery != "" {
+		http.NotFound(response, request)
+		return
+	}
+	snapshot, ok := h.agentSnapshot(request.PathValue("agent_id"))
+	if !ok {
+		http.NotFound(response, request)
+		return
+	}
+	data, err := h.serverPageData(request.Context(), session, snapshot, "")
+	if err != nil {
+		h.logger.Error(
+			"load server management page",
+			"agent_id",
+			snapshot.ID,
+			"error",
+			err,
+		)
+		http.Error(response, "server details could not be loaded", http.StatusInternalServerError)
+		return
+	}
+	h.render(response, http.StatusOK, "server.html", data)
+}
+
+func (h *Handler) deploymentStatus(
+	response http.ResponseWriter,
+	request *http.Request,
+) {
+	if _, ok := h.requireAuthentication(response, request); !ok {
+		return
+	}
+	if request.URL.RawQuery != "" {
+		http.NotFound(response, request)
+		return
+	}
+	snapshot, ok := h.agentSnapshot(request.PathValue("agent_id"))
+	if !ok {
+		http.NotFound(response, request)
+		return
+	}
+	record, err := h.controller.LatestDeployment(request.Context(), snapshot.ID)
+	if err != nil && !errors.Is(err, deployment.ErrNotFound) {
+		h.logger.Error(
+			"load deployment polling status",
+			"agent_id",
+			snapshot.ID,
+			"error",
+			err,
+		)
+		http.Error(response, "deployment status could not be loaded", http.StatusInternalServerError)
+		return
+	}
+	pending := false
+	if err == nil {
+		pending = deploymentViewFor(record).Pending
+	}
+	response.Header().Set("Content-Type", "application/json")
+	response.Header().Set("Cache-Control", "no-store")
+	if err := json.NewEncoder(response).Encode(struct {
+		Pending bool `json:"pending"`
+	}{Pending: pending}); err != nil {
+		h.logger.Error(
+			"write deployment polling status",
+			"agent_id",
+			snapshot.ID,
+			"error",
+			err,
+		)
+	}
+}
+
+func (h *Handler) deployServerConfiguration(
+	response http.ResponseWriter,
+	request *http.Request,
+) {
+	sessionToken, ok := h.sessionToken(request)
+	if !ok {
+		h.redirectToLogin(response, request)
+		return
+	}
+	if h.rejectInvalidMutationOrigin(response, request) {
+		return
+	}
+	form, err := readExactForm(
+		response,
+		request,
+		maxConfigurationFormBytes,
+		"config_json",
+		"csrf_token",
+	)
+	if err != nil || !h.access.AuthorizeCSRF(sessionToken, form.Get("csrf_token")) {
+		http.Error(response, "request was not authorized", http.StatusForbidden)
+		return
+	}
+	session, err := h.access.Authenticate(sessionToken)
+	if err != nil {
+		h.redirectToLogin(response, request)
+		return
+	}
+	snapshot, ok := h.agentSnapshot(request.PathValue("agent_id"))
+	if !ok {
+		http.NotFound(response, request)
+		return
+	}
+
+	config := []byte(form.Get("config_json"))
+	if err := validateConfigurationJSON(config); err != nil {
+		h.renderServerError(
+			response,
+			http.StatusBadRequest,
+			session,
+			snapshot,
+			string(config),
+			err.Error(),
+			"config_json",
+		)
+		return
+	}
+	if err := singbox.ValidateManagedConfig(config); err != nil {
+		message := "The configuration does not satisfy the managed-agent safety policy."
+		if errors.Is(err, singbox.ErrReservedListenPort) {
+			message = singbox.ReservedListenPortMessage()
+		}
+		h.renderServerError(
+			response,
+			http.StatusBadRequest,
+			session,
+			snapshot,
+			string(config),
+			message,
+			"config_json",
+		)
+		return
+	}
+	if snapshot.State != identity.AgentStateEnrolled {
+		h.renderServerError(
+			response,
+			http.StatusConflict,
+			session,
+			snapshot,
+			string(config),
+			"Finish enrolling this server before deploying a configuration.",
+			"",
+		)
+		return
+	}
+	if !h.sessions.IsOnline(snapshot.ID) {
+		h.renderServerError(
+			response,
+			http.StatusConflict,
+			session,
+			snapshot,
+			string(config),
+			"The agent is offline. Reconnect it before deploying a configuration.",
+			"",
+		)
+		return
+	}
+	if !h.controller.CanDeployConfiguration(snapshot.ID) {
+		h.renderServerError(
+			response,
+			http.StatusConflict,
+			session,
+			snapshot,
+			string(config),
+			"Update the agent or repair its sing-box installation before deploying configuration from this master.",
+			"",
+		)
+		return
+	}
+
+	deploymentID, err := randomOpaqueID("dep")
+	if err != nil {
+		h.logger.Error("generate deployment ID", "agent_id", snapshot.ID, "error", err)
+		http.Error(response, "deployment could not be prepared", http.StatusInternalServerError)
+		return
+	}
+	revisionID, err := randomOpaqueID("rev")
+	if err != nil {
+		h.logger.Error("generate revision ID", "agent_id", snapshot.ID, "error", err)
+		http.Error(response, "deployment could not be prepared", http.StatusInternalServerError)
+		return
+	}
+	record, err := h.controller.QueueDeployment(
+		request.Context(),
+		snapshot.ID,
+		deploymentID,
+		revisionID,
+		config,
+		configurationDeploymentPeriod,
+	)
+	clear(config)
+	if err != nil {
+		status := http.StatusInternalServerError
+		message := "The configuration could not be deployed."
+		switch {
+		case record.Status == deployment.StatusDeliveryFailed:
+			status = http.StatusConflict
+			message = "The agent disconnected before the configuration could be delivered."
+		case errors.Is(err, deployment.ErrDeploymentInProgress):
+			status = http.StatusConflict
+			message = "A configuration deployment is already in progress for this server."
+		case errors.Is(err, deployment.ErrNotFound),
+			errors.Is(err, identity.ErrAgentNotFound):
+			status = http.StatusNotFound
+			message = "The server entry no longer exists."
+		default:
+			h.logger.Error(
+				"queue configuration deployment",
+				"agent_id",
+				snapshot.ID,
+				"deployment_id",
+				deploymentID,
+				"error",
+				err,
+			)
+		}
+		h.renderServerError(
+			response,
+			status,
+			session,
+			snapshot,
+			form.Get("config_json"),
+			message,
+			"",
+		)
+		return
+	}
+	h.logger.Info(
+		"configuration deployment queued",
+		"agent_id",
+		snapshot.ID,
+		"deployment_id",
+		record.ID,
+		"revision_id",
+		record.RevisionID,
+	)
+	http.Redirect(
+		response,
+		request,
+		"/servers/"+url.PathEscape(snapshot.ID)+"/manage",
+		http.StatusSeeOther,
+	)
+}
+
+func (h *Handler) revokeServer(response http.ResponseWriter, request *http.Request) {
+	sessionToken, ok := h.sessionToken(request)
+	if !ok {
+		h.redirectToLogin(response, request)
+		return
+	}
+	if h.rejectInvalidMutationOrigin(response, request) {
+		return
+	}
+	form, err := readExactForm(
+		response,
+		request,
+		maxEnrollmentBodyBytes,
+		"agent_id",
+		"confirm_revoke",
+		"csrf_token",
+	)
+	if err != nil || !h.access.AuthorizeCSRF(sessionToken, form.Get("csrf_token")) {
+		http.Error(response, "request was not authorized", http.StatusForbidden)
+		return
+	}
+	if _, err := h.access.Authenticate(sessionToken); err != nil {
+		h.redirectToLogin(response, request)
+		return
+	}
+	h.agentMutationMu.Lock()
+	defer h.agentMutationMu.Unlock()
+	agentID := request.PathValue("agent_id")
+	if form.Get("agent_id") != agentID || form.Get("confirm_revoke") != "yes" {
+		http.Error(response, "request was not authorized", http.StatusForbidden)
+		return
+	}
+	if _, ok := h.agentSnapshot(agentID); !ok {
+		http.NotFound(response, request)
+		return
+	}
+	if err := h.controller.RevokeAgent(request.Context(), agentID); err != nil {
+		if errors.Is(err, identity.ErrAgentNotFound) {
+			http.NotFound(response, request)
+			return
+		}
+		h.logger.Error("revoke server", "agent_id", agentID, "error", err)
+		http.Error(response, "server access could not be revoked", http.StatusInternalServerError)
+		return
+	}
+	h.removeEnrollmentResultsForAgent(agentID)
+	h.logger.Info("server access revoked", "agent_id", agentID)
+	http.Redirect(response, request, "/servers", http.StatusSeeOther)
+}
+
+func (h *Handler) serverPageData(
+	ctx context.Context,
+	session Session,
+	snapshot identity.AgentSnapshot,
+	configurationOverride string,
+) (pageData, error) {
+	now := h.currentTime()
+	online := snapshot.State == identity.AgentStateEnrolled &&
+		h.sessions.IsOnline(snapshot.ID)
+	summary := agentViewFor(snapshot, now, online)
+	detail := &agentDetailView{
+		ID:                  snapshot.ID,
+		URL:                 "/servers/" + url.PathEscape(snapshot.ID) + "/manage",
+		DeploymentStatusURL: "/servers/" + url.PathEscape(snapshot.ID) + "/deployment-status",
+		EnrollmentLabel:     summary.EnrollmentLabel,
+		EnrollmentClass:     summary.EnrollmentClass,
+		ConnectionLabel:     summary.ConnectionLabel,
+		ConnectionClass:     summary.ConnectionClass,
+		ConnectionDetail:    summary.Detail,
+		Configuration:       defaultConfigurationJSON,
+		RevokeLabel:         "Remove server entry",
+	}
+	switch snapshot.State {
+	case identity.AgentStatePending:
+		detail.ConfigurationHint = "The server must enroll before it can receive configuration."
+		detail.RevokeLabel = "Cancel enrollment"
+	case identity.AgentStateExpired:
+		detail.ConfigurationHint = "Remove this expired entry, then add the server again."
+		detail.RevokeLabel = "Remove expired entry"
+	case identity.AgentStateEnrolled:
+		switch {
+		case !online:
+			detail.ConfigurationHint = "The agent must be online before a configuration can be deployed."
+		case !h.controller.CanDeployConfiguration(snapshot.ID):
+			detail.ConfigurationHint = "This agent is connected, but its agent or sing-box installation must be updated before it can activate configurations."
+		default:
+			detail.ConfigurationEnabled = true
+			detail.ConfigurationEditable = true
+			detail.ConfigurationHint = "The agent checks the JSON with sing-box, atomically activates it, and rolls back if startup fails."
+		}
+	}
+
+	record, err := h.controller.LatestDeployment(ctx, snapshot.ID)
+	if err == nil {
+		if len(record.ConfigJSON) != 0 {
+			detail.Configuration = string(record.ConfigJSON)
+		}
+		detail.Deployment = deploymentViewFor(record)
+		if detail.Deployment.Pending {
+			detail.ConfigurationEditable = false
+			detail.ConfigurationHint = "Wait for the current deployment result. This page refreshes automatically."
+		}
+	} else if !errors.Is(err, deployment.ErrNotFound) {
+		return pageData{}, err
+	}
+	if configurationOverride != "" {
+		detail.Configuration = configurationOverride
+	}
+	return pageData{
+		Title:     snapshot.ID,
+		CSRFToken: session.CSRFToken,
+		Agent:     detail,
+	}, nil
+}
+
+func (h *Handler) renderServerError(
+	response http.ResponseWriter,
+	status int,
+	session Session,
+	snapshot identity.AgentSnapshot,
+	configuration string,
+	message string,
+	errorField string,
+) {
+	data, err := h.serverPageData(
+		context.Background(),
+		session,
+		snapshot,
+		configuration,
+	)
+	if err != nil {
+		h.logger.Error(
+			"render server error",
+			"agent_id",
+			snapshot.ID,
+			"error",
+			err,
+		)
+		http.Error(response, "server details could not be loaded", http.StatusInternalServerError)
+		return
+	}
+	data.Error = message
+	data.ErrorField = errorField
+	h.render(response, status, "server.html", data)
+}
+
 func (h *Handler) newServerPage(response http.ResponseWriter, request *http.Request) {
 	session, ok := h.requireAuthentication(response, request)
 	if !ok {
@@ -475,6 +947,8 @@ func (h *Handler) createServer(response http.ResponseWriter, request *http.Reque
 	}
 
 	expiresAt := h.currentTime().Add(ttl)
+	h.agentMutationMu.Lock()
+	defer h.agentMutationMu.Unlock()
 	token, err := h.registry.CreateEnrollment(request.Context(), agentID, expiresAt)
 	if err != nil {
 		message := "The server entry could not be created."
@@ -556,6 +1030,7 @@ func agentViewFor(snapshot identity.AgentSnapshot, now time.Time, online bool) a
 	view := agentView{
 		ID:      snapshot.ID,
 		Initial: strings.ToUpper(snapshot.ID[:1]),
+		URL:     "/servers/" + url.PathEscape(snapshot.ID) + "/manage",
 	}
 	switch snapshot.State {
 	case identity.AgentStatePending:
@@ -584,6 +1059,168 @@ func agentViewFor(snapshot identity.AgentSnapshot, now time.Time, online bool) a
 		}
 	}
 	return view
+}
+
+func deploymentViewFor(record deployment.Record) *deploymentView {
+	view := &deploymentView{
+		ID:         record.ID,
+		RevisionID: record.RevisionID,
+		Digest:     hex.EncodeToString(record.ConfigSHA256[:]),
+		UpdatedAt:  record.UpdatedAt.UTC().Format("2 Jan 2006, 15:04:05 UTC"),
+		Diagnostic: record.Diagnostic,
+	}
+	switch record.Status {
+	case deployment.StatusQueued:
+		view.StatusLabel = "Queued"
+		view.StatusClass = "pending"
+		view.Pending = true
+	case deployment.StatusValidating:
+		view.StatusLabel = "Validating"
+		view.StatusClass = "pending"
+		view.Pending = true
+	case deployment.StatusValidated:
+		view.StatusLabel = "Validated"
+		view.StatusClass = "online"
+	case deployment.StatusDeploying:
+		view.StatusLabel = "Deploying"
+		view.StatusClass = "pending"
+		view.Pending = true
+	case deployment.StatusApplied:
+		view.StatusLabel = "Applied"
+		view.StatusClass = "online"
+	case deployment.StatusRuntimeFailed:
+		view.StatusLabel = "Runtime failure"
+		view.StatusClass = "expired"
+	case deployment.StatusValidationFailed:
+		view.StatusLabel = "Validation failed"
+		view.StatusClass = "expired"
+	case deployment.StatusActivationFailed:
+		view.StatusLabel = "Activation failed"
+		view.StatusClass = "expired"
+	case deployment.StatusInternalError:
+		view.StatusLabel = "Agent error"
+		view.StatusClass = "expired"
+	case deployment.StatusDeliveryFailed:
+		view.StatusLabel = "Delivery failed"
+		view.StatusClass = "expired"
+	default:
+		view.StatusLabel = "Unknown"
+		view.StatusClass = "offline"
+	}
+	return view
+}
+
+func (h *Handler) agentSnapshot(agentID string) (identity.AgentSnapshot, bool) {
+	if strings.TrimSpace(agentID) == "" {
+		return identity.AgentSnapshot{}, false
+	}
+	for _, snapshot := range h.registry.Snapshot(h.currentTime()) {
+		if snapshot.ID == agentID {
+			return snapshot, true
+		}
+	}
+	return identity.AgentSnapshot{}, false
+}
+
+func validateConfigurationJSON(config []byte) error {
+	if len(config) == 0 {
+		return errors.New("Enter a sing-box configuration.")
+	}
+	if len(config) > maxConfigurationBytes {
+		return errors.New("The configuration exceeds the 4 MiB size limit.")
+	}
+	decoder := json.NewDecoder(bytes.NewReader(config))
+	decoder.UseNumber()
+	token, err := decoder.Token()
+	if err != nil {
+		return errors.New("Enter a valid JSON configuration.")
+	}
+	if delimiter, ok := token.(json.Delim); !ok || delimiter != '{' {
+		return errors.New("The sing-box configuration must be a JSON object.")
+	}
+	if err := consumeJSONObject(decoder, 1); err != nil {
+		return err
+	}
+	if _, err := decoder.Token(); !errors.Is(err, io.EOF) {
+		return errors.New("Enter one complete JSON configuration.")
+	}
+	return nil
+}
+
+func consumeJSONObject(decoder *json.Decoder, depth int) error {
+	if depth > maxConfigurationJSONDepth {
+		return errors.New("The configuration is nested too deeply.")
+	}
+	keys := make(map[string]struct{})
+	for decoder.More() {
+		token, err := decoder.Token()
+		if err != nil {
+			return errors.New("Enter a valid JSON configuration.")
+		}
+		key, ok := token.(string)
+		if !ok {
+			return errors.New("Enter a valid JSON configuration.")
+		}
+		if _, duplicate := keys[key]; duplicate {
+			return errors.New("The configuration contains a duplicate object key.")
+		}
+		keys[key] = struct{}{}
+		if err := consumeJSONValue(decoder, depth); err != nil {
+			return err
+		}
+	}
+	token, err := decoder.Token()
+	if err != nil {
+		return errors.New("Enter a valid JSON configuration.")
+	}
+	if delimiter, ok := token.(json.Delim); !ok || delimiter != '}' {
+		return errors.New("Enter a valid JSON configuration.")
+	}
+	return nil
+}
+
+func consumeJSONValue(decoder *json.Decoder, depth int) error {
+	token, err := decoder.Token()
+	if err != nil {
+		return errors.New("Enter a valid JSON configuration.")
+	}
+	delimiter, composite := token.(json.Delim)
+	if !composite {
+		return nil
+	}
+	switch delimiter {
+	case '{':
+		return consumeJSONObject(decoder, depth+1)
+	case '[':
+		if depth >= maxConfigurationJSONDepth {
+			return errors.New("The configuration is nested too deeply.")
+		}
+		for decoder.More() {
+			if err := consumeJSONValue(decoder, depth+1); err != nil {
+				return err
+			}
+		}
+		token, err := decoder.Token()
+		if err != nil {
+			return errors.New("Enter a valid JSON configuration.")
+		}
+		if closing, ok := token.(json.Delim); !ok || closing != ']' {
+			return errors.New("Enter a valid JSON configuration.")
+		}
+		return nil
+	default:
+		return errors.New("Enter a valid JSON configuration.")
+	}
+}
+
+func randomOpaqueID(prefix string) (string, error) {
+	var random [18]byte
+	if _, err := rand.Read(random[:]); err != nil {
+		return "", err
+	}
+	encoded := base64.RawURLEncoding.EncodeToString(random[:])
+	clear(random[:])
+	return prefix + "_" + encoded, nil
 }
 
 func (h *Handler) installCommand(agentID, token string) string {
@@ -655,6 +1292,16 @@ func (h *Handler) takeEnrollmentResult(
 func (h *Handler) purgeEnrollmentResultsLocked(now time.Time) {
 	for resultID, result := range h.results {
 		if !now.Before(result.createdAt.Add(enrollmentResultTTL)) {
+			delete(h.results, resultID)
+		}
+	}
+}
+
+func (h *Handler) removeEnrollmentResultsForAgent(agentID string) {
+	h.resultMu.Lock()
+	defer h.resultMu.Unlock()
+	for resultID, result := range h.results {
+		if result.created.AgentID == agentID {
 			delete(h.results, resultID)
 		}
 	}

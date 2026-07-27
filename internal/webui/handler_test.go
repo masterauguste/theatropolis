@@ -4,6 +4,8 @@ import (
 	"context"
 	"crypto/ed25519"
 	"crypto/rand"
+	"encoding/hex"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -15,6 +17,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/masterauguste/theatropolis/internal/deployment"
 	"github.com/masterauguste/theatropolis/internal/identity"
 )
 
@@ -26,14 +29,89 @@ func (s testSessions) IsOnline(agentID string) bool {
 	return s[agentID]
 }
 
+type testAgentController struct {
+	registry   *identity.Registry
+	sessions   testSessions
+	store      deployment.Store
+	deployable map[string]bool
+	queueErr   error
+	revokeErr  error
+}
+
+func (c *testAgentController) CanDeployConfiguration(agentID string) bool {
+	if c.deployable != nil {
+		return c.deployable[agentID]
+	}
+	return c.sessions[agentID]
+}
+
+func (c *testAgentController) LatestDeployment(
+	ctx context.Context,
+	agentID string,
+) (deployment.Record, error) {
+	return c.store.LatestForAgent(ctx, agentID)
+}
+
+func (c *testAgentController) QueueDeployment(
+	ctx context.Context,
+	agentID string,
+	deploymentID string,
+	revisionID string,
+	config []byte,
+	_ time.Duration,
+) (deployment.Record, error) {
+	if c.queueErr != nil {
+		return deployment.Record{}, c.queueErr
+	}
+	record, err := deployment.New(
+		deploymentID,
+		agentID,
+		revisionID,
+		config,
+		time.Now().UTC(),
+	)
+	if err != nil {
+		return deployment.Record{}, err
+	}
+	if err := c.store.Create(ctx, record); err != nil {
+		return deployment.Record{}, err
+	}
+	return c.store.Transition(
+		ctx,
+		record.ID,
+		deployment.StatusDeploying,
+		"",
+		time.Now().UTC(),
+	)
+}
+
+func (c *testAgentController) RevokeAgent(
+	ctx context.Context,
+	agentID string,
+) error {
+	if c.revokeErr != nil {
+		return c.revokeErr
+	}
+	if err := c.registry.Revoke(ctx, agentID); err != nil {
+		return err
+	}
+	c.sessions[agentID] = false
+	if err := c.store.RemoveAgent(ctx, agentID); err != nil &&
+		!errors.Is(err, deployment.ErrNotFound) {
+		return err
+	}
+	return nil
+}
+
 type webFixture struct {
-	handler  http.Handler
-	registry *identity.Registry
-	access   *AccessManager
-	username string
-	password string
-	session  Session
-	now      time.Time
+	handler    http.Handler
+	registry   *identity.Registry
+	controller *testAgentController
+	access     *AccessManager
+	username   string
+	password   string
+	session    Session
+	now        time.Time
 }
 
 func TestProtectedPagesRequireAuthenticationAndConfiguredHost(t *testing.T) {
@@ -528,6 +606,396 @@ func TestServersPageUsesRealEnrollmentAndConnectionState(t *testing.T) {
 	}
 }
 
+func TestAuthenticatedSidebarOmitsMasterEndpoint(t *testing.T) {
+	t.Parallel()
+
+	fixture := newWebFixture(t)
+	request := fixture.authenticatedRequest(http.MethodGet, "/servers", "")
+	response := httptest.NewRecorder()
+	fixture.handler.ServeHTTP(response, request)
+	if response.Code != http.StatusOK {
+		t.Fatalf("GET /servers status = %d, body = %s", response.Code, response.Body.String())
+	}
+
+	body := response.Body.String()
+	for _, unexpected := range []string{
+		"Master endpoint",
+		"endpoint-card",
+		testPublicURL,
+	} {
+		if strings.Contains(body, unexpected) {
+			t.Errorf("authenticated sidebar contains %q", unexpected)
+		}
+	}
+	if !strings.Contains(
+		body,
+		`class="button button--quiet button--full button--small"`,
+	) {
+		t.Fatal("authenticated sidebar does not contain a compact, full-width sign-out button")
+	}
+}
+
+func TestServerManagementPageShowsConfigurationAndRevocationControls(t *testing.T) {
+	t.Parallel()
+
+	fixture := newWebFixture(t)
+	enrollAgent(t, fixture.registry, "edge-online")
+
+	request := fixture.authenticatedRequest(
+		http.MethodGet,
+		"/servers/edge-online/manage",
+		"",
+	)
+	response := httptest.NewRecorder()
+	fixture.handler.ServeHTTP(response, request)
+	if response.Code != http.StatusOK {
+		t.Fatalf(
+			"GET server management status = %d, body = %s",
+			response.Code,
+			response.Body.String(),
+		)
+	}
+	body := response.Body.String()
+	for _, expected := range []string{
+		"Server management",
+		"edge-online",
+		"sing-box configuration",
+		"Validate and deploy",
+		`action="/servers/edge-online/revoke"`,
+		`name="confirm_revoke"`,
+		"Revoke access",
+		"does not uninstall the remote agent",
+	} {
+		if !strings.Contains(body, expected) {
+			t.Errorf("server management page does not contain %q", expected)
+		}
+	}
+	if strings.Contains(body, testPublicURL) {
+		t.Fatal("server management sidebar exposed the master endpoint")
+	}
+
+	request = fixture.authenticatedRequest(
+		http.MethodGet,
+		"/servers/unknown/manage",
+		"",
+	)
+	response = httptest.NewRecorder()
+	fixture.handler.ServeHTTP(response, request)
+	if response.Code != http.StatusNotFound {
+		t.Fatalf("unknown server detail status = %d, want 404", response.Code)
+	}
+}
+
+func TestReservedLookingAgentIDsUseUnambiguousManagementRoute(t *testing.T) {
+	t.Parallel()
+
+	fixture := newWebFixture(t)
+	for _, agentID := range []string{"new", "enrollment-result"} {
+		enrollAgent(t, fixture.registry, agentID)
+		request := fixture.authenticatedRequest(
+			http.MethodGet,
+			"/servers/"+agentID+"/manage",
+			"",
+		)
+		response := httptest.NewRecorder()
+		fixture.handler.ServeHTTP(response, request)
+		if response.Code != http.StatusOK ||
+			!strings.Contains(response.Body.String(), agentID) {
+			t.Fatalf(
+				"management page for %q = %d %q",
+				agentID,
+				response.Code,
+				response.Body.String(),
+			)
+		}
+	}
+
+	request := fixture.authenticatedRequest(http.MethodGet, "/servers", "")
+	response := httptest.NewRecorder()
+	fixture.handler.ServeHTTP(response, request)
+	for _, expected := range []string{
+		`href="/servers/new/manage"`,
+		`href="/servers/enrollment-result/manage"`,
+	} {
+		if !strings.Contains(response.Body.String(), expected) {
+			t.Errorf("servers page does not contain %q", expected)
+		}
+	}
+}
+
+func TestConfigurationDeploymentRequiresAuthorizationAndValidJSONObject(t *testing.T) {
+	t.Parallel()
+
+	fixture := newWebFixture(t)
+	enrollAgent(t, fixture.registry, "edge-online")
+	validConfig := "{\n  \"log\": {\"level\": \"warn\"},\n  \"inbounds\": []\n}\n"
+	form := url.Values{
+		"config_json": {validConfig},
+		"csrf_token":  {fixture.session.CSRFToken},
+	}.Encode()
+
+	request := fixture.authenticatedRequest(
+		http.MethodPost,
+		"/servers/edge-online/configuration",
+		form,
+	)
+	response := httptest.NewRecorder()
+	fixture.handler.ServeHTTP(response, request)
+	if response.Code != http.StatusForbidden {
+		t.Fatalf("configuration without Origin status = %d, want 403", response.Code)
+	}
+	if _, err := fixture.controller.store.LatestForAgent(
+		context.Background(),
+		"edge-online",
+	); !errors.Is(err, deployment.ErrNotFound) {
+		t.Fatalf("unauthorized configuration created deployment: %v", err)
+	}
+
+	duplicateConfig := `{"log":{"level":"info"},"log":{"level":"debug"}}`
+	invalidForm := url.Values{
+		"config_json": {duplicateConfig},
+		"csrf_token":  {fixture.session.CSRFToken},
+	}.Encode()
+	request = fixture.authenticatedMutationRequest(
+		http.MethodPost,
+		"/servers/edge-online/configuration",
+		invalidForm,
+	)
+	response = httptest.NewRecorder()
+	fixture.handler.ServeHTTP(response, request)
+	if response.Code != http.StatusBadRequest ||
+		!strings.Contains(response.Body.String(), "duplicate object key") {
+		t.Fatalf(
+			"duplicate-key configuration response = %d %q",
+			response.Code,
+			response.Body.String(),
+		)
+	}
+
+	reservedPortForm := url.Values{
+		"config_json": {`{"inbounds":[{"type":"anytls","listen_port":80}]}`},
+		"csrf_token":  {fixture.session.CSRFToken},
+	}.Encode()
+	request = fixture.authenticatedMutationRequest(
+		http.MethodPost,
+		"/servers/edge-online/configuration",
+		reservedPortForm,
+	)
+	response = httptest.NewRecorder()
+	fixture.handler.ServeHTTP(response, request)
+	if response.Code != http.StatusBadRequest ||
+		!strings.Contains(response.Body.String(), "reserved for ACME HTTP-01") {
+		t.Fatalf(
+			"reserved-port configuration response = %d %q",
+			response.Code,
+			response.Body.String(),
+		)
+	}
+
+	request = fixture.authenticatedMutationRequest(
+		http.MethodPost,
+		"/servers/edge-online/configuration",
+		form,
+	)
+	response = httptest.NewRecorder()
+	fixture.handler.ServeHTTP(response, request)
+	if response.Code != http.StatusSeeOther ||
+		response.Header().Get("Location") != "/servers/edge-online/manage" {
+		t.Fatalf(
+			"valid deployment response = %d %q, body = %s",
+			response.Code,
+			response.Header().Get("Location"),
+			response.Body.String(),
+		)
+	}
+	record, err := fixture.controller.store.LatestForAgent(
+		context.Background(),
+		"edge-online",
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if record.Status != deployment.StatusDeploying ||
+		string(record.ConfigJSON) != validConfig {
+		t.Fatalf(
+			"queued deployment = status %q config %q",
+			record.Status,
+			string(record.ConfigJSON),
+		)
+	}
+
+	request = fixture.authenticatedRequest(
+		http.MethodGet,
+		"/servers/edge-online/manage",
+		"",
+	)
+	response = httptest.NewRecorder()
+	fixture.handler.ServeHTTP(response, request)
+	body := response.Body.String()
+	if response.Code != http.StatusOK ||
+		!strings.Contains(
+			body,
+			`data-deployment-refresh-url="/servers/edge-online/manage"`,
+		) ||
+		!strings.Contains(
+			body,
+			`data-deployment-status-url="/servers/edge-online/deployment-status"`,
+		) ||
+		!strings.Contains(body, "Wait for the current deployment result") ||
+		!strings.Contains(body, hex.EncodeToString(record.ConfigSHA256[:])) {
+		t.Fatalf(
+			"pending deployment page = %d %q",
+			response.Code,
+			body,
+		)
+	}
+
+	request = fixture.authenticatedRequest(
+		http.MethodGet,
+		"/servers/edge-online/deployment-status",
+		"",
+	)
+	response = httptest.NewRecorder()
+	fixture.handler.ServeHTTP(response, request)
+	if response.Code != http.StatusOK ||
+		response.Header().Get("Content-Type") != "application/json" ||
+		!strings.Contains(response.Body.String(), `"pending":true`) {
+		t.Fatalf(
+			"deployment polling status = %d %q",
+			response.Code,
+			response.Body.String(),
+		)
+	}
+}
+
+func TestConfigurationDeploymentRejectsOfflineOrOutdatedAgent(t *testing.T) {
+	t.Parallel()
+
+	fixture := newWebFixture(t)
+	enrollAgent(t, fixture.registry, "edge-offline")
+	form := url.Values{
+		"config_json": {`{}`},
+		"csrf_token":  {fixture.session.CSRFToken},
+	}.Encode()
+
+	request := fixture.authenticatedMutationRequest(
+		http.MethodPost,
+		"/servers/edge-offline/configuration",
+		form,
+	)
+	response := httptest.NewRecorder()
+	fixture.handler.ServeHTTP(response, request)
+	if response.Code != http.StatusConflict ||
+		!strings.Contains(response.Body.String(), "agent is offline") {
+		t.Fatalf(
+			"offline deployment response = %d %q",
+			response.Code,
+			response.Body.String(),
+		)
+	}
+
+	fixture.controller.sessions["edge-offline"] = true
+	fixture.controller.deployable = map[string]bool{"edge-offline": false}
+	request = fixture.authenticatedMutationRequest(
+		http.MethodPost,
+		"/servers/edge-offline/configuration",
+		form,
+	)
+	response = httptest.NewRecorder()
+	fixture.handler.ServeHTTP(response, request)
+	if response.Code != http.StatusConflict ||
+		!strings.Contains(response.Body.String(), "Update the agent") {
+		t.Fatalf(
+			"outdated deployment response = %d %q",
+			response.Code,
+			response.Body.String(),
+		)
+	}
+}
+
+func TestRevokeServerRequiresOriginCSRFAndMatchingIdentity(t *testing.T) {
+	t.Parallel()
+
+	fixture := newWebFixture(t)
+	enrollAgent(t, fixture.registry, "edge-online")
+	form := url.Values{
+		"agent_id":       {"edge-online"},
+		"confirm_revoke": {"yes"},
+		"csrf_token":     {fixture.session.CSRFToken},
+	}.Encode()
+
+	request := fixture.authenticatedRequest(
+		http.MethodPost,
+		"/servers/edge-online/revoke",
+		form,
+	)
+	response := httptest.NewRecorder()
+	fixture.handler.ServeHTTP(response, request)
+	if response.Code != http.StatusForbidden {
+		t.Fatalf("revoke without Origin status = %d, want 403", response.Code)
+	}
+	if _, err := fixture.registry.PublicKey(
+		context.Background(),
+		"edge-online",
+	); err != nil {
+		t.Fatalf("unauthorized revoke removed identity: %v", err)
+	}
+
+	mismatch := url.Values{
+		"agent_id":       {"another-server"},
+		"confirm_revoke": {"yes"},
+		"csrf_token":     {fixture.session.CSRFToken},
+	}.Encode()
+	request = fixture.authenticatedMutationRequest(
+		http.MethodPost,
+		"/servers/edge-online/revoke",
+		mismatch,
+	)
+	response = httptest.NewRecorder()
+	fixture.handler.ServeHTTP(response, request)
+	if response.Code != http.StatusForbidden {
+		t.Fatalf("mismatched revoke identity status = %d, want 403", response.Code)
+	}
+
+	unconfirmed := url.Values{
+		"agent_id":       {"edge-online"},
+		"confirm_revoke": {"no"},
+		"csrf_token":     {fixture.session.CSRFToken},
+	}.Encode()
+	request = fixture.authenticatedMutationRequest(
+		http.MethodPost,
+		"/servers/edge-online/revoke",
+		unconfirmed,
+	)
+	response = httptest.NewRecorder()
+	fixture.handler.ServeHTTP(response, request)
+	if response.Code != http.StatusForbidden {
+		t.Fatalf("unconfirmed revoke status = %d, want 403", response.Code)
+	}
+
+	request = fixture.authenticatedMutationRequest(
+		http.MethodPost,
+		"/servers/edge-online/revoke",
+		form,
+	)
+	response = httptest.NewRecorder()
+	fixture.handler.ServeHTTP(response, request)
+	if response.Code != http.StatusSeeOther ||
+		response.Header().Get("Location") != "/servers" {
+		t.Fatalf(
+			"valid revoke response = %d %q",
+			response.Code,
+			response.Header().Get("Location"),
+		)
+	}
+	if snapshots := fixture.registry.Snapshot(fixture.now); len(snapshots) != 0 {
+		t.Fatalf("revoked identity remains in registry: %+v", snapshots)
+	}
+	if fixture.controller.sessions["edge-online"] {
+		t.Fatal("revoked agent remains online")
+	}
+}
+
 func TestCreateServerRequiresCSRFAndRevealsCommandOnce(t *testing.T) {
 	t.Parallel()
 
@@ -894,25 +1362,33 @@ func newWebFixtureWithAccess(
 ) webFixture {
 	t.Helper()
 	now := time.Now().UTC().Add(2 * time.Hour)
+	sessions := testSessions{"edge-online": true}
+	controller := &testAgentController{
+		registry: registry,
+		sessions: sessions,
+		store:    deployment.NewMemoryStore(),
+	}
 	handler, err := New(Options{
-		Registry:  registry,
-		Sessions:  testSessions{"edge-online": true},
-		Access:    access,
-		PublicURL: testPublicURL,
-		Version:   "test",
-		Now:       func() time.Time { return now },
+		Registry:   registry,
+		Sessions:   sessions,
+		Controller: controller,
+		Access:     access,
+		PublicURL:  testPublicURL,
+		Version:    "test",
+		Now:        func() time.Time { return now },
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
 	return webFixture{
-		handler:  handler,
-		registry: registry,
-		access:   access,
-		username: username,
-		password: password,
-		session:  session,
-		now:      now,
+		handler:    handler,
+		registry:   registry,
+		controller: controller,
+		access:     access,
+		username:   username,
+		password:   password,
+		session:    session,
+		now:        now,
 	}
 }
 

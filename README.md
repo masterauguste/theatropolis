@@ -18,4 +18,4 @@ Add a server in the web interface, then run its generated command. The equivalen
 curl --proto '=https' --tlsv1.2 -fsSL https://raw.githubusercontent.com/masterauguste/theatropolis/main/install.sh | sudo sh -s -- agent --master master.example.com:8443 --agent-id edge-1 --token TOKEN
 ```
 
-The installer downloads SHA-256-verified release binaries—no compiler or Go toolchain is installed.
+The installer downloads SHA-256-verified release binaries—no compiler or Go toolchain is installed. Agent installations include the pinned official sing-box 1.14.0-beta.2 binary for the detected architecture.

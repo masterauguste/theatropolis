@@ -136,6 +136,9 @@ func OpenRegistry(path string) (*Registry, error) {
 		if !agentIDPattern.MatchString(agentID) {
 			return nil, errors.New("identity registry contains an invalid agent ID")
 		}
+		if _, pending := registry.pending[agentID]; pending {
+			return nil, errors.New("identity registry contains conflicting agent states")
+		}
 		publicKey, err := base64.RawURLEncoding.DecodeString(encodedPublicKey)
 		if err != nil || len(publicKey) != ed25519.PublicKeySize {
 			return nil, errors.New("identity registry contains an invalid public key")
@@ -235,6 +238,36 @@ func (r *Registry) PublicKey(_ context.Context, agentID string) (ed25519.PublicK
 		return nil, ErrAgentNotFound
 	}
 	return append(ed25519.PublicKey(nil), publicKey...), nil
+}
+
+// Revoke durably removes every enrollment credential associated with agentID.
+// It removes both maps defensively so a malformed historical registry cannot
+// leave a hidden pending token usable after an enrolled identity is revoked.
+func (r *Registry) Revoke(_ context.Context, agentID string) error {
+	if !agentIDPattern.MatchString(agentID) {
+		return ErrInvalidAgentID
+	}
+
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	pending, hadPending := r.pending[agentID]
+	publicKey, hadPublicKey := r.enrolled[agentID]
+	if !hadPending && !hadPublicKey {
+		return ErrAgentNotFound
+	}
+	delete(r.pending, agentID)
+	delete(r.enrolled, agentID)
+	if err := r.persistLocked(); err != nil {
+		if hadPending {
+			r.pending[agentID] = pending
+		}
+		if hadPublicKey {
+			r.enrolled[agentID] = publicKey
+		}
+		return fmt.Errorf("persist agent revocation: %w", err)
+	}
+	return nil
 }
 
 // Snapshot returns a sorted, credential-free view of registered identities.
