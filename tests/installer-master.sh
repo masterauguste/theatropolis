@@ -514,16 +514,25 @@ if [ -z "${MSYSTEM:-}" ] && command -v script >/dev/null 2>&1; then
 	: >"$INTERACTIVE_OUTPUT_FILE"
 	mkfifo "$INTERACTIVE_INPUT_FIFO"
 	(
+		exec 3>"$INTERACTIVE_INPUT_FIFO"
 		ATTEMPTS=0
 		until grep -Fq 'Admin username [admin]:' "$INTERACTIVE_OUTPUT_FILE"; do
 			ATTEMPTS=$((ATTEMPTS + 1))
 			[ "$ATTEMPTS" -le 600 ] || exit 1
 			sleep 0.1
 		done
-		printf '\n%s\n%s\n' \
+		printf '\n' >&3
+		ATTEMPTS=0
+		until grep -Fq 'Admin password (15-128 characters):' "$INTERACTIVE_OUTPUT_FILE"; do
+			ATTEMPTS=$((ATTEMPTS + 1))
+			[ "$ATTEMPTS" -le 600 ] || exit 1
+			sleep 0.1
+		done
+		printf '%s\n%s\n' \
 			"$INTERACTIVE_PASSWORD" \
-			"$INTERACTIVE_PASSWORD"
-	) >"$INTERACTIVE_INPUT_FIFO" &
+			"$INTERACTIVE_PASSWORD" >&3
+		exec 3>&-
+	) &
 	INTERACTIVE_WRITER_PID="$!"
 	set +e
 	# The command string is intentionally expanded by script's child shell.
