@@ -284,6 +284,10 @@ func (h *Handler) routes() {
 	h.mux.HandleFunc("GET /healthz", h.health)
 	h.mux.HandleFunc("GET /assets/app.css", h.asset("assets/app.css", "text/css; charset=utf-8"))
 	h.mux.HandleFunc("GET /assets/app.js", h.asset("assets/app.js", "text/javascript; charset=utf-8"))
+	h.mux.HandleFunc(
+		"GET /assets/config-editor.js",
+		h.asset("assets/config-editor.js", "text/javascript; charset=utf-8"),
+	)
 	h.mux.HandleFunc("GET /login", h.loginPage)
 	h.mux.HandleFunc("POST /login", h.login)
 	h.mux.HandleFunc("POST /logout", h.logout)

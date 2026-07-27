@@ -1434,17 +1434,32 @@ func TestAssetsAreSelfHostedAndSecurityHeadersApplyToErrors(t *testing.T) {
 	t.Parallel()
 
 	fixture := newWebFixture(t)
-	request := fixture.request(http.MethodGet, "/assets/app.js", "")
-	response := httptest.NewRecorder()
-	fixture.handler.ServeHTTP(response, request)
-	if response.Code != http.StatusOK ||
-		!strings.HasPrefix(response.Header().Get("Content-Type"), "text/javascript") {
-		t.Fatalf("app.js response = %d %q", response.Code, response.Header().Get("Content-Type"))
+	for _, path := range []string{
+		"/assets/app.js",
+		"/assets/config-editor.js",
+	} {
+		request := fixture.request(http.MethodGet, path, "")
+		response := httptest.NewRecorder()
+		fixture.handler.ServeHTTP(response, request)
+		if response.Code != http.StatusOK ||
+			!strings.HasPrefix(
+				response.Header().Get("Content-Type"),
+				"text/javascript",
+			) ||
+			response.Body.Len() == 0 {
+			t.Fatalf(
+				"%s response = %d %q (%d bytes)",
+				path,
+				response.Code,
+				response.Header().Get("Content-Type"),
+				response.Body.Len(),
+			)
+		}
+		assertSecurityHeaders(t, response.Header())
 	}
-	assertSecurityHeaders(t, response.Header())
 
-	request = fixture.request(http.MethodGet, "/not-found", "")
-	response = httptest.NewRecorder()
+	request := fixture.request(http.MethodGet, "/not-found", "")
+	response := httptest.NewRecorder()
 	fixture.handler.ServeHTTP(response, request)
 	if response.Code != http.StatusNotFound {
 		t.Fatalf("unknown route status = %d, want %d", response.Code, http.StatusNotFound)
