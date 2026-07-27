@@ -1281,12 +1281,12 @@ func (h *Handler) releaseVersionsFor(
 	component string,
 ) ([]agentVersionView, string, string) {
 	if catalog == nil {
-		return nil, "", "The release catalog is unavailable; enter an exact tag manually."
+		return nil, "", "Version lookup failed: release catalog is unavailable."
 	}
 	releases, err := catalog.Versions(ctx)
 	if err != nil {
 		h.logger.Warn("load release catalog", "component", component, "error", err)
-		return nil, "", "GitHub releases could not be loaded; enter an exact tag manually."
+		return nil, "", catalogDiagnostic(err)
 	}
 	versions := make([]agentVersionView, 0, len(releases))
 	for _, release := range releases {

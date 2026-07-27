@@ -156,10 +156,11 @@ if (versionCatalogURL) {
         headers: { Accept: "application/json" },
       },
     );
+    const data = await response.json().catch(() => ({}));
     if (!response.ok) {
-      throw new Error(`version catalog returned ${response.status}`);
+      throw new Error(data.error || `version catalog returned ${response.status}`);
     }
-    return response.json();
+    return data;
   };
 
   if (document.querySelector("[data-latest-agent-version], [data-master-latest-label]")) {
@@ -191,13 +192,18 @@ if (versionCatalogURL) {
       masterButton.disabled = true;
       masterButtonText.textContent = "Latest version unavailable";
     }
-  }).catch(() => {
+  }).catch((error) => {
     const agentLabel = document.querySelector("[data-latest-agent-version-label]");
     const masterLabel = document.querySelector("[data-master-latest-label]");
     const masterButtonText = document.querySelector("[data-master-button-text]");
     if (agentLabel) agentLabel.textContent = "unavailable";
     if (masterLabel) masterLabel.textContent = "unavailable";
     if (masterButtonText) masterButtonText.textContent = "Latest version unavailable";
+    const warning = document.querySelector("[data-agent-catalog-warning]");
+    if (warning) {
+      warning.textContent = error.message;
+      warning.hidden = false;
+    }
   });
   }
 
@@ -229,14 +235,14 @@ if (versionCatalogURL) {
       warning.hidden = false;
       if (info) info.hidden = true;
     }
-  }).catch(() => {
+  }).catch((error) => {
     const select = document.querySelector("[data-sing-box-version-select]");
     if (select) {
       select.innerHTML = '<option value="">Versions unavailable</option>';
     }
     const warning = document.querySelector("[data-sing-box-catalog-warning]");
     if (warning) {
-      warning.textContent = "GitHub releases could not be loaded.";
+      warning.textContent = error.message;
       warning.hidden = false;
     }
   });

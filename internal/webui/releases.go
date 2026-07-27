@@ -2,26 +2,28 @@ package webui
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
 	"net/http"
+	"regexp"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
+	"unicode"
 
 	"github.com/masterauguste/theatropolis/internal/agentupdate"
 	"github.com/masterauguste/theatropolis/internal/singboxupdate"
 )
 
 const (
-	releaseCatalogTTL          = 10 * time.Minute
-	maxReleaseResponseSize     = 2 << 20
-	maxReleaseResponseSizeWide = 4 << 20
-	maxReleasePages = 20
+	releaseCatalogTTL      = 10 * time.Minute
+	maxReleaseResponseSize = 2 << 20
 )
+
+var gitTagReferencePattern = regexp.MustCompile(`refs/tags/([^\x00\s^]+)`)
 
 type AgentRelease struct {
 	Tag         string
@@ -33,49 +35,43 @@ type ReleaseCatalog interface {
 	Versions(context.Context) ([]AgentRelease, error)
 }
 
+// GitHubReleaseCatalog discovers tags through GitHub's public Git transport.
+// Unlike the REST API this endpoint is not subject to unauthenticated API rate
+// limits and does not include large release asset metadata.
 type GitHubReleaseCatalog struct {
-	client          *http.Client
-	now             func() time.Time
-	mu              sync.Mutex
-	cached          []AgentRelease
-	expiresAt       time.Time
-	apiURL          string
-	validVersion    func(string) bool
-	perPage         int
-	maxResponseSize int64
-	tagsOnly        bool
+	client       *http.Client
+	now          func() time.Time
+	mu           sync.Mutex
+	cached       []AgentRelease
+	expiresAt    time.Time
+	refsURL      string
+	validVersion func(string) bool
 }
 
 func NewGitHubReleaseCatalog(client *http.Client) *GitHubReleaseCatalog {
 	if client == nil {
 		client = &http.Client{
-			Timeout: 8 * time.Second,
+			Timeout: 12 * time.Second,
 			CheckRedirect: func(request *http.Request, _ []*http.Request) error {
-				if request.URL.Scheme != "https" ||
-					request.URL.Hostname() != "api.github.com" {
-					return errors.New("GitHub release catalog redirected to an untrusted host")
+				if request.URL.Scheme != "https" || request.URL.Hostname() != "github.com" {
+					return errors.New("version catalog redirected to an untrusted host")
 				}
 				return nil
 			},
 		}
 	}
 	return &GitHubReleaseCatalog{
-		client:          client,
-		now:             time.Now,
-		apiURL:          "https://api.github.com/repos/masterauguste/theatropolis/releases",
-		validVersion:    agentupdate.ValidVersion,
-		perPage:         100,
-		maxResponseSize: maxReleaseResponseSize,
+		client:       client,
+		now:          time.Now,
+		refsURL:      "https://github.com/masterauguste/theatropolis.git/info/refs?service=git-upload-pack",
+		validVersion: agentupdate.ValidVersion,
 	}
 }
 
 func NewSingBoxReleaseCatalog(client *http.Client) *GitHubReleaseCatalog {
 	catalog := NewGitHubReleaseCatalog(client)
-	catalog.apiURL = "https://api.github.com/repos/SagerNet/sing-box/tags"
+	catalog.refsURL = "https://github.com/SagerNet/sing-box.git/info/refs?service=git-upload-pack"
 	catalog.validVersion = singboxupdate.ValidVersion
-	catalog.perPage = 100
-	catalog.maxResponseSize = maxReleaseResponseSize
-	catalog.tagsOnly = true
 	return catalog
 }
 
@@ -99,128 +95,148 @@ func (c *GitHubReleaseCatalog) Versions(ctx context.Context) ([]AgentRelease, er
 }
 
 func (c *GitHubReleaseCatalog) fetch(ctx context.Context) ([]AgentRelease, error) {
+	request, err := http.NewRequestWithContext(ctx, http.MethodGet, c.refsURL, nil)
+	if err != nil {
+		return nil, fmt.Errorf("prepare tag discovery: %w", err)
+	}
+	request.Header.Set("Accept", "application/x-git-upload-pack-advertisement")
+	response, err := c.client.Do(request)
+	if err != nil {
+		return nil, fmt.Errorf("request GitHub tags: %w", err)
+	}
+	defer response.Body.Close()
+	if response.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("GitHub tag discovery returned status %d", response.StatusCode)
+	}
+	if response.ContentLength > maxReleaseResponseSize {
+		return nil, errors.New("GitHub tag response exceeds the size limit")
+	}
+	encoded, err := io.ReadAll(io.LimitReader(response.Body, maxReleaseResponseSize+1))
+	if err != nil {
+		return nil, fmt.Errorf("read GitHub tags: %w", err)
+	}
+	if len(encoded) > maxReleaseResponseSize {
+		return nil, errors.New("GitHub tag response exceeds the size limit")
+	}
+
+	unique := make(map[string]struct{})
 	releases := make([]AgentRelease, 0, 32)
-	for page := 1; page <= maxReleasePages; page++ {
-		endpoint := fmt.Sprintf(
-			"%s?per_page=%d&page=%d",
-			c.apiURL,
-			c.perPage,
-			page,
-		)
-		request, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
-		if err != nil {
-			return nil, err
+	for _, match := range gitTagReferencePattern.FindAllSubmatch(encoded, -1) {
+		tag := string(match[1])
+		if _, exists := unique[tag]; exists || !c.validVersion(tag) {
+			continue
 		}
-		request.Header.Set("Accept", "application/vnd.github+json")
-		request.Header.Set("X-GitHub-Api-Version", "2022-11-28")
-		response, err := c.client.Do(request)
-		if err != nil {
-			return nil, fmt.Errorf("fetch GitHub releases: %w", err)
-		}
-		var pageReleases []githubRelease
-		var decodeErr error
-		if c.tagsOnly {
-			pageReleases, decodeErr = decodeTagPage(response, c.maxResponseSize)
-		} else {
-			pageReleases, decodeErr = decodeReleasePage(response, c.maxResponseSize)
-		}
-		response.Body.Close()
-		if decodeErr != nil {
-			return nil, decodeErr
-		}
-		for _, release := range pageReleases {
-			if release.Draft || !c.validVersion(release.TagName) {
-				continue
-			}
-			releases = append(releases, AgentRelease{
-				Tag:         release.TagName,
-				Prerelease:  release.Prerelease,
-				PublishedAt: release.PublishedAt.UTC(),
-			})
-		}
-		if len(pageReleases) < c.perPage {
-			break
-		}
+		unique[tag] = struct{}{}
+		releases = append(releases, AgentRelease{
+			Tag:        tag,
+			Prerelease: strings.Contains(tag, "-"),
+		})
+	}
+	if len(releases) == 0 {
+		return nil, errors.New("GitHub returned no supported version tags")
 	}
 	sort.SliceStable(releases, func(left, right int) bool {
-		return releases[left].PublishedAt.After(releases[right].PublishedAt)
+		return compareVersionTags(releases[left].Tag, releases[right].Tag) > 0
 	})
 	return releases, nil
 }
 
-func decodeTagPage(response *http.Response, maxBytes int64) ([]githubRelease, error) {
-	if response.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf(
-			"GitHub tags returned status %d",
-			response.StatusCode,
-		)
-	}
-	if response.ContentLength > maxBytes {
-		return nil, errors.New("GitHub tags response exceeds the size limit")
-	}
-	decoder := json.NewDecoder(io.LimitReader(response.Body, maxBytes+1))
-	var tags []struct {
-		Name string `json:"name"`
-	}
-	if err := decoder.Decode(&tags); err != nil {
-		return nil, fmt.Errorf("decode GitHub tags: %w", err)
-	}
-	releases := make([]githubRelease, 0, len(tags))
-	for _, tag := range tags {
-		releases = append(releases, githubRelease{
-			TagName:    tag.Name,
-			Prerelease: strings.Contains(tag.Name, "-"),
-		})
-	}
-	return releases, nil
+type parsedVersion struct {
+	major      int
+	minor      int
+	patch      int
+	prerelease string
 }
 
-type githubRelease struct {
-	TagName     string    `json:"tag_name"`
-	Draft       bool      `json:"draft"`
-	Prerelease  bool      `json:"prerelease"`
-	PublishedAt time.Time `json:"published_at"`
+func compareVersionTags(left, right string) int {
+	l, lok := parseVersionTag(left)
+	r, rok := parseVersionTag(right)
+	if !lok || !rok {
+		return strings.Compare(left, right)
+	}
+	for _, pair := range [][2]int{{l.major, r.major}, {l.minor, r.minor}, {l.patch, r.patch}} {
+		if pair[0] < pair[1] {
+			return -1
+		}
+		if pair[0] > pair[1] {
+			return 1
+		}
+	}
+	if l.prerelease == "" && r.prerelease != "" {
+		return 1
+	}
+	if l.prerelease != "" && r.prerelease == "" {
+		return -1
+	}
+	return comparePrerelease(l.prerelease, r.prerelease)
 }
 
-func decodeReleasePage(response *http.Response, maxBytes int64) ([]githubRelease, error) {
-	if response.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf(
-			"GitHub releases returned status %d",
-			response.StatusCode,
-		)
+func parseVersionTag(value string) (parsedVersion, bool) {
+	value = strings.TrimPrefix(value, "v")
+	base, prerelease, _ := strings.Cut(value, "-")
+	parts := strings.Split(base, ".")
+	if len(parts) != 3 {
+		return parsedVersion{}, false
 	}
-	if response.ContentLength > maxBytes {
-		return nil, errors.New("GitHub releases response exceeds the size limit")
+	numbers := make([]int, 3)
+	for index, part := range parts {
+		number, err := strconv.Atoi(part)
+		if err != nil {
+			return parsedVersion{}, false
+		}
+		numbers[index] = number
 	}
-	decoder := json.NewDecoder(io.LimitReader(
-		response.Body,
-		maxBytes+1,
-	))
-	decoder.DisallowUnknownFields()
-	// GitHub adds fields over time, so decode through raw objects and then
-	// select only the small trusted subset this UI needs.
-	var raw []map[string]json.RawMessage
-	if err := decoder.Decode(&raw); err != nil {
-		return nil, fmt.Errorf("decode GitHub releases: %w", err)
-	}
-	releases := make([]githubRelease, 0, len(raw))
-	for _, item := range raw {
-		var release githubRelease
-		for name, destination := range map[string]any{
-			"tag_name":     &release.TagName,
-			"draft":        &release.Draft,
-			"prerelease":   &release.Prerelease,
-			"published_at": &release.PublishedAt,
-		} {
-			value, exists := item[name]
-			if !exists || string(value) == "null" {
-				continue
+	return parsedVersion{
+		major: numbers[0], minor: numbers[1], patch: numbers[2], prerelease: prerelease,
+	}, true
+}
+
+func comparePrerelease(left, right string) int {
+	leftParts := strings.Split(left, ".")
+	rightParts := strings.Split(right, ".")
+	for index := 0; index < max(len(leftParts), len(rightParts)); index++ {
+		if index >= len(leftParts) {
+			return -1
+		}
+		if index >= len(rightParts) {
+			return 1
+		}
+		leftNumber, leftErr := strconv.Atoi(leftParts[index])
+		rightNumber, rightErr := strconv.Atoi(rightParts[index])
+		switch {
+		case leftErr == nil && rightErr == nil:
+			if leftNumber < rightNumber {
+				return -1
 			}
-			if err := json.Unmarshal(value, destination); err != nil {
-				return nil, fmt.Errorf("decode GitHub release field %s: %w", name, err)
+			if leftNumber > rightNumber {
+				return 1
+			}
+		case leftErr == nil:
+			return -1
+		case rightErr == nil:
+			return 1
+		default:
+			if compared := strings.Compare(leftParts[index], rightParts[index]); compared != 0 {
+				return compared
 			}
 		}
-		releases = append(releases, release)
 	}
-	return releases, nil
+	return 0
+}
+
+func catalogDiagnostic(err error) string {
+	if err == nil {
+		return ""
+	}
+	clean := strings.Map(func(r rune) rune {
+		if r == '\n' || r == '\t' || !unicode.IsControl(r) {
+			return r
+		}
+		return -1
+	}, err.Error())
+	clean = strings.TrimSpace(clean)
+	if len(clean) > 300 {
+		clean = clean[:300] + "..."
+	}
+	return "Version lookup failed: " + clean
 }
