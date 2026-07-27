@@ -25,14 +25,26 @@
           </span>
           <p class="eyebrow">Operator access</p>
           <h1 id="login-title">Sign in to continue</h1>
+          {{if .LegacyLogin}}
           <p>Enter the access key shown when the master was installed.</p>
+          {{else}}
+          <p>Enter your operator username and password.</p>
+          {{end}}
         </div>
+
+        {{if .LegacyLogin}}
+        <div class="notice notice--warning" role="status">
+          <strong>Legacy sign-in</strong><br>
+          This master still uses its existing access key. Rerun the master installer with <code>--admin-username yourname</code> when you are ready to migrate it.
+        </div>
+        {{end}}
 
         {{if .Error}}
         <div class="notice notice--error" id="login-error" role="alert">{{.Error}}</div>
         {{end}}
 
         <form class="stack" action="/login" method="post">
+          {{if .LegacyLogin}}
           <div class="field">
             <label for="access-key">Access key</label>
             <span class="secret-input">
@@ -51,6 +63,7 @@
               <button
                 type="button"
                 data-reveal-secret
+                data-secret-label="access key"
                 aria-label="Show access key"
                 aria-controls="access-key"
                 aria-pressed="false"
@@ -58,15 +71,70 @@
             </span>
             <small id="access-key-help">Use the 43-character value printed once by the installer.</small>
           </div>
+          {{else}}
+          <div class="field">
+            <label for="username">Username</label>
+            <input
+              id="username"
+              name="username"
+              type="text"
+              value="{{.Username}}"
+              autocomplete="username"
+              autocapitalize="none"
+              spellcheck="false"
+              required
+              pattern="[a-z0-9][a-z0-9._-]{0,63}"
+              maxlength="64"
+              {{if not .Error}}autofocus{{end}}
+              aria-invalid="{{if .Error}}true{{else}}false{{end}}"
+              aria-describedby="username-help{{if .Error}} login-error{{end}}"
+            >
+            <small id="username-help">Lowercase letters, numbers, dots, underscores, and hyphens.</small>
+          </div>
+          <div class="field">
+            <label for="password">Password</label>
+            <span class="secret-input">
+              <input
+                id="password"
+                name="password"
+                type="password"
+                autocomplete="current-password"
+                required
+                maxlength="512"
+                {{if .Error}}autofocus{{end}}
+                aria-invalid="{{if .Error}}true{{else}}false{{end}}"
+                {{if .Error}}aria-describedby="login-error"{{end}}
+              >
+              <button
+                type="button"
+                data-reveal-secret
+                data-secret-label="password"
+                aria-label="Show password"
+                aria-controls="password"
+                aria-pressed="false"
+              >Show</button>
+            </span>
+          </div>
+          {{end}}
           <button class="button button--primary button--full" type="submit">Sign in</button>
         </form>
 
+        {{if .LegacyLogin}}
         <p class="auth-help">
           The master stores no plaintext copy. Keep the value printed by the installer in your password manager.
         </p>
+        {{else}}
+        <p class="auth-help">
+          Your credentials are verified locally. The master never stores your plaintext password.
+        </p>
+        {{end}}
       </div>
       <p class="auth-panel__foot">
+        {{if .LegacyLogin}}
         TLS-protected sign-in. The master stores only a hash of your access key.
+        {{else}}
+        TLS-protected sign-in. Your password is stored as a salted, memory-hard verifier.
+        {{end}}
       </p>
     </section>
   </main>

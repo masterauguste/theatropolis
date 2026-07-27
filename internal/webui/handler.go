@@ -26,7 +26,7 @@ import (
 )
 
 const (
-	maxLoginBodyBytes      = 2 << 10
+	maxLoginBodyBytes      = 8 << 10
 	maxEnrollmentBodyBytes = 4 << 10
 	enrollmentLimit        = 30
 	enrollmentWindow       = time.Minute
@@ -91,6 +91,8 @@ type pageData struct {
 	CSRFToken     string
 	Error         string
 	ErrorField    string
+	Username      string
+	LegacyLogin   bool
 	AgentID       string
 	TTLSeconds    int64
 	Stats         fleetStats
@@ -238,35 +240,89 @@ func (h *Handler) loginPage(response http.ResponseWriter, request *http.Request)
 		http.Redirect(response, request, "/servers", http.StatusSeeOther)
 		return
 	}
-	h.render(response, http.StatusOK, "login.html", pageData{Title: "Sign in"})
+	h.render(
+		response,
+		http.StatusOK,
+		"login.html",
+		loginPageData(h.access.Mode(), ""),
+	)
 }
 
 func (h *Handler) login(response http.ResponseWriter, request *http.Request) {
 	if h.rejectInvalidMutationOrigin(response, request) {
 		return
 	}
-	form, err := readExactForm(response, request, maxLoginBodyBytes, "access_key")
+	mode := h.access.Mode()
+	var (
+		username string
+		password string
+		err      error
+	)
+	switch mode {
+	case LegacyAccessKey:
+		var form url.Values
+		form, err = readExactForm(
+			response,
+			request,
+			maxLoginBodyBytes,
+			"access_key",
+		)
+		if err == nil {
+			password = form.Get("access_key")
+		}
+	case UsernamePassword:
+		var form url.Values
+		form, err = readExactForm(
+			response,
+			request,
+			maxLoginBodyBytes,
+			"password",
+			"username",
+		)
+		if err == nil {
+			username = form.Get("username")
+			password = form.Get("password")
+		}
+	default:
+		h.logger.Error("unsupported web credential mode", "mode", mode)
+		http.Error(
+			response,
+			"interface could not authenticate",
+			http.StatusInternalServerError,
+		)
+		return
+	}
 	if err != nil {
 		http.Error(response, "invalid request", http.StatusBadRequest)
 		return
 	}
-	session, err := h.access.Login(form.Get("access_key"))
+	session, err := h.access.Login(username, password)
 	if err != nil {
 		status := http.StatusUnauthorized
-		message := "The access key was not accepted."
+		message := "The username or password was not accepted."
+		if mode == LegacyAccessKey {
+			message = "The access key was not accepted."
+		}
 		if errors.Is(err, ErrLoginRateLimited) {
 			status = http.StatusTooManyRequests
 			message = "Too many attempts. Wait one minute and try again."
 			response.Header().Set("Retry-After", "60")
 		}
-		h.render(response, status, "login.html", pageData{
-			Title: "Sign in",
-			Error: message,
-		})
+		data := loginPageData(mode, username)
+		data.Error = message
+		h.render(response, status, "login.html", data)
 		return
 	}
 	http.SetCookie(response, NewSessionCookie(session.Token, session.ExpiresAt))
 	http.Redirect(response, request, "/servers", http.StatusSeeOther)
+}
+
+func loginPageData(mode CredentialMode, username string) pageData {
+	return pageData{
+		Title:       "Sign in",
+		Username:    username,
+		LegacyLogin: mode == LegacyAccessKey,
+	}
 }
 
 func (h *Handler) logout(response http.ResponseWriter, request *http.Request) {

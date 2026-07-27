@@ -12,17 +12,37 @@ import (
 	"io"
 	"net/http"
 	"os"
+	"path/filepath"
+	"reflect"
 	"runtime"
 	"strings"
 	"sync"
 	"time"
+	"unicode"
+	"unicode/utf8"
+
+	"golang.org/x/crypto/argon2"
 )
 
 const (
-	accessFileVersion       = 1
-	accessFileMaxBytes      = 4 << 10
+	// accessFileVersion is retained for the legacy access-key document format.
+	accessFileVersion      = 1
+	adminAccessFileVersion = 2
+	accessFileMaxBytes     = 8 << 10
+
 	credentialBytes         = 32
 	encodedCredentialLength = 43
+
+	argon2IDVersion      = argon2.Version
+	argon2MemoryKiB      = 64 * 1024
+	argon2Iterations     = 3
+	argon2Parallelism    = 4
+	passwordSaltBytes    = 16
+	passwordHashBytes    = 32
+	passwordMaxBytes     = 512
+	passwordMinRunes     = 15
+	passwordMaxRunes     = 128
+	passwordDocumentType = "password"
 
 	DefaultSessionIdleTimeout     = 30 * time.Minute
 	DefaultSessionAbsoluteTimeout = 12 * time.Hour
@@ -36,12 +56,40 @@ const (
 
 var (
 	ErrAuthenticationFailed = errors.New("authentication failed")
-	ErrLoginRateLimited     = errors.New("too many failed login attempts")
+	ErrLoginRateLimited     = errors.New("too many login attempts")
+
+	// The production process loads one AccessManager, but this package-wide
+	// gate also protects against accidentally loading more than one. Argon2id
+	// verification never queues: a concurrent attempt is rejected instead of
+	// retaining an unbounded request body and goroutine.
+	globalPasswordKDFGate = make(chan struct{}, 1)
 )
 
-type accessDocument struct {
-	Version         int
-	AccessKeySHA256 string
+// CredentialMode identifies the one credential format accepted by an
+// AccessManager. A manager never accepts both formats at once.
+type CredentialMode uint8
+
+const (
+	LegacyAccessKey CredentialMode = iota + 1
+	UsernamePassword
+)
+
+type legacyAccessDocument struct {
+	Version         int    `json:"version"`
+	AccessKeySHA256 string `json:"access_key_sha256"`
+}
+
+type passwordAccessDocument struct {
+	Version       int    `json:"version"`
+	Type          string `json:"type"`
+	Username      string `json:"username"`
+	Algorithm     string `json:"algorithm"`
+	Argon2Version int    `json:"argon2_version"`
+	MemoryKiB     uint32 `json:"memory_kib"`
+	Iterations    uint32 `json:"iterations"`
+	Parallelism   uint8  `json:"parallelism"`
+	Salt          string `json:"salt"`
+	PasswordHash  string `json:"password_hash"`
 }
 
 // Session contains the plaintext browser credentials returned at login or
@@ -62,14 +110,23 @@ type memorySession struct {
 
 type loginFailureLimiter struct {
 	windowStartedAt time.Time
-	failures        int
+	attempts        int
 }
 
-// AccessManager authenticates the persisted operator access key and owns
-// ephemeral browser sessions. It never retains plaintext access or session
-// tokens.
+type passwordDeriver func(password, salt []byte) [passwordHashBytes]byte
+
+// AccessManager authenticates the persisted operator credential and owns
+// ephemeral browser sessions. It never retains plaintext passwords, access
+// keys, or session tokens.
 type AccessManager struct {
+	mode CredentialMode
+
 	accessKeyDigest [sha256.Size]byte
+	usernameDigest  [sha256.Size]byte
+	passwordSalt    [passwordSaltBytes]byte
+	passwordHash    [passwordHashBytes]byte
+	derivePassword  passwordDeriver
+	passwordKDFGate chan struct{}
 
 	mu       sync.Mutex
 	sessions map[[sha256.Size]byte]*memorySession
@@ -84,12 +141,12 @@ type AccessManager struct {
 	random                 io.Reader
 }
 
-// InitializeAccess creates a new access file without replacing any existing
-// path. The returned base64url key is the only plaintext copy and should be
-// shown to the operator once.
+// InitializeAccess creates a legacy v1 access-key file. It remains available
+// so existing installations and their explicit migration path keep working.
+// New installations should use InitializeAdminAccess.
 func InitializeAccess(path string) (plaintextKey string, err error) {
-	if strings.TrimSpace(path) == "" {
-		return "", errors.New("access file path is required")
+	if err := validateAccessPath(path); err != nil {
+		return "", err
 	}
 
 	var key [credentialBytes]byte
@@ -99,81 +156,327 @@ func InitializeAccess(path string) (plaintextKey string, err error) {
 	defer clear(key[:])
 
 	digest := sha256.Sum256(key[:])
-	document, err := json.Marshal(struct {
-		Version         int    `json:"version"`
-		AccessKeySHA256 string `json:"access_key_sha256"`
-	}{
+	document, err := marshalAccessDocument(legacyAccessDocument{
 		Version:         accessFileVersion,
 		AccessKeySHA256: base64.RawURLEncoding.EncodeToString(digest[:]),
 	})
 	if err != nil {
-		return "", fmt.Errorf("encode access file: %w", err)
+		return "", err
 	}
-	document = append(document, '\n')
-
-	file, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
-	if err != nil {
-		return "", fmt.Errorf("create access file: %w", err)
+	if err := createAccessFile(path, document); err != nil {
+		return "", err
 	}
-	committed := false
-	defer func() {
-		if committed {
-			return
-		}
-		_ = file.Close()
-		_ = os.Remove(path)
-	}()
-
-	if err := file.Chmod(0o600); err != nil {
-		return "", fmt.Errorf("secure access file: %w", err)
-	}
-	if _, err := file.Write(document); err != nil {
-		return "", fmt.Errorf("write access file: %w", err)
-	}
-	if err := file.Sync(); err != nil {
-		return "", fmt.Errorf("sync access file: %w", err)
-	}
-	if err := file.Close(); err != nil {
-		return "", fmt.Errorf("close access file: %w", err)
-	}
-	committed = true
-
 	return base64.RawURLEncoding.EncodeToString(key[:]), nil
 }
 
-// LoadAccess loads the operator access-key digest from disk and creates an
-// empty in-memory session manager.
-func LoadAccess(path string) (*AccessManager, error) {
+// InitializeAdminAccess creates a v2 single-admin username/password file
+// without replacing an existing path.
+func InitializeAdminAccess(path, username string, password []byte) error {
+	return initializeAdminAccessWithPasswordDeriver(
+		path,
+		username,
+		password,
+		deriveArgon2idPassword,
+		rand.Reader,
+	)
+}
+
+// ReplaceAdminAccess atomically replaces a regular, safely permissioned
+// credential file with a v2 username/password file. On Unix, its ownership and
+// 0600/0640 mode are preserved.
+func ReplaceAdminAccess(path, username string, password []byte) error {
+	return replaceAdminAccessWithPasswordDeriver(
+		path,
+		username,
+		password,
+		deriveArgon2idPassword,
+		rand.Reader,
+	)
+}
+
+// The injectable helpers keep package tests fast while exercising exactly the
+// same schema, policy, file handling, and login paths as production.
+func initializeAdminAccessWithPasswordDeriver(
+	path, username string,
+	password []byte,
+	derive passwordDeriver,
+	random io.Reader,
+) error {
+	if err := validateAccessPath(path); err != nil {
+		return err
+	}
+	document, err := newPasswordAccessDocument(username, password, derive, random)
+	if err != nil {
+		return err
+	}
+	encoded, err := marshalAccessDocument(document)
+	if err != nil {
+		return err
+	}
+	return createAccessFile(path, encoded)
+}
+
+func replaceAdminAccessWithPasswordDeriver(
+	path, username string,
+	password []byte,
+	derive passwordDeriver,
+	random io.Reader,
+) error {
+	if err := validateAccessPath(path); err != nil {
+		return err
+	}
+	if derive == nil {
+		return errors.New("password derivation function is required")
+	}
+	if random == nil {
+		return errors.New("credential random source is required")
+	}
+
+	existing, existingInfo, err := openVerifiedAccessFile(path)
+	if err != nil {
+		return err
+	}
+	if err := existing.Close(); err != nil {
+		return fmt.Errorf("close existing access file: %w", err)
+	}
+
+	document, err := newPasswordAccessDocument(username, password, derive, random)
+	if err != nil {
+		return err
+	}
+	encoded, err := marshalAccessDocument(document)
+	if err != nil {
+		return err
+	}
+
+	directory := filepath.Dir(path)
+	temp, err := os.CreateTemp(directory, "."+filepath.Base(path)+".tmp-*")
+	if err != nil {
+		return fmt.Errorf("create temporary access file: %w", err)
+	}
+	tempPath := temp.Name()
+	committed := false
+	defer func() {
+		_ = temp.Close()
+		if !committed {
+			_ = os.Remove(tempPath)
+		}
+	}()
+
+	if err := preserveAccessFileMetadata(temp, existingInfo); err != nil {
+		return err
+	}
+	if err := writeAndSyncAccessFile(temp, encoded); err != nil {
+		return err
+	}
+	if err := temp.Close(); err != nil {
+		return fmt.Errorf("close temporary access file: %w", err)
+	}
+
+	currentInfo, err := os.Lstat(path)
+	if err != nil {
+		return fmt.Errorf("reinspect access file before replacement: %w", err)
+	}
+	if currentInfo.Mode()&os.ModeSymlink != 0 ||
+		!currentInfo.Mode().IsRegular() ||
+		!os.SameFile(existingInfo, currentInfo) {
+		return errors.New("access file changed before it could be replaced")
+	}
+	if err := os.Rename(tempPath, path); err != nil {
+		return fmt.Errorf("replace access file: %w", err)
+	}
+	committed = true
+	if err := syncParentDirectory(path); err != nil {
+		return err
+	}
+	return nil
+}
+
+func newPasswordAccessDocument(
+	username string,
+	password []byte,
+	derive passwordDeriver,
+	random io.Reader,
+) (passwordAccessDocument, error) {
+	if err := validateAdminUsername(username); err != nil {
+		return passwordAccessDocument{}, err
+	}
+	if len(password) > passwordMaxBytes {
+		return passwordAccessDocument{}, fmt.Errorf(
+			"password must not exceed %d bytes",
+			passwordMaxBytes,
+		)
+	}
+	passwordCopy := append([]byte(nil), password...)
+	defer clear(passwordCopy)
+	if err := validateAdminPassword(username, passwordCopy, true); err != nil {
+		return passwordAccessDocument{}, err
+	}
+	if derive == nil {
+		return passwordAccessDocument{}, errors.New("password derivation function is required")
+	}
+	if random == nil {
+		return passwordAccessDocument{}, errors.New("credential random source is required")
+	}
+
+	var salt [passwordSaltBytes]byte
+	if _, err := io.ReadFull(random, salt[:]); err != nil {
+		return passwordAccessDocument{}, fmt.Errorf("generate password salt: %w", err)
+	}
+	defer clear(salt[:])
+
+	hash := derive(passwordCopy, salt[:])
+	defer clear(hash[:])
+
+	return passwordAccessDocument{
+		Version:       adminAccessFileVersion,
+		Type:          passwordDocumentType,
+		Username:      username,
+		Algorithm:     "argon2id",
+		Argon2Version: argon2IDVersion,
+		MemoryKiB:     argon2MemoryKiB,
+		Iterations:    argon2Iterations,
+		Parallelism:   argon2Parallelism,
+		Salt:          base64.RawURLEncoding.EncodeToString(salt[:]),
+		PasswordHash:  base64.RawURLEncoding.EncodeToString(hash[:]),
+	}, nil
+}
+
+func marshalAccessDocument(document any) ([]byte, error) {
+	encoded, err := json.Marshal(document)
+	if err != nil {
+		return nil, fmt.Errorf("encode access file: %w", err)
+	}
+	return append(encoded, '\n'), nil
+}
+
+func validateAccessPath(path string) error {
 	if strings.TrimSpace(path) == "" {
-		return nil, errors.New("access file path is required")
+		return errors.New("access file path is required")
+	}
+	return nil
+}
+
+func createAccessFile(path string, document []byte) (err error) {
+	file, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
+	if err != nil {
+		return fmt.Errorf("create access file: %w", err)
+	}
+	committed := false
+	defer func() {
+		_ = file.Close()
+		if !committed {
+			_ = os.Remove(path)
+		}
+	}()
+
+	if err := file.Chmod(0o600); err != nil {
+		return fmt.Errorf("secure access file: %w", err)
+	}
+	if err := writeAndSyncAccessFile(file, document); err != nil {
+		return err
+	}
+	if err := file.Close(); err != nil {
+		return fmt.Errorf("close access file: %w", err)
+	}
+	if err := syncParentDirectory(path); err != nil {
+		return err
+	}
+	committed = true
+	return nil
+}
+
+func writeAndSyncAccessFile(file *os.File, document []byte) error {
+	written, err := file.Write(document)
+	if err != nil {
+		return fmt.Errorf("write access file: %w", err)
+	}
+	if written != len(document) {
+		return fmt.Errorf("write access file: %w", io.ErrShortWrite)
+	}
+	if err := file.Sync(); err != nil {
+		return fmt.Errorf("sync access file: %w", err)
+	}
+	return nil
+}
+
+func syncParentDirectory(path string) error {
+	if runtime.GOOS == "windows" {
+		return nil
+	}
+	directory, err := os.Open(filepath.Dir(path))
+	if err != nil {
+		return fmt.Errorf("open access file directory: %w", err)
+	}
+	defer directory.Close()
+	if err := directory.Sync(); err != nil {
+		return fmt.Errorf("sync access file directory: %w", err)
+	}
+	return nil
+}
+
+func preserveAccessFileMetadata(file *os.File, existing os.FileInfo) error {
+	mode := existing.Mode().Perm()
+	if runtime.GOOS != "windows" && mode != 0o600 && mode != 0o640 {
+		return errors.New("access file permissions must be 0600 or 0640")
+	}
+	if runtime.GOOS != "windows" {
+		uid, gid, ok := unixOwnership(existing)
+		if !ok {
+			return errors.New("cannot determine access file ownership")
+		}
+		if err := file.Chown(uid, gid); err != nil {
+			return fmt.Errorf("preserve access file ownership: %w", err)
+		}
+	}
+	if err := file.Chmod(mode); err != nil {
+		return fmt.Errorf("preserve access file permissions: %w", err)
+	}
+	return nil
+}
+
+func unixOwnership(info os.FileInfo) (uid, gid int, ok bool) {
+	value := reflect.ValueOf(info.Sys())
+	if !value.IsValid() {
+		return 0, 0, false
+	}
+	if value.Kind() == reflect.Pointer {
+		if value.IsNil() {
+			return 0, 0, false
+		}
+		value = value.Elem()
+	}
+	if value.Kind() != reflect.Struct {
+		return 0, 0, false
+	}
+	uidField := value.FieldByName("Uid")
+	gidField := value.FieldByName("Gid")
+	if !uidField.IsValid() || !gidField.IsValid() ||
+		!uidField.CanUint() || !gidField.CanUint() {
+		return 0, 0, false
+	}
+	return int(uidField.Uint()), int(gidField.Uint()), true
+}
+
+// LoadAccess loads either a strict legacy v1 access-key document or a strict
+// v2 username/password document and creates an empty in-memory session manager.
+func LoadAccess(path string) (*AccessManager, error) {
+	return loadAccessWithPasswordDeriver(path, deriveArgon2idPassword)
+}
+
+func loadAccessWithPasswordDeriver(path string, derive passwordDeriver) (*AccessManager, error) {
+	if err := validateAccessPath(path); err != nil {
+		return nil, err
+	}
+	if derive == nil {
+		return nil, errors.New("password derivation function is required")
 	}
 
-	pathInfo, err := os.Lstat(path)
+	file, _, err := openVerifiedAccessFile(path)
 	if err != nil {
-		return nil, fmt.Errorf("inspect access file: %w", err)
-	}
-	if pathInfo.Mode()&os.ModeSymlink != 0 || !pathInfo.Mode().IsRegular() {
-		return nil, errors.New("access file must be a regular file, not a symbolic link")
-	}
-
-	file, err := os.Open(path)
-	if err != nil {
-		return nil, fmt.Errorf("open access file: %w", err)
+		return nil, err
 	}
 	defer file.Close()
-
-	fileInfo, err := file.Stat()
-	if err != nil {
-		return nil, fmt.Errorf("inspect open access file: %w", err)
-	}
-	if !fileInfo.Mode().IsRegular() || !os.SameFile(pathInfo, fileInfo) {
-		return nil, errors.New("access file changed while it was being opened")
-	}
-	if runtime.GOOS != "windows" &&
-		fileInfo.Mode().Perm() != 0o600 &&
-		fileInfo.Mode().Perm() != 0o640 {
-		return nil, errors.New("access file permissions must be 0600 or 0640")
-	}
 
 	encoded, err := io.ReadAll(io.LimitReader(file, accessFileMaxBytes+1))
 	if err != nil {
@@ -183,26 +486,244 @@ func LoadAccess(path string) (*AccessManager, error) {
 		return nil, errors.New("access file is empty or exceeds the size limit")
 	}
 
-	document, err := decodeAccessDocument(encoded)
+	fields, err := decodeAccessFields(encoded)
 	if err != nil {
 		return nil, fmt.Errorf("decode access file: %w", err)
 	}
-	if document.Version != accessFileVersion {
-		return nil, fmt.Errorf("unsupported access file version %d", document.Version)
+	var version int
+	if err := decodeRequiredAccessField(fields, "version", &version); err != nil {
+		return nil, fmt.Errorf("decode access file: %w", err)
 	}
 
-	decodedDigest, err := base64.RawURLEncoding.DecodeString(document.AccessKeySHA256)
+	manager := newAccessManager()
+	switch version {
+	case accessFileVersion:
+		if err := loadLegacyCredential(manager, fields); err != nil {
+			return nil, fmt.Errorf("decode access file: %w", err)
+		}
+	case adminAccessFileVersion:
+		if err := loadPasswordCredential(manager, fields, derive); err != nil {
+			return nil, fmt.Errorf("decode access file: %w", err)
+		}
+	default:
+		return nil, fmt.Errorf("unsupported access file version %d", version)
+	}
+	return manager, nil
+}
+
+func openVerifiedAccessFile(path string) (*os.File, os.FileInfo, error) {
+	pathInfo, err := os.Lstat(path)
+	if err != nil {
+		return nil, nil, fmt.Errorf("inspect access file: %w", err)
+	}
+	if pathInfo.Mode()&os.ModeSymlink != 0 || !pathInfo.Mode().IsRegular() {
+		return nil, nil, errors.New("access file must be a regular file, not a symbolic link")
+	}
+
+	file, err := os.Open(path)
+	if err != nil {
+		return nil, nil, fmt.Errorf("open access file: %w", err)
+	}
+	fileInfo, err := file.Stat()
+	if err != nil {
+		_ = file.Close()
+		return nil, nil, fmt.Errorf("inspect open access file: %w", err)
+	}
+	if !fileInfo.Mode().IsRegular() || !os.SameFile(pathInfo, fileInfo) {
+		_ = file.Close()
+		return nil, nil, errors.New("access file changed while it was being opened")
+	}
+	if runtime.GOOS != "windows" &&
+		fileInfo.Mode().Perm() != 0o600 &&
+		fileInfo.Mode().Perm() != 0o640 {
+		_ = file.Close()
+		return nil, nil, errors.New("access file permissions must be 0600 or 0640")
+	}
+	return file, fileInfo, nil
+}
+
+func decodeAccessFields(encoded []byte) (map[string]json.RawMessage, error) {
+	decoder := json.NewDecoder(bytes.NewReader(encoded))
+	first, err := decoder.Token()
+	if err != nil {
+		return nil, err
+	}
+	if delimiter, ok := first.(json.Delim); !ok || delimiter != '{' {
+		return nil, errors.New("access document must be a JSON object")
+	}
+
+	fields := make(map[string]json.RawMessage)
+	for decoder.More() {
+		keyToken, err := decoder.Token()
+		if err != nil {
+			return nil, err
+		}
+		key, ok := keyToken.(string)
+		if !ok {
+			return nil, errors.New("access document contains a non-string field name")
+		}
+		if _, duplicate := fields[key]; duplicate {
+			return nil, fmt.Errorf("access document contains duplicate field %q", key)
+		}
+		var value json.RawMessage
+		if err := decoder.Decode(&value); err != nil {
+			return nil, err
+		}
+		fields[key] = value
+	}
+	last, err := decoder.Token()
+	if err != nil {
+		return nil, err
+	}
+	if delimiter, ok := last.(json.Delim); !ok || delimiter != '}' {
+		return nil, errors.New("access document is not terminated")
+	}
+
+	var trailing any
+	if err := decoder.Decode(&trailing); !errors.Is(err, io.EOF) {
+		if err == nil {
+			return nil, errors.New("access document contains trailing JSON")
+		}
+		return nil, err
+	}
+	return fields, nil
+}
+
+func decodeRequiredAccessField(fields map[string]json.RawMessage, name string, target any) error {
+	value, ok := fields[name]
+	if !ok {
+		return fmt.Errorf("access document is missing %s", name)
+	}
+	if err := json.Unmarshal(value, target); err != nil {
+		return fmt.Errorf("access document contains invalid %s: %w", name, err)
+	}
+	return nil
+}
+
+func requireExactAccessFields(fields map[string]json.RawMessage, required ...string) error {
+	allowed := make(map[string]struct{}, len(required))
+	for _, name := range required {
+		allowed[name] = struct{}{}
+		if _, ok := fields[name]; !ok {
+			return fmt.Errorf("access document is missing %s", name)
+		}
+	}
+	for name := range fields {
+		if _, ok := allowed[name]; !ok {
+			return fmt.Errorf("access document contains unknown field %q", name)
+		}
+	}
+	return nil
+}
+
+func loadLegacyCredential(manager *AccessManager, fields map[string]json.RawMessage) error {
+	if err := requireExactAccessFields(fields, "version", "access_key_sha256"); err != nil {
+		return err
+	}
+	var document legacyAccessDocument
+	if err := decodeRequiredAccessField(fields, "version", &document.Version); err != nil {
+		return err
+	}
+	if err := decodeRequiredAccessField(fields, "access_key_sha256", &document.AccessKeySHA256); err != nil {
+		return err
+	}
+	digest, err := decodeCanonicalBase64(document.AccessKeySHA256, sha256.Size)
+	if err != nil {
+		return errors.New("access file contains an invalid access-key digest")
+	}
+	defer clear(digest)
+
+	manager.mode = LegacyAccessKey
+	copy(manager.accessKeyDigest[:], digest)
+	return nil
+}
+
+func loadPasswordCredential(
+	manager *AccessManager,
+	fields map[string]json.RawMessage,
+	derive passwordDeriver,
+) error {
+	if err := requireExactAccessFields(
+		fields,
+		"version",
+		"type",
+		"username",
+		"algorithm",
+		"argon2_version",
+		"memory_kib",
+		"iterations",
+		"parallelism",
+		"salt",
+		"password_hash",
+	); err != nil {
+		return err
+	}
+
+	var document passwordAccessDocument
+	for _, field := range []struct {
+		name   string
+		target any
+	}{
+		{"version", &document.Version},
+		{"type", &document.Type},
+		{"username", &document.Username},
+		{"algorithm", &document.Algorithm},
+		{"argon2_version", &document.Argon2Version},
+		{"memory_kib", &document.MemoryKiB},
+		{"iterations", &document.Iterations},
+		{"parallelism", &document.Parallelism},
+		{"salt", &document.Salt},
+		{"password_hash", &document.PasswordHash},
+	} {
+		if err := decodeRequiredAccessField(fields, field.name, field.target); err != nil {
+			return err
+		}
+	}
+
+	if document.Type != passwordDocumentType ||
+		document.Algorithm != "argon2id" ||
+		document.Argon2Version != argon2IDVersion ||
+		document.MemoryKiB != argon2MemoryKiB ||
+		document.Iterations != argon2Iterations ||
+		document.Parallelism != argon2Parallelism {
+		return errors.New("access file contains unsupported password parameters")
+	}
+	if err := validateAdminUsername(document.Username); err != nil {
+		return fmt.Errorf("access file contains invalid username: %w", err)
+	}
+	salt, err := decodeCanonicalBase64(document.Salt, passwordSaltBytes)
+	if err != nil {
+		return errors.New("access file contains an invalid password salt")
+	}
+	defer clear(salt)
+	hash, err := decodeCanonicalBase64(document.PasswordHash, passwordHashBytes)
+	if err != nil {
+		return errors.New("access file contains an invalid password hash")
+	}
+	defer clear(hash)
+
+	manager.mode = UsernamePassword
+	manager.usernameDigest = sha256.Sum256([]byte(document.Username))
+	copy(manager.passwordSalt[:], salt)
+	copy(manager.passwordHash[:], hash)
+	manager.derivePassword = derive
+	manager.passwordKDFGate = globalPasswordKDFGate
+	return nil
+}
+
+func decodeCanonicalBase64(encoded string, expectedBytes int) ([]byte, error) {
+	decoded, err := base64.RawURLEncoding.DecodeString(encoded)
 	if err != nil ||
-		len(decodedDigest) != sha256.Size ||
-		base64.RawURLEncoding.EncodeToString(decodedDigest) != document.AccessKeySHA256 {
-		return nil, errors.New("access file contains an invalid access-key digest")
+		len(decoded) != expectedBytes ||
+		base64.RawURLEncoding.EncodeToString(decoded) != encoded {
+		clear(decoded)
+		return nil, errors.New("invalid base64url value")
 	}
-	var digest [sha256.Size]byte
-	copy(digest[:], decodedDigest)
-	clear(decodedDigest)
+	return decoded, nil
+}
 
+func newAccessManager() *AccessManager {
 	return &AccessManager{
-		accessKeyDigest:        digest,
 		sessions:               make(map[[sha256.Size]byte]*memorySession),
 		sessionIdleTimeout:     DefaultSessionIdleTimeout,
 		sessionAbsoluteTimeout: DefaultSessionAbsoluteTimeout,
@@ -211,82 +732,47 @@ func LoadAccess(path string) (*AccessManager, error) {
 		maxSessions:            defaultMaxSessions,
 		now:                    time.Now,
 		random:                 rand.Reader,
-	}, nil
+	}
 }
 
-func decodeAccessDocument(encoded []byte) (accessDocument, error) {
-	decoder := json.NewDecoder(bytes.NewReader(encoded))
-	first, err := decoder.Token()
-	if err != nil {
-		return accessDocument{}, err
-	}
-	if delimiter, ok := first.(json.Delim); !ok || delimiter != '{' {
-		return accessDocument{}, errors.New("access document must be a JSON object")
-	}
-
-	var document accessDocument
-	seen := make(map[string]struct{}, 2)
-	for decoder.More() {
-		keyToken, err := decoder.Token()
-		if err != nil {
-			return accessDocument{}, err
-		}
-		key, ok := keyToken.(string)
-		if !ok {
-			return accessDocument{}, errors.New("access document contains a non-string field name")
-		}
-		if _, duplicate := seen[key]; duplicate {
-			return accessDocument{}, fmt.Errorf("access document contains duplicate field %q", key)
-		}
-		seen[key] = struct{}{}
-
-		switch key {
-		case "version":
-			if err := decoder.Decode(&document.Version); err != nil {
-				return accessDocument{}, err
-			}
-		case "access_key_sha256":
-			if err := decoder.Decode(&document.AccessKeySHA256); err != nil {
-				return accessDocument{}, err
-			}
-		default:
-			return accessDocument{}, fmt.Errorf("access document contains unknown field %q", key)
-		}
-	}
-	last, err := decoder.Token()
-	if err != nil {
-		return accessDocument{}, err
-	}
-	if delimiter, ok := last.(json.Delim); !ok || delimiter != '}' {
-		return accessDocument{}, errors.New("access document is not terminated")
-	}
-	if _, ok := seen["version"]; !ok {
-		return accessDocument{}, errors.New("access document is missing version")
-	}
-	if _, ok := seen["access_key_sha256"]; !ok {
-		return accessDocument{}, errors.New("access document is missing access_key_sha256")
-	}
-
-	var trailing any
-	if err := decoder.Decode(&trailing); !errors.Is(err, io.EOF) {
-		if err == nil {
-			return accessDocument{}, errors.New("access document contains trailing JSON")
-		}
-		return accessDocument{}, err
-	}
-	return document, nil
+// Mode returns the only credential mode accepted by this manager.
+func (m *AccessManager) Mode() CredentialMode {
+	return m.mode
 }
 
-// Login verifies an operator access key and creates a new in-memory session.
-// Valid credentials bypass and reset the global failed-login limiter so an
-// attacker cannot lock out an operator who still holds the high-entropy key.
-func (m *AccessManager) Login(accessKey string) (Session, error) {
+// Login verifies the credential for this manager's mode and creates a new
+// in-memory session. For LegacyAccessKey, username must be empty and password
+// carries the legacy access key. V2 verifies every normal-shaped username with
+// exactly one Argon2id derivation, including unknown usernames.
+func (m *AccessManager) Login(username, password string) (Session, error) {
 	now := m.currentTime()
-	if !m.matchesAccessKey(accessKey) {
-		m.mu.Lock()
-		err := m.recordLoginFailureLocked(now)
-		m.mu.Unlock()
+	if err := m.reserveLoginAttempt(now); err != nil {
 		return Session{}, err
+	}
+
+	authenticated := false
+	switch m.mode {
+	case LegacyAccessKey:
+		authenticated = username == "" && m.matchesAccessKey(password)
+	case UsernamePassword:
+		passwordShapeValid := false
+		if len(password) <= passwordMaxBytes {
+			passwordCopy := []byte(password)
+			passwordShapeValid = validateAdminPassword("", passwordCopy, false) == nil
+			clear(passwordCopy)
+		}
+		if validateAdminUsername(username) == nil && passwordShapeValid {
+			if !m.acquirePasswordKDF() {
+				return Session{}, ErrLoginRateLimited
+			}
+			authenticated = func() bool {
+				defer m.releasePasswordKDF()
+				return m.matchesUsernamePassword(username, password)
+			}()
+		}
+	}
+	if !authenticated {
+		return Session{}, ErrAuthenticationFailed
 	}
 
 	var token [credentialBytes]byte
@@ -323,6 +809,173 @@ func (m *AccessManager) Login(accessKey string) (Session, error) {
 		CSRFToken: base64.RawURLEncoding.EncodeToString(csrf[:]),
 		ExpiresAt: absoluteExpiresAt,
 	}, nil
+}
+
+func (m *AccessManager) reserveLoginAttempt(now time.Time) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	if m.loginFailureLimit <= 0 || m.loginFailureWindow <= 0 {
+		return ErrLoginRateLimited
+	}
+	windowExpired := m.failures.windowStartedAt.IsZero() ||
+		now.Before(m.failures.windowStartedAt) ||
+		!now.Before(m.failures.windowStartedAt.Add(m.loginFailureWindow))
+	if windowExpired {
+		m.failures = loginFailureLimiter{windowStartedAt: now}
+	}
+	if m.failures.attempts >= m.loginFailureLimit {
+		return ErrLoginRateLimited
+	}
+	m.failures.attempts++
+	return nil
+}
+
+func (m *AccessManager) acquirePasswordKDF() bool {
+	if m.passwordKDFGate == nil {
+		return false
+	}
+	select {
+	case m.passwordKDFGate <- struct{}{}:
+		return true
+	default:
+		return false
+	}
+}
+
+func (m *AccessManager) releasePasswordKDF() {
+	<-m.passwordKDFGate
+}
+
+func (m *AccessManager) matchesUsernamePassword(username, password string) bool {
+	candidateUsername := sha256.Sum256([]byte(username))
+	usernameMatches := subtle.ConstantTimeCompare(
+		m.usernameDigest[:],
+		candidateUsername[:],
+	)
+
+	passwordCopy := []byte(password)
+	defer clear(passwordCopy)
+	candidateHash := m.derivePassword(passwordCopy, m.passwordSalt[:])
+	defer clear(candidateHash[:])
+	passwordMatches := subtle.ConstantTimeCompare(
+		m.passwordHash[:],
+		candidateHash[:],
+	)
+	return usernameMatches&passwordMatches == 1
+}
+
+func deriveArgon2idPassword(password, salt []byte) [passwordHashBytes]byte {
+	derived := argon2.IDKey(
+		password,
+		salt,
+		argon2Iterations,
+		argon2MemoryKiB,
+		argon2Parallelism,
+		passwordHashBytes,
+	)
+	defer clear(derived)
+	var hash [passwordHashBytes]byte
+	copy(hash[:], derived)
+	return hash
+}
+
+func validateAdminUsername(username string) error {
+	if len(username) == 0 || len(username) > 64 {
+		return errors.New("username must contain between 1 and 64 ASCII characters")
+	}
+	for index := 0; index < len(username); index++ {
+		character := username[index]
+		alphanumeric := character >= 'a' && character <= 'z' ||
+			character >= '0' && character <= '9'
+		if alphanumeric {
+			continue
+		}
+		if index > 0 && (character == '.' || character == '_' || character == '-') {
+			continue
+		}
+		return errors.New("username must match [a-z0-9][a-z0-9._-]{0,63}")
+	}
+	return nil
+}
+
+func validateAdminPassword(username string, password []byte, rejectWeak bool) error {
+	if len(password) > passwordMaxBytes {
+		return fmt.Errorf("password must not exceed %d bytes", passwordMaxBytes)
+	}
+	if !utf8.Valid(password) {
+		return errors.New("password must be valid UTF-8")
+	}
+	runeCount := utf8.RuneCount(password)
+	if runeCount < passwordMinRunes || runeCount > passwordMaxRunes {
+		return fmt.Errorf(
+			"password must contain between %d and %d Unicode characters",
+			passwordMinRunes,
+			passwordMaxRunes,
+		)
+	}
+	for _, character := range string(password) {
+		if unicode.IsControl(character) {
+			return errors.New("password must not contain control characters")
+		}
+	}
+	if rejectWeak && obviousWeakPassword(username, string(password)) {
+		return errors.New("password is too common or too closely related to the username")
+	}
+	return nil
+}
+
+func obviousWeakPassword(username, password string) bool {
+	lowerPassword := strings.ToLower(password)
+	if strings.TrimSpace(password) == "" {
+		return true
+	}
+	var (
+		firstRune rune
+		repeated  = true
+	)
+	for index, character := range password {
+		if index == 0 {
+			firstRune = character
+			continue
+		}
+		if character != firstRune {
+			repeated = false
+			break
+		}
+	}
+	if repeated {
+		return true
+	}
+	switch lowerPassword {
+	case "123456789012345",
+		"passwordpassword",
+		"password123456",
+		"qwertyuiopasdfgh",
+		"letmeinletmein",
+		"changemechangeme",
+		"adminadminadmin",
+		"correct horse battery staple",
+		"correcthorsebatterystaple",
+		"theatropolistheatropolis":
+		return true
+	}
+	if len(username) < 3 {
+		return false
+	}
+	for _, derived := range []string{
+		username,
+		username + username,
+		username + "123",
+		username + "123456",
+		username + "password",
+		"password" + username,
+	} {
+		if lowerPassword == derived {
+			return true
+		}
+	}
+	return false
 }
 
 // Authenticate verifies a session token, refreshes its idle deadline, and
@@ -386,6 +1039,14 @@ func (m *AccessManager) Logout(sessionToken string) {
 	m.mu.Unlock()
 }
 
+// InvalidateAllSessions revokes every browser session, for example after a
+// synchronized live credential reload.
+func (m *AccessManager) InvalidateAllSessions() {
+	m.mu.Lock()
+	clear(m.sessions)
+	m.mu.Unlock()
+}
+
 // NewSessionCookie returns the host-only cookie used by the public HTTPS
 // handler. ExpiresAt should be Session.ExpiresAt.
 func NewSessionCookie(token string, expiresAt time.Time) *http.Cookie {
@@ -445,23 +1106,6 @@ func decodeCredential(encoded string) ([credentialBytes]byte, int) {
 		return credential, 0
 	}
 	return credential, 1
-}
-
-func (m *AccessManager) recordLoginFailureLocked(now time.Time) error {
-	if m.loginFailureLimit <= 0 {
-		return ErrLoginRateLimited
-	}
-	windowExpired := m.failures.windowStartedAt.IsZero() ||
-		now.Before(m.failures.windowStartedAt) ||
-		!now.Before(m.failures.windowStartedAt.Add(m.loginFailureWindow))
-	if windowExpired {
-		m.failures = loginFailureLimiter{windowStartedAt: now}
-	}
-	if m.failures.failures >= m.loginFailureLimit {
-		return ErrLoginRateLimited
-	}
-	m.failures.failures++
-	return ErrAuthenticationFailed
 }
 
 func (m *AccessManager) purgeExpiredSessionsLocked(now time.Time) {

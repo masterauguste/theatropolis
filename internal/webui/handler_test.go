@@ -30,7 +30,8 @@ type webFixture struct {
 	handler  http.Handler
 	registry *identity.Registry
 	access   *AccessManager
-	key      string
+	username string
+	password string
 	session  Session
 	now      time.Time
 }
@@ -74,7 +75,10 @@ func TestLoginRequiresSameOriginAndCreatesSecureSession(t *testing.T) {
 	t.Parallel()
 
 	fixture := newWebFixture(t)
-	form := url.Values{"access_key": {fixture.key}}.Encode()
+	form := url.Values{
+		"username": {fixture.username},
+		"password": {fixture.password},
+	}.Encode()
 
 	request := fixture.request(http.MethodPost, "/login", form)
 	response := httptest.NewRecorder()
@@ -112,8 +116,196 @@ func TestLoginRequiresSameOriginAndCreatesSecureSession(t *testing.T) {
 		cookie.Domain != "" {
 		t.Fatalf("login set insecure cookie: %+v", cookie)
 	}
-	if strings.Contains(response.Body.String(), fixture.key) {
-		t.Fatal("login response reflected the operator access key")
+	if strings.Contains(response.Body.String(), fixture.password) {
+		t.Fatal("login response reflected the operator password")
+	}
+}
+
+func TestUsernamePasswordLoginFormIsAccessibleAndDoesNotReflectSecrets(t *testing.T) {
+	t.Parallel()
+
+	fixture := newWebFixture(t)
+	request := fixture.request(http.MethodGet, "/login", "")
+	response := httptest.NewRecorder()
+	fixture.handler.ServeHTTP(response, request)
+	if response.Code != http.StatusOK {
+		t.Fatalf("GET /login status = %d, want %d", response.Code, http.StatusOK)
+	}
+	body := response.Body.String()
+	for _, expected := range []string{
+		`name="username"`,
+		`autocomplete="username"`,
+		`autocapitalize="none"`,
+		`spellcheck="false"`,
+		`pattern="[a-z0-9][a-z0-9._-]{0,63}"`,
+		`name="password"`,
+		`autocomplete="current-password"`,
+		`maxlength="512"`,
+		`aria-label="Show password"`,
+		`data-secret-label="password"`,
+	} {
+		if !strings.Contains(body, expected) {
+			t.Errorf("login form does not contain %q", expected)
+		}
+	}
+	if strings.Contains(body, `name="access_key"`) {
+		t.Fatal("username/password login page exposed the legacy access-key form")
+	}
+
+	untrustedUsername := `operator"><script>alert(1)</script>`
+	submittedPassword := "password-that-must-not-be-reflected"
+	form := url.Values{
+		"username": {untrustedUsername},
+		"password": {submittedPassword},
+	}.Encode()
+	request = fixture.mutationRequest(http.MethodPost, "/login", form)
+	response = httptest.NewRecorder()
+	fixture.handler.ServeHTTP(response, request)
+	if response.Code != http.StatusUnauthorized {
+		t.Fatalf(
+			"invalid login status = %d, want %d",
+			response.Code,
+			http.StatusUnauthorized,
+		)
+	}
+	body = response.Body.String()
+	if !strings.Contains(body, "The username or password was not accepted.") {
+		t.Fatal("invalid login did not return the generic credential error")
+	}
+	if strings.Contains(body, untrustedUsername) ||
+		!strings.Contains(body, "&lt;script&gt;") {
+		t.Fatal("invalid login did not safely preserve the submitted username")
+	}
+	if strings.Contains(body, submittedPassword) {
+		t.Fatal("invalid login reflected the submitted password")
+	}
+	if count := strings.Count(body, `aria-invalid="true"`); count != 2 {
+		t.Fatalf("invalid login marked %d fields invalid, want 2", count)
+	}
+}
+
+func TestUsernamePasswordLoginRequiresExactBoundedFields(t *testing.T) {
+	t.Parallel()
+
+	fixture := newWebFixture(t)
+	tests := map[string]string{
+		"missing username": url.Values{
+			"password": {fixture.password},
+		}.Encode(),
+		"missing password": url.Values{
+			"username": {fixture.username},
+		}.Encode(),
+		"duplicate username": url.Values{
+			"username": {fixture.username, "other"},
+			"password": {fixture.password},
+		}.Encode(),
+		"unexpected field": url.Values{
+			"username": {fixture.username},
+			"password": {fixture.password},
+			"remember": {"yes"},
+		}.Encode(),
+		"legacy field": url.Values{
+			"access_key": {fixture.password},
+		}.Encode(),
+		"oversized password": url.Values{
+			"username": {fixture.username},
+			"password": {strings.Repeat("A", maxLoginBodyBytes)},
+		}.Encode(),
+	}
+	for name, form := range tests {
+		t.Run(name, func(t *testing.T) {
+			request := fixture.mutationRequest(http.MethodPost, "/login", form)
+			response := httptest.NewRecorder()
+			fixture.handler.ServeHTTP(response, request)
+			if response.Code != http.StatusBadRequest {
+				t.Fatalf(
+					"malformed login status = %d, want %d",
+					response.Code,
+					http.StatusBadRequest,
+				)
+			}
+			if response.Header().Get("Set-Cookie") != "" {
+				t.Fatalf(
+					"malformed login changed cookies: %q",
+					response.Header().Get("Set-Cookie"),
+				)
+			}
+		})
+	}
+}
+
+func TestLegacyAccessKeyLoginRemainsAvailableDuringMigration(t *testing.T) {
+	t.Parallel()
+
+	fixture := newLegacyWebFixture(t)
+	request := fixture.request(http.MethodGet, "/login", "")
+	response := httptest.NewRecorder()
+	fixture.handler.ServeHTTP(response, request)
+	if response.Code != http.StatusOK {
+		t.Fatalf("legacy GET /login status = %d, want %d", response.Code, http.StatusOK)
+	}
+	body := response.Body.String()
+	for _, expected := range []string{
+		"Legacy sign-in",
+		`name="access_key"`,
+		`data-secret-label="access key"`,
+		`aria-label="Show access key"`,
+	} {
+		if !strings.Contains(body, expected) {
+			t.Errorf("legacy login form does not contain %q", expected)
+		}
+	}
+	if strings.Contains(body, `name="username"`) ||
+		strings.Contains(body, `name="password"`) {
+		t.Fatal("legacy login page exposed username/password fields")
+	}
+
+	form := url.Values{
+		"username": {"operator"},
+		"password": {"correct-horse-battery-staple"},
+	}.Encode()
+	request = fixture.mutationRequest(http.MethodPost, "/login", form)
+	response = httptest.NewRecorder()
+	fixture.handler.ServeHTTP(response, request)
+	if response.Code != http.StatusBadRequest {
+		t.Fatalf(
+			"legacy login accepted v2 fields with status %d",
+			response.Code,
+		)
+	}
+
+	rejectedKey := strings.Repeat("B", encodedCredentialLength)
+	form = url.Values{"access_key": {rejectedKey}}.Encode()
+	request = fixture.mutationRequest(http.MethodPost, "/login", form)
+	response = httptest.NewRecorder()
+	fixture.handler.ServeHTTP(response, request)
+	if response.Code != http.StatusUnauthorized ||
+		!strings.Contains(response.Body.String(), "The access key was not accepted.") {
+		t.Fatalf(
+			"invalid legacy login response = %d %q",
+			response.Code,
+			response.Body.String(),
+		)
+	}
+	if strings.Contains(response.Body.String(), rejectedKey) {
+		t.Fatal("invalid legacy login reflected the submitted access key")
+	}
+
+	form = url.Values{"access_key": {fixture.password}}.Encode()
+	request = fixture.mutationRequest(http.MethodPost, "/login", form)
+	response = httptest.NewRecorder()
+	fixture.handler.ServeHTTP(response, request)
+	if response.Code != http.StatusSeeOther ||
+		response.Header().Get("Location") != "/servers" {
+		t.Fatalf(
+			"valid legacy login response = %d %q",
+			response.Code,
+			response.Header().Get("Location"),
+		)
+	}
+	if cookies := response.Result().Cookies(); len(cookies) != 1 ||
+		cookies[0].Name != SessionCookieName {
+		t.Fatalf("valid legacy login cookies = %+v", cookies)
 	}
 }
 
@@ -133,7 +325,10 @@ func TestLoginAllowsTrustedOriginWithBrowserInitiatedFetchMetadata(t *testing.T)
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
 			fixture := newWebFixture(t)
-			form := url.Values{"access_key": {fixture.key}}.Encode()
+			form := url.Values{
+				"username": {fixture.username},
+				"password": {fixture.password},
+			}.Encode()
 			request := httptest.NewRequest(
 				http.MethodPost,
 				"http://127.0.0.1:8080/login",
@@ -166,7 +361,10 @@ func TestLoginRejectsUntrustedOrAmbiguousOriginMetadata(t *testing.T) {
 	t.Parallel()
 
 	fixture := newWebFixture(t)
-	form := url.Values{"access_key": {fixture.key}}.Encode()
+	form := url.Values{
+		"username": {fixture.username},
+		"password": {fixture.password},
+	}.Encode()
 	tests := []struct {
 		name            string
 		path            string
@@ -484,7 +682,7 @@ func TestEnrollmentResultIsBoundToCreatingSession(t *testing.T) {
 	}
 	resultLocation := response.Header().Get("Location")
 
-	otherSession, err := fixture.access.Login(fixture.key)
+	otherSession, err := fixture.access.Login(fixture.username, fixture.password)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -655,19 +853,46 @@ func newWebFixture(t *testing.T) webFixture {
 
 func newWebFixtureWithRegistry(t *testing.T, registry *identity.Registry) webFixture {
 	t.Helper()
-	accessPath := filepath.Join(t.TempDir(), "web-auth.json")
-	key, err := InitializeAccess(accessPath)
+	access, username, password := newTestAdminAccessManager(t)
+	session, err := access.Login(username, password)
 	if err != nil {
 		t.Fatal(err)
 	}
-	access, err := LoadAccess(accessPath)
+	return newWebFixtureWithAccess(
+		t,
+		registry,
+		access,
+		username,
+		password,
+		session,
+	)
+}
+
+func newLegacyWebFixture(t *testing.T) webFixture {
+	t.Helper()
+	access, accessKey := newTestAccessManager(t)
+	session, err := access.Login("", accessKey)
 	if err != nil {
 		t.Fatal(err)
 	}
-	session, err := access.Login(key)
-	if err != nil {
-		t.Fatal(err)
-	}
+	return newWebFixtureWithAccess(
+		t,
+		identity.NewRegistry(),
+		access,
+		"",
+		accessKey,
+		session,
+	)
+}
+
+func newWebFixtureWithAccess(
+	t *testing.T,
+	registry *identity.Registry,
+	access *AccessManager,
+	username, password string,
+	session Session,
+) webFixture {
+	t.Helper()
 	now := time.Now().UTC().Add(2 * time.Hour)
 	handler, err := New(Options{
 		Registry:  registry,
@@ -684,7 +909,8 @@ func newWebFixtureWithRegistry(t *testing.T, registry *identity.Registry) webFix
 		handler:  handler,
 		registry: registry,
 		access:   access,
-		key:      key,
+		username: username,
+		password: password,
 		session:  session,
 		now:      now,
 	}

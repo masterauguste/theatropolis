@@ -2,8 +2,9 @@
 
 set -eu
 
-INSTALLER="${1:-./install.sh}"
+INSTALLER_SOURCE="${1:-./install.sh}"
 TEST_DIRECTORY="$(mktemp -d)"
+INSTALLER="$TEST_DIRECTORY/install.sh"
 VALID_TOKEN="AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
 
 cleanup() {
@@ -16,6 +17,11 @@ fail() {
 }
 
 trap cleanup EXIT HUP INT TERM
+
+sed \
+	"s#INSTALL_LOCK_FILE=\"/run/theatropolis-installer.lock\"#INSTALL_LOCK_FILE=\"$TEST_DIRECTORY/installer.lock\"#" \
+	"$INSTALLER_SOURCE" >"$INSTALLER"
+chmod +x "$INSTALLER"
 
 command -v script >/dev/null 2>&1 ||
 	fail "the util-linux script command is required"
@@ -48,7 +54,12 @@ printf '%s\n' \
 	'exit 42' \
 	>"$PROMPT_BIN/apt-get"
 printf '%s\n' '#!/bin/sh' 'exit 0' >"$PROMPT_BIN/systemctl"
-chmod +x "$PROMPT_BIN/id" "$PROMPT_BIN/apt-get" "$PROMPT_BIN/systemctl"
+printf '%s\n' '#!/bin/sh' 'exit 0' >"$PROMPT_BIN/flock"
+chmod +x \
+	"$PROMPT_BIN/id" \
+	"$PROMPT_BIN/apt-get" \
+	"$PROMPT_BIN/systemctl" \
+	"$PROMPT_BIN/flock"
 
 PROMPT_PATH="$PROMPT_BIN:$PATH"
 set +e
@@ -155,7 +166,7 @@ INSTALL_INVOCATIONS="$TEST_DIRECTORY/install-invocations.log"
 mkdir "$RELEASE_DIRECTORY" "$RELEASE_STAGE" "$COMPAT_BIN"
 
 # Model the published v0.0.1 master: it can report its version but does not
-# implement the init-web-admin command required by the web-enabled installer.
+# implement password-based web administration.
 # shellcheck disable=SC2016
 printf '%s\n' \
 	'#!/bin/sh' \
@@ -165,7 +176,7 @@ printf '%s\n' \
 	'	printf "v0.0.1 (commit test, built test)\n"' \
 	'	exit 0' \
 	';;' \
-	'init-web-admin)' \
+	'set-web-admin)' \
 	'	printf "unknown command %s\n" "$1" >&2' \
 	'	exit 64' \
 	';;' \
@@ -198,6 +209,7 @@ printf '%s\n' \
 	>"$COMPAT_BIN/id"
 printf '%s\n' '#!/bin/sh' 'exit 0' >"$COMPAT_BIN/apt-get"
 printf '%s\n' '#!/bin/sh' 'exit 0' >"$COMPAT_BIN/systemctl"
+printf '%s\n' '#!/bin/sh' 'exit 0' >"$COMPAT_BIN/flock"
 printf '%s\n' '#!/bin/sh' 'printf "x86_64\n"' >"$COMPAT_BIN/uname"
 # shellcheck disable=SC2016
 printf '%s\n' \
@@ -257,8 +269,8 @@ set -e
 	fail "installer attempted to install the incompatible v0.0.1 master"
 [ -s "$MASTER_INVOCATIONS" ] ||
 	fail "installer did not probe the candidate master for compatibility"
-grep -Eq '(version|init-web-admin)' "$MASTER_INVOCATIONS" ||
+grep -Eq '(version|set-web-admin)' "$MASTER_INVOCATIONS" ||
 	fail "installer compatibility probe did not inspect the required master capability"
 printf '%s' "$COMPAT_OUTPUT" |
-	grep -Eiq '(incompat|does not support|requires|newer|too old|minimum|web interface|init-web-admin)' ||
+	grep -Eiq '(incompat|does not support|requires|newer|too old|minimum|web administration|set-web-admin)' ||
 	fail "v0.0.1 rejection did not provide a compatibility diagnostic"

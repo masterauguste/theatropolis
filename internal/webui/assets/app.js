@@ -40,9 +40,10 @@ for (const button of document.querySelectorAll("[data-reveal-secret]")) {
       return;
     }
     const revealing = input.type === "password";
+    const secretLabel = button.dataset.secretLabel || "password";
     input.type = revealing ? "text" : "password";
     button.textContent = revealing ? "Hide" : "Show";
-    button.setAttribute("aria-label", `${revealing ? "Hide" : "Show"} access key`);
+    button.setAttribute("aria-label", `${revealing ? "Hide" : "Show"} ${secretLabel}`);
     button.setAttribute("aria-pressed", revealing ? "true" : "false");
   });
 }

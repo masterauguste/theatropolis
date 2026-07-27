@@ -1,6 +1,7 @@
 #!/bin/sh
 
 set -eu
+set +x
 umask 077
 
 REPOSITORY="masterauguste/theatropolis"
@@ -13,6 +14,8 @@ AGENT_STATE_DIRECTORY="${STATE_DIRECTORY}/agent"
 CONFIG_DIRECTORY="/etc/theatropolis"
 MASTER_ADMIN_SOCKET="/run/theatropolis/master-admin.sock"
 WEB_AUTH_FILE="${CONFIG_DIRECTORY}/web-auth.json"
+MASTER_UNIT_FILE="/etc/systemd/system/theatropolis-master.service"
+INSTALL_LOCK_FILE="/run/theatropolis-installer.lock"
 DEFAULT_HTTPS_PORT="8443"
 
 ROLE=""
@@ -24,9 +27,25 @@ AGENT_ID=""
 ENROLLMENT_TOKEN=""
 CA_FILE=""
 TEMP_DIRECTORY=""
-WEB_ADMIN_ACCESS_KEY=""
+ADMIN_USERNAME=""
+ADMIN_PASSWORD_FILE=""
+ADMIN_PASSWORD_FILE_ID=""
+ADMIN_PASSWORD_SNAPSHOT=""
+WEB_ADMIN_PASSWORD=""
+WEB_ADMIN_PASSWORD_CONFIRM=""
+WEB_AUTH_EXISTED="no"
 WEB_AUTH_CREATED="no"
+WEB_AUTH_CREATED_ID=""
+WEB_AUTH_RESET_APPLIED="no"
+WEB_AUTH_BACKUP=""
+MASTER_UNIT_BACKUP=""
+MASTER_UNIT_HAD="no"
+MASTER_UNIT_TOUCHED="no"
+MASTER_UNIT_TEMP=""
+MASTER_WAS_ACTIVE="no"
+MASTER_STOPPED="no"
 INSTALL_SUCCEEDED="no"
+CLEANUP_STARTED="no"
 TTY_SETTINGS=""
 ENROLLMENT_TOKEN_TEMP=""
 AGENT_WAS_ACTIVE="no"
@@ -35,9 +54,9 @@ AGENT_STOPPED="no"
 usage() {
 	printf '%s\n' \
 		"Usage:" \
-		"  install.sh master --domain <name> [--https-port <port>] [--version <tag>]" \
+		"  install.sh master --domain <name> [--https-port <port>] [--version <tag>] [--admin-username <name> [--admin-password-file <path>]]" \
 		"  install.sh agent --master <host:port> --agent-id <id> [--token <token>] [--ca-file <path>]" \
-		"  install.sh all --domain <name> --agent-id <id> [--https-port <port>]" \
+		"  install.sh all --domain <name> --agent-id <id> [--https-port <port>] [--admin-username <name> [--admin-password-file <path>]]" \
 		"" \
 		"Installs precompiled Linux amd64/arm64 release binaries. It never compiles locally."
 }
@@ -48,19 +67,90 @@ fail() {
 }
 
 cleanup() {
+	CLEANUP_STATUS="$?"
+	if [ "$CLEANUP_STARTED" = "yes" ]; then
+		return
+	fi
+	CLEANUP_STARTED="yes"
+	trap - EXIT HUP INT TERM
+	set +e
+
 	if [ -n "$TTY_SETTINGS" ]; then
 		stty "$TTY_SETTINGS" </dev/tty >/dev/null 2>&1 || true
 		TTY_SETTINGS=""
 	fi
-	if [ "$WEB_AUTH_CREATED" = "yes" ] &&
-		[ "$INSTALL_SUCCEEDED" != "yes" ] &&
-		[ -n "$WEB_ADMIN_ACCESS_KEY" ]; then
-		printf '%s\n' \
-			'' \
-			'Web interface operator access was initialized before installation failed.' \
-			'Keep this key, correct the reported error, and run the installer again.' >&2
-		printf 'Access key: %s\n' "$WEB_ADMIN_ACCESS_KEY" >&2
-		WEB_ADMIN_ACCESS_KEY=""
+	WEB_ADMIN_PASSWORD=""
+	WEB_ADMIN_PASSWORD_CONFIRM=""
+	if [ -n "$ADMIN_PASSWORD_SNAPSHOT" ] &&
+		[ -f "$ADMIN_PASSWORD_SNAPSHOT" ] &&
+		[ ! -L "$ADMIN_PASSWORD_SNAPSHOT" ]; then
+		rm -f -- "$ADMIN_PASSWORD_SNAPSHOT"
+	fi
+	if [ -n "$MASTER_UNIT_TEMP" ] &&
+		[ -f "$MASTER_UNIT_TEMP" ] &&
+		[ ! -L "$MASTER_UNIT_TEMP" ]; then
+		rm -f -- "$MASTER_UNIT_TEMP"
+	fi
+
+	if [ "$INSTALL_SUCCEEDED" != "yes" ] &&
+		{ [ "$WEB_AUTH_RESET_APPLIED" = "yes" ] ||
+			[ "$WEB_AUTH_CREATED" = "yes" ] ||
+			[ "$MASTER_UNIT_TOUCHED" = "yes" ] ||
+			[ "$MASTER_STOPPED" = "yes" ]; }; then
+		MASTER_STOPPED="yes"
+		systemctl stop theatropolis-master >/dev/null 2>&1 || true
+	fi
+
+	if [ "$INSTALL_SUCCEEDED" != "yes" ] &&
+		[ "$WEB_AUTH_RESET_APPLIED" = "yes" ] &&
+		[ -n "$WEB_AUTH_BACKUP" ]; then
+		AUTH_RESTORE="${WEB_AUTH_FILE}.restore.$$"
+		rm -f -- "$AUTH_RESTORE"
+		if cp -a "$WEB_AUTH_BACKUP" "$AUTH_RESTORE" &&
+			mv -fT -- "$AUTH_RESTORE" "$WEB_AUTH_FILE"; then
+			:
+		else
+			rm -f -- "$AUTH_RESTORE"
+			printf '%s\n' \
+				'theatropolis installer: could not restore the previous web admin credential' >&2
+		fi
+	elif [ "$INSTALL_SUCCEEDED" != "yes" ] &&
+		[ "$WEB_AUTH_CREATED" = "yes" ] &&
+		[ -n "$WEB_AUTH_CREATED_ID" ] &&
+		[ -f "$WEB_AUTH_FILE" ] &&
+		[ ! -L "$WEB_AUTH_FILE" ] &&
+		[ "$(stat -c '%d:%i' "$WEB_AUTH_FILE" 2>/dev/null || true)" = "$WEB_AUTH_CREATED_ID" ]; then
+		rm -f -- "$WEB_AUTH_FILE"
+	fi
+
+	if [ "$INSTALL_SUCCEEDED" != "yes" ] &&
+		[ "$MASTER_UNIT_TOUCHED" = "yes" ]; then
+		if [ "$MASTER_UNIT_HAD" = "yes" ] &&
+			[ -n "$MASTER_UNIT_BACKUP" ]; then
+			UNIT_RESTORE="${MASTER_UNIT_FILE}.restore.$$"
+			rm -f -- "$UNIT_RESTORE"
+			if cp -a "$MASTER_UNIT_BACKUP" "$UNIT_RESTORE" &&
+				mv -fT -- "$UNIT_RESTORE" "$MASTER_UNIT_FILE"; then
+				:
+			else
+				rm -f -- "$UNIT_RESTORE"
+				printf '%s\n' \
+					'theatropolis installer: could not restore the previous master service unit' >&2
+			fi
+		elif [ "$MASTER_UNIT_HAD" = "no" ]; then
+			rm -f -- "$MASTER_UNIT_FILE"
+		fi
+		systemctl daemon-reload >/dev/null 2>&1 || true
+	fi
+
+	if [ "$INSTALL_SUCCEEDED" != "yes" ] &&
+		[ "$MASTER_WAS_ACTIVE" = "yes" ] &&
+		[ "$MASTER_STOPPED" = "yes" ]; then
+		if ! systemctl start theatropolis-master; then
+			printf '%s\n' \
+				'theatropolis installer: the previous master could not be restarted after rollback' >&2
+		fi
+		MASTER_STOPPED="no"
 	fi
 	if [ -n "$TEMP_DIRECTORY" ] && [ -d "$TEMP_DIRECTORY" ]; then
 		rm -rf -- "$TEMP_DIRECTORY"
@@ -79,9 +169,17 @@ cleanup() {
 		fi
 		AGENT_STOPPED="no"
 	fi
+	exit "$CLEANUP_STATUS"
 }
 
-trap cleanup EXIT HUP INT TERM
+handle_signal() {
+	exit "$1"
+}
+
+trap cleanup EXIT
+trap 'handle_signal 129' HUP
+trap 'handle_signal 130' INT
+trap 'handle_signal 143' TERM
 
 validate_enrollment_token() {
 	printf '%s' "$ENROLLMENT_TOKEN" |
@@ -109,6 +207,106 @@ prompt_for_enrollment_token() {
 	TTY_SETTINGS=""
 	printf '\n' >/dev/tty
 	validate_enrollment_token
+}
+
+validate_admin_username() {
+	printf '%s' "$ADMIN_USERNAME" |
+		grep -Eq '^[a-z0-9][a-z0-9._-]{0,63}$' ||
+		fail "the admin username is invalid"
+}
+
+validate_admin_password_file() {
+	if [ -L "$ADMIN_PASSWORD_FILE" ] || [ ! -f "$ADMIN_PASSWORD_FILE" ]; then
+		fail "--admin-password-file must be a regular file, not a symbolic link"
+	fi
+	FILE_OWNER="$(stat -c '%u' -- "$ADMIN_PASSWORD_FILE")" ||
+		fail "could not inspect --admin-password-file ownership"
+	[ "$FILE_OWNER" = "0" ] ||
+		fail "--admin-password-file must be owned by root"
+	FILE_MODE="$(stat -c '%a' -- "$ADMIN_PASSWORD_FILE")" ||
+		fail "could not inspect --admin-password-file permissions"
+	case "$FILE_MODE" in
+	400 | 600) ;;
+	*) fail "--admin-password-file permissions must be 0400 or 0600" ;;
+	esac
+	ADMIN_PASSWORD_FILE_ID="$(stat -c '%d:%i' -- "$ADMIN_PASSWORD_FILE")" ||
+		fail "could not inspect --admin-password-file identity"
+}
+
+snapshot_admin_password_file() {
+	[ -n "$TEMP_DIRECTORY" ] ||
+		fail "cannot snapshot --admin-password-file before temporary storage is ready"
+	ADMIN_PASSWORD_SNAPSHOT="$TEMP_DIRECTORY/admin-password"
+	if ! cp -p --no-dereference -- \
+		"$ADMIN_PASSWORD_FILE" \
+		"$ADMIN_PASSWORD_SNAPSHOT"; then
+		fail "could not securely snapshot --admin-password-file"
+	fi
+	if [ -L "$ADMIN_PASSWORD_SNAPSHOT" ] ||
+		[ ! -f "$ADMIN_PASSWORD_SNAPSHOT" ]; then
+		fail "--admin-password-file changed while it was being read"
+	fi
+	SNAPSHOT_OWNER="$(stat -c '%u' "$ADMIN_PASSWORD_SNAPSHOT")" ||
+		fail "could not inspect the admin password snapshot ownership"
+	[ "$SNAPSHOT_OWNER" = "0" ] ||
+		fail "--admin-password-file changed while it was being read"
+	SNAPSHOT_MODE="$(stat -c '%a' "$ADMIN_PASSWORD_SNAPSHOT")" ||
+		fail "could not inspect the admin password snapshot permissions"
+	case "$SNAPSHOT_MODE" in
+	400 | 600) ;;
+	*) fail "--admin-password-file changed while it was being read" ;;
+	esac
+	CURRENT_PASSWORD_FILE_ID="$(
+		stat -c '%d:%i' -- "$ADMIN_PASSWORD_FILE" 2>/dev/null || true
+	)"
+	[ "$CURRENT_PASSWORD_FILE_ID" = "$ADMIN_PASSWORD_FILE_ID" ] ||
+		fail "--admin-password-file changed while it was being read"
+}
+
+prompt_for_admin_credentials() {
+	if [ ! -r /dev/tty ] || [ ! -w /dev/tty ]; then
+		fail "a terminal is required to choose web admin credentials; use --admin-username with --admin-password-file for secured automation"
+	fi
+	if [ -z "$ADMIN_USERNAME" ]; then
+		printf 'Admin username [admin]: ' >/dev/tty
+		if ! IFS= read -r ADMIN_USERNAME </dev/tty; then
+			fail "could not read the admin username from the terminal"
+		fi
+		if [ -z "$ADMIN_USERNAME" ]; then
+			ADMIN_USERNAME="admin"
+		fi
+	fi
+	validate_admin_username
+
+	TTY_SETTINGS="$(stty -g </dev/tty)" ||
+		fail "could not read terminal settings for the admin password prompt"
+	stty -echo </dev/tty ||
+		fail "could not disable terminal echo for the admin password prompt"
+	printf 'Admin password (15-128 characters): ' >/dev/tty
+	if ! IFS= read -r WEB_ADMIN_PASSWORD </dev/tty; then
+		stty "$TTY_SETTINGS" </dev/tty >/dev/null 2>&1 || true
+		TTY_SETTINGS=""
+		printf '\n' >/dev/tty
+		fail "could not read the admin password from the terminal"
+	fi
+	printf '\nConfirm admin password: ' >/dev/tty
+	if ! IFS= read -r WEB_ADMIN_PASSWORD_CONFIRM </dev/tty; then
+		stty "$TTY_SETTINGS" </dev/tty >/dev/null 2>&1 || true
+		TTY_SETTINGS=""
+		WEB_ADMIN_PASSWORD=""
+		printf '\n' >/dev/tty
+		fail "could not read the admin password confirmation from the terminal"
+	fi
+	stty "$TTY_SETTINGS" </dev/tty ||
+		fail "could not restore terminal settings after reading the admin password"
+	TTY_SETTINGS=""
+	printf '\n' >/dev/tty
+	if [ "$WEB_ADMIN_PASSWORD" != "$WEB_ADMIN_PASSWORD_CONFIRM" ]; then
+		WEB_ADMIN_PASSWORD=""
+		WEB_ADMIN_PASSWORD_CONFIRM=""
+		fail "the admin password confirmation did not match"
+	fi
+	WEB_ADMIN_PASSWORD_CONFIRM=""
 }
 
 if [ "$#" -eq 0 ]; then
@@ -167,6 +365,16 @@ while [ "$#" -gt 0 ]; do
 		CA_FILE="$2"
 		shift 2
 		;;
+	--admin-username)
+		[ "$#" -ge 2 ] || fail "--admin-username requires a value"
+		ADMIN_USERNAME="$2"
+		shift 2
+		;;
+	--admin-password-file)
+		[ "$#" -ge 2 ] || fail "--admin-password-file requires a value"
+		ADMIN_PASSWORD_FILE="$2"
+		shift 2
+		;;
 	-h | --help)
 		usage
 		exit 0
@@ -186,6 +394,11 @@ debian | ubuntu) ;;
 *) fail "only Debian and Ubuntu are currently supported" ;;
 esac
 command -v systemctl >/dev/null 2>&1 || fail "systemd is required"
+command -v flock >/dev/null 2>&1 || fail "util-linux flock is required"
+exec 9>"$INSTALL_LOCK_FILE" ||
+	fail "could not open the installer lock file"
+flock -n 9 ||
+	fail "another Theatropolis installer is already running"
 
 case "$(uname -m)" in
 x86_64 | amd64) ARCHITECTURE="amd64" ;;
@@ -210,8 +423,21 @@ master | all)
 	if [ "$HTTPS_PORT" -lt 1024 ] || [ "$HTTPS_PORT" -gt 65535 ]; then
 		fail "--https-port must be between 1024 and 65535"
 	fi
+	if [ -n "$ADMIN_USERNAME" ]; then
+		validate_admin_username
+	fi
+	if [ -n "$ADMIN_PASSWORD_FILE" ]; then
+		[ -n "$ADMIN_USERNAME" ] ||
+			fail "--admin-password-file requires --admin-username"
+		validate_admin_password_file
+	fi
 	;;
 esac
+
+if [ "$ROLE" = "agent" ] &&
+	{ [ -n "$ADMIN_USERNAME" ] || [ -n "$ADMIN_PASSWORD_FILE" ]; }; then
+	fail "--admin-username and --admin-password-file are only valid for master or all"
+fi
 
 case "$ROLE" in
 agent | all)
@@ -295,16 +521,33 @@ case "$ROLE" in
 master | all)
 	COMPATIBILITY_STATE="$TEMP_DIRECTORY/master-compatibility"
 	mkdir "$COMPATIBILITY_STATE"
-	if ! COMPATIBILITY_KEY="$(
-		"$TEMP_DIRECTORY/extracted/theatropolis-master" init-web-admin \
-			--state-dir "$COMPATIBILITY_STATE" 2>/dev/null
-	)"; then
-		fail "the selected release does not support the required master web interface; choose a newer version"
+	if ! printf '%s\n' 'theatropolis-compatibility-password' |
+		"$TEMP_DIRECTORY/extracted/theatropolis-master" set-web-admin \
+			--state-dir "$COMPATIBILITY_STATE" \
+			--username compatibility \
+			--password-stdin >/dev/null 2>&1; then
+		fail "the selected release does not support password-based web administration; choose a newer version"
 	fi
-	printf '%s' "$COMPATIBILITY_KEY" |
-		grep -Eq '^[A-Za-z0-9_-]{43}$' ||
-		fail "the selected release returned an invalid web-interface compatibility result"
-	COMPATIBILITY_KEY=""
+	if [ ! -f "$COMPATIBILITY_STATE/web-auth.json" ] ||
+		[ -L "$COMPATIBILITY_STATE/web-auth.json" ]; then
+		fail "the selected release did not create a valid web admin credential"
+	fi
+	if [ -e "$WEB_AUTH_FILE" ] || [ -L "$WEB_AUTH_FILE" ]; then
+		if [ -L "$WEB_AUTH_FILE" ] || [ ! -f "$WEB_AUTH_FILE" ]; then
+			fail "the web access file exists but is not a regular file"
+		fi
+		COMPATIBILITY_EXISTING="$TEMP_DIRECTORY/master-existing-compatibility"
+		mkdir "$COMPATIBILITY_EXISTING"
+		cp -a "$WEB_AUTH_FILE" "$COMPATIBILITY_EXISTING/web-auth.json"
+		if ! printf '%s\n' 'theatropolis-compatibility-password' |
+			"$TEMP_DIRECTORY/extracted/theatropolis-master" set-web-admin \
+				--state-dir "$COMPATIBILITY_EXISTING" \
+				--username compatibility \
+				--password-stdin \
+				--replace >/dev/null 2>&1; then
+			fail "the selected release cannot migrate the existing web admin credential"
+		fi
+	fi
 	;;
 esac
 
@@ -428,8 +671,55 @@ EOF
 	fi
 }
 
+run_set_web_admin() {
+	ADMIN_BINARY="$1"
+	REPLACE_ADMIN="$2"
+	ADMIN_STATUS=0
+	if [ -n "$ADMIN_PASSWORD_FILE" ]; then
+		[ -n "$ADMIN_PASSWORD_SNAPSHOT" ] ||
+			fail "the admin password file was not securely snapshotted"
+		if [ "$REPLACE_ADMIN" = "yes" ]; then
+			"$ADMIN_BINARY" set-web-admin \
+				--state-dir "$CONFIG_DIRECTORY" \
+				--username "$ADMIN_USERNAME" \
+				--password-stdin \
+				--replace <"$ADMIN_PASSWORD_SNAPSHOT" ||
+				ADMIN_STATUS="$?"
+		else
+			"$ADMIN_BINARY" set-web-admin \
+				--state-dir "$CONFIG_DIRECTORY" \
+				--username "$ADMIN_USERNAME" \
+				--password-stdin <"$ADMIN_PASSWORD_SNAPSHOT" ||
+				ADMIN_STATUS="$?"
+		fi
+	else
+		if [ "$REPLACE_ADMIN" = "yes" ]; then
+			printf '%s\n' "$WEB_ADMIN_PASSWORD" |
+				"$ADMIN_BINARY" set-web-admin \
+					--state-dir "$CONFIG_DIRECTORY" \
+					--username "$ADMIN_USERNAME" \
+					--password-stdin \
+					--replace ||
+				ADMIN_STATUS="$?"
+		else
+			printf '%s\n' "$WEB_ADMIN_PASSWORD" |
+				"$ADMIN_BINARY" set-web-admin \
+					--state-dir "$CONFIG_DIRECTORY" \
+					--username "$ADMIN_USERNAME" \
+					--password-stdin ||
+				ADMIN_STATUS="$?"
+		fi
+	fi
+	WEB_ADMIN_PASSWORD=""
+	WEB_ADMIN_PASSWORD_CONFIRM=""
+	if [ -n "$ADMIN_PASSWORD_SNAPSHOT" ]; then
+		rm -f -- "$ADMIN_PASSWORD_SNAPSHOT"
+		ADMIN_PASSWORD_SNAPSHOT=""
+	fi
+	return "$ADMIN_STATUS"
+}
+
 install_master() {
-	install_binary master
 	install -d -o root -g root -m 0755 "$STATE_DIRECTORY"
 	ensure_service_user "$MASTER_USER" "$MASTER_STATE_DIRECTORY"
 	install -d -o root -g "$MASTER_USER" -m 0750 "$CONFIG_DIRECTORY"
@@ -437,22 +727,69 @@ install_master() {
 		if [ -L "$WEB_AUTH_FILE" ] || [ ! -f "$WEB_AUTH_FILE" ]; then
 			fail "the web access file exists but is not a regular file"
 		fi
+		WEB_AUTH_EXISTED="yes"
 	else
-		WEB_ADMIN_ACCESS_KEY="$(
-			"$INSTALL_DIRECTORY/theatropolis-master" init-web-admin \
-				--state-dir "$CONFIG_DIRECTORY"
-		)"
-		if ! printf '%s' "$WEB_ADMIN_ACCESS_KEY" |
-			grep -Eq '^[A-Za-z0-9_-]{43}$'; then
-			rm -f -- "$WEB_AUTH_FILE"
-			WEB_ADMIN_ACCESS_KEY=""
-			fail "the master returned an invalid web access key"
-		fi
-		WEB_AUTH_CREATED="yes"
+		WEB_AUTH_EXISTED="no"
 	fi
-	chown "root:$MASTER_USER" "$WEB_AUTH_FILE"
-	chmod 0640 "$WEB_AUTH_FILE"
-	cat >/etc/systemd/system/theatropolis-master.service <<EOF
+	if [ -e "$MASTER_UNIT_FILE" ] || [ -L "$MASTER_UNIT_FILE" ]; then
+		if [ -L "$MASTER_UNIT_FILE" ] || [ ! -f "$MASTER_UNIT_FILE" ]; then
+			fail "the master service unit exists but is not a regular file"
+		fi
+		MASTER_UNIT_HAD="yes"
+		MASTER_UNIT_BACKUP="$TEMP_DIRECTORY/theatropolis-master.service.backup"
+		cp -a "$MASTER_UNIT_FILE" "$MASTER_UNIT_BACKUP"
+	fi
+	if systemctl is-active --quiet theatropolis-master; then
+		MASTER_WAS_ACTIVE="yes"
+	fi
+
+	if [ "$WEB_AUTH_EXISTED" = "no" ] || [ -n "$ADMIN_USERNAME" ]; then
+		if [ -z "$ADMIN_PASSWORD_FILE" ]; then
+			prompt_for_admin_credentials
+		else
+			snapshot_admin_password_file
+		fi
+		validate_admin_username
+	fi
+
+	if [ "$WEB_AUTH_EXISTED" = "yes" ] && [ -n "$ADMIN_USERNAME" ]; then
+		WEB_AUTH_BACKUP="$TEMP_DIRECTORY/web-auth.backup"
+		cp -a "$WEB_AUTH_FILE" "$WEB_AUTH_BACKUP"
+		if [ "$MASTER_WAS_ACTIVE" = "yes" ]; then
+			MASTER_STOPPED="yes"
+			if ! systemctl stop theatropolis-master; then
+				fail "could not stop the active master before replacing its web admin credential"
+			fi
+		fi
+		WEB_AUTH_RESET_APPLIED="yes"
+		if ! run_set_web_admin \
+			"$TEMP_DIRECTORY/extracted/theatropolis-master" yes; then
+			fail "could not replace the web admin credential"
+		fi
+	elif [ "$WEB_AUTH_EXISTED" = "no" ]; then
+		WEB_AUTH_CREATED="yes"
+		if ! run_set_web_admin \
+			"$TEMP_DIRECTORY/extracted/theatropolis-master" no; then
+			if [ -f "$WEB_AUTH_FILE" ] && [ ! -L "$WEB_AUTH_FILE" ]; then
+				WEB_AUTH_CREATED_ID="$(
+					stat -c '%d:%i' "$WEB_AUTH_FILE" 2>/dev/null || true
+				)"
+			fi
+			fail "could not initialize the web admin credential"
+		fi
+		WEB_AUTH_CREATED_ID="$(stat -c '%d:%i' "$WEB_AUTH_FILE")" ||
+			fail "could not inspect the new web admin credential"
+	fi
+
+	install_binary master
+	if [ "$WEB_AUTH_CREATED" = "yes" ] ||
+		[ "$WEB_AUTH_RESET_APPLIED" = "yes" ]; then
+		chown "root:$MASTER_USER" "$WEB_AUTH_FILE"
+		chmod 0640 "$WEB_AUTH_FILE"
+	fi
+	MASTER_UNIT_TEMP="$(mktemp "${MASTER_UNIT_FILE}.tmp.XXXXXX")" ||
+		fail "could not create a temporary master service unit"
+	cat >"$MASTER_UNIT_TEMP" <<EOF
 [Unit]
 Description=Theatropolis master
 After=network-online.target
@@ -488,7 +825,12 @@ ReadWritePaths=${MASTER_STATE_DIRECTORY} /run/theatropolis
 [Install]
 WantedBy=multi-user.target
 EOF
-	chmod 0644 /etc/systemd/system/theatropolis-master.service
+	chmod 0644 "$MASTER_UNIT_TEMP"
+	MASTER_UNIT_TOUCHED="yes"
+	if ! mv -fT -- "$MASTER_UNIT_TEMP" "$MASTER_UNIT_FILE"; then
+		fail "could not atomically install the master service unit"
+	fi
+	MASTER_UNIT_TEMP=""
 	systemctl daemon-reload
 	systemctl enable --now theatropolis-master
 	systemctl restart theatropolis-master
@@ -628,12 +970,14 @@ if [ "$ROLE" = "master" ] || [ "$ROLE" = "all" ]; then
 	if [ "$HTTPS_PORT" != "443" ]; then
 		printf 'Port 443 remains available for a sing-box inbound.\n'
 	fi
-	if [ -n "$WEB_ADMIN_ACCESS_KEY" ]; then
+	if [ "$WEB_AUTH_CREATED" = "yes" ] ||
+		[ "$WEB_AUTH_RESET_APPLIED" = "yes" ]; then
+		printf 'Web admin username: %s\n' "$ADMIN_USERNAME"
 		printf '%s\n' \
-			'' \
-			'Web interface operator access (shown once):'
-		printf 'Access key: %s\n' "$WEB_ADMIN_ACCESS_KEY"
-		WEB_ADMIN_ACCESS_KEY=""
+			'The admin password was not printed or stored in plaintext.'
+	else
+		printf '%s\n' \
+			'The existing web admin credential was preserved.'
 	fi
 fi
 INSTALL_SUCCEEDED="yes"

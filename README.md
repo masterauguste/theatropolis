@@ -10,7 +10,7 @@ Debian/Ubuntu on amd64 or arm64:
 curl --proto '=https' --tlsv1.2 -fsSL https://raw.githubusercontent.com/masterauguste/theatropolis/main/install.sh | sudo sh -s -- master --domain master.example.com
 ```
 
-Replace `master.example.com` with the master's DNS name. The installer prints the web-interface access key once; sign in at `https://master.example.com:8443`.
+Replace `master.example.com` with the master's DNS name. The installer securely prompts for the local administrator username and password; sign in at `https://master.example.com:8443`. Existing access-key installations keep working until they are explicitly migrated by rerunning the installer with `--admin-username operator` (or another lowercase username).
 
 Add a server in the web interface, then run its generated command. The equivalent manual flow is `sudo theatropolis-master create-enrollment --agent-id edge-1`, followed by:
 

@@ -37,6 +37,7 @@ mkdir -p \
 	"$RELEASE_DIRECTORY" \
 	"$RELEASE_STAGE" \
 	"$TEST_ROOT/etc/systemd/system" \
+	"$TEST_ROOT/run" \
 	"$TEST_ROOT/usr/local/bin" \
 	"$TEST_ROOT/var/lib/theatropolis/agent"
 
@@ -199,6 +200,11 @@ EOF
 cat >"$MOCK_BIN/chown" <<'EOF'
 #!/bin/sh
 printf '%s\n' "$*" >>"$TEST_CHOWN_LOG"
+exit 0
+EOF
+
+cat >"$MOCK_BIN/flock" <<'EOF'
+#!/bin/sh
 exit 0
 EOF
 

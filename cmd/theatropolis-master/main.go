@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"encoding/base64"
 	"encoding/json"
@@ -14,6 +15,7 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"syscall"
 	"time"
@@ -28,12 +30,17 @@ import (
 	healthv1 "google.golang.org/grpc/health/grpc_health_v1"
 )
 
-const maxWireMessageBytes = control.DefaultMaxConfigBytes + 64<<10
+const (
+	maxWireMessageBytes   = control.DefaultMaxConfigBytes + 64<<10
+	maxAdminPasswordBytes = 512
+)
 
 var (
 	version   = "development"
 	commit    = "unknown"
 	buildDate = "unknown"
+
+	effectiveUserID = os.Geteuid
 )
 
 func main() {
@@ -45,15 +52,15 @@ func main() {
 
 func run(arguments []string) error {
 	if len(arguments) == 0 {
-		return errors.New("expected serve, create-enrollment, init-web-admin, or version")
+		return errors.New("expected serve, create-enrollment, set-web-admin, or version")
 	}
 	switch arguments[0] {
 	case "serve":
 		return serve(arguments[1:])
 	case "create-enrollment":
 		return createEnrollment(arguments[1:])
-	case "init-web-admin":
-		return initWebAdmin(arguments[1:])
+	case "set-web-admin":
+		return setWebAdmin(arguments[1:])
 	case "version":
 		fmt.Printf("%s (commit %s, built %s)\n", version, commit, buildDate)
 		return nil
@@ -230,29 +237,84 @@ func serve(arguments []string) error {
 	return serveErr
 }
 
-func initWebAdmin(arguments []string) error {
-	flags := flag.NewFlagSet("init-web-admin", flag.ContinueOnError)
+func setWebAdmin(arguments []string) error {
+	flags := flag.NewFlagSet("set-web-admin", flag.ContinueOnError)
 	flags.SetOutput(io.Discard)
 	stateDirectory := flags.String(
 		"state-dir",
 		"/var/lib/theatropolis/master",
 		"master state directory",
 	)
+	username := flags.String("username", "", "admin username")
+	passwordStdin := flags.Bool(
+		"password-stdin",
+		false,
+		"read the admin password from standard input",
+	)
+	replace := flags.Bool("replace", false, "replace an existing admin credential")
 	if err := flags.Parse(arguments); err != nil {
 		return err
 	}
-	if flags.NArg() != 0 || strings.TrimSpace(*stateDirectory) == "" {
-		return errors.New("--state-dir is required and positional arguments are not accepted")
+	if flags.NArg() != 0 {
+		return errors.New("positional arguments are not accepted")
+	}
+	if strings.TrimSpace(*stateDirectory) == "" {
+		return errors.New("--state-dir is required")
+	}
+	if strings.TrimSpace(*username) == "" {
+		return errors.New("--username is required")
+	}
+	if !*passwordStdin {
+		return errors.New("--password-stdin is required")
+	}
+	if runtime.GOOS != "windows" && effectiveUserID() != 0 {
+		return errors.New("set-web-admin must run as root")
 	}
 	if err := os.MkdirAll(*stateDirectory, 0o700); err != nil {
 		return fmt.Errorf("create master state directory: %w", err)
 	}
-	accessKey, err := webui.InitializeAccess(filepath.Join(*stateDirectory, "web-auth.json"))
+	password, err := readAdminPassword(os.Stdin)
 	if err != nil {
-		return fmt.Errorf("initialize web operator access: %w", err)
+		return err
 	}
-	fmt.Println(accessKey)
+	defer clear(password)
+
+	accessPath := filepath.Join(*stateDirectory, "web-auth.json")
+	if *replace {
+		if err := webui.ReplaceAdminAccess(accessPath, *username, password); err != nil {
+			return fmt.Errorf("replace web admin access: %w", err)
+		}
+		return nil
+	}
+	if err := webui.InitializeAdminAccess(accessPath, *username, password); err != nil {
+		return fmt.Errorf("initialize web admin access: %w", err)
+	}
 	return nil
+}
+
+func readAdminPassword(reader io.Reader) ([]byte, error) {
+	password, err := io.ReadAll(io.LimitReader(reader, maxAdminPasswordBytes+3))
+	if err != nil {
+		return nil, fmt.Errorf("read admin password: %w", err)
+	}
+	if bytes.HasSuffix(password, []byte{'\n'}) {
+		password = password[:len(password)-1]
+		if bytes.HasSuffix(password, []byte{'\r'}) {
+			password = password[:len(password)-1]
+		}
+	}
+	if len(password) == 0 {
+		return nil, errors.New("admin password is empty")
+	}
+	if len(password) > maxAdminPasswordBytes {
+		clear(password)
+		return nil, errors.New("admin password exceeds the size limit")
+	}
+	if bytes.ContainsAny(password, "\r\n") {
+		clear(password)
+		return nil, errors.New("admin password must be a single line")
+	}
+	return password, nil
 }
 
 func createEnrollment(arguments []string) error {

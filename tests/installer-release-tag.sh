@@ -2,8 +2,9 @@
 
 set -eu
 
-INSTALLER="${1:-./install.sh}"
+INSTALLER_SOURCE="${1:-./install.sh}"
 TEST_DIRECTORY="$(mktemp -d)"
+INSTALLER="$TEST_DIRECTORY/install.sh"
 
 cleanup() {
 	rm -rf -- "$TEST_DIRECTORY"
@@ -12,6 +13,10 @@ cleanup() {
 trap cleanup EXIT HUP INT TERM
 
 mkdir "$TEST_DIRECTORY/bin"
+sed \
+	"s#INSTALL_LOCK_FILE=\"/run/theatropolis-installer.lock\"#INSTALL_LOCK_FILE=\"$TEST_DIRECTORY/installer.lock\"#" \
+	"$INSTALLER_SOURCE" >"$INSTALLER"
+chmod +x "$INSTALLER"
 # This text is written verbatim into the mock executable.
 # shellcheck disable=SC2016
 printf '%s\n' \
@@ -26,7 +31,11 @@ printf '%s\n' \
 	'#!/bin/sh' \
 	'exit 42' \
 	>"$TEST_DIRECTORY/bin/apt-get"
-chmod +x "$TEST_DIRECTORY/bin/id" "$TEST_DIRECTORY/bin/apt-get"
+printf '%s\n' '#!/bin/sh' 'exit 0' >"$TEST_DIRECTORY/bin/flock"
+chmod +x \
+	"$TEST_DIRECTORY/bin/id" \
+	"$TEST_DIRECTORY/bin/apt-get" \
+	"$TEST_DIRECTORY/bin/flock"
 
 run_case() {
 	description="$1"
