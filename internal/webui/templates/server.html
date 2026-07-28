@@ -110,13 +110,6 @@
                   <button class="button button--secondary button--small" type="button" data-dialog-open="outbound-manager-dialog">Manage</button>
                 </div>
               </section>
-              <section class="builder-section" aria-labelledby="ruleset-builder-heading">
-                <div class="resource-summary">
-                  <div><h3 id="ruleset-builder-heading">Geo rule sets</h3><p>Official SagerNet geosite/geoip rule sets or a custom remote SRS URL.</p></div>
-                  <span class="resource-summary__count" data-resource-count="rule-set">0 configured</span>
-                  <button class="button button--secondary button--small" type="button" data-dialog-open="rule-set-manager-dialog">Manage</button>
-                </div>
-              </section>
               <section class="builder-section" aria-labelledby="route-builder-heading">
                 <div class="resource-summary">
                   <div><h3 id="route-builder-heading">Routing rules</h3><p>Route by inbound, protocol, domain, IP, user, network, or rule set.</p></div>
@@ -162,13 +155,13 @@
           <dialog class="modal resource-modal" id="inbound-manager-dialog" aria-labelledby="inbound-manager-title">
             <div class="modal__surface">
               <header class="modal__header">
-                <div><p class="eyebrow">Configuration resource</p><h2 id="inbound-manager-title">Manage inbounds and users</h2><p>Add, inspect, change, or remove every managed listener.</p></div>
+                <div><p class="eyebrow">Configuration resource</p><h2 id="inbound-manager-title">Manage inbounds and users</h2><p>Add, edit, or remove listeners.</p></div>
                 <button class="button button--secondary button--icon-only" type="button" data-dialog-close aria-label="Close inbound manager">×</button>
               </header>
               <div class="modal__body"><div class="builder-list" data-inbound-list></div></div>
               <footer class="modal__footer">
-                <button class="button button--secondary" type="button" data-add-inbound {{if not .Agent.ConfigurationEditable}}disabled{{end}}>New inbound</button>
-                <button class="button button--primary" type="button" data-dialog-close>Done</button>
+                <button class="button button--secondary" type="button" data-add-inbound {{if not .Agent.ConfigurationEditable}}disabled{{end}}>Add inbound</button>
+                <button class="button button--primary" type="button" data-dialog-close>Close</button>
               </footer>
             </div>
           </dialog>
@@ -176,27 +169,13 @@
           <dialog class="modal resource-modal" id="outbound-manager-dialog" aria-labelledby="outbound-manager-title">
             <div class="modal__surface">
               <header class="modal__header">
-                <div><p class="eyebrow">Configuration resource</p><h2 id="outbound-manager-title">Manage outbounds</h2><p>Add, inspect, change, or remove routing destinations.</p></div>
+                <div><p class="eyebrow">Configuration resource</p><h2 id="outbound-manager-title">Manage outbounds</h2><p>Add, edit, or remove routing destinations.</p></div>
                 <button class="button button--secondary button--icon-only" type="button" data-dialog-close aria-label="Close outbound manager">×</button>
               </header>
               <div class="modal__body"><div class="builder-list" data-outbound-list></div></div>
               <footer class="modal__footer">
-                <button class="button button--secondary" type="button" data-add-outbound {{if not .Agent.ConfigurationEditable}}disabled{{end}}>New outbound</button>
-                <button class="button button--primary" type="button" data-dialog-close>Done</button>
-              </footer>
-            </div>
-          </dialog>
-
-          <dialog class="modal resource-modal" id="rule-set-manager-dialog" aria-labelledby="rule-set-manager-title">
-            <div class="modal__surface">
-              <header class="modal__header">
-                <div><p class="eyebrow">Configuration resource</p><h2 id="rule-set-manager-title">Manage rule sets</h2><p>Add, inspect, change, or remove geo and custom SRS sources.</p></div>
-                <button class="button button--secondary button--icon-only" type="button" data-dialog-close aria-label="Close rule-set manager">×</button>
-              </header>
-              <div class="modal__body"><div class="builder-list" data-rule-set-list></div></div>
-              <footer class="modal__footer">
-                <button class="button button--secondary" type="button" data-add-rule-set {{if not .Agent.ConfigurationEditable}}disabled{{end}}>New rule set</button>
-                <button class="button button--primary" type="button" data-dialog-close>Done</button>
+                <button class="button button--secondary" type="button" data-add-outbound {{if not .Agent.ConfigurationEditable}}disabled{{end}}>Add outbound</button>
+                <button class="button button--primary" type="button" data-dialog-close>Close</button>
               </footer>
             </div>
           </dialog>
@@ -204,7 +183,7 @@
           <dialog class="modal resource-modal" id="route-rule-manager-dialog" aria-labelledby="route-rule-manager-title">
             <div class="modal__surface">
               <header class="modal__header">
-                <div><p class="eyebrow">Configuration resource</p><h2 id="route-rule-manager-title">Manage routing rules</h2><p>Add, inspect, change, reorder in JSON, or remove match rules.</p></div>
+                <div><p class="eyebrow">Configuration resource</p><h2 id="route-rule-manager-title">Manage routing rules</h2><p>Add, edit, reorder in JSON, or remove match rules.</p></div>
                 <button class="button button--secondary button--icon-only" type="button" data-dialog-close aria-label="Close routing-rule manager">×</button>
               </header>
               <div class="modal__body">
@@ -216,8 +195,8 @@
                 <div class="builder-list" data-route-rule-list></div>
               </div>
               <footer class="modal__footer">
-                <button class="button button--secondary" type="button" data-add-route-rule {{if not .Agent.ConfigurationEditable}}disabled{{end}}>New rule</button>
-                <button class="button button--primary" type="button" data-dialog-close>Done</button>
+                <button class="button button--secondary" type="button" data-add-route-rule {{if not .Agent.ConfigurationEditable}}disabled{{end}}>Add rule</button>
+                <button class="button button--primary" type="button" data-dialog-close>Close</button>
               </footer>
             </div>
           </dialog>
@@ -229,32 +208,43 @@
                 <button class="button button--secondary button--small" type="button" data-edit-card>Edit</button>
               </div>
               <div class="builder-card__editor" data-card-editor hidden>
-              <div class="builder-fields builder-fields--three">
+              <div class="builder-fields">
                 <label class="field"><span>Protocol</span><select data-inbound-field="type"><option value="shadowsocks">Shadowsocks 2022</option><option value="anytls">AnyTLS</option><option value="hysteria2">Hysteria2</option></select></label>
                 <label class="field"><span>Tag</span><input type="text" data-inbound-field="tag" placeholder="proxy-in" maxlength="128" required></label>
                 <label class="field"><span>Listen port</span><input type="number" data-inbound-field="listen_port" min="1" max="65535" placeholder="8443" required></label>
                 <label class="field"><span>Listen address</span><input type="text" data-inbound-field="listen" value="::" placeholder="::"></label>
-                <label class="field" data-ss-field><span>2022 method</span><select data-inbound-field="method"><option value="2022-blake3-aes-128-gcm">AES-128-GCM</option><option value="2022-blake3-aes-256-gcm">AES-256-GCM</option><option value="2022-blake3-chacha20-poly1305">ChaCha20-Poly1305</option></select></label>
-                <label class="field" data-ss-field><span>Server key</span><span class="field-with-action"><input type="password" data-inbound-field="password" autocomplete="new-password" required><button type="button" class="button button--secondary button--small" data-generate-secret="server">Generate</button></span></label>
-                <label class="field" data-hy2-field hidden><span>Upload Mbps</span><input type="number" data-inbound-field="up_mbps" min="1" max="1000000" placeholder="100"></label>
-                <label class="field" data-hy2-field hidden><span>Download Mbps</span><input type="number" data-inbound-field="down_mbps" min="1" max="1000000" placeholder="100"></label>
-                <label class="field" data-hy2-field hidden><span>Obfuscation</span><select data-inbound-field="obfs_type"><option value="">Disabled</option><option value="salamander">Salamander</option><option value="gecko">Gecko</option></select></label>
-                <label class="field" data-hy2-field hidden><span>Obfuscation password</span><span class="field-with-action"><input type="password" data-inbound-field="obfs_password" autocomplete="new-password"><button type="button" class="button button--secondary button--small" data-generate-secret="obfs">Generate</button></span></label>
               </div>
-              <fieldset class="builder-subsection" data-tls-fields>
+              <fieldset class="builder-subsection" data-inbound-section="shadowsocks" hidden>
+                <legend>Shadowsocks 2022</legend>
+                <div class="builder-fields">
+                  <label class="field"><span>2022 method</span><select data-inbound-field="method"><option value="2022-blake3-aes-128-gcm">AES-128-GCM</option><option value="2022-blake3-aes-256-gcm">AES-256-GCM</option><option value="2022-blake3-chacha20-poly1305">ChaCha20-Poly1305</option></select></label>
+                  <label class="field"><span>Server key</span><span class="field-with-action"><input type="password" data-inbound-field="password" autocomplete="new-password" required><button type="button" class="button button--secondary button--small" data-generate-secret="server">Generate</button></span></label>
+                </div>
+              </fieldset>
+              <fieldset class="builder-subsection" data-inbound-section="hysteria2" hidden>
+                <legend>Hysteria2</legend>
+                <div class="builder-fields builder-fields--three">
+                  <label class="field"><span>Upload Mbps</span><input type="number" data-inbound-field="up_mbps" min="1" max="1000000" placeholder="100"></label>
+                  <label class="field"><span>Download Mbps</span><input type="number" data-inbound-field="down_mbps" min="1" max="1000000" placeholder="100"></label>
+                  <label class="field"><span>Obfuscation</span><select data-inbound-field="obfs_type"><option value="">Disabled</option><option value="salamander">Salamander</option><option value="gecko">Gecko</option></select></label>
+                  <label class="field" data-obfs-password-field hidden><span>Obfuscation password</span><span class="field-with-action"><input type="password" data-inbound-field="obfs_password" autocomplete="new-password"><button type="button" class="button button--secondary button--small" data-generate-secret="obfs">Generate</button></span></label>
+                </div>
+              </fieldset>
+              <fieldset class="builder-subsection" data-tls-fields hidden>
                 <legend>TLS certificate</legend>
                 <div class="builder-fields builder-fields--three">
-                  <label class="field"><span>Certificate mode</span><select data-inbound-field="tls_mode"><option value="acme">ACME HTTP-01 (Let's Encrypt)</option><option value="files">Certificate files / self-signed</option></select></label>
+                  <label class="field"><span>Certificate mode</span><select data-inbound-field="tls_mode"><option value="acme">ACME (Let's Encrypt)</option><option value="files">Certificate files</option></select></label>
                   <label class="field" data-acme-field><span>Domain</span><input type="text" data-inbound-field="tls_domain" placeholder="proxy.example.com"></label>
                   <label class="field" data-acme-field><span>ACME email</span><input type="email" data-inbound-field="tls_email" placeholder="admin@example.com"></label>
                   <label class="field" data-certificate-file-field hidden><span>Certificate path</span><input type="text" data-inbound-field="certificate_path" placeholder="/etc/theatropolis/certs/server.pem"></label>
                   <label class="field" data-certificate-file-field hidden><span>Private key path</span><input type="text" data-inbound-field="key_path" placeholder="/etc/theatropolis/certs/server.key"></label>
                 </div>
-                <small>HTTP-01 reserves port 80. Proxy inbounds cannot listen on that port.</small>
+                <small data-acme-field>ACME HTTP-01 requires port 80 to be free.</small>
               </fieldset>
               <fieldset class="builder-subsection">
                 <div class="builder-subsection__header"><legend>Users</legend><button class="button-link" type="button" data-add-user>Add user</button></div>
                 <div class="user-list" data-user-list></div>
+                <small data-users-hint></small>
               </fieldset>
               <div class="builder-card__actions"><button class="button-link button-link--danger" type="button" data-remove-card>Remove inbound</button></div>
               </div>
@@ -264,9 +254,12 @@
           <template id="user-row-template">
             <div class="user-row" data-user-row>
               <label class="field"><span>Name</span><input type="text" data-user-field="name" maxlength="128" placeholder="user"></label>
-              <label class="field"><span>Password / key</span><span class="field-with-action"><input type="password" data-user-field="password" autocomplete="new-password" required><button type="button" class="button button--secondary button--small" data-generate-user-secret>Generate</button></span></label>
-              <button class="button button--secondary button--small user-row__copy" type="button" data-copy-uri title="Copy import URI for this user">Copy URI</button>
-              <button class="button-link button-link--danger user-row__remove" type="button" data-remove-user>Remove</button>
+              <label class="field"><span>Password / key</span><input type="password" data-user-field="password" autocomplete="new-password" required></label>
+              <div class="user-row__actions">
+                <button class="button button--secondary button--icon-only" type="button" data-generate-user-secret title="Generate a random key" aria-label="Generate a random key"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M20 11A8 8 0 1 0 19 16"/><path d="M20 5v6h-6"/></svg></button>
+                <button class="button button--secondary button--icon-only user-row__copy" type="button" data-copy-uri title="Copy import URI for this user" aria-label="Copy import URI for this user"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="11" height="11" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg></button>
+                <button class="button button--secondary button--icon-only user-row__remove" type="button" data-remove-user title="Remove this user" aria-label="Remove this user"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M3 6h18"/><path d="M8 6V4a1 1 0 0 1 1-1h6a1 1 0 0 1 1 1v2"/><path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6"/></svg></button>
+              </div>
             </div>
           </template>
 
@@ -284,28 +277,23 @@
             </article>
           </template>
 
-          <template id="rule-set-card-template">
-            <article class="builder-card" data-rule-set-card>
-              <div class="builder-card__header"><div class="builder-card__identity"><strong data-card-title>New rule set</strong><small data-card-meta>Not configured</small></div><button class="button button--secondary button--small" type="button" data-edit-card>Edit</button></div>
-              <div class="builder-card__editor" data-card-editor hidden>
-              <div class="builder-fields builder-fields--three">
-                <label class="field"><span>Source</span><select data-rule-set-field="kind"><option value="geosite">SagerNet geosite</option><option value="geoip">SagerNet geoip</option><option value="custom">Custom SRS URL</option></select></label>
-                <label class="field"><span>Name / tag</span><input type="text" data-rule-set-field="name" placeholder="openai" maxlength="128" required></label>
-                <label class="field" data-rule-set-url-field hidden><span>HTTPS URL</span><input type="url" data-rule-set-field="url" placeholder="https://example.com/rules.srs"></label>
-              </div>
-              <div class="builder-card__actions"><button class="button-link button-link--danger" type="button" data-remove-card>Remove rule set</button></div>
-              </div>
-            </article>
-          </template>
-
           <template id="route-rule-card-template">
             <article class="builder-card" data-route-rule-card>
               <div class="builder-card__header"><div class="builder-card__identity"><strong data-card-title>Routing rule</strong><small data-card-meta>Not configured</small></div><button class="button button--secondary button--small" type="button" data-edit-card>Edit</button></div>
               <div class="builder-card__editor" data-card-editor hidden>
               <div class="builder-fields builder-fields--three">
                 <label class="field"><span>Inbound tags</span><input type="text" data-route-field="inbound" placeholder="proxy-in, another-in"></label>
-                <label class="field"><span>Match</span><select data-route-field="match_type"><option value="protocol">Protocol</option><option value="domain">Exact domain</option><option value="domain_suffix">Domain suffix</option><option value="domain_keyword">Domain keyword</option><option value="ip_cidr">IP/CIDR</option><option value="rule_set">Geo/custom rule set</option><option value="network">Network</option><option value="auth_user">Authenticated user</option></select></label>
-                <label class="field"><span>Match values</span><textarea data-route-field="match_values" rows="3" placeholder="tls, quic"></textarea></label>
+                <label class="field"><span>Match</span><select data-route-field="match_type"><option value="protocol">Protocol</option><option value="domain">Exact domain</option><option value="domain_suffix">Domain suffix</option><option value="domain_keyword">Domain keyword</option><option value="ip_cidr">IP/CIDR</option><option value="geosite">Geosite domains</option><option value="geoip">GeoIP ranges</option><option value="rule_set">Custom rule set tag</option><option value="network">Network</option><option value="auth_user">Authenticated user</option></select></label>
+                <div data-route-values-plain>
+                  <label class="field"><span>Match values</span><textarea data-route-field="match_values" rows="3" placeholder="tls, quic"></textarea></label>
+                </div>
+                <div class="field geo-combobox" data-route-values-geo hidden>
+                  <span>Rule sets</span>
+                  <div class="geo-chips" data-route-geo-chips></div>
+                  <input type="text" data-route-geo-filter placeholder="Type to filter rule sets…" autocomplete="off">
+                  <div class="geo-options" data-route-geo-options hidden></div>
+                  <small data-route-geo-hint hidden></small>
+                </div>
                 <label class="field"><span>Outbound</span><input type="text" data-route-field="outbound" list="outbound-tags" placeholder="direct-out" required></label>
               </div>
               <div class="builder-card__actions"><button class="button-link button-link--danger" type="button" data-remove-card>Remove rule</button></div>

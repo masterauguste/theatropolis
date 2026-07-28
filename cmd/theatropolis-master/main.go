@@ -199,6 +199,8 @@ func serve(arguments []string) error {
 		Access:          access,
 		Releases:        webui.NewGitHubReleaseCatalog(nil),
 		SingBoxReleases: webui.NewSingBoxReleaseCatalog(nil),
+		GeositeRuleSets: webui.NewGeositeRuleSetCatalog(nil),
+		GeoipRuleSets:   webui.NewGeoipRuleSetCatalog(nil),
 		MasterUpdater:   masterUpdater,
 		PublicURL:       *publicURL,
 		Version:         version,

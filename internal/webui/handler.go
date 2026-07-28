@@ -91,6 +91,8 @@ type Options struct {
 	Access          *AccessManager
 	Releases        ReleaseCatalog
 	SingBoxReleases ReleaseCatalog
+	GeositeRuleSets RuleSetOptions
+	GeoipRuleSets   RuleSetOptions
 	MasterUpdater   *agentupdate.Scheduler
 	PublicURL       string
 	Version         string
@@ -105,6 +107,8 @@ type Handler struct {
 	access          *AccessManager
 	releases        ReleaseCatalog
 	singBoxReleases ReleaseCatalog
+	geositeRuleSets RuleSetOptions
+	geoipRuleSets   RuleSetOptions
 	masterUpdater   *agentupdate.Scheduler
 	version         string
 	publicURL       string
@@ -288,6 +292,8 @@ func New(options Options) (http.Handler, error) {
 		access:          options.Access,
 		releases:        options.Releases,
 		singBoxReleases: options.SingBoxReleases,
+		geositeRuleSets: options.GeositeRuleSets,
+		geoipRuleSets:   options.GeoipRuleSets,
 		masterUpdater:   options.MasterUpdater,
 		version:         versionLabel,
 		publicURL:       public.origin,
@@ -331,6 +337,10 @@ func (h *Handler) routes() {
 	h.mux.HandleFunc(
 		"GET /servers/{agent_id}/versions",
 		h.serverVersions,
+	)
+	h.mux.HandleFunc(
+		"GET /servers/{agent_id}/rule-set-options",
+		h.serverRuleSetOptions,
 	)
 	h.mux.HandleFunc(
 		"POST /servers/{agent_id}/configuration",
@@ -1366,6 +1376,45 @@ func (h *Handler) releaseVersionsFor(
 		latest = releases[0].Tag
 	}
 	return versions, latest, ""
+}
+
+type ruleSetOptionsResponse struct {
+	Options []string `json:"options"`
+	Warning string   `json:"warning,omitempty"`
+}
+
+func (h *Handler) serverRuleSetOptions(response http.ResponseWriter, request *http.Request) {
+	if _, ok := h.authenticate(request); !ok {
+		http.Error(response, "unauthorized", http.StatusUnauthorized)
+		return
+	}
+	if _, exists := h.agentSnapshot(request.PathValue("agent_id")); !exists {
+		http.NotFound(response, request)
+		return
+	}
+	var catalog RuleSetOptions
+	switch request.URL.Query().Get("kind") {
+	case "geosite":
+		catalog = h.geositeRuleSets
+	case "geoip":
+		catalog = h.geoipRuleSets
+	default:
+		http.Error(response, "unknown rule-set catalog", http.StatusBadRequest)
+		return
+	}
+	result := ruleSetOptionsResponse{}
+	if catalog == nil {
+		result.Warning = "Rule-set lookup failed: rule-set catalog is unavailable."
+	} else if options, err := catalog.Options(request.Context()); err != nil {
+		h.logger.Warn("load rule-set catalog", "kind", request.URL.Query().Get("kind"), "error", err)
+		result.Warning = ruleSetDiagnostic(err)
+	} else {
+		result.Options = options
+	}
+	response.Header().Set("Content-Type", "application/json")
+	if err := json.NewEncoder(response).Encode(result); err != nil {
+		h.logger.Warn("encode rule-set catalog", "error", err)
+	}
 }
 
 func singBoxUpdateViewFor(

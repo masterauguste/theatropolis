@@ -61,6 +61,13 @@
   box-sizing: border-box;
 }
 
+/* The `hidden` attribute must win over component display rules such as
+   `.field { display: flex }`, which otherwise override the UA default and
+   keep "hidden" fields visible. */
+[hidden] {
+  display: none !important;
+}
+
 html {
   min-width: 320px;
   background: var(--paper);
@@ -1607,7 +1614,13 @@ body:has(dialog[open]) {
   background: var(--surface-sunken);
   border: 1px solid var(--ink-100);
   border-radius: var(--radius-sm);
-  grid-template-columns: 1fr 1.4fr auto auto;
+  grid-template-columns: 1fr 1fr auto;
+}
+
+.user-row__actions {
+  display: flex;
+  align-items: center;
+  gap: 0.35rem;
 }
 
 .user-row .field {
@@ -1616,6 +1629,81 @@ body:has(dialog[open]) {
 
 .user-row .field > span {
   font-size: 0.75rem;
+}
+
+/* ---------- Geo rule set combobox (routing rules) ---------- */
+
+.geo-combobox {
+  position: relative;
+}
+
+.geo-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.35rem;
+}
+
+.geo-chips:empty {
+  display: none;
+}
+
+.geo-chip {
+  display: inline-flex;
+  padding: 0.15rem 0.5rem;
+  align-items: center;
+  gap: 0.3rem;
+  color: var(--accent-800);
+  background: var(--accent-100);
+  border: 1px solid rgb(127 45 45 / 25%);
+  border-radius: 999px;
+  cursor: pointer;
+  font-size: 0.78rem;
+  font-weight: 600;
+  transition: color var(--ease), border-color var(--ease), background-color var(--ease);
+}
+
+.geo-chip:hover {
+  color: var(--red-700);
+  background: var(--red-100);
+  border-color: var(--red-700);
+}
+
+.geo-options {
+  position: absolute;
+  z-index: 10;
+  top: 100%;
+  right: 0;
+  left: 0;
+  max-height: 14rem;
+  margin-top: 0.25rem;
+  overflow-y: auto;
+  background: var(--surface);
+  border: 1px solid var(--ink-200);
+  border-radius: var(--radius-md);
+  box-shadow: var(--shadow-md);
+}
+
+.geo-option {
+  display: block;
+  width: 100%;
+  padding: 0.45rem 0.7rem;
+  color: var(--ink-900);
+  background: none;
+  border: none;
+  cursor: pointer;
+  font-family: var(--font-mono);
+  font-size: 0.82rem;
+  text-align: left;
+  transition: background-color var(--ease);
+}
+
+.geo-option:hover {
+  background: var(--surface-sunken);
+}
+
+.geo-option.is-selected {
+  color: var(--ink-400);
+  background: var(--surface-sunken);
 }
 
 /* ---------- Settings / update progress ---------- */
@@ -1765,9 +1853,9 @@ body:has(dialog[open]) {
     grid-template-columns: 1fr 1fr;
   }
 
-  .user-row__copy,
-  .user-row__remove {
-    justify-self: start;
+  .user-row__actions {
+    grid-column: 1 / -1;
+    justify-content: flex-end;
   }
 }
 

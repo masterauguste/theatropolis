@@ -41,6 +41,15 @@ func (c testReleaseCatalog) Versions(context.Context) ([]AgentRelease, error) {
 	return append([]AgentRelease(nil), c.releases...), c.err
 }
 
+type testRuleSetOptions struct {
+	options []string
+	err     error
+}
+
+func (c testRuleSetOptions) Options(context.Context) ([]string, error) {
+	return append([]string(nil), c.options...), c.err
+}
+
 func (s testSessions) AgentInfo(agentID string) (control.AgentInfo, bool) {
 	if !s[agentID] {
 		return control.AgentInfo{}, false
@@ -1197,6 +1206,72 @@ func TestServerVersionsEndpointReturnsIndependentCatalogs(t *testing.T) {
 		if strings.Contains(body, test.reject) {
 			t.Fatalf("%s versions response unexpectedly contains %q: %q", test.catalog, test.reject, body)
 		}
+	}
+}
+
+func TestServerRuleSetOptionsEndpoint(t *testing.T) {
+	t.Parallel()
+	fixture := newWebFixture(t)
+	enrollAgent(t, fixture.registry, "edge-online")
+	fixture.handler.(*Handler).geositeRuleSets = testRuleSetOptions{
+		options: []string{"category-ads-all", "cn", "openai"},
+	}
+	fixture.handler.(*Handler).geoipRuleSets = testRuleSetOptions{
+		options: []string{"cn", "private"},
+	}
+
+	request := fixture.request(
+		http.MethodGet,
+		"/servers/edge-online/rule-set-options?kind=geosite",
+		"",
+	)
+	response := httptest.NewRecorder()
+	fixture.handler.ServeHTTP(response, request)
+	if response.Code != http.StatusUnauthorized {
+		t.Fatalf("unauthenticated rule-set options status = %d, want %d", response.Code, http.StatusUnauthorized)
+	}
+
+	for _, test := range []struct {
+		kind   string
+		want   []string
+		reject string
+	}{
+		{kind: "geosite", want: []string{"category-ads-all", "openai"}, reject: "private"},
+		{kind: "geoip", want: []string{"private"}, reject: "openai"},
+	} {
+		request := fixture.authenticatedRequest(
+			http.MethodGet,
+			"/servers/edge-online/rule-set-options?kind="+test.kind,
+			"",
+		)
+		response := httptest.NewRecorder()
+		fixture.handler.ServeHTTP(response, request)
+		if response.Code != http.StatusOK {
+			t.Fatalf("%s rule-set options response = %d %q", test.kind, response.Code, response.Body.String())
+		}
+		if contentType := response.Header().Get("Content-Type"); contentType != "application/json" {
+			t.Fatalf("%s rule-set options Content-Type = %q", test.kind, contentType)
+		}
+		body := response.Body.String()
+		for _, want := range test.want {
+			if !strings.Contains(body, want) {
+				t.Fatalf("%s rule-set options response missing %q: %q", test.kind, want, body)
+			}
+		}
+		if strings.Contains(body, test.reject) {
+			t.Fatalf("%s rule-set options response unexpectedly contains %q: %q", test.kind, test.reject, body)
+		}
+	}
+
+	request = fixture.authenticatedRequest(
+		http.MethodGet,
+		"/servers/edge-online/rule-set-options?kind=bogus",
+		"",
+	)
+	response = httptest.NewRecorder()
+	fixture.handler.ServeHTTP(response, request)
+	if response.Code != http.StatusBadRequest {
+		t.Fatalf("bogus rule-set kind status = %d, want %d", response.Code, http.StatusBadRequest)
 	}
 }
 

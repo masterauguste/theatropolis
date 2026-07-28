@@ -12,14 +12,12 @@ if (configTextarea && configurationForm && configurationEditor) {
   const summary = configurationForm.querySelector("[data-config-summary]");
   const inboundList = configurationEditor.querySelector("[data-inbound-list]");
   const outboundList = configurationEditor.querySelector("[data-outbound-list]");
-  const ruleSetList = configurationEditor.querySelector("[data-rule-set-list]");
   const routeRuleList = configurationEditor.querySelector("[data-route-rule-list]");
   const routeFinal = configurationEditor.querySelector("[data-route-final]");
   const outboundTags = configurationForm.querySelector("[data-outbound-tags]");
   const inboundTemplate = document.getElementById("inbound-card-template");
   const userTemplate = document.getElementById("user-row-template");
   const outboundTemplate = document.getElementById("outbound-card-template");
-  const ruleSetTemplate = document.getElementById("rule-set-card-template");
   const routeRuleTemplate = document.getElementById("route-rule-card-template");
   const originals = new WeakMap();
   const supportedInboundTypes = new Set(["shadowsocks", "anytls", "hysteria2"]);
@@ -34,12 +32,19 @@ if (configTextarea && configurationForm && configurationEditor) {
     "auth_user",
   ];
   let documentModel = {};
+  // Per-card geo rule set selections (geosite/geoip match types) and the
+  // lazily fetched option catalogs, keyed by kind ("geosite" / "geoip").
+  const geoSelections = new WeakMap();
+  const geoOptionState = new Map();
+  const geoOptionValues = new Map();
+  const GEO_OPTION_RENDER_LIMIT = 50;
+  const ruleSetOptionsBase = (configurationForm.getAttribute("action") || "")
+    .replace(/\/configuration$/, "/rule-set-options");
 
   function updateResourceCounts() {
     const counts = {
       inbound: inboundList.querySelectorAll("[data-inbound-card]").length,
       outbound: outboundList.querySelectorAll("[data-outbound-card]").length,
-      "rule-set": ruleSetList.querySelectorAll("[data-rule-set-card]").length,
       "route-rule": routeRuleList.querySelectorAll("[data-route-rule-card]").length,
     };
     for (const [name, count] of Object.entries(counts)) {
@@ -94,6 +99,19 @@ if (configTextarea && configurationForm && configurationEditor) {
     }
     return encoded;
   };
+  const base64url = (value) => btoa(value).replaceAll("+", "-").replaceAll("/", "_").replaceAll("=", "");
+  // Decoded byte length of a base64 key, accepting url-safe alphabets and
+  // missing padding; -1 when the value is not valid base64 at all.
+  const base64ByteLength = (value) => {
+    const normalized = value.trim().replaceAll("-", "+").replaceAll("_", "/");
+    if (!/^[A-Za-z0-9+/]*={0,2}$/.test(normalized)) return -1;
+    const padded = normalized + "=".repeat((4 - (normalized.length % 4)) % 4);
+    try {
+      return atob(padded).length;
+    } catch {
+      return -1;
+    }
+  };
   const safeTagPart = (value) => value.toLowerCase().replace(/[^a-z0-9_-]+/g, "-").replace(/^-+|-+$/g, "") || "inbound";
 
   function disableWhenReadonly(root) {
@@ -142,8 +160,10 @@ if (configTextarea && configurationForm && configurationEditor) {
     }
     if (type === "shadowsocks") {
       const method = field(card, "inbound", "method").value;
-      const userInfo = btoa(method + ":" + password).replaceAll("=", "");
-      return "ss://" + userInfo + "@" + host + ":" + port + "#" + label;
+      const serverKey = field(card, "inbound", "password").value;
+      // SIP022 multi-user format: base64url(method:serverPSK:userPSK).
+      const credentials = serverKey ? method + ":" + serverKey + ":" + password : method + ":" + password;
+      return "ss://" + base64url(credentials) + "@" + host + ":" + port + "#" + label;
     }
     return null;
   }
@@ -178,11 +198,13 @@ if (configTextarea && configurationForm && configurationEditor) {
     return fallbackCopyText(value);
   }
 
+  // The copy button holds an SVG icon, so swap the whole content and
+  // restore it afterwards rather than touching textContent.
   function showCopyResult(button, copied) {
-    const original = button.textContent;
-    button.textContent = copied ? "Copied!" : "Copy failed";
+    const original = button.innerHTML;
+    button.textContent = copied ? "✓" : "✗";
     window.setTimeout(() => {
-      button.textContent = original;
+      button.innerHTML = original;
     }, 1500);
   }
 
@@ -211,15 +233,45 @@ if (configTextarea && configurationForm && configurationEditor) {
     ) || null;
   }
 
+  // Shadowsocks 2022 keys are base64 PSKs whose decoded length must match the
+  // method (16 bytes for aes-128, 32 otherwise). Flag mismatches via
+  // setCustomValidity so the native form validation surfaces them.
+  function validateSSKeys(card) {
+    const serverKey = field(card, "inbound", "password");
+    const userKeys = Array.from(card.querySelectorAll('[data-user-field="password"]'));
+    if (field(card, "inbound", "type").value !== "shadowsocks") {
+      serverKey.setCustomValidity("");
+      for (const input of userKeys) input.setCustomValidity("");
+      return;
+    }
+    const method = field(card, "inbound", "method").value;
+    const expected = method === "2022-blake3-aes-128-gcm" ? 16 : 32;
+    const hint = "2022-blake3-aes-128-gcm requires a 16-byte base64 key (32 for other methods).";
+    const check = (input, label) => {
+      const value = input.value.trim();
+      // Empty values are left to the required attribute, if any.
+      input.setCustomValidity(!value || base64ByteLength(value) === expected ? "" : `${label}: ${hint}`);
+    };
+    check(serverKey, "Server key");
+    for (const input of userKeys) check(input, "User key");
+  }
+
   function updateInboundVisibility(card) {
     const type = field(card, "inbound", "type").value;
     const tlsMode = field(card, "inbound", "tls_mode").value;
-    for (const element of card.querySelectorAll("[data-ss-field]")) {
-      element.hidden = type !== "shadowsocks";
+    // Each protocol has its own section in the card; only the active one is
+    // shown, so protocol-foreign fields are never exposed.
+    for (const section of card.querySelectorAll("[data-inbound-section]")) {
+      section.hidden = section.dataset.inboundSection !== type;
     }
-    for (const element of card.querySelectorAll("[data-hy2-field]")) {
-      element.hidden = type !== "hysteria2";
-    }
+    // sing-box requires obfs.password whenever obfs is configured, so the
+    // field is only shown (and required) once an obfs type is picked.
+    const obfsEnabled = type === "hysteria2" && field(card, "inbound", "obfs_type").value !== "";
+    card.querySelector("[data-obfs-password-field]").hidden = !obfsEnabled;
+    field(card, "inbound", "obfs_password").required = obfsEnabled;
+    card.querySelector("[data-users-hint]").textContent = type === "shadowsocks"
+      ? "Optional — the server key alone accepts one user. Keys are base64 PSKs sized to the method."
+      : "At least one user is required.";
     const tlsFields = card.querySelector("[data-tls-fields]");
     tlsFields.hidden = type === "shadowsocks";
     for (const element of card.querySelectorAll("[data-acme-field]")) {
@@ -270,6 +322,7 @@ if (configTextarea && configurationForm && configurationEditor) {
     }
     inboundList.append(card);
     updateInboundVisibility(card);
+    validateSSKeys(card);
     setCardEditing(card, !inbound.tag);
     disableWhenReadonly(card);
     updateResourceCounts();
@@ -305,63 +358,169 @@ if (configTextarea && configurationForm && configurationEditor) {
     return card;
   }
 
-  function inferRuleSet(ruleSet) {
-    const url = String(ruleSet.url || "");
-    const geosite = url.match(/SagerNet\/sing-geosite\/rule-set\/geosite-(.+)\.srs$/);
-    if (geosite) {
-      return { kind: "geosite", name: geosite[1], url };
+  function geoSelection(card) {
+    let selection = geoSelections.get(card);
+    if (!selection) {
+      selection = [];
+      geoSelections.set(card, selection);
     }
-    const geoip = url.match(/SagerNet\/sing-geoip\/rule-set\/geoip-(.+)\.srs$/);
-    if (geoip) {
-      return { kind: "geoip", name: geoip[1], url };
-    }
-    return { kind: "custom", name: ruleSet.tag || "", url };
+    return selection;
   }
 
-  function updateRuleSetVisibility(card) {
-    const kind = field(card, "rule-set", "kind").value;
-    card.querySelector("[data-rule-set-url-field]").hidden = kind !== "custom";
-    field(card, "rule-set", "url").required = kind === "custom";
-    const name = field(card, "rule-set", "name").value || "New rule set";
-    updateCardSummary(card, name, kind === "custom" ? "Custom SRS" : `SagerNet ${kind}`);
+  // "geosite" when every rule_set tag is geosite-*, "geoip" likewise, else
+  // null (mixed kinds, custom tags, or no rule_set at all).
+  function inferGeoMatchKind(ruleSet) {
+    if (!Array.isArray(ruleSet) || ruleSet.length === 0) return null;
+    let kind = null;
+    for (const tag of ruleSet) {
+      const match = typeof tag === "string" && tag.match(/^(geosite|geoip)-(.+)$/);
+      if (!match || (kind && match[1] !== kind)) return null;
+      kind = match[1];
+    }
+    return kind;
   }
 
-  function addRuleSet(ruleSet = {}) {
-    const card = ruleSetTemplate.content.firstElementChild.cloneNode(true);
-    originals.set(card, clone(ruleSet));
-    const inferred = inferRuleSet(ruleSet);
-    setValue(field(card, "rule-set", "kind"), inferred.kind);
-    setValue(field(card, "rule-set", "name"), inferred.name);
-    setValue(field(card, "rule-set", "url"), inferred.url);
-    ruleSetList.append(card);
-    updateRuleSetVisibility(card);
-    setCardEditing(card, !ruleSet.tag);
-    disableWhenReadonly(card);
-    updateResourceCounts();
-    return card;
+  // Fetch the rule set name catalog for a kind once; failures are remembered
+  // so the hint shows on every combobox of that kind and free text still works.
+  function ensureGeoOptions(kind) {
+    if (geoOptionState.has(kind)) return;
+    geoOptionState.set(kind, "loading");
+    fetch(`${ruleSetOptionsBase}?kind=${encodeURIComponent(kind)}`, {
+      credentials: "same-origin",
+      headers: { Accept: "application/json" },
+    })
+      .then(async (response) => {
+        if (!response.ok) throw new Error(`rule-set-options HTTP ${response.status}`);
+        const body = await response.json();
+        if (!body || !Array.isArray(body.options)) {
+          throw new Error(body?.error || "rule-set-options returned no options");
+        }
+        geoOptionValues.set(kind, body.options);
+        geoOptionState.set(kind, "ok");
+      })
+      .catch(() => {
+        geoOptionState.set(kind, "error");
+      })
+      .finally(() => {
+        for (const card of routeRuleList.querySelectorAll("[data-route-rule-card]")) {
+          if (field(card, "route", "match_type").value !== kind) continue;
+          updateGeoHint(card);
+          renderGeoOptions(card);
+        }
+      });
+  }
+
+  function updateGeoHint(card) {
+    const hint = card.querySelector("[data-route-geo-hint]");
+    const failed = geoOptionState.get(field(card, "route", "match_type").value) === "error";
+    hint.hidden = !failed;
+    hint.textContent = failed ? "List unavailable — type a name manually" : "";
+  }
+
+  function renderGeoChips(card) {
+    const container = card.querySelector("[data-route-geo-chips]");
+    container.replaceChildren();
+    for (const name of geoSelection(card)) {
+      const chip = document.createElement("button");
+      chip.type = "button";
+      chip.className = "geo-chip";
+      chip.dataset.geoChip = name;
+      chip.title = `Remove ${name}`;
+      chip.append(document.createTextNode(name));
+      const marker = document.createElement("span");
+      marker.setAttribute("aria-hidden", "true");
+      marker.textContent = "×";
+      chip.append(marker);
+      container.append(chip);
+    }
+  }
+
+  function renderGeoOptions(card) {
+    const list = card.querySelector("[data-route-geo-options]");
+    if (list.hidden) return;
+    const filterValue = card.querySelector("[data-route-geo-filter]").value.trim().toLowerCase();
+    const kind = field(card, "route", "match_type").value;
+    const selection = geoSelection(card);
+    list.replaceChildren();
+    const matches = (geoOptionValues.get(kind) || [])
+      .filter((name) => !filterValue || name.includes(filterValue));
+    for (const name of matches.slice(0, GEO_OPTION_RENDER_LIMIT)) {
+      const option = document.createElement("button");
+      option.type = "button";
+      option.className = "geo-option";
+      option.dataset.geoOption = name;
+      option.textContent = name;
+      if (selection.includes(name)) option.classList.add("is-selected");
+      list.append(option);
+    }
+  }
+
+  function openGeoOptions(card) {
+    card.querySelector("[data-route-geo-options]").hidden = false;
+    renderGeoOptions(card);
+  }
+
+  function addGeoChip(card, rawName) {
+    const name = rawName.trim().toLowerCase();
+    const selection = geoSelection(card);
+    if (!/^[a-z0-9_-]+$/.test(name) || selection.includes(name)) return;
+    selection.push(name);
+    renderGeoChips(card);
+    renderGeoOptions(card);
+    updateRouteRuleVisibility(card);
+  }
+
+  function removeGeoChip(card, name) {
+    const selection = geoSelection(card);
+    const index = selection.indexOf(name);
+    if (index === -1) return;
+    selection.splice(index, 1);
+    renderGeoChips(card);
+    renderGeoOptions(card);
+    updateRouteRuleVisibility(card);
   }
 
   function addRouteRule(rule = {}) {
     const card = routeRuleTemplate.content.firstElementChild.cloneNode(true);
     originals.set(card, clone(rule));
     setValue(field(card, "route", "inbound"), listValue(rule.inbound).join(", "));
-    const matchType = routeMatchFields.find((name) => rule[name] !== undefined) || "protocol";
+    const geoKind = inferGeoMatchKind(rule.rule_set);
+    const matchType = geoKind || routeMatchFields.find((name) => rule[name] !== undefined) || "protocol";
     setValue(field(card, "route", "match_type"), matchType);
-    const values = Array.isArray(rule[matchType]) ? rule[matchType] : [rule[matchType]].filter(Boolean);
-    setValue(field(card, "route", "match_values"), values.join("\n"));
+    if (geoKind) {
+      for (const tag of rule.rule_set) geoSelection(card).push(tag.slice(geoKind.length + 1));
+      renderGeoChips(card);
+    } else {
+      const values = Array.isArray(rule[matchType]) ? rule[matchType] : [rule[matchType]].filter(Boolean);
+      setValue(field(card, "route", "match_values"), values.join("\n"));
+    }
     setValue(field(card, "route", "outbound"), rule.outbound);
     routeRuleList.append(card);
-    updateRouteRuleSummary(card);
+    updateRouteRuleVisibility(card);
     setCardEditing(card, Object.keys(rule).length === 0);
     disableWhenReadonly(card);
     updateResourceCounts();
     return card;
   }
 
-  function updateRouteRuleSummary(card) {
+  function updateRouteRuleVisibility(card) {
     const type = field(card, "route", "match_type").value;
-    const values = splitValues(field(card, "route", "match_values").value);
+    const geo = type === "geosite" || type === "geoip";
+    card.querySelector("[data-route-values-plain]").hidden = geo;
+    card.querySelector("[data-route-values-geo]").hidden = !geo;
     const outbound = field(card, "route", "outbound").value || "no outbound";
+    if (geo) {
+      ensureGeoOptions(type);
+      updateGeoHint(card);
+      const names = geoSelection(card);
+      updateCardSummary(
+        card,
+        names[0] ? `${type}-${names[0]}` : "Routing rule",
+        `${type} · ${names.length} set${names.length === 1 ? "" : "s"} · ${outbound}`,
+      );
+      return;
+    }
+    const values = splitValues(field(card, "route", "match_values").value);
     updateCardSummary(
       card,
       values[0] || "Routing rule",
@@ -407,6 +566,9 @@ if (configTextarea && configurationForm && configurationEditor) {
     }
     if (inbound.listen_port === 80) {
       throw new Error("Port 80 is reserved for ACME HTTP-01 and cannot be used by a proxy inbound.");
+    }
+    if ((type === "anytls" || type === "hysteria2") && inbound.users.length === 0) {
+      throw new Error(`${inbound.tag || type} requires at least one user.`);
     }
     if (type === "shadowsocks") {
       inbound.method = field(card, "inbound", "method").value;
@@ -467,24 +629,6 @@ if (configTextarea && configurationForm && configurationEditor) {
     return outbound;
   }
 
-  function serializeRuleSet(card) {
-    const original = clone(originals.get(card) || {});
-    const kind = field(card, "rule-set", "kind").value;
-    const name = field(card, "rule-set", "name").value.trim();
-    const prefix = kind === "geoip" ? "geoip" : "geosite";
-    const tag = kind === "custom" ? name : `${prefix}-${name}`;
-    const url = kind === "custom"
-      ? field(card, "rule-set", "url").value.trim()
-      : `https://raw.githubusercontent.com/SagerNet/sing-${prefix}/rule-set/${prefix}-${name}.srs`;
-    return {
-      ...original,
-      type: "remote",
-      tag,
-      format: "binary",
-      url,
-    };
-  }
-
   function serializeRouteRule(card) {
     const rule = clone(originals.get(card) || {});
     const matchType = field(card, "route", "match_type").value;
@@ -492,10 +636,16 @@ if (configTextarea && configurationForm && configurationEditor) {
       delete rule[name];
     }
     const inbound = splitValues(field(card, "route", "inbound").value);
-    const values = splitValues(field(card, "route", "match_values").value);
     if (inbound.length) rule.inbound = inbound;
     else delete rule.inbound;
-    if (values.length) rule[matchType] = values;
+    if (matchType === "geosite" || matchType === "geoip") {
+      // geosite/geoip are UI-level match types; the JSON field stays rule_set.
+      const names = geoSelection(card);
+      if (names.length) rule.rule_set = names.map((name) => `${matchType}-${name}`);
+    } else {
+      const values = splitValues(field(card, "route", "match_values").value);
+      if (values.length) rule[matchType] = values;
+    }
     rule.action = "route";
     rule.outbound = field(card, "route", "outbound").value.trim();
     return rule;
@@ -521,14 +671,40 @@ if (configTextarea && configurationForm && configurationEditor) {
     if (providers.length) next.certificate_providers = providers;
     else delete next.certificate_providers;
     const route = objectValue(next.route) ? clone(next.route) : {};
-    route.rule_set = Array.from(
-      ruleSetList.querySelectorAll("[data-rule-set-card]"),
-      serializeRuleSet,
-    );
     route.rules = Array.from(
       routeRuleList.querySelectorAll("[data-route-rule-card]"),
       serializeRouteRule,
     );
+    // Rule sets are derived from the routing rules: every referenced
+    // geosite-*/geoip-* tag gets a remote binary SRS entry (spreading the
+    // original entry first so extras like download_detour survive), custom
+    // non-SagerNet entries pass through, and unreferenced SagerNet entries
+    // are dropped.
+    const sagerNetURL = /SagerNet\/sing-geo(?:site|ip)\/rule-set\//;
+    const referencedTags = new Set();
+    for (const rule of route.rules) {
+      for (const tag of listValue(rule.rule_set)) {
+        if (/^(?:geosite|geoip)-.+$/.test(tag)) referencedTags.add(tag);
+      }
+    }
+    const originalRuleSets = listValue(route.rule_set);
+    const ruleSets = [];
+    for (const tag of referencedTags) {
+      const prefix = tag.startsWith("geoip-") ? "geoip" : "geosite";
+      const original = originalRuleSets.find((entry) => entry?.tag === tag);
+      ruleSets.push({
+        ...(objectValue(original) ? original : {}),
+        type: "remote",
+        format: "binary",
+        tag,
+        url: `https://raw.githubusercontent.com/SagerNet/sing-${prefix}/rule-set/${tag}.srs`,
+      });
+    }
+    for (const entry of originalRuleSets) {
+      if (!sagerNetURL.test(String(entry?.url || ""))) ruleSets.push(entry);
+    }
+    if (ruleSets.length) route.rule_set = ruleSets;
+    else delete route.rule_set;
     const finalOutbound = routeFinal.value.trim();
     if (finalOutbound) route.final = finalOutbound;
     else delete route.final;
@@ -547,7 +723,6 @@ if (configTextarea && configurationForm && configurationEditor) {
     documentModel = clone(model);
     inboundList.replaceChildren();
     outboundList.replaceChildren();
-    ruleSetList.replaceChildren();
     routeRuleList.replaceChildren();
     const unsupported = [];
     for (const inbound of listValue(documentModel.inbounds)) {
@@ -561,9 +736,6 @@ if (configTextarea && configurationForm && configurationEditor) {
       addOutbound(outbound);
     }
     const route = objectValue(documentModel.route) ? documentModel.route : {};
-    for (const ruleSet of listValue(route.rule_set)) {
-      addRuleSet(ruleSet);
-    }
     for (const rule of listValue(route.rules)) {
       addRouteRule(rule);
     }
@@ -629,10 +801,20 @@ if (configTextarea && configurationForm && configurationEditor) {
       addInbound({ type: "shadowsocks", listen: "::" });
     } else if (button.matches("[data-add-outbound]")) {
       addOutbound({ type: "direct" });
-    } else if (button.matches("[data-add-rule-set]")) {
-      addRuleSet({});
     } else if (button.matches("[data-add-route-rule]")) {
       addRouteRule({});
+    } else if (button.matches("[data-geo-chip]")) {
+      const card = button.closest("[data-route-rule-card]");
+      if (card) removeGeoChip(card, button.dataset.geoChip);
+    } else if (button.matches("[data-geo-option]")) {
+      const card = button.closest("[data-route-rule-card]");
+      if (card) {
+        addGeoChip(card, button.dataset.geoOption);
+        const filter = card.querySelector("[data-route-geo-filter]");
+        filter.value = "";
+        renderGeoOptions(card);
+        filter.focus();
+      }
     } else if (button.matches("[data-remove-card]")) {
       button.closest(".builder-card")?.remove();
       updateOutboundTagOptions();
@@ -672,23 +854,59 @@ if (configTextarea && configurationForm && configurationEditor) {
   });
 
   configurationEditor.addEventListener("input", (event) => {
-    const card = event.target.closest("[data-inbound-card], [data-outbound-card], [data-rule-set-card]");
-    if (card?.matches("[data-inbound-card]")) updateInboundVisibility(card);
+    const card = event.target.closest("[data-inbound-card], [data-outbound-card], [data-route-rule-card]");
+    if (card?.matches("[data-inbound-card]")) {
+      updateInboundVisibility(card);
+      validateSSKeys(card);
+    }
     if (card?.matches("[data-outbound-card]")) updateOutboundVisibility(card);
-    if (card?.matches("[data-rule-set-card]")) updateRuleSetVisibility(card);
-    if (card?.matches("[data-route-rule-card]")) updateRouteRuleSummary(card);
+    if (card?.matches("[data-route-rule-card]")) updateRouteRuleVisibility(card);
+    if (event.target.matches("[data-route-geo-filter]") && card) {
+      openGeoOptions(card);
+    }
     if (event.target.matches('[data-outbound-field="tag"]')) updateOutboundTagOptions();
   });
 
   configurationEditor.addEventListener("change", (event) => {
     const inbound = event.target.closest("[data-inbound-card]");
-    if (inbound) updateInboundVisibility(inbound);
+    if (inbound) {
+      updateInboundVisibility(inbound);
+      validateSSKeys(inbound);
+    }
     const outbound = event.target.closest("[data-outbound-card]");
     if (outbound) updateOutboundVisibility(outbound);
-    const ruleSet = event.target.closest("[data-rule-set-card]");
-    if (ruleSet) updateRuleSetVisibility(ruleSet);
     const routeRule = event.target.closest("[data-route-rule-card]");
-    if (routeRule) updateRouteRuleSummary(routeRule);
+    if (routeRule) updateRouteRuleVisibility(routeRule);
+  });
+
+  configurationEditor.addEventListener("focusin", (event) => {
+    if (!event.target.matches("[data-route-geo-filter]")) return;
+    const card = event.target.closest("[data-route-rule-card]");
+    if (card) openGeoOptions(card);
+  });
+
+  configurationEditor.addEventListener("keydown", (event) => {
+    if (!event.target.matches("[data-route-geo-filter]")) return;
+    const card = event.target.closest("[data-route-rule-card]");
+    if (!card) return;
+    if (event.key === "Enter") {
+      // Free-text entry is allowed even when the catalog failed to load.
+      event.preventDefault();
+      addGeoChip(card, event.target.value);
+      event.target.value = "";
+      renderGeoOptions(card);
+    } else if (event.key === "Escape") {
+      // Keep the Escape from bubbling up and closing the manager dialog.
+      event.preventDefault();
+      card.querySelector("[data-route-geo-options]").hidden = true;
+    }
+  });
+
+  document.addEventListener("click", (event) => {
+    for (const list of routeRuleList.querySelectorAll("[data-route-geo-options]:not([hidden])")) {
+      const combobox = list.closest("[data-route-values-geo]");
+      if (combobox && !combobox.contains(event.target)) list.hidden = true;
+    }
   });
 
   configurationForm.addEventListener("submit", (event) => {
