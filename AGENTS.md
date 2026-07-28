@@ -1,0 +1,90 @@
+# Theatropolis — Agent Reference
+
+Reference for AI agents working in this repository. Read this first; it should
+save a full re-exploration of the codebase.
+
+## What this is
+
+Theatropolis is a **master–agent manager for sing-box fleets** (proxy servers).
+A single master serves a local web UI (fleet management, config editor, version
+management) and a gRPC control plane; agents enroll with one-time tokens, keep a
+long-lived bidirectional stream to the master, and run/supervise sing-box.
+
+- Module: `github.com/masterauguste/theatropolis`, Go 1.26 (`go.mod`).
+- Dependencies: gRPC, protobuf, `golang.org/x/crypto` (Argon2id), `x/sys`. Nothing else — stdlib-heavy.
+- Releases: Linux amd64/arm64 tarballs on GitHub releases (`theatropolis_linux_{arch}.tar.gz` + `checksums.txt`).
+
+## Layout
+
+- `cmd/theatropolis-master/` — master binary. Subcommands: `serve`, `apply-update`, `create-enrollment`, `set-web-admin`, `version` (main.go:58).
+- `cmd/theatropolis-agent/` — agent binary. Subcommands: default run, `apply-update`, `apply-sing-box-update`.
+- `internal/control/server.go` — gRPC `AgentControlService`: `Enroll` (token → Ed25519 key binding), `Connect` (long-lived bidirectional stream with nonce challenge, monotonic sequence numbers, 75 s heartbeat timeout). Also master-local methods the web UI calls: `QueueValidation`, `QueueDeployment`, `QueueAgentUpdate`, `QueueSingBoxUpdate`, `RevokeAgent`, plus `SessionRegistry`.
+- `internal/webui/` — server-rendered HTML UI (embedded templates in `templates/`, assets in `assets/`, Go 1.22 mux patterns). Argon2id password or legacy access key in `web-auth.json`; `__Host-` session cookie + `X-CSRF-Token` header; sessions persisted to `web-sessions.json` (idle 30 min / absolute 12 h). `releases.go` discovers available versions via Git `info/refs` (not the REST API, avoids rate limits). Design system: single coherent stylesheet (`app.css`), warm parchment/burgundy palette, system fonts only (body system-ui, headings Georgia serif, code ui-monospace) — keep everything token-driven off the single `:root` block; all class names double as JS hooks, so rename nothing without checking `app.js`/`config-editor.js` and `handler_test.go` (it asserts literal header HTML).
+- `internal/agent/runner.go` — agent control loop: connect with backoff (1 s→30 s), hello/challenge proof, heartbeat 20 s, dispatch validate/deploy/update commands.
+- `internal/singbox/` — `manager.go` (validates, persists `sing-box/active.json`, supervises sing-box child as non-root, restart backoff, rollback), `validator.go` (`sing-box check`, scrubs secrets from diagnostics, 4 MiB config / 8 KiB diagnostic limits), `policy.go` (rejects `listen_port` 80 — reserved for ACME), `executable.go` (requires sing-box ≥ 1.14).
+- `internal/agentupdate/`, `internal/singboxupdate/` — self-update. File-based handshake: `update-request.json` in state dir → systemd **path unit** fires → root helper (`apply-update` subcommand) downloads, verifies SHA-256, atomically replaces binary, restarts service, result reported over control stream. agentupdate pulls project GitHub release tarballs; singboxupdate uses the GitHub REST API for SagerNet/sing-box (installs `sing-box` + `libcronet.so`).
+- `internal/deployment/` — deployment `Record` + 10-status state machine; `MemoryStore`/`DiskStore`; **only latest deployment per agent kept** (one JSON per agent under `<state-dir>/deployments/`).
+- `internal/identity/` — master registry (`identities.json`, 0600): SHA-256 of pending tokens + enrolled Ed25519 public keys only. Agent ID format `[a-zA-Z0-9][a-zA-Z0-9._-]{0,127}`.
+- `api/proto/theatropolis/control/v1/control.proto` — one service, two RPCs (`Enroll`, `Connect` stream). Frames: monotonic `sequence` + `oneof payload`. Protocol version constant = 1. Generated code in `api/gen/` (regenerate with protoc + protoc-gen-go / protoc-gen-go-grpc, binaries in `.tools/bin/`).
+- `install.sh` (~1280 lines, POSIX sh) — installer. Roles `master` / `agent` / `all`. Root + Debian/Ubuntu + systemd only. Downloads SHA-256-verified release tarballs + pinned sing-box 1.14.0-beta.2 (hardcoded hash), creates system users, heavily sandboxed systemd units (main + three `.path`/`.service` update pairs), configures Caddy reverse proxy with ACME. Extensive rollback on failure.
+- `tests/*.sh` — installer test suite (master, agent-token, release-tag, security).
+
+## Runtime architecture (installed system)
+
+- Master `serve` opens **three loopback-only listeners**: gRPC `127.0.0.1:8081` (h2c), web UI `127.0.0.1:8080`, Unix socket `/run/theatropolis/master-admin.sock` (0600, local admin API for `create-enrollment`). **TLS is not in the Go process** — Caddy terminates TLS on :8443 (gRPC paths → h2c :8081, rest → :8080), ACME HTTP-01 needs port 80 free.
+- Agent connects out with TLS 1.3 only.
+- Master state dir: `/var/lib/theatropolis/master` (`identities.json`, `deployments/`, `web-auth.json`, `web-sessions.json`, `update-request.json`).
+- Agent state dir: `/var/lib/theatropolis/agent` (`identity.pem` Ed25519, `agent-id`, `enrollment.token`, `sing-box/active.json`, update state).
+- Update capability gated on systemd path units (`/etc/systemd/system/theatropolis-*-update.path`).
+
+## Build & test workflow (IMPORTANT: Windows host, use WSL)
+
+This repo is developed on Windows but targets Linux. **Use WSL for Go work:**
+
+- Go 1.26.5 for Linux lives in WSL at `~/go-toolchain/go/bin/go` (not on PATH).
+- A Windows Go also exists at `.tools/go/bin/go.exe` for quick checks, but tests assume Linux semantics.
+- The repo is visible in WSL at `/mnt/c/Users/Liukun Zhao/Documents/Theatropolis`.
+
+Typical verification (mirrors CI in `.github/workflows/ci.yml`):
+
+```sh
+# Go build + tests + vet (run inside WSL):
+wsl -- bash -c 'cd "/mnt/c/Users/Liukun Zhao/Documents/Theatropolis" && export PATH="$HOME/go-toolchain/go/bin:$PATH" && go build ./... && go test -count=1 ./... && go vet ./...'
+
+# Installer shell tests: use the helper script (avoids quoting pitfalls below):
+MSYS_NO_PATHCONV=1 wsl -- sh "/mnt/c/Users/Liukun Zhao/Documents/Theatropolis/.tools/run-shell-tests.sh"
+```
+
+### Git Bash → WSL pitfalls (learned the hard way)
+
+- Prefix WSL commands with `MSYS_NO_PATHCONV=1`, or Git Bash rewrites `/mnt/c/...` arguments into `C:/Program Files/Git/mnt/c/...`.
+- Shell `for` loops with globs passed through `wsl -- bash -c '...'` get mangled (loop var expands empty). Put multi-line shell logic in a script file (see `.tools/run-shell-tests.sh`) and invoke that instead.
+- **Controlling-terminal gotcha:** `wsl -- sh ...` allocates a pty, so WSL processes have a controlling terminal. `tests/installer-security.sh` has a scenario that requires *no* controlling terminal (installer must fail closed when a token can't be prompted); run plainly, the installer legitimately prompts on `/dev/tty` and the test blocks forever at `install.sh:214`. Run installer tests detached: `setsid --fork --wait sh tests/installer-security.sh </dev/null` (the `.tools/run-shell-tests.sh` helper already does this). All four installer tests pass this way.
+
+### Local toolchain (`.tools/`, gitignored)
+
+- `.tools/go/` — Windows Go 1.26.5. `.tools/bin/` — `protoc-gen-go.exe`, `protoc-gen-go-grpc.exe`, `govulncheck.exe`. `.tools/protoc-35.1/` — protoc.
+- `.tools/shellcheck/shellcheck.exe` (0.11.0), `.tools/shfmt.exe` (3.13.1), `.tools/actionlint.exe` — for CI-parity linting of `install.sh`, `tests/*.sh`, workflows.
+- `.tools/run-shell-tests.sh` — helper written for running `tests/*.sh` via WSL.
+- `.tools/serve-dev.sh` + `.tools/shoot.py` — local UI preview: builds and runs the master in WSL (`wsl -u root`, temp state in `/tmp/tp-ui-state`, admin/`smoke-test-password-123`, `--public-url https://localhost:9443` — HTTPS is mandatory, `parsePublicURL` rejects http; the web UI 421s requests whose Host doesn't match public-url and 403s POSTs whose Origin doesn't match). Browse via the Caddy frontend `https://localhost:9443` (self-signed, accept the warning). For curl admin flows against 8080 directly, send `-H "Host: localhost:9443"` + `-H "Origin: https://localhost:9443"`. Screenshots via headless Chrome on the Windows side over CDP (`.tools/pyenv` venv has `websocket-client`; `suppress_origin=True` is required). WSL→Windows connections via the default-route IP are unreliable here — run CDP clients on Windows, where 127.0.0.1 reaches both Chrome and (via localhost forwarding) the WSL master.
+- `.tools/dev-agent-stack.sh` — full local stack: builds the agent, writes a fake `sing-box` stub (`version`→1.14.0, `check`→exit 0, `run`→sleep) and a Caddyfile, then runs Caddy (`/usr/local/bin/caddy` — WSL `/tmp` gets wiped between instance restarts, don't install it there; `tls internal` on `https://localhost:9443`, gRPC path → h2c 8081, rest → 8080) plus the agent against the serve-dev master. Pass the enrollment token as `$1` (scrape it from `/servers/enrollment-result?id=...` after POSTing `/servers` with fields `agent_id` + `ttl_seconds` + `csrf_token`; the token in the install command is HTML-escaped as `&#39;`, 43 chars). Without `$1` it falls back to the `create-enrollment` CLI, which 409s if a pending enrollment already exists. Sing-box is a stub: validation passes but nothing really proxies.
+- `.tools/cross/`, `.tools/build-check/` — cross-built Linux binaries from earlier sessions.
+
+## CI & release
+
+- `.github/workflows/ci.yml` (push/PR): `go mod verify`, `go test -count=1 ./...`, `go vet`, `sh -n install.sh`, all four `tests/*.sh`, shellcheck; plus linux amd64/arm64 cross-build job.
+- `.github/workflows/release.yml` (tags `v*`): same checks, then reproducible tarballs (`-trimpath`, `-ldflags "-s -w -buildid= -X main.version=… -X main.commit=… -X main.buildDate=…"`, sorted tar with fixed mtime) for amd64/arm64 + `checksums.txt`, published via `gh release`.
+- Pinned action SHAs in workflows; sing-box versions use lightweight tags upstream.
+- Latest tags: v0.0.9 era. Check `git tag` for current state.
+
+## Conventions to preserve
+
+- **Security-first everywhere**: atomic file writes via temp+rename (`replaceFile` per-OS shims `replace_file_{unix,windows}.go` in several packages), `Lstat` symlink checks before reads/writes, strict JSON decoding (`DisallowUnknownFields` + trailing-data check), size limits on every input, diagnostics scrubbed of config secrets, sentinel errors, `slog` JSON logging.
+- Comments explain concurrency/race reasoning — keep them accurate when changing code.
+- Time injection (`Now func() time.Time`) for testability.
+- Every package has substantial unit tests; integration test in `internal/control/control_integration_test.go` runs full master↔agent over `bufconn` with a fake sing-box via `TestMain` re-exec helper (`THEATROPOLIS_SING_BOX_TEST_HELPER`).
+- Minimal, scoped changes; match surrounding style. Update this file when layout, workflow, or conventions change.
+
+## Deploy access
+
+`.deploy/` (gitignored) contains an SSH deploy keypair + `known_hosts` for a live deployment target. Treat as credentials; never commit.
