@@ -24,7 +24,7 @@
         </div>
       </header>
 
-      <section class="metric-grid" aria-label="Fleet summary">
+      <section class="metric-grid" aria-label="Troupe summary">
         <article class="metric-card">
           <span class="metric-card__label">Total servers</span>
           <strong>{{.Stats.Total}}</strong>
@@ -50,7 +50,7 @@
       <section class="panel" aria-labelledby="fleet-heading">
         <div class="panel__header">
           <div>
-            <h2 id="fleet-heading">Fleet</h2>
+            <h2 id="fleet-heading">Singers</h2>
             <p>Current connection state and enrollment readiness.</p>
           </div>
           <span class="panel__count">{{.Stats.Total}} total</span>
@@ -103,10 +103,6 @@
         </div>
         {{else}}
         <div class="empty-state">
-          <div class="empty-state__art" aria-hidden="true">
-            <span></span>
-            <svg viewBox="0 0 64 64"><path d="M14 17h36v30H14zM22 26h8m4 0h8M22 35h20"/></svg>
-          </div>
           <p class="eyebrow">The stage is ready</p>
           <h3>No servers enrolled yet</h3>
           <p>Create a server entry to generate its secure, single-use installation command.</p>

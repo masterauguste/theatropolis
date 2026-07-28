@@ -14,7 +14,7 @@ if (configTextarea && configurationForm && configurationEditor) {
   const outboundList = configurationEditor.querySelector("[data-outbound-list]");
   const ruleSetList = configurationEditor.querySelector("[data-rule-set-list]");
   const routeRuleList = configurationEditor.querySelector("[data-route-rule-list]");
-  const routeFinal = configurationForm.querySelector("[data-route-final]");
+  const routeFinal = configurationEditor.querySelector("[data-route-final]");
   const outboundTags = configurationForm.querySelector("[data-outbound-tags]");
   const inboundTemplate = document.getElementById("inbound-card-template");
   const userTemplate = document.getElementById("user-row-template");

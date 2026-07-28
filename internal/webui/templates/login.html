@@ -5,32 +5,17 @@
 <body class="auth-page">
   <a class="skip-link" href="#main">Skip to content</a>
   <main class="auth-shell" id="main">
-    <section class="auth-intro" aria-labelledby="welcome-title">
+    <div class="auth-card">
       {{template "brand" .}}
-      <div class="auth-intro__copy">
-        <p class="eyebrow">Master control plane</p>
-        <h2 id="welcome-title">Your fleet,<br>under one roof.</h2>
-        <p>Securely enroll servers and manage every Theatropolis agent from one private workspace.</p>
+      <div class="auth-card__heading">
+        <p class="eyebrow">Operator access</p>
+        <h1 id="login-title">Sign in to continue</h1>
+        {{if .LegacyLogin}}
+        <p>Enter the access key shown when the master was installed.</p>
+        {{else}}
+        <p>Enter your operator username and password.</p>
+        {{end}}
       </div>
-      <div class="auth-intro__signal" aria-hidden="true">
-        <span></span><span></span><span></span>
-      </div>
-    </section>
-
-    <section class="auth-panel" aria-labelledby="login-title">
-      <div class="auth-card">
-        <div class="auth-card__heading">
-          <span class="auth-card__icon" aria-hidden="true">
-            <svg viewBox="0 0 24 24"><path d="M7 10V8a5 5 0 0 1 10 0v2m-9 0h8a2 2 0 0 1 2 2v7H6v-7a2 2 0 0 1 2-2Z"/></svg>
-          </span>
-          <p class="eyebrow">Operator access</p>
-          <h1 id="login-title">Sign in to continue</h1>
-          {{if .LegacyLogin}}
-          <p>Enter the access key shown when the master was installed.</p>
-          {{else}}
-          <p>Enter your operator username and password.</p>
-          {{end}}
-        </div>
 
         {{if .LegacyLogin}}
         <div class="notice notice--warning" role="status">
@@ -128,15 +113,14 @@
           Your credentials are verified locally. The master never stores your plaintext password.
         </p>
         {{end}}
-      </div>
-      <p class="auth-panel__foot">
-        {{if .LegacyLogin}}
-        TLS-protected sign-in. The master stores only a hash of your access key.
-        {{else}}
-        TLS-protected sign-in. Your password is stored as a salted, memory-hard verifier.
-        {{end}}
-      </p>
-    </section>
+    </div>
+    <p class="auth-panel__foot">
+      {{if .LegacyLogin}}
+      TLS-protected sign-in. The master stores only a hash of your access key.
+      {{else}}
+      TLS-protected sign-in. Your password is stored as a salted, memory-hard verifier.
+      {{end}}
+    </p>
   </main>
   <script src="/assets/app.js?v={{.AssetVersion}}" defer></script>
 </body>
