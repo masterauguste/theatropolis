@@ -794,7 +794,11 @@ func TestPersistentSessionSurvivesManagerRestartAndLogout(t *testing.T) {
 	); err != nil {
 		t.Fatal(err)
 	}
-	now := time.Date(2026, 7, 28, 12, 0, 0, 0, time.UTC)
+	// Sessions are reloaded with the real clock inside
+	// loadAccessWithPasswordDeriverAndSessions (the injected now is only
+	// applied afterwards), so a hardcoded date goes stale within a day and
+	// the reloaded session would be dropped as idle-expired.
+	now := time.Now().UTC().Truncate(time.Second)
 	load := func() *AccessManager {
 		manager, err := loadAccessWithPasswordDeriverAndSessions(
 			accessPath,
