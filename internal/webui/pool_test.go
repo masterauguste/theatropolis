@@ -424,8 +424,8 @@ func TestServerAddressOverride(t *testing.T) {
 	}
 	body := response.Body.String()
 	for _, expected := range []string{
-		`IPv4 <code>192.0.2.9</code>`,
-		`IPv6 <code>2001:db8::9</code>`,
+		`<code class="pool-address-line">192.0.2.9</code>`,
+		`<code class="pool-address-line">2001:db8::9</code>`,
 		`Established`,
 		`Not established`,
 	} {
@@ -438,6 +438,8 @@ func TestServerAddressOverride(t *testing.T) {
 		`name="override_ipv6"`,
 		"Connected from:",
 		"Last known address:",
+		"IPv4 <code>",
+		"IPv6 <code>",
 		"(reported)",
 	} {
 		if strings.Contains(body, unexpected) {
@@ -574,8 +576,8 @@ func TestServerAddressOverride(t *testing.T) {
 	request = fixture.authenticatedRequest(http.MethodGet, "/servers/content", "")
 	response = httptest.NewRecorder()
 	fixture.handler.ServeHTTP(response, request)
-	if !strings.Contains(response.Body.String(), `IPv4 <code>198.51.100.9</code>`) ||
-		!strings.Contains(response.Body.String(), `IPv6 <code>2001:db8::99</code>`) {
+	if !strings.Contains(response.Body.String(), `<code class="pool-address-line">198.51.100.9</code>`) ||
+		!strings.Contains(response.Body.String(), `<code class="pool-address-line">2001:db8::99</code>`) {
 		t.Errorf("servers page does not reflect the override: %s", response.Body.String())
 	}
 	request = fixture.authenticatedRequest(http.MethodGet, "/pool/content", "")

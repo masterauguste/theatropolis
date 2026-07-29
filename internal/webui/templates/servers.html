@@ -1,5 +1,5 @@
 {{define "servers-content"}}
-<section class="metric-grid" aria-label="Troupe summary">
+<section class="metric-grid" aria-label="Fleet summary">
   <article class="metric-card">
     <span class="metric-card__label">Total servers</span>
     <strong>{{.Stats.Total}}</strong>
@@ -25,7 +25,7 @@
 <section class="panel" aria-labelledby="fleet-heading">
   <div class="panel__header">
     <div>
-      <h2 id="fleet-heading">Singers</h2>
+      <h2 id="fleet-heading">Servers</h2>
       <p>Current connection state and enrollment readiness.</p>
     </div>
     <span class="panel__count">{{.Stats.Total}} total</span>
@@ -39,20 +39,13 @@
           <th scope="col">Server</th>
           <th scope="col">Connection</th>
           <th scope="col">IP addresses</th>
-          <th scope="col"><span class="visually-hidden">Actions</span></th>
         </tr>
       </thead>
       <tbody>
         {{range .Agents}}
         <tr>
           <td data-label="Server">
-            <div class="server-name">
-              <span class="server-name__avatar" aria-hidden="true">{{.Initial}}</span>
-              <div>
-                <strong><a class="server-link" href="{{.URL}}">{{.ID}}</a></strong>
-                <small>Agent-managed server</small>
-              </div>
-            </div>
+            <strong><a class="server-link" href="{{.URL}}">{{.ID}}</a></strong>
           </td>
           <td data-label="Connection">
             <span class="status status--{{.ConnectionClass}}">
@@ -61,12 +54,9 @@
           </td>
           <td data-label="IP addresses">
             {{if or .IPv4 .IPv6}}
-            {{if .IPv4}}<span class="pool-address-line">IPv4 <code>{{.IPv4}}</code></span>{{end}}
-            {{if .IPv6}}<span class="pool-address-line">IPv6 <code>{{.IPv6}}</code></span>{{end}}
+            {{if .IPv4}}<code class="pool-address-line">{{.IPv4}}</code>{{end}}
+            {{if .IPv6}}<code class="pool-address-line">{{.IPv6}}</code>{{end}}
             {{else}}<span class="muted">—</span>{{end}}
-          </td>
-          <td data-label="Actions">
-            <a class="button button--secondary button--small" href="{{.URL}}">Manage</a>
           </td>
         </tr>
         {{end}}
@@ -75,7 +65,6 @@
   </div>
   {{else}}
   <div class="empty-state">
-    <p class="eyebrow">The stage is ready</p>
     <h3>No servers enrolled yet</h3>
     <p>Create a server entry to generate its secure, single-use installation command.</p>
     <a class="button button--primary" href="/servers/new">Add your first server</a>

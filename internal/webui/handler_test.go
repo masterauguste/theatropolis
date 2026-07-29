@@ -739,6 +739,7 @@ func TestServersPageUsesRealEnrollmentAndConnectionState(t *testing.T) {
 	}
 	body := response.Body.String()
 	for _, expected := range []string{
+		`<h2 id="fleet-heading">Servers</h2>`,
 		"edge-pending",
 		"edge-expired",
 		"edge-online",
@@ -753,6 +754,17 @@ func TestServersPageUsesRealEnrollmentAndConnectionState(t *testing.T) {
 	}
 	if strings.Contains(body, "fake") || strings.Contains(body, "TOKEN") {
 		t.Fatal("servers page contains placeholder data")
+	}
+	for _, unexpected := range []string{
+		"Singers",
+		"Troupe summary",
+		"server-name__avatar",
+		"Agent-managed server",
+		`data-label="Actions"`,
+	} {
+		if strings.Contains(body, unexpected) {
+			t.Errorf("servers page still contains %q", unexpected)
+		}
 	}
 	if response.Header().Get("Cache-Control") != "no-store" {
 		t.Fatalf("servers Cache-Control = %q", response.Header().Get("Cache-Control"))

@@ -194,7 +194,6 @@ type fleetStats struct {
 
 type agentView struct {
 	ID              string
-	Initial         string
 	EnrollmentLabel string
 	EnrollmentClass string
 	ConnectionLabel string
@@ -1966,9 +1965,8 @@ func (h *Handler) renderNewServerError(
 
 func agentViewFor(snapshot identity.AgentSnapshot, now time.Time, online bool) agentView {
 	view := agentView{
-		ID:      snapshot.ID,
-		Initial: strings.ToUpper(snapshot.ID[:1]),
-		URL:     "/servers/" + url.PathEscape(snapshot.ID) + "/manage",
+		ID:  snapshot.ID,
+		URL: "/servers/" + url.PathEscape(snapshot.ID) + "/manage",
 	}
 	switch snapshot.State {
 	case identity.AgentStatePending:
