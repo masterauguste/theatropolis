@@ -8,7 +8,7 @@ import (
 	"net/http"
 	"net/netip"
 	"net/url"
-	"slices"
+	"strconv"
 	"strings"
 
 	"github.com/masterauguste/theatropolis/internal/control"
@@ -21,39 +21,23 @@ import (
 // object limit plus room for the name, CSRF token, and form encoding.
 const maxPoolFormBytes = pool.MaxManualOutboundBytes + 8<<10
 
-type poolEntryView struct {
-	Ref       string
-	UserLabel string
-	Type      string
-	Port      int
-	// IPv4/IPv6 hold the resolved address per family; "" means no source
-	// yielded an address of that family.
-	IPv4 string
-	IPv6 string
-	// IPv4Source/IPv6Source label the winning address source ("override",
-	// "observed", "probed", "reported"); only the family that auto
-	// resolution picked is labelled, the other stays "".
-	IPv4Source string
-	IPv6Source string
-	Available  bool
+type poolUserView struct {
+	Label string
+	Ref   string
 }
 
 type poolInboundView struct {
-	Tag     string
-	Entries []poolEntryView
-}
-
-type poolAgentView struct {
-	ID       string
-	Inbounds []poolInboundView
-	// AddressURL is the address-override endpoint for this agent.
+	DialogID   string
+	AgentID    string
+	Tag        string
+	Type       string
+	Port       int
+	IPv4       string
+	IPv6       string
+	Users      []poolUserView
 	AddressURL string
-	// ResolvedAddress/ResolvedSource show the address auto resolution
-	// currently picks for the agent and which source won; the pool registry
-	// does not expose the raw override, so the override form displays this
-	// resolved address instead.
-	ResolvedAddress string
-	ResolvedSource  string
+	OverrideV4 string
+	OverrideV6 string
 }
 
 type poolManualView struct {
@@ -64,7 +48,7 @@ type poolManualView struct {
 }
 
 type poolView struct {
-	Agents      []poolAgentView
+	Inbounds    []poolInboundView
 	Manual      []poolManualView
 	Diagnostics []string
 }
@@ -129,22 +113,35 @@ func (h *Handler) poolPageView(ctx context.Context) *poolView {
 	}
 	entries, diagnostics := h.derivePoolEntries(ctx, "")
 	view := &poolView{Diagnostics: diagnostics}
-	// Derive sorts by agent, inbound tag, then user, so grouping is a single
-	// linear pass over consecutive entries.
+	// Derive sorts by agent, inbound tag, then user. Collapse its user-level
+	// routing options into one page summary per inbound while retaining each
+	// user inside the summary's detail dialog.
 	for _, entry := range entries {
 		if entry.Manual {
 			continue
 		}
-		if len(view.Agents) == 0 || view.Agents[len(view.Agents)-1].ID != entry.AgentID {
-			view.Agents = append(view.Agents, poolAgentViewFor(registry, entry.AgentID))
+		if len(view.Inbounds) == 0 ||
+			view.Inbounds[len(view.Inbounds)-1].AgentID != entry.AgentID ||
+			view.Inbounds[len(view.Inbounds)-1].Tag != entry.InboundTag {
+			overrideV4, overrideV6 := registry.Overrides(entry.AgentID)
+			view.Inbounds = append(view.Inbounds, poolInboundView{
+				DialogID:   "pool-inbound-" + strconv.Itoa(len(view.Inbounds)),
+				AgentID:    entry.AgentID,
+				Tag:        entry.InboundTag,
+				Type:       entry.Type,
+				Port:       entry.Port,
+				IPv4:       entry.IPv4,
+				IPv6:       entry.IPv6,
+				AddressURL: "/servers/" + url.PathEscape(entry.AgentID) + "/address",
+				OverrideV4: overrideV4,
+				OverrideV6: overrideV6,
+			})
 		}
-		agent := &view.Agents[len(view.Agents)-1]
-		if len(agent.Inbounds) == 0 ||
-			agent.Inbounds[len(agent.Inbounds)-1].Tag != entry.InboundTag {
-			agent.Inbounds = append(agent.Inbounds, poolInboundView{Tag: entry.InboundTag})
-		}
-		inbound := &agent.Inbounds[len(agent.Inbounds)-1]
-		inbound.Entries = append(inbound.Entries, poolEntryViewFor(registry, entry))
+		inbound := &view.Inbounds[len(view.Inbounds)-1]
+		inbound.Users = append(inbound.Users, poolUserView{
+			Label: poolUserLabel(entry),
+			Ref:   entry.Ref,
+		})
 	}
 	for _, manual := range registry.Manual() {
 		view.Manual = append(view.Manual, poolManualView{
@@ -153,47 +150,6 @@ func (h *Handler) poolPageView(ctx context.Context) *poolView {
 			Port:     poolManualPort(manual.Outbound),
 			Outbound: string(manual.Outbound),
 		})
-	}
-	return view
-}
-
-// poolAgentViewFor starts the derived-view group for one agent, attaching
-// the address-override form endpoint and the address auto resolution
-// currently picks.
-func poolAgentViewFor(registry *pool.Registry, agentID string) poolAgentView {
-	view := poolAgentView{
-		ID:         agentID,
-		AddressURL: "/servers/" + url.PathEscape(agentID) + "/address",
-	}
-	if address, source, ok := registry.AddressSourceForFamily(agentID, pool.FamilyAuto); ok {
-		view.ResolvedAddress = address
-		view.ResolvedSource = source.String()
-	}
-	return view
-}
-
-// poolEntryViewFor projects one derived entry for the pool table,
-// labelling the address source of the family that auto resolution picks.
-func poolEntryViewFor(registry *pool.Registry, entry pool.Entry) poolEntryView {
-	view := poolEntryView{
-		Ref:       entry.Ref,
-		UserLabel: poolUserLabel(entry),
-		Type:      entry.Type,
-		Port:      entry.Port,
-		IPv4:      entry.IPv4,
-		IPv6:      entry.IPv6,
-		Available: entry.Available,
-	}
-	address, source, ok := registry.AddressSourceForFamily(entry.AgentID, pool.FamilyAuto)
-	if !ok {
-		return view
-	}
-	// The auto walk tries IPv4 first, so an address equal to the entry's
-	// IPv4 won that family; anything else resolved through IPv6.
-	if address == entry.IPv4 {
-		view.IPv4Source = source.String()
-	} else {
-		view.IPv6Source = source.String()
 	}
 	return view
 }
@@ -231,25 +187,16 @@ func poolManualPort(outbound json.RawMessage) int {
 	return object.ServerPort
 }
 
-// poolAddressLine summarizes an enrolled agent's address for the servers
-// table as one compact line: the pool-resolved address when the registry has
-// one, else the live reported addresses while the agent is online, else an
-// em-dash.
-func (h *Handler) poolAddressLine(agentID string, online bool) string {
-	if registry := h.controller.PoolRegistry(); registry != nil {
-		if address, ok := registry.AgentAddress(agentID); ok {
-			return address
-		}
+// poolAddresses resolves each family independently for the server list.
+// Source attribution is intentionally omitted from the UI.
+func (h *Handler) poolAddresses(agentID string) (ipv4, ipv6 string) {
+	registry := h.controller.PoolRegistry()
+	if registry == nil {
+		return "", ""
 	}
-	if online {
-		if info, exists := h.sessions.AgentInfo(agentID); exists {
-			addresses := append(slices.Clone(info.ReportedIPv4), info.ReportedIPv6...)
-			if len(addresses) > 0 {
-				return strings.Join(addresses, ", ")
-			}
-		}
-	}
-	return "—"
+	ipv4, _ = registry.AgentAddressForFamily(agentID, pool.FamilyIPv4)
+	ipv6, _ = registry.AgentAddressForFamily(agentID, pool.FamilyIPv6)
+	return ipv4, ipv6
 }
 
 func (h *Handler) poolPage(response http.ResponseWriter, request *http.Request) {
@@ -446,8 +393,9 @@ func (h *Handler) setServerAddress(response http.ResponseWriter, request *http.R
 		response,
 		request,
 		maxEnrollmentBodyBytes,
-		"address",
 		"csrf_token",
+		"override_ipv4",
+		"override_ipv6",
 	)
 	if err != nil || !h.access.AuthorizeCSRF(sessionToken, form.Get("csrf_token")) {
 		http.Error(response, "request was not authorized", http.StatusForbidden)
@@ -472,22 +420,31 @@ func (h *Handler) setServerAddress(response http.ResponseWriter, request *http.R
 		return
 	}
 
-	address := strings.TrimSpace(form.Get("address"))
-	if address != "" {
-		if _, err := netip.ParseAddr(address); err != nil {
-			http.Error(response, "enter an IP address or leave the field empty", http.StatusBadRequest)
+	overrideV4 := strings.TrimSpace(form.Get("override_ipv4"))
+	overrideV6 := strings.TrimSpace(form.Get("override_ipv6"))
+	if overrideV4 != "" {
+		address, err := netip.ParseAddr(overrideV4)
+		if err != nil || !address.Is4() {
+			http.Error(response, "the IPv4 override must be an IPv4 address or empty", http.StatusBadRequest)
 			return
 		}
 	}
-	if err := registry.SetOverride(snapshot.ID, address); err != nil {
+	if overrideV6 != "" {
+		address, err := netip.ParseAddr(overrideV6)
+		if err != nil || !address.Is6() {
+			http.Error(response, "the IPv6 override must be an IPv6 address or empty", http.StatusBadRequest)
+			return
+		}
+	}
+	if err := registry.SetOverrides(snapshot.ID, overrideV4, overrideV6); err != nil {
 		if errors.Is(err, pool.ErrInvalidAddress) {
 			// The registry rejects anything that is not a globally routable
 			// address (private, ULA, CGNAT, reserved).
-			http.Error(response, "the address override must be a public IP address", http.StatusBadRequest)
+			http.Error(response, "address overrides must be public IP addresses", http.StatusBadRequest)
 			return
 		}
 		if errors.Is(err, pool.ErrInvalidName) {
-			http.Error(response, "enter an IP address or leave the field empty", http.StatusBadRequest)
+			http.Error(response, "invalid server ID", http.StatusBadRequest)
 			return
 		}
 		h.logger.Error("set pool address override", "agent_id", snapshot.ID, "error", err)
@@ -496,7 +453,7 @@ func (h *Handler) setServerAddress(response http.ResponseWriter, request *http.R
 	}
 	h.controller.PropagateManualPoolChange(request.Context())
 	h.logger.Info("pool address override saved", "agent_id", snapshot.ID)
-	http.Redirect(response, request, "/servers", http.StatusSeeOther)
+	http.Redirect(response, request, "/pool", http.StatusSeeOther)
 }
 
 // requestAddressProbe asks the SOURCE agent (the path agent_id, whose pool

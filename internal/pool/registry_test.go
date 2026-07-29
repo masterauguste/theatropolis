@@ -332,6 +332,58 @@ func TestSetOverrideRejectsNonRoutable(t *testing.T) {
 	}
 }
 
+func TestSetOverridesStoresFamiliesIndependently(t *testing.T) {
+	registry, path := openTestRegistry(t)
+
+	if err := registry.SetOverrides("edge-1", "2001:db8::1", ""); !errors.Is(err, ErrInvalidAddress) {
+		t.Fatalf("SetOverrides(v6 as v4) error = %v, want ErrInvalidAddress", err)
+	}
+	if err := registry.SetOverrides("edge-1", "", "198.51.100.1"); !errors.Is(err, ErrInvalidAddress) {
+		t.Fatalf("SetOverrides(v4 as v6) error = %v, want ErrInvalidAddress", err)
+	}
+	if err := registry.SetOverrides(
+		"edge-1",
+		"198.51.100.9",
+		"2001:db8::9",
+	); err != nil {
+		t.Fatalf("SetOverrides() error = %v", err)
+	}
+	v4, v6 := registry.Overrides("edge-1")
+	if v4 != "198.51.100.9" || v6 != "2001:db8::9" {
+		t.Fatalf("Overrides() = %q/%q, want both families", v4, v6)
+	}
+	for _, testCase := range []struct {
+		family Family
+		want   string
+	}{
+		{FamilyIPv4, "198.51.100.9"},
+		{FamilyIPv6, "2001:db8::9"},
+	} {
+		addr, source, ok := registry.AddressSourceForFamily("edge-1", testCase.family)
+		if !ok || addr != testCase.want || source != SourceOverride {
+			t.Fatalf("AddressSourceForFamily(%v) = %q, %v, %v", testCase.family, addr, source, ok)
+		}
+	}
+
+	// Clearing one family preserves the other.
+	if err := registry.SetOverrides("edge-1", "", "2001:db8::9"); err != nil {
+		t.Fatalf("SetOverrides(clear v4) error = %v", err)
+	}
+	v4, v6 = registry.Overrides("edge-1")
+	if v4 != "" || v6 != "2001:db8::9" {
+		t.Fatalf("Overrides() after v4 clear = %q/%q", v4, v6)
+	}
+
+	reloaded, err := Open(path)
+	if err != nil {
+		t.Fatalf("Open() error = %v", err)
+	}
+	v4, v6 = reloaded.Overrides("edge-1")
+	if v4 != "" || v6 != "2001:db8::9" {
+		t.Fatalf("reloaded Overrides() = %q/%q", v4, v6)
+	}
+}
+
 func TestAddressSelectionOrder(t *testing.T) {
 	registry, _ := openTestRegistry(t)
 
@@ -557,6 +609,8 @@ func TestOpenRejectsInvalidDocuments(t *testing.T) {
 		{"v6 in v4 list", `{"version":1,"pool_version":0,"manual":[],"agents":{"edge-1":{"reported_v4":["2001:db8::1"],"reported_v6":[],"address_override":"","updated_at":"2026-01-02T03:04:05Z"}},"rendered":{}}`},
 		{"too many addresses", `{"version":1,"pool_version":0,"manual":[],"agents":{"edge-1":{"reported_v4":["192.0.2.1","192.0.2.1","192.0.2.1","192.0.2.1","192.0.2.1","192.0.2.1","192.0.2.1","192.0.2.1","192.0.2.1"],"reported_v6":[],"address_override":"","updated_at":"2026-01-02T03:04:05Z"}},"rendered":{}}`},
 		{"bad override", `{"version":1,"pool_version":0,"manual":[],"agents":{"edge-1":{"reported_v4":[],"reported_v6":[],"address_override":"nope","updated_at":"2026-01-02T03:04:05Z"}},"rendered":{}}`},
+		{"v6 in v4 override", `{"version":1,"pool_version":0,"manual":[],"agents":{"edge-1":{"reported_v4":[],"reported_v6":[],"address_override_v4":"2001:db8::1","updated_at":"2026-01-02T03:04:05Z"}},"rendered":{}}`},
+		{"v4 in v6 override", `{"version":1,"pool_version":0,"manual":[],"agents":{"edge-1":{"reported_v4":[],"reported_v6":[],"address_override_v6":"198.51.100.1","updated_at":"2026-01-02T03:04:05Z"}},"rendered":{}}`},
 		{"bad rendered digest", `{"version":1,"pool_version":0,"manual":[],"agents":{},"rendered":{"edge-1":{"pool_version":1,"config_sha256":"zz"}}}`},
 		{"bad rendered agent", `{"version":1,"pool_version":0,"manual":[],"agents":{},"rendered":{"bad agent":{"pool_version":1,"config_sha256":"` + strings.Repeat("ab", 32) + `"}}}`},
 	}
@@ -570,6 +624,35 @@ func TestOpenRejectsInvalidDocuments(t *testing.T) {
 				t.Fatalf("Open() error = nil, want error for %s", testCase.name)
 			}
 		})
+	}
+}
+
+func TestOpenMigratesLegacyAddressOverride(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "outbound-pool.json")
+	content := `{
+  "version": 1,
+  "pool_version": 3,
+  "manual": [],
+  "agents": {
+    "edge-v4": {"reported_v4": [], "reported_v6": [], "address_override": "198.51.100.4", "updated_at": "2026-01-02T03:04:05Z"},
+    "edge-v6": {"reported_v4": [], "reported_v6": [], "address_override": "2001:db8::6", "updated_at": "2026-01-02T03:04:05Z"}
+  },
+  "rendered": {}
+}`
+	if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
+		t.Fatalf("WriteFile() error = %v", err)
+	}
+	registry, err := Open(path)
+	if err != nil {
+		t.Fatalf("Open() error = %v", err)
+	}
+	v4, v6 := registry.Overrides("edge-v4")
+	if v4 != "198.51.100.4" || v6 != "" {
+		t.Fatalf("edge-v4 Overrides() = %q/%q", v4, v6)
+	}
+	v4, v6 = registry.Overrides("edge-v6")
+	if v4 != "" || v6 != "2001:db8::6" {
+		t.Fatalf("edge-v6 Overrides() = %q/%q", v4, v6)
 	}
 }
 

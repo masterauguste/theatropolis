@@ -62,9 +62,8 @@
             <thead>
               <tr>
                 <th scope="col">Server</th>
-                <th scope="col">Enrollment</th>
                 <th scope="col">Connection</th>
-                <th scope="col">Details</th>
+                <th scope="col">IP addresses</th>
                 <th scope="col"><span class="visually-hidden">Actions</span></th>
               </tr>
             </thead>
@@ -80,19 +79,16 @@
                     </div>
                   </div>
                 </td>
-                <td data-label="Enrollment">
-                  <span class="status status--{{.EnrollmentClass}}">
-                    <span aria-hidden="true"></span>{{.EnrollmentLabel}}
-                  </span>
-                </td>
                 <td data-label="Connection">
                   <span class="status status--{{.ConnectionClass}}">
-                    <span aria-hidden="true"></span>{{.ConnectionLabel}}
+                    <span aria-hidden="true"></span>{{if eq .ConnectionClass "online"}}Established{{else}}Not established{{end}}
                   </span>
                 </td>
-                <td data-label="Details">
-                  <span class="muted">{{.Detail}}</span>
-                  {{if .AddressLine}}<small class="muted server-address">{{.AddressLine}}</small>{{end}}
+                <td data-label="IP addresses">
+                  {{if or .IPv4 .IPv6}}
+                  {{if .IPv4}}<span class="pool-address-line">IPv4 <code>{{.IPv4}}</code></span>{{end}}
+                  {{if .IPv6}}<span class="pool-address-line">IPv6 <code>{{.IPv6}}</code></span>{{end}}
+                  {{else}}<span class="muted">—</span>{{end}}
                 </td>
                 <td data-label="Actions">
                   <a class="button button--secondary button--small" href="{{.URL}}">Manage</a>

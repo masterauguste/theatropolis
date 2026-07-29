@@ -729,10 +729,8 @@ func TestServersPageUsesRealEnrollmentAndConnectionState(t *testing.T) {
 		"edge-expired",
 		"edge-online",
 		"edge-offline",
-		">Online<",
-		"Offline",
-		">Pending<",
-		"Expired",
+		"Established",
+		"Not established",
 		"4 total",
 	} {
 		if !strings.Contains(body, expected) {

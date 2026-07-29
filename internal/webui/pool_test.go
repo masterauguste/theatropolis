@@ -348,7 +348,7 @@ func TestServerAddressOverride(t *testing.T) {
 	if _, err := fixture.controller.poolRegistry.SetReported(
 		"edge-offline",
 		[]string{"192.0.2.9"},
-		nil,
+		[]string{"2001:db8::9"},
 	); err != nil {
 		t.Fatal(err)
 	}
@@ -360,7 +360,8 @@ func TestServerAddressOverride(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	// The servers page shows one compact address line and no override form.
+	// The servers page shows connection establishment plus independently
+	// resolved IPv4 and IPv6 addresses, with no override form.
 	request := fixture.authenticatedRequest(http.MethodGet, "/servers", "")
 	response := httptest.NewRecorder()
 	fixture.handler.ServeHTTP(response, request)
@@ -369,26 +370,29 @@ func TestServerAddressOverride(t *testing.T) {
 	}
 	body := response.Body.String()
 	for _, expected := range []string{
-		`server-address">192.0.2.9<`,
-		`server-address">—<`,
+		`IPv4 <code>192.0.2.9</code>`,
+		`IPv6 <code>2001:db8::9</code>`,
+		`Established`,
+		`Not established`,
 	} {
 		if !strings.Contains(body, expected) {
 			t.Errorf("servers page does not contain %q", expected)
 		}
 	}
 	for _, unexpected := range []string{
-		`name="address"`,
+		`name="override_ipv4"`,
+		`name="override_ipv6"`,
 		"Connected from:",
 		"Last known address:",
-		"No address reported",
+		"(reported)",
 	} {
 		if strings.Contains(body, unexpected) {
 			t.Errorf("servers page still contains %q", unexpected)
 		}
 	}
 
-	// The override form lives on the pool page, showing the resolved address
-	// and its source for each agent group.
+	// The override form lives in each pool summary dialog, and the displayed
+	// addresses deliberately omit their internal source attribution.
 	request = fixture.authenticatedRequest(http.MethodGet, "/pool", "")
 	response = httptest.NewRecorder()
 	fixture.handler.ServeHTTP(response, request)
@@ -398,17 +402,24 @@ func TestServerAddressOverride(t *testing.T) {
 	for _, expected := range []string{
 		`action="/servers/edge-online/address"`,
 		`action="/servers/edge-offline/address"`,
-		`name="address"`,
-		"Pool address: 192.0.2.9 (reported)",
+		`name="override_ipv4"`,
+		`name="override_ipv6"`,
+		`<code>192.0.2.9</code>`,
+		`<code>2001:db8::9</code>`,
 	} {
 		if !strings.Contains(response.Body.String(), expected) {
 			t.Errorf("pool page does not contain %q", expected)
 		}
 	}
 
+	if strings.Contains(response.Body.String(), "(reported)") {
+		t.Error("pool page exposes address source attribution")
+	}
+
 	form := url.Values{
-		"address":    {"198.51.100.9"},
-		"csrf_token": {fixture.session.CSRFToken},
+		"override_ipv4": {"198.51.100.9"},
+		"override_ipv6": {"2001:db8::99"},
+		"csrf_token":    {fixture.session.CSRFToken},
 	}.Encode()
 
 	// Origin and CSRF enforcement.
@@ -423,8 +434,9 @@ func TestServerAddressOverride(t *testing.T) {
 		t.Fatalf("address override without Origin status = %d, want 403", response.Code)
 	}
 	badCSRF := url.Values{
-		"address":    {"198.51.100.9"},
-		"csrf_token": {"wrong"},
+		"override_ipv4": {"198.51.100.9"},
+		"override_ipv6": {""},
+		"csrf_token":    {"wrong"},
 	}.Encode()
 	request = fixture.authenticatedMutationRequest(
 		http.MethodPost,
@@ -437,10 +449,11 @@ func TestServerAddressOverride(t *testing.T) {
 		t.Fatalf("address override with bad CSRF status = %d, want 403", response.Code)
 	}
 
-	// The address must parse as an IP or be empty.
+	// Each address must parse as its declared family or be empty.
 	invalid := url.Values{
-		"address":    {"not-an-ip"},
-		"csrf_token": {fixture.session.CSRFToken},
+		"override_ipv4": {"2001:db8::1"},
+		"override_ipv6": {""},
+		"csrf_token":    {fixture.session.CSRFToken},
 	}.Encode()
 	request = fixture.authenticatedMutationRequest(
 		http.MethodPost,
@@ -454,10 +467,19 @@ func TestServerAddressOverride(t *testing.T) {
 	}
 
 	// Private/ULA overrides are rejected by the registry as non-routable.
-	for _, address := range []string{"10.0.0.8", "192.168.1.2", "100.64.0.9", "fd12:3456::1"} {
+	for _, testCase := range []struct {
+		v4 string
+		v6 string
+	}{
+		{v4: "10.0.0.8"},
+		{v4: "192.168.1.2"},
+		{v4: "100.64.0.9"},
+		{v6: "fd12:3456::1"},
+	} {
 		private := url.Values{
-			"address":    {address},
-			"csrf_token": {fixture.session.CSRFToken},
+			"override_ipv4": {testCase.v4},
+			"override_ipv6": {testCase.v6},
+			"csrf_token":    {fixture.session.CSRFToken},
 		}.Encode()
 		request = fixture.authenticatedMutationRequest(
 			http.MethodPost,
@@ -467,11 +489,11 @@ func TestServerAddressOverride(t *testing.T) {
 		response = httptest.NewRecorder()
 		fixture.handler.ServeHTTP(response, request)
 		if response.Code != http.StatusBadRequest {
-			t.Fatalf("private override %q status = %d, want 400", address, response.Code)
+			t.Fatalf("private overrides %q/%q status = %d, want 400", testCase.v4, testCase.v6, response.Code)
 		}
 	}
 
-	// Valid override.
+	// Valid independent family overrides.
 	request = fixture.authenticatedMutationRequest(
 		http.MethodPost,
 		"/servers/edge-online/address",
@@ -479,36 +501,43 @@ func TestServerAddressOverride(t *testing.T) {
 	)
 	response = httptest.NewRecorder()
 	fixture.handler.ServeHTTP(response, request)
-	if response.Code != http.StatusSeeOther || response.Header().Get("Location") != "/servers" {
+	if response.Code != http.StatusSeeOther || response.Header().Get("Location") != "/pool" {
 		t.Fatalf("address override response = %d %q", response.Code, response.Header().Get("Location"))
 	}
-	address, ok := fixture.controller.poolRegistry.AgentAddress("edge-online")
-	if !ok || address != "198.51.100.9" {
-		t.Fatalf("resolved pool address = %q (ok=%v), want 198.51.100.9", address, ok)
+	ipv4, ok := fixture.controller.poolRegistry.AgentAddressForFamily("edge-online", pool.FamilyIPv4)
+	if !ok || ipv4 != "198.51.100.9" {
+		t.Fatalf("resolved IPv4 = %q (ok=%v), want 198.51.100.9", ipv4, ok)
+	}
+	ipv6, ok := fixture.controller.poolRegistry.AgentAddressForFamily("edge-online", pool.FamilyIPv6)
+	if !ok || ipv6 != "2001:db8::99" {
+		t.Fatalf("resolved IPv6 = %q (ok=%v), want 2001:db8::99", ipv6, ok)
 	}
 	if fixture.controller.propagateCalls != 1 {
 		t.Fatalf("propagation calls = %d, want 1", fixture.controller.propagateCalls)
 	}
 
-	// The servers page reflects the override as the single address line, and
-	// the pool page labels its source.
+	// Both pages reflect both overrides without exposing source labels.
 	request = fixture.authenticatedRequest(http.MethodGet, "/servers", "")
 	response = httptest.NewRecorder()
 	fixture.handler.ServeHTTP(response, request)
-	if !strings.Contains(response.Body.String(), `server-address">198.51.100.9<`) {
+	if !strings.Contains(response.Body.String(), `IPv4 <code>198.51.100.9</code>`) ||
+		!strings.Contains(response.Body.String(), `IPv6 <code>2001:db8::99</code>`) {
 		t.Errorf("servers page does not reflect the override: %s", response.Body.String())
 	}
 	request = fixture.authenticatedRequest(http.MethodGet, "/pool", "")
 	response = httptest.NewRecorder()
 	fixture.handler.ServeHTTP(response, request)
-	if !strings.Contains(response.Body.String(), "Pool address: 198.51.100.9 (override)") {
+	if !strings.Contains(response.Body.String(), `value="198.51.100.9"`) ||
+		!strings.Contains(response.Body.String(), `value="2001:db8::99"`) ||
+		strings.Contains(response.Body.String(), "(override)") {
 		t.Errorf("pool page does not reflect the override: %s", response.Body.String())
 	}
 
-	// An empty submission clears the override.
+	// An empty submission clears both overrides.
 	clearForm := url.Values{
-		"address":    {""},
-		"csrf_token": {fixture.session.CSRFToken},
+		"override_ipv4": {""},
+		"override_ipv6": {""},
+		"csrf_token":    {fixture.session.CSRFToken},
 	}.Encode()
 	request = fixture.authenticatedMutationRequest(
 		http.MethodPost,
@@ -520,8 +549,9 @@ func TestServerAddressOverride(t *testing.T) {
 	if response.Code != http.StatusSeeOther {
 		t.Fatalf("clear override status = %d, want 303", response.Code)
 	}
-	if _, ok := fixture.controller.poolRegistry.AgentAddress("edge-online"); ok {
-		t.Fatal("clearing the override left a resolved address")
+	overrideV4, overrideV6 := fixture.controller.poolRegistry.Overrides("edge-online")
+	if overrideV4 != "" || overrideV6 != "" {
+		t.Fatalf("clearing overrides left %q/%q", overrideV4, overrideV6)
 	}
 
 	// Pending and unknown agents cannot take an override.
@@ -605,14 +635,78 @@ func TestPoolPageAddressFamilies(t *testing.T) {
 	}
 	body := response.Body.String()
 	for _, expected := range []string{
-		// The auto-resolved family carries the winning source label.
-		"v4 <code>203.0.113.7</code> (reported)",
-		"v6 —",
-		"no address — unreachable",
+		"<small>IPv4</small><code>203.0.113.7</code>",
+		"<small>IPv6</small><span class=\"muted\">—</span>",
+		"<small>IPv4</small><span class=\"muted\">—</span>",
 	} {
 		if !strings.Contains(body, expected) {
 			t.Errorf("pool page table does not contain %q", expected)
 		}
+	}
+	if strings.Contains(body, "(reported)") || strings.Contains(body, "(probed)") ||
+		strings.Contains(body, "(observed)") || strings.Contains(body, "(override)") {
+		t.Error("pool page exposes internal address source labels")
+	}
+}
+
+func TestPoolPageCollapsesUsersButRoutingOptionsRetainThem(t *testing.T) {
+	t.Parallel()
+
+	fixture := newPoolFixture(t)
+	enrollAgent(t, fixture.registry, "edge-source")
+	enrollAgent(t, fixture.registry, "edge-consumer")
+	const config = `{"inbounds":[{"type":"anytls","tag":"shared-in","listen_port":443,"users":[{"name":"alice","password":"one"},{"name":"bob","password":"two"}]}],"outbounds":[]}`
+	seedPoolDeployment(t, fixture, "edge-source", config)
+	if _, err := fixture.controller.poolRegistry.SetReported(
+		"edge-source",
+		[]string{"203.0.113.8"},
+		[]string{"2001:db8::8"},
+	); err != nil {
+		t.Fatal(err)
+	}
+
+	request := fixture.authenticatedRequest(http.MethodGet, "/pool", "")
+	response := httptest.NewRecorder()
+	fixture.handler.ServeHTTP(response, request)
+	if response.Code != http.StatusOK {
+		t.Fatalf("GET /pool status = %d, body = %s", response.Code, response.Body.String())
+	}
+	body := response.Body.String()
+	if got := strings.Count(body, `class="pool-summary-card"`); got != 1 {
+		t.Fatalf("pool summary count = %d, want one inbound summary", got)
+	}
+	for _, expected := range []string{
+		"edge-source",
+		"shared-in",
+		"alice",
+		"bob",
+		"agent/edge-source/shared-in/alice",
+		"agent/edge-source/shared-in/bob",
+	} {
+		if !strings.Contains(body, expected) {
+			t.Errorf("pool page does not contain %q", expected)
+		}
+	}
+
+	request = fixture.authenticatedRequest(
+		http.MethodGet,
+		"/servers/edge-consumer/pool-options",
+		"",
+	)
+	response = httptest.NewRecorder()
+	fixture.handler.ServeHTTP(response, request)
+	if response.Code != http.StatusOK {
+		t.Fatalf("pool options status = %d, body = %s", response.Code, response.Body.String())
+	}
+	var result poolOptionsResponse
+	if err := json.Unmarshal(response.Body.Bytes(), &result); err != nil {
+		t.Fatalf("decode pool options: %v", err)
+	}
+	if len(result.Options) != 2 {
+		t.Fatalf("routing option count = %d, want one per user", len(result.Options))
+	}
+	if result.Options[0].User != "alice" || result.Options[1].User != "bob" {
+		t.Fatalf("routing users = %q/%q, want alice/bob", result.Options[0].User, result.Options[1].User)
 	}
 }
 

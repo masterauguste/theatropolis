@@ -162,7 +162,8 @@ type agentRecord struct {
 	observed   string
 	probedV4   []string
 	probedV6   []string
-	override   string
+	overrideV4 string
+	overrideV6 string
 	updatedAt  time.Time
 }
 
@@ -438,7 +439,8 @@ func (r *Registry) SetReported(agentID string, v4, v6 []string) (bool, error) {
 		observed:   previous.observed,
 		probedV4:   probedV4,
 		probedV6:   probedV6,
-		override:   previous.override,
+		overrideV4: previous.overrideV4,
+		overrideV6: previous.overrideV6,
 		updatedAt:  r.now(),
 	}
 	previousVersion := r.poolVersion
@@ -499,7 +501,8 @@ func (r *Registry) SetProbed(agentID string, v4, v6 []string) (bool, error) {
 		observed:   previous.observed,
 		probedV4:   normalizedV4,
 		probedV6:   normalizedV6,
-		override:   previous.override,
+		overrideV4: previous.overrideV4,
+		overrideV6: previous.overrideV6,
 		updatedAt:  r.now(),
 	}
 	previousVersion := r.poolVersion
@@ -558,7 +561,8 @@ func (r *Registry) SetObserved(agentID, addr string) (bool, error) {
 		record.reportedV6 = previous.reportedV6
 		record.probedV4 = previous.probedV4
 		record.probedV6 = previous.probedV6
-		record.override = previous.override
+		record.overrideV4 = previous.overrideV4
+		record.overrideV6 = previous.overrideV6
 	}
 	r.agents[agentID] = record
 	previousVersion := r.poolVersion
@@ -575,37 +579,41 @@ func (r *Registry) SetObserved(agentID, addr string) (bool, error) {
 	return true, nil
 }
 
-// SetOverride sets or clears (empty addr) the operator-pinned address for an
-// agent. A non-empty addr must parse as a globally routable IP address;
-// anything else (including private, ULA, CGNAT, and reserved space) is
-// rejected with ErrInvalidAddress, which the web UI surfaces as a 400.
-// Changes bump the pool version; setting the already-current value is a
-// no-op.
-func (r *Registry) SetOverride(agentID, addr string) error {
+// SetOverrides sets or clears the operator-pinned address independently for
+// each family. Non-empty values must be globally routable addresses of the
+// corresponding family. Changes bump the pool version; setting the already
+// current pair is a no-op.
+func (r *Registry) SetOverrides(agentID, v4, v6 string) error {
 	if !validComponent(agentID) {
 		return ErrInvalidName
 	}
-	addr = strings.TrimSpace(addr)
-	if addr != "" {
-		parsed, err := netip.ParseAddr(addr)
-		if err != nil || !globallyRoutable(parsed) {
-			return ErrInvalidAddress
-		}
-		addr = parsed.String()
+	normalizedV4, err := normalizeOverride(v4, FamilyIPv4)
+	if err != nil {
+		return err
+	}
+	normalizedV6, err := normalizeOverride(v6, FamilyIPv6)
+	if err != nil {
+		return err
 	}
 
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
 	previous, existed := r.agents[agentID]
-	if existed && previous.override == addr {
+	if existed &&
+		previous.overrideV4 == normalizedV4 &&
+		previous.overrideV6 == normalizedV6 {
 		return nil
 	}
-	if !existed && addr == "" {
+	if !existed && normalizedV4 == "" && normalizedV6 == "" {
 		return nil
 	}
 
-	record := agentRecord{override: addr, updatedAt: r.now()}
+	record := agentRecord{
+		overrideV4: normalizedV4,
+		overrideV6: normalizedV6,
+		updatedAt:  r.now(),
+	}
 	if existed {
 		record.reportedV4 = previous.reportedV4
 		record.reportedV6 = previous.reportedV6
@@ -626,6 +634,48 @@ func (r *Registry) SetOverride(agentID, addr string) error {
 		return err
 	}
 	return nil
+}
+
+// SetOverride preserves the original single-address API for callers and
+// older tests. Setting one address clears the other family's override, while
+// an empty address clears both.
+func (r *Registry) SetOverride(agentID, addr string) error {
+	addr = strings.TrimSpace(addr)
+	if addr == "" {
+		return r.SetOverrides(agentID, "", "")
+	}
+	parsed, err := netip.ParseAddr(addr)
+	if err != nil || !globallyRoutable(parsed) {
+		return ErrInvalidAddress
+	}
+	if parsed.Is4() {
+		return r.SetOverrides(agentID, parsed.String(), "")
+	}
+	return r.SetOverrides(agentID, "", parsed.String())
+}
+
+// Overrides returns the raw operator-pinned addresses for display in the web
+// interface. Empty values mean that family is using automatic resolution.
+func (r *Registry) Overrides(agentID string) (v4, v6 string) {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	record, ok := r.agents[agentID]
+	if !ok {
+		return "", ""
+	}
+	return record.overrideV4, record.overrideV6
+}
+
+func normalizeOverride(addr string, family Family) (string, error) {
+	addr = strings.TrimSpace(addr)
+	if addr == "" {
+		return "", nil
+	}
+	parsed, err := netip.ParseAddr(addr)
+	if err != nil || !globallyRoutable(parsed) || addressFamily(parsed.String()) != family {
+		return "", ErrInvalidAddress
+	}
+	return parsed.String(), nil
 }
 
 // AddressSourceForFamily resolves the usable address for one agent and IP
@@ -664,8 +714,12 @@ func resolveForFamily(record agentRecord, family Family) (string, AddressSource,
 	if family != FamilyIPv4 && family != FamilyIPv6 {
 		return "", 0, false
 	}
-	if record.override != "" && addressFamily(record.override) == family {
-		return record.override, SourceOverride, true
+	override := record.overrideV4
+	if family == FamilyIPv6 {
+		override = record.overrideV6
+	}
+	if override != "" {
+		return override, SourceOverride, true
 	}
 	if record.observed != "" && addressFamily(record.observed) == family {
 		return record.observed, SourceObserved, true
@@ -855,16 +909,30 @@ func validateDiskAgent(agent diskAgent) (agentRecord, error) {
 			observed = parsed.String()
 		}
 	}
-	override := strings.TrimSpace(agent.AddressOverride)
-	if override != "" {
-		parsed, err := netip.ParseAddr(override)
-		if err != nil {
+	overrideV4, err := normalizeDiskOverride(agent.AddressOverrideV4, FamilyIPv4)
+	if err != nil {
+		return agentRecord{}, err
+	}
+	overrideV6, err := normalizeDiskOverride(agent.AddressOverrideV6, FamilyIPv6)
+	if err != nil {
+		return agentRecord{}, err
+	}
+	// Migrate the original single override field into its matching family.
+	// Explicit family fields win if a partially migrated document contains
+	// both representations.
+	legacyOverride := strings.TrimSpace(agent.AddressOverride)
+	if legacyOverride != "" {
+		parsed, parseErr := netip.ParseAddr(legacyOverride)
+		if parseErr != nil {
 			return agentRecord{}, errors.New("pool: registry contains an invalid address override")
 		}
-		if !globallyRoutable(parsed) {
-			override = ""
-		} else {
-			override = parsed.String()
+		if globallyRoutable(parsed) {
+			if parsed.Is4() && overrideV4 == "" {
+				overrideV4 = parsed.String()
+			}
+			if parsed.Is6() && overrideV6 == "" {
+				overrideV6 = parsed.String()
+			}
 		}
 	}
 	return agentRecord{
@@ -873,9 +941,27 @@ func validateDiskAgent(agent diskAgent) (agentRecord, error) {
 		observed:   observed,
 		probedV4:   probedV4,
 		probedV6:   probedV6,
-		override:   override,
+		overrideV4: overrideV4,
+		overrideV6: overrideV6,
 		updatedAt:  agent.UpdatedAt.UTC(),
 	}, nil
+}
+
+func normalizeDiskOverride(addr string, family Family) (string, error) {
+	addr = strings.TrimSpace(addr)
+	if addr == "" {
+		return "", nil
+	}
+	parsed, err := netip.ParseAddr(addr)
+	if err != nil || addressFamily(parsed.String()) != family {
+		return "", errors.New("pool: registry contains an invalid address override")
+	}
+	// Stale non-routable overrides written by an older release are dropped
+	// rather than made eligible for routing.
+	if !globallyRoutable(parsed) {
+		return "", nil
+	}
+	return parsed.String(), nil
 }
 
 func stringSlicesEqual(left, right []string) bool {
@@ -909,13 +995,15 @@ type diskManual struct {
 // added after version 1 shipped; they are optional, so version-1 documents
 // written before them load cleanly (missing fields decode as empty).
 type diskAgent struct {
-	ReportedV4      []string  `json:"reported_v4"`
-	ReportedV6      []string  `json:"reported_v6"`
-	ObservedAddress string    `json:"observed_address,omitempty"`
-	ProbedV4        []string  `json:"probed_v4,omitempty"`
-	ProbedV6        []string  `json:"probed_v6,omitempty"`
-	AddressOverride string    `json:"address_override"`
-	UpdatedAt       time.Time `json:"updated_at"`
+	ReportedV4        []string  `json:"reported_v4"`
+	ReportedV6        []string  `json:"reported_v6"`
+	ObservedAddress   string    `json:"observed_address,omitempty"`
+	ProbedV4          []string  `json:"probed_v4,omitempty"`
+	ProbedV6          []string  `json:"probed_v6,omitempty"`
+	AddressOverride   string    `json:"address_override,omitempty"` // legacy single-family field
+	AddressOverrideV4 string    `json:"address_override_v4,omitempty"`
+	AddressOverrideV6 string    `json:"address_override_v6,omitempty"`
+	UpdatedAt         time.Time `json:"updated_at"`
 }
 
 type diskRender struct {
@@ -950,13 +1038,14 @@ func (r *Registry) persistLocked() error {
 	}
 	for agentID, record := range r.agents {
 		stored.Agents[agentID] = diskAgent{
-			ReportedV4:      append([]string(nil), record.reportedV4...),
-			ReportedV6:      append([]string(nil), record.reportedV6...),
-			ObservedAddress: record.observed,
-			ProbedV4:        append([]string(nil), record.probedV4...),
-			ProbedV6:        append([]string(nil), record.probedV6...),
-			AddressOverride: record.override,
-			UpdatedAt:       record.updatedAt.UTC(),
+			ReportedV4:        append([]string(nil), record.reportedV4...),
+			ReportedV6:        append([]string(nil), record.reportedV6...),
+			ObservedAddress:   record.observed,
+			ProbedV4:          append([]string(nil), record.probedV4...),
+			ProbedV6:          append([]string(nil), record.probedV6...),
+			AddressOverrideV4: record.overrideV4,
+			AddressOverrideV6: record.overrideV6,
+			UpdatedAt:         record.updatedAt.UTC(),
 		}
 	}
 	for agentID, record := range r.rendered {

@@ -197,10 +197,8 @@ type agentView struct {
 	ConnectionClass string
 	Detail          string
 	URL             string
-	// AddressLine is the agent's single compact address summary: the
-	// pool-resolved address, else the live reported addresses, else an
-	// em-dash. Empty for non-enrolled agents.
-	AddressLine string
+	IPv4            string
+	IPv6            string
 }
 
 type agentDetailView struct {
@@ -555,7 +553,7 @@ func (h *Handler) serversPage(response http.ResponseWriter, request *http.Reques
 			h.sessions.IsOnline(snapshot.ID)
 		view := agentViewFor(snapshot, now, online)
 		if snapshot.State == identity.AgentStateEnrolled {
-			view.AddressLine = h.poolAddressLine(snapshot.ID, online)
+			view.IPv4, view.IPv6 = h.poolAddresses(snapshot.ID)
 		}
 		agents = append(agents, view)
 		switch {
