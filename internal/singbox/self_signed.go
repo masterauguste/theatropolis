@@ -12,9 +12,11 @@ import (
 	"errors"
 	"fmt"
 	"math/big"
+	"net/netip"
 	"os"
 	"path/filepath"
 	"regexp"
+	"strings"
 	"time"
 )
 
@@ -24,10 +26,14 @@ var managedSelfSignedPathPattern = regexp.MustCompile(
 	`^certificates/theatropolis-self-signed/([a-z0-9_-]{1,96})/(certificate\.pem|private-key\.pem)$`,
 )
 var managedSelfSignedIDPattern = regexp.MustCompile(`^[a-z0-9_-]{1,96}$`)
+var selfSignedDNSLabelPattern = regexp.MustCompile(
+	`^[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?$`,
+)
 
 type managedTLSPaths struct {
 	CertificatePath string `json:"certificate_path"`
 	KeyPath         string `json:"key_path"`
+	ServerName      string `json:"server_name"`
 }
 
 // prepareManagedSelfSignedCertificates materializes only the reserved paths
@@ -47,7 +53,7 @@ func prepareManagedSelfSignedCertificates(
 	if err := decoder.Decode(&document); err != nil {
 		return nil
 	}
-	requested := make(map[string]struct{})
+	requested := make(map[string]string)
 	for _, inbound := range document.Inbounds {
 		certificateMatch := managedSelfSignedPathPattern.FindStringSubmatch(
 			inbound.TLS.CertificatePath,
@@ -64,10 +70,23 @@ func prepareManagedSelfSignedCertificates(
 			keyMatch[2] != "private-key.pem" {
 			return errors.New("managed self-signed certificate paths do not match")
 		}
-		requested[certificateMatch[1]] = struct{}{}
+		serverName := strings.TrimSpace(inbound.TLS.ServerName)
+		if err := validateSelfSignedServerName(serverName); err != nil {
+			return err
+		}
+		if previous, exists := requested[certificateMatch[1]]; exists &&
+			previous != serverName {
+			return errors.New("managed self-signed certificate identity has conflicting names")
+		}
+		requested[certificateMatch[1]] = serverName
 	}
-	for id := range requested {
-		if err := ensureManagedSelfSignedCertificate(stateDirectory, id, now); err != nil {
+	for id, serverName := range requested {
+		if err := ensureManagedSelfSignedCertificate(
+			stateDirectory,
+			id,
+			serverName,
+			now,
+		); err != nil {
 			return err
 		}
 	}
@@ -77,6 +96,7 @@ func prepareManagedSelfSignedCertificates(
 func ensureManagedSelfSignedCertificate(
 	stateDirectory string,
 	id string,
+	serverName string,
 	now time.Time,
 ) error {
 	if !managedSelfSignedIDPattern.MatchString(id) {
@@ -117,10 +137,10 @@ func ensureManagedSelfSignedCertificate(
 		if err := os.Chmod(keyPath, 0o600); err != nil {
 			return fmt.Errorf("secure managed self-signed private key: %w", err)
 		}
-		return validateManagedSelfSignedPair(certificatePath, keyPath)
+		return validateManagedSelfSignedPair(certificatePath, keyPath, serverName)
 	}
 
-	certificatePEM, keyPEM, err := generateSelfSignedPair(now)
+	certificatePEM, keyPEM, err := generateSelfSignedPair(serverName, now)
 	if err != nil {
 		return err
 	}
@@ -151,7 +171,10 @@ func regularFileExists(path string) (bool, error) {
 	return true, nil
 }
 
-func generateSelfSignedPair(now time.Time) ([]byte, []byte, error) {
+func generateSelfSignedPair(serverName string, now time.Time) ([]byte, []byte, error) {
+	if err := validateSelfSignedServerName(serverName); err != nil {
+		return nil, nil, err
+	}
 	privateKey, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
 	if err != nil {
 		return nil, nil, fmt.Errorf("generate managed self-signed private key: %w", err)
@@ -167,14 +190,18 @@ func generateSelfSignedPair(now time.Time) ([]byte, []byte, error) {
 	template := &x509.Certificate{
 		SerialNumber: serial,
 		Subject: pkix.Name{
-			CommonName: "Theatropolis agent",
+			CommonName: serverName,
 		},
 		NotBefore:             now.UTC().Add(-5 * time.Minute),
 		NotAfter:              now.UTC().AddDate(5, 0, 0),
 		KeyUsage:              x509.KeyUsageDigitalSignature | x509.KeyUsageKeyEncipherment,
 		ExtKeyUsage:           []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth},
 		BasicConstraintsValid: true,
-		DNSNames:              []string{"localhost"},
+	}
+	if address, err := netip.ParseAddr(serverName); err == nil {
+		template.IPAddresses = append(template.IPAddresses, address.AsSlice())
+	} else {
+		template.DNSNames = append(template.DNSNames, serverName)
 	}
 	certificateDER, err := x509.CreateCertificate(
 		rand.Reader,
@@ -243,7 +270,11 @@ func installNewPrivateFile(path string, content []byte) error {
 	return nil
 }
 
-func validateManagedSelfSignedPair(certificatePath, keyPath string) error {
+func validateManagedSelfSignedPair(
+	certificatePath,
+	keyPath,
+	serverName string,
+) error {
 	certificatePEM, err := os.ReadFile(certificatePath)
 	if err != nil {
 		return err
@@ -270,6 +301,28 @@ func validateManagedSelfSignedPair(certificatePath, keyPath string) error {
 	publicKey, publicOK := certificate.PublicKey.(*ecdsa.PublicKey)
 	if !keyOK || !publicOK || !publicKey.Equal(&privateKey.PublicKey) {
 		return errors.New("managed self-signed certificate and private key do not match")
+	}
+	if err := certificate.VerifyHostname(serverName); err != nil {
+		return errors.New("managed self-signed certificate does not cover its configured name")
+	}
+	return nil
+}
+
+func validateSelfSignedServerName(serverName string) error {
+	if serverName == "" || len(serverName) > 253 ||
+		serverName != strings.TrimSpace(serverName) {
+		return errors.New("managed self-signed certificate name is invalid")
+	}
+	if _, err := netip.ParseAddr(serverName); err == nil {
+		return nil
+	}
+	if strings.HasSuffix(serverName, ".") {
+		serverName = strings.TrimSuffix(serverName, ".")
+	}
+	for _, label := range strings.Split(serverName, ".") {
+		if !selfSignedDNSLabelPattern.MatchString(label) {
+			return errors.New("managed self-signed certificate name is invalid")
+		}
 	}
 	return nil
 }

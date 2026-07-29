@@ -244,13 +244,13 @@
                 <legend>TLS certificate</legend>
                 <div class="builder-fields builder-fields--three">
                   <label class="field"><span>Certificate mode</span><select data-inbound-field="tls_mode"><option value="acme">ACME (Let's Encrypt)</option><option value="self_signed">Self-signed by agent</option><option value="files">Existing certificate files</option></select></label>
-                  <label class="field" data-acme-field><span>Domain</span><input type="text" data-inbound-field="tls_domain" placeholder="proxy.example.com"></label>
+                  <label class="field" data-tls-domain-field><span>Domain or IP address</span><input type="text" data-inbound-field="tls_domain" placeholder="proxy.example.com"></label>
                   <label class="field" data-acme-field><span>ACME email</span><input type="email" data-inbound-field="tls_email" placeholder="admin@example.com"></label>
                   <label class="field" data-certificate-file-field hidden><span>Certificate path</span><input type="text" data-inbound-field="certificate_path" placeholder="/etc/theatropolis/certs/server.pem"></label>
                   <label class="field" data-certificate-file-field hidden><span>Private key path</span><input type="text" data-inbound-field="key_path" placeholder="/etc/theatropolis/certs/server.key"></label>
                 </div>
                 <small data-acme-field>ACME HTTP-01 requires port 80 to be free.</small>
-                <small data-self-signed-field hidden>The agent generates and securely retains this certificate and private key in its own state directory.</small>
+                <small data-self-signed-field hidden>The agent signs this domain or IP address and securely retains the certificate and private key in its own state directory.</small>
               </fieldset>
               <fieldset class="builder-subsection">
                 <div class="builder-subsection__header"><legend>Users</legend><button class="button-link" type="button" data-add-user>Add user</button></div>

@@ -125,17 +125,17 @@ if (configTextarea && configurationForm && configurationEditor) {
     }
   };
   const safeTagPart = (value) => value.toLowerCase().replace(/[^a-z0-9_-]+/g, "-").replace(/^-+|-+$/g, "") || "inbound";
-  const selfSignedID = (value) => {
-    const text = String(value || "inbound");
+  const selfSignedID = (tag, serverName) => {
+    const text = `${String(tag || "inbound")}\u0000${String(serverName || "")}`;
     let hash = 2166136261;
     for (let index = 0; index < text.length; index += 1) {
       hash ^= text.charCodeAt(index);
       hash = Math.imul(hash, 16777619);
     }
-    return `${safeTagPart(text).slice(0, 64)}-${(hash >>> 0).toString(16).padStart(8, "0")}`;
+    return `${safeTagPart(tag || "inbound").slice(0, 64)}-${(hash >>> 0).toString(16).padStart(8, "0")}`;
   };
-  const selfSignedPaths = (tag) => {
-    const id = selfSignedID(tag);
+  const selfSignedPaths = (tag, serverName) => {
+    const id = selfSignedID(tag, serverName);
     return {
       certificate: `${managedSelfSignedPrefix}${id}/certificate.pem`,
       key: `${managedSelfSignedPrefix}${id}/private-key.pem`,
@@ -178,7 +178,7 @@ if (configTextarea && configurationForm && configurationEditor) {
     const password = field(row, "user", "password").value;
     const tlsMode = field(card, "inbound", "tls_mode").value;
     const tlsDomain = field(card, "inbound", "tls_domain").value;
-    const host = tlsMode === "acme" && tlsDomain ? tlsDomain : window.location.hostname;
+    const host = tlsDomain || window.location.hostname;
     const insecure = tlsMode === "acme" ? "0" : "1";
     const label = encodeURIComponent(tag + " - " + userName);
     if (type === "anytls") {
@@ -312,15 +312,18 @@ if (configTextarea && configurationForm && configurationEditor) {
     for (const element of card.querySelectorAll("[data-acme-field]")) {
       element.hidden = type === "shadowsocks" || tlsMode !== "acme";
     }
+    for (const element of card.querySelectorAll("[data-tls-domain-field]")) {
+      element.hidden = type === "shadowsocks" ||
+        (tlsMode !== "acme" && tlsMode !== "self_signed");
+    }
     for (const element of card.querySelectorAll("[data-certificate-file-field]")) {
       element.hidden = type === "shadowsocks" || tlsMode !== "files";
     }
     for (const element of card.querySelectorAll("[data-self-signed-field]")) {
       element.hidden = type === "shadowsocks" || tlsMode !== "self_signed";
     }
-    for (const input of card.querySelectorAll("[data-acme-field] input")) {
-      input.required = type !== "shadowsocks" && tlsMode === "acme" && input.dataset.inboundField === "tls_domain";
-    }
+    field(card, "inbound", "tls_domain").required =
+      type !== "shadowsocks" && (tlsMode === "acme" || tlsMode === "self_signed");
     for (const input of card.querySelectorAll("[data-certificate-file-field] input")) {
       input.required = type !== "shadowsocks" && tlsMode === "files";
     }
@@ -352,7 +355,10 @@ if (configTextarea && configurationForm && configurationEditor) {
       field(card, "inbound", "tls_mode"),
       acme ? "acme" : selfSigned ? "self_signed" : "files",
     );
-    setValue(field(card, "inbound", "tls_domain"), acme?.domain?.[0]);
+    setValue(
+      field(card, "inbound", "tls_domain"),
+      acme?.domain?.[0] || (selfSigned ? inbound.tls?.server_name : ""),
+    );
     setValue(field(card, "inbound", "tls_email"), acme?.email);
     setValue(field(card, "inbound", "certificate_path"), inbound.tls?.certificate_path);
     setValue(field(card, "inbound", "key_path"), inbound.tls?.key_path);
@@ -845,9 +851,11 @@ if (configTextarea && configurationForm && configurationEditor) {
       });
       inbound.tls = { enabled: true, certificate_provider: providerTag };
     } else if (tlsMode === "self_signed") {
-      const paths = selfSignedPaths(inbound.tag);
+      const serverName = field(card, "inbound", "tls_domain").value.trim();
+      const paths = selfSignedPaths(inbound.tag, serverName);
       inbound.tls = {
         enabled: true,
+        server_name: serverName,
         certificate_path: paths.certificate,
         key_path: paths.key,
       };

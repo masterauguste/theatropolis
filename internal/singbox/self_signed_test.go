@@ -20,6 +20,7 @@ func TestPrepareManagedSelfSignedCertificatesCreatesAndReusesPair(t *testing.T) 
 			"tag": "tls-in",
 			"tls": {
 				"enabled": true,
+				"server_name": "proxy.example.com",
 				"certificate_path": "certificates/theatropolis-self-signed/tls-in-1234/certificate.pem",
 				"key_path": "certificates/theatropolis-self-signed/tls-in-1234/private-key.pem"
 			}
@@ -88,6 +89,9 @@ func TestPrepareManagedSelfSignedCertificatesCreatesAndReusesPair(t *testing.T) 
 			certificate.NotAfter,
 		)
 	}
+	if err := certificate.VerifyHostname("proxy.example.com"); err != nil {
+		t.Fatalf("certificate does not cover requested domain: %v", err)
+	}
 }
 
 func TestPrepareManagedSelfSignedCertificatesRejectsMismatchedPaths(t *testing.T) {
@@ -96,6 +100,7 @@ func TestPrepareManagedSelfSignedCertificatesRejectsMismatchedPaths(t *testing.T
 	config := []byte(`{
 		"inbounds": [{
 			"tls": {
+				"server_name": "proxy.example.com",
 				"certificate_path": "certificates/theatropolis-self-signed/one/certificate.pem",
 				"key_path": "certificates/theatropolis-self-signed/two/private-key.pem"
 			}
@@ -107,6 +112,65 @@ func TestPrepareManagedSelfSignedCertificatesRejectsMismatchedPaths(t *testing.T
 		time.Now(),
 	); err == nil {
 		t.Fatal("mismatched managed paths were accepted")
+	}
+}
+
+func TestPrepareManagedSelfSignedCertificatesSupportsIPAddress(t *testing.T) {
+	t.Parallel()
+
+	stateDirectory := t.TempDir()
+	config := []byte(`{
+		"inbounds": [{
+			"tls": {
+				"server_name": "203.0.113.9",
+				"certificate_path": "certificates/theatropolis-self-signed/ip-address/certificate.pem",
+				"key_path": "certificates/theatropolis-self-signed/ip-address/private-key.pem"
+			}
+		}]
+	}`)
+	if err := prepareManagedSelfSignedCertificates(
+		config,
+		stateDirectory,
+		time.Now(),
+	); err != nil {
+		t.Fatal(err)
+	}
+	certificatePEM, err := os.ReadFile(filepath.Join(
+		stateDirectory,
+		managedSelfSignedDirectory,
+		"ip-address",
+		"certificate.pem",
+	))
+	if err != nil {
+		t.Fatal(err)
+	}
+	certificateBlock, _ := pem.Decode(certificatePEM)
+	certificate, err := x509.ParseCertificate(certificateBlock.Bytes)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := certificate.VerifyHostname("203.0.113.9"); err != nil {
+		t.Fatalf("certificate does not cover requested IP address: %v", err)
+	}
+}
+
+func TestPrepareManagedSelfSignedCertificatesRequiresName(t *testing.T) {
+	t.Parallel()
+
+	config := []byte(`{
+		"inbounds": [{
+			"tls": {
+				"certificate_path": "certificates/theatropolis-self-signed/no-name/certificate.pem",
+				"key_path": "certificates/theatropolis-self-signed/no-name/private-key.pem"
+			}
+		}]
+	}`)
+	if err := prepareManagedSelfSignedCertificates(
+		config,
+		t.TempDir(),
+		time.Now(),
+	); err == nil {
+		t.Fatal("managed self-signed certificate without a name was accepted")
 	}
 }
 
