@@ -18,6 +18,7 @@ long-lived bidirectional stream to the master, and run/supervise sing-box.
 
 - Release catalog note: Theatropolis versions now come from GitHub release metadata and are offered only when `checksums.txt` plus both supported Linux tarballs exist; only the sing-box catalog continues to use Git `info/refs`. This supersedes the older `releases.go` transport note below.
 - Routing normalization note: the guided editor preserves sniff actions outside its draggable route cards and automatically prepends `{"action":"sniff"}` when domain, geosite/custom rule-set, protocol, or client matching needs it. `ensureRequiredRouteSniff` repeats this normalization at the deployment boundary; destination-IP/geoip-only rules stay unchanged.
+- Dropdown note: shared select popovers clamp to the viewport and wrap long option labels inside their vertically scrollable menu. The routing geosite/geoip selector is also a manual top-layer popover (so modal footers cannot cover or clip it), and those two catalog-backed match types are single-select; other match types retain multi-value OR behavior.
 
 - `cmd/theatropolis-master/` — master binary. Subcommands: `serve`, `apply-update`, `create-enrollment`, `set-web-admin`, `version` (main.go:58).
 - `cmd/theatropolis-agent/` — agent binary. Subcommands: default run, `apply-update`, `apply-sing-box-update`.

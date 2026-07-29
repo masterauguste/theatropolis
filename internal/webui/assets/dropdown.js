@@ -19,13 +19,22 @@
   const positionMenu = (control) => {
     const bounds = control.trigger.getBoundingClientRect();
     const gap = 6;
+    const viewportWidth = document.documentElement.clientWidth;
+    const viewportMargin = 8;
+    const menuWidth = Math.max(
+      0,
+      Math.min(bounds.width, viewportWidth - viewportMargin * 2),
+    );
     const availableBelow = window.innerHeight - bounds.bottom - gap - 12;
     const availableAbove = bounds.top - gap - 12;
-    const maxHeight = Math.max(120, Math.min(320, Math.max(availableBelow, availableAbove)));
-    control.menu.style.width = `${bounds.width}px`;
+    const maxHeight = Math.max(0, Math.min(320, Math.max(availableBelow, availableAbove)));
+    control.menu.style.width = `${menuWidth}px`;
     control.menu.style.maxHeight = `${maxHeight}px`;
     control.menu.style.left =
-      `${Math.max(8, Math.min(bounds.left, window.innerWidth - bounds.width - 8))}px`;
+      `${Math.max(
+        viewportMargin,
+        Math.min(bounds.left, viewportWidth - menuWidth - viewportMargin),
+      )}px`;
     if (availableBelow >= 150 || availableBelow >= availableAbove) {
       control.menu.style.top = `${bounds.bottom + gap}px`;
       control.menu.style.bottom = "auto";
