@@ -915,6 +915,13 @@ textarea[data-route-field="match_values"] {
   border-left-color: var(--amber-700);
 }
 
+.notice--success {
+  color: var(--green-700);
+  background: var(--green-100);
+  border-color: rgb(46 95 69 / 25%);
+  border-left-color: var(--green-700);
+}
+
 .notice--error {
   color: var(--red-700);
   background: var(--red-100);

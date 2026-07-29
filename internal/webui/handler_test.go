@@ -832,6 +832,7 @@ func TestServerManagementPageShowsConfigurationAndRevocationControls(t *testing.
 		"edge-online",
 		"sing-box configuration",
 		"Validate and deploy",
+		"Self-signed by agent",
 		`action="/servers/edge-online/revoke"`,
 		`name="confirm_revoke"`,
 		"Revoke access",
@@ -1039,6 +1040,67 @@ func TestConfigurationDeploymentRequiresAuthorizationAndValidJSONObject(t *testi
 			response.Code,
 			response.Body.String(),
 		)
+	}
+}
+
+func TestConfigurationDeploymentJSONFlowReportsTerminalStatus(t *testing.T) {
+	t.Parallel()
+
+	fixture := newWebFixture(t)
+	enrollAgent(t, fixture.registry, "edge-online")
+	form := url.Values{
+		"config_json": {`{"inbounds":[],"outbounds":[]}`},
+		"csrf_token":  {fixture.session.CSRFToken},
+	}.Encode()
+	request := fixture.authenticatedMutationRequest(
+		http.MethodPost,
+		"/servers/edge-online/configuration",
+		form,
+	)
+	request.Header.Set("Accept", "application/json")
+	response := httptest.NewRecorder()
+	fixture.handler.ServeHTTP(response, request)
+	if response.Code != http.StatusAccepted ||
+		!strings.Contains(
+			response.Body.String(),
+			`"status_url":"/servers/edge-online/deployment-status"`,
+		) {
+		t.Fatalf(
+			"JSON deployment response = %d %q",
+			response.Code,
+			response.Body.String(),
+		)
+	}
+	record, err := fixture.controller.store.LatestForAgent(
+		context.Background(),
+		"edge-online",
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := fixture.controller.store.Transition(
+		context.Background(),
+		record.ID,
+		deployment.StatusApplied,
+		"",
+		fixture.now,
+	); err != nil {
+		t.Fatal(err)
+	}
+
+	request = fixture.authenticatedRequest(
+		http.MethodGet,
+		"/servers/edge-online/deployment-status",
+		"",
+	)
+	response = httptest.NewRecorder()
+	fixture.handler.ServeHTTP(response, request)
+	body := response.Body.String()
+	if response.Code != http.StatusOK ||
+		!strings.Contains(body, `"pending":false`) ||
+		!strings.Contains(body, `"status_label":"Applied"`) ||
+		!strings.Contains(body, `"status_class":"online"`) {
+		t.Fatalf("terminal deployment status = %d %q", response.Code, body)
 	}
 }
 

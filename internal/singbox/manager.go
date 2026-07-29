@@ -180,8 +180,8 @@ type runningProcess struct {
 }
 
 type commandProcess struct {
-	command    *exec.Cmd
-	stderrBuf  *boundedBuffer
+	command   *exec.Cmd
+	stderrBuf *boundedBuffer
 }
 
 func (p *commandProcess) Start() error                  { return p.command.Start() }
@@ -254,6 +254,7 @@ func NewManager(options ManagerOptions) (*Manager, error) {
 	}
 	manager.newProcess = func(executable, configPath string) managedProcess {
 		command := exec.Command(executable, "run", "-c", configPath)
+		command.Dir = cleanStateDirectory
 		// A validation or runtime error must not accidentally copy credentials
 		// from a configuration into the agent's journal.
 		command.Stdout = io.Discard

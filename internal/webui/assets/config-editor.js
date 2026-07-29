@@ -21,6 +21,7 @@ if (configTextarea && configurationForm && configurationEditor) {
   const routeRuleTemplate = document.getElementById("route-rule-card-template");
   const originals = new WeakMap();
   const supportedInboundTypes = new Set(["shadowsocks", "anytls", "hysteria2"]);
+  const managedSelfSignedPrefix = "certificates/theatropolis-self-signed/";
   const routeMatchFields = [
     "protocol",
     "domain",
@@ -124,6 +125,29 @@ if (configTextarea && configurationForm && configurationEditor) {
     }
   };
   const safeTagPart = (value) => value.toLowerCase().replace(/[^a-z0-9_-]+/g, "-").replace(/^-+|-+$/g, "") || "inbound";
+  const selfSignedID = (value) => {
+    const text = String(value || "inbound");
+    let hash = 2166136261;
+    for (let index = 0; index < text.length; index += 1) {
+      hash ^= text.charCodeAt(index);
+      hash = Math.imul(hash, 16777619);
+    }
+    return `${safeTagPart(text).slice(0, 64)}-${(hash >>> 0).toString(16).padStart(8, "0")}`;
+  };
+  const selfSignedPaths = (tag) => {
+    const id = selfSignedID(tag);
+    return {
+      certificate: `${managedSelfSignedPrefix}${id}/certificate.pem`,
+      key: `${managedSelfSignedPrefix}${id}/private-key.pem`,
+    };
+  };
+  const isManagedSelfSignedTLS = (tls) => {
+    if (!objectValue(tls)) return false;
+    const certificatePath = String(tls.certificate_path || "");
+    const keyPath = String(tls.key_path || "");
+    return certificatePath.startsWith(managedSelfSignedPrefix) &&
+      keyPath.startsWith(managedSelfSignedPrefix);
+  };
 
   function disableWhenReadonly(root) {
     if (editable) {
@@ -155,7 +179,7 @@ if (configTextarea && configurationForm && configurationEditor) {
     const tlsMode = field(card, "inbound", "tls_mode").value;
     const tlsDomain = field(card, "inbound", "tls_domain").value;
     const host = tlsMode === "acme" && tlsDomain ? tlsDomain : window.location.hostname;
-    const insecure = tlsMode === "files" ? "1" : "0";
+    const insecure = tlsMode === "acme" ? "0" : "1";
     const label = encodeURIComponent(tag + " - " + userName);
     if (type === "anytls") {
       return "anytls://" + encodeURIComponent(password) + "@" + host + ":" + port + "?sni=" + encodeURIComponent(host) + "&insecure=" + insecure + "#" + label;
@@ -291,6 +315,9 @@ if (configTextarea && configurationForm && configurationEditor) {
     for (const element of card.querySelectorAll("[data-certificate-file-field]")) {
       element.hidden = type === "shadowsocks" || tlsMode !== "files";
     }
+    for (const element of card.querySelectorAll("[data-self-signed-field]")) {
+      element.hidden = type === "shadowsocks" || tlsMode !== "self_signed";
+    }
     for (const input of card.querySelectorAll("[data-acme-field] input")) {
       input.required = type !== "shadowsocks" && tlsMode === "acme" && input.dataset.inboundField === "tls_domain";
     }
@@ -320,7 +347,11 @@ if (configTextarea && configurationForm && configurationEditor) {
     setValue(field(card, "inbound", "obfs_type"), inbound.obfs?.type);
     setValue(field(card, "inbound", "obfs_password"), inbound.obfs?.password);
     const acme = findACMEProvider(inbound);
-    setValue(field(card, "inbound", "tls_mode"), acme ? "acme" : "files");
+    const selfSigned = isManagedSelfSignedTLS(inbound.tls);
+    setValue(
+      field(card, "inbound", "tls_mode"),
+      acme ? "acme" : selfSigned ? "self_signed" : "files",
+    );
     setValue(field(card, "inbound", "tls_domain"), acme?.domain?.[0]);
     setValue(field(card, "inbound", "tls_email"), acme?.email);
     setValue(field(card, "inbound", "certificate_path"), inbound.tls?.certificate_path);
@@ -813,6 +844,13 @@ if (configTextarea && configurationForm && configurationEditor) {
         disable_tls_alpn_challenge: true,
       });
       inbound.tls = { enabled: true, certificate_provider: providerTag };
+    } else if (tlsMode === "self_signed") {
+      const paths = selfSignedPaths(inbound.tag);
+      inbound.tls = {
+        enabled: true,
+        certificate_path: paths.certificate,
+        key_path: paths.key,
+      };
     } else {
       inbound.tls = {
         enabled: true,

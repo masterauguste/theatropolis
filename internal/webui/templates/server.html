@@ -70,11 +70,13 @@
               <h2 id="configuration-heading">sing-box configuration</h2>
               <p>Raw JSON for sing-box 1.14 and newer.</p>
             </div>
-            {{if .Agent.Deployment}}
-            <span class="status status--{{.Agent.Deployment.StatusClass}}">
-              <span aria-hidden="true"></span>{{.Agent.Deployment.StatusLabel}}
+            <span
+              class="status{{if .Agent.Deployment}} status--{{.Agent.Deployment.StatusClass}}{{end}}"
+              data-configuration-deployment-status
+              {{if not .Agent.Deployment}}hidden{{end}}
+            >
+              <span aria-hidden="true"></span><span data-configuration-deployment-label>{{if .Agent.Deployment}}{{.Agent.Deployment.StatusLabel}}{{end}}</span>
             </span>
-            {{end}}
           </div>
 
           <form action="/servers/{{.Agent.ID}}/configuration" method="post" class="configuration-form">
@@ -88,6 +90,13 @@
               data-error-summary
             >{{.Error}}</div>
             {{end}}
+            <div
+              class="notice"
+              role="status"
+              tabindex="-1"
+              data-configuration-deployment-result
+              hidden
+            ></div>
 
             <div class="config-mode-tabs" role="tablist" aria-label="Configuration editor mode">
               <button class="config-mode-tab is-active" type="button" role="tab" aria-selected="true" data-config-tab="guided">Guided editor</button>
@@ -234,13 +243,14 @@
               <fieldset class="builder-subsection" data-tls-fields hidden>
                 <legend>TLS certificate</legend>
                 <div class="builder-fields builder-fields--three">
-                  <label class="field"><span>Certificate mode</span><select data-inbound-field="tls_mode"><option value="acme">ACME (Let's Encrypt)</option><option value="files">Certificate files</option></select></label>
+                  <label class="field"><span>Certificate mode</span><select data-inbound-field="tls_mode"><option value="acme">ACME (Let's Encrypt)</option><option value="self_signed">Self-signed by agent</option><option value="files">Existing certificate files</option></select></label>
                   <label class="field" data-acme-field><span>Domain</span><input type="text" data-inbound-field="tls_domain" placeholder="proxy.example.com"></label>
                   <label class="field" data-acme-field><span>ACME email</span><input type="email" data-inbound-field="tls_email" placeholder="admin@example.com"></label>
                   <label class="field" data-certificate-file-field hidden><span>Certificate path</span><input type="text" data-inbound-field="certificate_path" placeholder="/etc/theatropolis/certs/server.pem"></label>
                   <label class="field" data-certificate-file-field hidden><span>Private key path</span><input type="text" data-inbound-field="key_path" placeholder="/etc/theatropolis/certs/server.key"></label>
                 </div>
                 <small data-acme-field>ACME HTTP-01 requires port 80 to be free.</small>
+                <small data-self-signed-field hidden>The agent generates and securely retains this certificate and private key in its own state directory.</small>
               </fieldset>
               <fieldset class="builder-subsection">
                 <div class="builder-subsection__header"><legend>Users</legend><button class="button-link" type="button" data-add-user>Add user</button></div>

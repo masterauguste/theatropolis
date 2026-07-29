@@ -91,6 +91,14 @@ func (v Validator) Check(ctx context.Context, config []byte, expectedSHA256 []by
 		result.Diagnostic = "sing-box validation directory is not configured"
 		return result
 	}
+	if err := prepareManagedSelfSignedCertificates(
+		config,
+		v.StateDirectory,
+		time.Now(),
+	); err != nil {
+		result.Diagnostic = "managed self-signed certificate could not be prepared"
+		return result
+	}
 
 	secrets := collectSecrets(config)
 	validationDir := filepath.Join(v.StateDirectory, "validation")
@@ -143,9 +151,16 @@ func (v Validator) Check(ctx context.Context, config []byte, expectedSHA256 []by
 	output := newLimitedBuffer(maxDiagnosticBytes)
 	runCommand := v.runCommand
 	if runCommand == nil {
-		runCommand = runSingBoxCheck
+		err = runSingBoxCheck(
+			checkCtx,
+			v.BinaryPath,
+			candidatePath,
+			v.StateDirectory,
+			output,
+		)
+	} else {
+		err = runCommand(checkCtx, v.BinaryPath, candidatePath, output)
 	}
-	err = runCommand(checkCtx, v.BinaryPath, candidatePath, output)
 
 	rawOutput := output.String()
 	result.RawDiagnosticLength = output.Total()
@@ -180,9 +195,11 @@ func runSingBoxCheck(
 	ctx context.Context,
 	binaryPath string,
 	candidatePath string,
+	workingDirectory string,
 	output io.Writer,
 ) error {
 	command := exec.CommandContext(ctx, binaryPath, "check", "-c", candidatePath)
+	command.Dir = workingDirectory
 	command.Stdout = output
 	command.Stderr = output
 	return command.Run()

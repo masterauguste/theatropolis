@@ -85,6 +85,113 @@ if (errorSummary && !document.querySelector('[aria-invalid="true"]')) {
   errorSummary.focus();
 }
 
+const configurationDeploymentForm = document.querySelector("form.configuration-form");
+if (configurationDeploymentForm) {
+  const submitButton = configurationDeploymentForm.querySelector("[data-submit-button]");
+  const resultNotice = configurationDeploymentForm.querySelector(
+    "[data-configuration-deployment-result]",
+  );
+  const statusBadge = document.querySelector("[data-configuration-deployment-status]");
+  const statusLabel = statusBadge?.querySelector("[data-configuration-deployment-label]");
+  const originalSubmitLabel = submitButton?.textContent.trim();
+
+  const showDeploymentStatus = (status) => {
+    if (statusBadge && statusLabel && status.status_label) {
+      statusBadge.hidden = false;
+      statusBadge.className = `status status--${status.status_class || "offline"}`;
+      statusLabel.textContent = status.status_label;
+    }
+  };
+
+  const finishDeployment = (status) => {
+    showDeploymentStatus(status);
+    if (submitButton) {
+      submitButton.disabled = false;
+      submitButton.textContent = originalSubmitLabel;
+    }
+    if (resultNotice) {
+      const succeeded = status.status_class === "online";
+      resultNotice.hidden = false;
+      resultNotice.className = `notice ${succeeded ? "notice--success" : "notice--error"}`;
+      resultNotice.textContent = succeeded
+        ? "Configuration deployed."
+        : status.diagnostic || `${status.status_label || "Deployment"} did not complete successfully.`;
+      resultNotice.focus();
+    }
+  };
+
+  const pollSubmittedDeployment = async (statusURL) => {
+    try {
+      const response = await fetch(statusURL, {
+        cache: "no-store",
+        credentials: "same-origin",
+        headers: { Accept: "application/json" },
+      });
+      if (!response.ok) {
+        window.setTimeout(() => pollSubmittedDeployment(statusURL), 5000);
+        return;
+      }
+      const status = await response.json();
+      showDeploymentStatus(status);
+      if (status.pending === true) {
+        window.setTimeout(() => pollSubmittedDeployment(statusURL), 2000);
+        return;
+      }
+      finishDeployment(status);
+    } catch {
+      window.setTimeout(() => pollSubmittedDeployment(statusURL), 5000);
+    }
+  };
+
+  configurationDeploymentForm.addEventListener("submit", async (event) => {
+    if (event.defaultPrevented) {
+      return;
+    }
+    event.preventDefault();
+    if (submitButton) {
+      submitButton.disabled = true;
+      submitButton.textContent = submitButton.dataset.submitLabel || "Deploying…";
+    }
+    if (resultNotice) {
+      resultNotice.hidden = false;
+      resultNotice.className = "notice";
+      resultNotice.textContent = "The agent is validating and activating this configuration.";
+    }
+    try {
+      const response = await fetch(configurationDeploymentForm.action, {
+        method: "POST",
+        body: new URLSearchParams(new FormData(configurationDeploymentForm)),
+        cache: "no-store",
+        credentials: "same-origin",
+        headers: { Accept: "application/json" },
+      });
+      const responseText = await response.text();
+      let data = {};
+      try {
+        data = JSON.parse(responseText);
+      } catch {
+        const errorDocument = new DOMParser().parseFromString(responseText, "text/html");
+        data.error = errorDocument.querySelector(".notice--error")?.textContent.trim();
+      }
+      if (!response.ok || !data.status_url) {
+        throw new Error(data.error || "The configuration could not be queued.");
+      }
+      await pollSubmittedDeployment(data.status_url);
+    } catch (error) {
+      if (submitButton) {
+        submitButton.disabled = false;
+        submitButton.textContent = originalSubmitLabel;
+      }
+      if (resultNotice) {
+        resultNotice.hidden = false;
+        resultNotice.className = "notice notice--error";
+        resultNotice.textContent = error.message;
+        resultNotice.focus();
+      }
+    }
+  });
+}
+
 for (const form of document.querySelectorAll("form")) {
   form.addEventListener("submit", (event) => {
     window.setTimeout(() => {

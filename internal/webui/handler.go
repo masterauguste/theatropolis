@@ -715,14 +715,24 @@ func (h *Handler) deploymentStatus(
 		return
 	}
 	pending := false
+	var view *deploymentView
 	if err == nil {
-		pending = deploymentViewFor(record).Pending
+		view = deploymentViewFor(record)
+		pending = view.Pending
 	}
 	response.Header().Set("Content-Type", "application/json")
 	response.Header().Set("Cache-Control", "no-store")
 	if err := json.NewEncoder(response).Encode(struct {
-		Pending bool `json:"pending"`
-	}{Pending: pending}); err != nil {
+		Pending     bool   `json:"pending"`
+		StatusLabel string `json:"status_label,omitempty"`
+		StatusClass string `json:"status_class,omitempty"`
+		Diagnostic  string `json:"diagnostic,omitempty"`
+	}{
+		Pending:     pending,
+		StatusLabel: deploymentStatusLabel(view),
+		StatusClass: deploymentStatusClass(view),
+		Diagnostic:  deploymentDiagnostic(view),
+	}); err != nil {
 		h.logger.Error(
 			"write deployment polling status",
 			"agent_id",
@@ -899,12 +909,42 @@ func (h *Handler) deployServerConfiguration(
 		"revision_id",
 		record.RevisionID,
 	)
+	if strings.Contains(request.Header.Get("Accept"), "application/json") {
+		response.Header().Set("Content-Type", "application/json")
+		response.Header().Set("Cache-Control", "no-store")
+		response.WriteHeader(http.StatusAccepted)
+		_ = json.NewEncoder(response).Encode(map[string]string{
+			"status_url": "/servers/" + url.PathEscape(snapshot.ID) + "/deployment-status",
+		})
+		return
+	}
 	http.Redirect(
 		response,
 		request,
 		"/servers/"+url.PathEscape(snapshot.ID)+"/manage",
 		http.StatusSeeOther,
 	)
+}
+
+func deploymentStatusLabel(view *deploymentView) string {
+	if view == nil {
+		return ""
+	}
+	return view.StatusLabel
+}
+
+func deploymentStatusClass(view *deploymentView) string {
+	if view == nil {
+		return ""
+	}
+	return view.StatusClass
+}
+
+func deploymentDiagnostic(view *deploymentView) string {
+	if view == nil {
+		return ""
+	}
+	return view.Diagnostic
 }
 
 func (h *Handler) revokeServer(response http.ResponseWriter, request *http.Request) {
