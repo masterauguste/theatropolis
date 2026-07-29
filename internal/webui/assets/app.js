@@ -172,6 +172,9 @@ if (configurationDeploymentForm) {
       } catch {
         const errorDocument = new DOMParser().parseFromString(responseText, "text/html");
         data.error = errorDocument.querySelector(".notice--error")?.textContent.trim();
+        if (!data.error && response.headers.get("Content-Type")?.startsWith("text/plain")) {
+          data.error = responseText.trim();
+        }
       }
       if (!response.ok || !data.status_url) {
         throw new Error(data.error || "The configuration could not be queued.");

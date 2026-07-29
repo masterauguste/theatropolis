@@ -941,10 +941,14 @@ textarea[aria-invalid="true"]:focus {
   position: fixed;
   z-index: 100;
   box-sizing: border-box;
+  max-height: min(20rem, calc(100dvh - 1.5rem));
   margin: 0;
   padding: 0.35rem;
   overflow-x: hidden;
   overflow-y: auto;
+  overscroll-behavior: contain;
+  scrollbar-gutter: stable;
+  -webkit-overflow-scrolling: touch;
   color: var(--ink-900);
   background: var(--surface);
   border: 1px solid var(--ink-300);

@@ -898,6 +898,59 @@ func TestReservedLookingAgentIDsUseUnambiguousManagementRoute(t *testing.T) {
 	}
 }
 
+func TestReadExactFormAcceptsOnlyUTF8ContentTypeParameter(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name        string
+		contentType string
+		wantError   bool
+	}{
+		{
+			name:        "native form",
+			contentType: "application/x-www-form-urlencoded",
+		},
+		{
+			name:        "URLSearchParams fetch",
+			contentType: "application/x-www-form-urlencoded;charset=UTF-8",
+		},
+		{
+			name:        "unsupported charset",
+			contentType: "application/x-www-form-urlencoded;charset=iso-8859-1",
+			wantError:   true,
+		},
+		{
+			name:        "unexpected parameter",
+			contentType: "application/x-www-form-urlencoded;profile=browser",
+			wantError:   true,
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			request := httptest.NewRequest(
+				http.MethodPost,
+				testPublicURL+"/form",
+				strings.NewReader("field=value"),
+			)
+			request.Header.Set("Content-Type", test.contentType)
+			response := httptest.NewRecorder()
+			form, err := readExactForm(response, request, 1024, "field")
+			if test.wantError {
+				if err == nil {
+					t.Fatalf("readExactForm() = %v, want an error", form)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatal(err)
+			}
+			if form.Get("field") != "value" {
+				t.Fatalf("field = %q, want value", form.Get("field"))
+			}
+		})
+	}
+}
+
 func TestConfigurationDeploymentRequiresAuthorizationAndValidJSONObject(t *testing.T) {
 	t.Parallel()
 
@@ -971,6 +1024,10 @@ func TestConfigurationDeploymentRequiresAuthorizationAndValidJSONObject(t *testi
 		http.MethodPost,
 		"/servers/edge-online/configuration",
 		form,
+	)
+	request.Header.Set(
+		"Content-Type",
+		"application/x-www-form-urlencoded;charset=UTF-8",
 	)
 	response = httptest.NewRecorder()
 	fixture.handler.ServeHTTP(response, request)

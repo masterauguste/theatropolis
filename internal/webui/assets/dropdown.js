@@ -72,7 +72,8 @@
     const available = availableButtons(control);
     if (available.length === 0) return;
     const normalized = (index + available.length) % available.length;
-    available[normalized].focus();
+    available[normalized].focus({ preventScroll: true });
+    available[normalized].scrollIntoView({ block: "nearest" });
   };
 
   const openDropdown = (control, focusSelected = false) => {
@@ -328,5 +329,16 @@
     }
   });
   window.addEventListener("resize", () => closeDropdown());
-  window.addEventListener("scroll", () => closeDropdown(), true);
+  window.addEventListener("scroll", (event) => {
+    // The menu is its own scroll container. Only close when the page or an
+    // ancestor scrolls and moves the trigger; scrolling a long option list
+    // must leave the dropdown open.
+    if (
+      openControl &&
+      (event.target === openControl.menu || openControl.menu.contains(event.target))
+    ) {
+      return;
+    }
+    closeDropdown();
+  }, true);
 })();

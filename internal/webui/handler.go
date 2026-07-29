@@ -766,7 +766,11 @@ func (h *Handler) deployServerConfiguration(
 		"config_json",
 		"csrf_token",
 	)
-	if err != nil || !h.access.AuthorizeCSRF(sessionToken, form.Get("csrf_token")) {
+	if err != nil {
+		http.Error(response, "request form is invalid", http.StatusBadRequest)
+		return
+	}
+	if !h.access.AuthorizeCSRF(sessionToken, form.Get("csrf_token")) {
 		http.Error(response, "request was not authorized", http.StatusForbidden)
 		return
 	}
@@ -2229,8 +2233,16 @@ func readExactForm(
 		return nil, errors.New("request body is required")
 	}
 	mediaType, parameters, err := mime.ParseMediaType(request.Header.Get("Content-Type"))
-	if err != nil || mediaType != "application/x-www-form-urlencoded" || len(parameters) != 0 {
+	if err != nil || mediaType != "application/x-www-form-urlencoded" {
 		return nil, errors.New("content type must be application/x-www-form-urlencoded")
+	}
+	// Fetch serializes URLSearchParams with this standards-defined charset
+	// parameter. Accept only UTF-8; arbitrary parameters remain rejected so
+	// callers still get one unambiguous form encoding.
+	for name, value := range parameters {
+		if !strings.EqualFold(name, "charset") || !strings.EqualFold(value, "utf-8") {
+			return nil, errors.New("content type must be application/x-www-form-urlencoded with UTF-8")
+		}
 	}
 	body := http.MaxBytesReader(response, request.Body, maxBytes)
 	defer body.Close()
