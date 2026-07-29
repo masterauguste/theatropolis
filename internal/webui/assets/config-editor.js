@@ -562,6 +562,8 @@ if (configTextarea && configurationForm && configurationEditor) {
   function renderMatchChips(card) {
     const container = card.querySelector("[data-route-match-chips]");
     container.replaceChildren();
+    const type = field(card, "route", "match_type").value;
+    if (type === "geosite" || type === "geoip") return;
     for (const value of matchSelection(card)) {
       const chip = document.createElement("button");
       chip.type = "button";
@@ -588,8 +590,13 @@ if (configTextarea && configurationForm && configurationEditor) {
   function renderMatchOptions(card) {
     const list = card.querySelector("[data-route-match-options]");
     if (list.hidden) return;
-    const filterValue = card.querySelector("[data-route-match-filter]").value.trim().toLowerCase();
     const selection = matchSelection(card);
+    const type = field(card, "route", "match_type").value;
+    const inputValue = card.querySelector("[data-route-match-filter]").value.trim().toLowerCase();
+    const filterValue = (type === "geosite" || type === "geoip") &&
+      selection.length === 1 && inputValue === selection[0].toLowerCase()
+      ? ""
+      : inputValue;
     list.replaceChildren();
     const matches = matchOptionValues(card).filter(
       (value) => !filterValue || value.toLowerCase().includes(filterValue),
@@ -687,6 +694,7 @@ if (configTextarea && configurationForm && configurationEditor) {
     const selection = matchSelection(card);
     if (type === "geosite" || type === "geoip") {
       selection.splice(0, selection.length, normalized);
+      card.querySelector("[data-route-match-filter]").value = normalized;
     } else {
       if (selection.includes(normalized)) return;
       selection.push(normalized);
@@ -697,10 +705,14 @@ if (configTextarea && configurationForm && configurationEditor) {
   }
 
   function removeMatchChip(card, value) {
+    const type = field(card, "route", "match_type").value;
     const selection = matchSelection(card);
     const index = selection.indexOf(value);
     if (index === -1) return;
     selection.splice(index, 1);
+    if (type === "geosite" || type === "geoip") {
+      card.querySelector("[data-route-match-filter]").value = "";
+    }
     renderMatchChips(card);
     renderMatchOptions(card);
     updateRouteRuleVisibility(card);
@@ -727,7 +739,7 @@ if (configTextarea && configurationForm && configurationEditor) {
     select.required = type !== "all";
     if (type === "all") return;
     card.querySelector("[data-route-scope-label]").textContent =
-      type === "inbound" ? "Inbound" : "Authenticated user";
+      type === "inbound" ? "Inbound" : "User";
     const values = new Set();
     for (const inbound of inboundList.querySelectorAll("[data-inbound-card]")) {
       if (type === "inbound") {
@@ -777,6 +789,9 @@ if (configTextarea && configurationForm && configurationEditor) {
       ? "builtin/reject"
       : destinationFromOutbound(outboundByTag.get(rule.outbound));
     replaceSelectOptions(field(card, "route", "destination"), destinationOptions(), destination);
+    if (geoKind) {
+      card.querySelector("[data-route-match-filter]").value = matchSelection(card)[0] || "";
+    }
     renderMatchChips(card);
     updateRouteRuleVisibility(card);
     disableWhenReadonly(card);
@@ -1143,12 +1158,12 @@ if (configTextarea && configurationForm && configurationEditor) {
       if (card) {
         addMatchChip(card, button.dataset.routeMatchOption);
         const filter = card.querySelector("[data-route-match-filter]");
-        filter.value = "";
-        renderMatchOptions(card);
         const type = field(card, "route", "match_type").value;
         if (type === "geosite" || type === "geoip") {
           setMatchOptionsOpen(card, false);
         } else {
+          filter.value = "";
+          renderMatchOptions(card);
           filter.focus();
         }
       }
@@ -1213,9 +1228,21 @@ if (configTextarea && configurationForm && configurationEditor) {
         refreshRoutingOptions();
       }
     }
-    if (card?.matches("[data-route-rule-card]")) updateRouteRuleVisibility(card);
     if (event.target.matches("[data-route-match-filter]") && card) {
+      const type = field(card, "route", "match_type").value;
+      if (type === "geosite" || type === "geoip") {
+        const selection = matchSelection(card);
+        if (
+          selection.length &&
+          event.target.value.trim().toLowerCase() !== selection[0].toLowerCase()
+        ) {
+          selection.splice(0, selection.length);
+        }
+      }
+      updateRouteRuleVisibility(card);
       openMatchOptions(card);
+    } else if (card?.matches("[data-route-rule-card]")) {
+      updateRouteRuleVisibility(card);
     }
   });
 
@@ -1243,11 +1270,12 @@ if (configTextarea && configurationForm && configurationEditor) {
     if (event.key === "Enter") {
       event.preventDefault();
       addMatchChip(card, event.target.value);
-      event.target.value = "";
-      renderMatchOptions(card);
       const type = field(card, "route", "match_type").value;
       if (type === "geosite" || type === "geoip") {
         setMatchOptionsOpen(card, false);
+      } else {
+        event.target.value = "";
+        renderMatchOptions(card);
       }
     } else if (event.key === "Backspace" && event.target.value === "") {
       const selection = matchSelection(card);

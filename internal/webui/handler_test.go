@@ -834,6 +834,12 @@ func TestServerManagementPageShowsConfigurationAndRevocationControls(t *testing.
 		"sing-box configuration",
 		"Validate and deploy",
 		"Self-signed by agent",
+		`<option value="all">All traffic</option>`,
+		`<option value="inbound">Inbound</option>`,
+		`<option value="domain">Domain</option>`,
+		`<option value="domain_keyword">Domain Keyword</option>`,
+		`<option value="domain_regex">Regex</option>`,
+		`<option value="geosite">Geosite</option>`,
 		`action="/servers/edge-online/revoke"`,
 		`name="confirm_revoke"`,
 		"Revoke access",
@@ -848,6 +854,17 @@ func TestServerManagementPageShowsConfigurationAndRevocationControls(t *testing.
 	}
 	if strings.Contains(body, "Master software") || strings.Contains(body, `action="/master-update"`) {
 		t.Fatal("server management page still contains global master controls")
+	}
+	for _, removed := range []string{
+		"All traffic on this agent",
+		"A specific inbound",
+		"Exact domain",
+		"Domain regular expression",
+		"Geosite domains",
+	} {
+		if strings.Contains(body, removed) {
+			t.Errorf("server management page still contains verbose routing label %q", removed)
+		}
 	}
 
 	request = fixture.authenticatedRequest(
