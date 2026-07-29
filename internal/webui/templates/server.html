@@ -299,6 +299,31 @@
             </header>
             <div class="modal__body actions-list">
               <details class="action-section" open>
+                <summary><span><strong>Server settings</strong><small>{{if .Agent.DefaultTLSAddress}}{{.Agent.DefaultTLSAddress}}{{else}}No default TLS address{{end}}</small></span></summary>
+                <div class="action-section__body">
+                  <form action="/servers/{{.Agent.ID}}/tls-address" method="post" class="stack stack--compact">
+                    <input type="hidden" name="csrf_token" value="{{.CSRFToken}}">
+                    <label class="field">
+                      <span>Default TLS address <span class="field__optional">Optional</span></span>
+                      <input
+                        name="default_tls_address"
+                        type="text"
+                        value="{{.Agent.DefaultTLSAddress}}"
+                        placeholder="proxy.example.com"
+                        autocomplete="off"
+                        autocapitalize="none"
+                        spellcheck="false"
+                        inputmode="url"
+                        maxlength="253"
+                      >
+                      <small>Preferred hostname for new AnyTLS and Hysteria2 outbound selections. Clear it to use IP addresses by default.</small>
+                    </label>
+                    <button class="button button--secondary button--full" type="submit" data-submit-button data-submit-label="Saving…">Save server settings</button>
+                  </form>
+                </div>
+              </details>
+
+              <details class="action-section" open>
                 <summary><span><strong>sing-box runtime</strong><small>Running {{if .Agent.SingBoxVersion}}{{.Agent.SingBoxVersion}}{{else}}not detected{{end}}</small></span></summary>
                 <div class="action-section__body">
                   {{if .Agent.SingBoxUpdate}}

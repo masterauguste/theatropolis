@@ -71,6 +71,9 @@ func TestServerPoolOptionsEndpoint(t *testing.T) {
 	if err := registry.UpsertManual("backup", json.RawMessage(`{"type":"direct"}`)); err != nil {
 		t.Fatal(err)
 	}
+	if err := registry.SetDefaultTLSAddress("edge-source", "tls-source.example.com"); err != nil {
+		t.Fatal(err)
+	}
 
 	request := fixture.request(
 		http.MethodGet,
@@ -132,7 +135,8 @@ func TestServerPoolOptionsEndpoint(t *testing.T) {
 	if !source.Available || source.IPv4 != "203.0.113.7" || source.IPv6 != "2001:db8::7" ||
 		source.Type != "hysteria2" || source.Port != 8443 ||
 		source.AgentID != "edge-source" || source.InboundTag != "hy2-in" ||
-		source.User != "alice" || source.Manual {
+		source.User != "alice" || source.DefaultTLSAddress != "tls-source.example.com" ||
+		source.Manual {
 		t.Fatalf("unexpected edge-source option: %+v", source)
 	}
 	quiet, exists := byRef["agent/edge-quiet/hy2-in/alice"]
@@ -166,6 +170,48 @@ func TestServerPoolOptionsEndpoint(t *testing.T) {
 	}
 	if len(result.Options) != 2 {
 		t.Fatalf("self pool options count = %d, want 2 (edge-quiet + manual)", len(result.Options))
+	}
+}
+
+func TestServerDefaultTLSAddressSettings(t *testing.T) {
+	t.Parallel()
+
+	fixture := newPoolFixture(t)
+	enrollAgent(t, fixture.registry, "edge-settings")
+	form := url.Values{
+		"csrf_token":          {fixture.session.CSRFToken},
+		"default_tls_address": {"Tls.Edge.Example."},
+	}.Encode()
+	request := fixture.authenticatedMutationRequest(
+		http.MethodPost,
+		"/servers/edge-settings/tls-address",
+		form,
+	)
+	response := httptest.NewRecorder()
+	fixture.handler.ServeHTTP(response, request)
+	if response.Code != http.StatusSeeOther ||
+		response.Header().Get("Location") != "/servers/edge-settings/manage" {
+		t.Fatalf(
+			"save TLS address response = %d %q, body = %s",
+			response.Code,
+			response.Header().Get("Location"),
+			response.Body.String(),
+		)
+	}
+	if got := fixture.controller.poolRegistry.DefaultTLSAddress("edge-settings"); got != "tls.edge.example" {
+		t.Fatalf("DefaultTLSAddress() = %q, want tls.edge.example", got)
+	}
+
+	request = fixture.authenticatedRequest(
+		http.MethodGet,
+		"/servers/edge-settings/manage",
+		"",
+	)
+	response = httptest.NewRecorder()
+	fixture.handler.ServeHTTP(response, request)
+	if response.Code != http.StatusOK ||
+		!strings.Contains(response.Body.String(), `value="tls.edge.example"`) {
+		t.Fatalf("server settings page = %d, body = %s", response.Code, response.Body.String())
 	}
 }
 

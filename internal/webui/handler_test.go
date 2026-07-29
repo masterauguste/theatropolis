@@ -1830,9 +1830,10 @@ func TestCreateServerRequiresCSRFAndRevealsCommandOnce(t *testing.T) {
 
 	fixture := newWebFixture(t)
 	form := url.Values{
-		"agent_id":    {"edge-paris-1"},
-		"csrf_token":  {fixture.session.CSRFToken},
-		"ttl_seconds": {"900"},
+		"agent_id":            {"edge-paris-1"},
+		"csrf_token":          {fixture.session.CSRFToken},
+		"default_tls_address": {""},
+		"ttl_seconds":         {"900"},
 	}.Encode()
 
 	request := fixture.authenticatedRequest(http.MethodPost, "/servers", form)
@@ -1846,9 +1847,10 @@ func TestCreateServerRequiresCSRFAndRevealsCommandOnce(t *testing.T) {
 	}
 
 	badCSRF := url.Values{
-		"agent_id":    {"edge-paris-1"},
-		"csrf_token":  {strings.Repeat("A", encodedCredentialLength)},
-		"ttl_seconds": {"900"},
+		"agent_id":            {"edge-paris-1"},
+		"csrf_token":          {strings.Repeat("A", encodedCredentialLength)},
+		"default_tls_address": {""},
+		"ttl_seconds":         {"900"},
 	}.Encode()
 	request = fixture.authenticatedMutationRequest(http.MethodPost, "/servers", badCSRF)
 	response = httptest.NewRecorder()
@@ -1969,9 +1971,10 @@ func TestEnrollmentResultIsBoundToCreatingSession(t *testing.T) {
 
 	fixture := newWebFixture(t)
 	form := url.Values{
-		"agent_id":    {"edge-session-bound"},
-		"csrf_token":  {fixture.session.CSRFToken},
-		"ttl_seconds": {"900"},
+		"agent_id":            {"edge-session-bound"},
+		"csrf_token":          {fixture.session.CSRFToken},
+		"default_tls_address": {""},
+		"ttl_seconds":         {"900"},
 	}.Encode()
 	request := fixture.authenticatedMutationRequest(http.MethodPost, "/servers", form)
 	response := httptest.NewRecorder()
@@ -2000,6 +2003,46 @@ func TestEnrollmentResultIsBoundToCreatingSession(t *testing.T) {
 	if response.Code != http.StatusOK ||
 		!strings.Contains(response.Body.String(), "--token") {
 		t.Fatalf("creating session could not receive result: %d", response.Code)
+	}
+}
+
+func TestCreateServerStoresDefaultTLSAddress(t *testing.T) {
+	t.Parallel()
+
+	fixture := newWebFixture(t)
+	poolRegistry, err := pool.Open(filepath.Join(t.TempDir(), "outbound-pool.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	fixture.controller.poolRegistry = poolRegistry
+	form := url.Values{
+		"agent_id":            {"edge-tls-default"},
+		"csrf_token":          {fixture.session.CSRFToken},
+		"default_tls_address": {"Proxy.Example.COM."},
+		"ttl_seconds":         {"900"},
+	}.Encode()
+	request := fixture.authenticatedMutationRequest(http.MethodPost, "/servers", form)
+	response := httptest.NewRecorder()
+	fixture.handler.ServeHTTP(response, request)
+	if response.Code != http.StatusSeeOther {
+		t.Fatalf("create status = %d, body = %s", response.Code, response.Body.String())
+	}
+	if got := poolRegistry.DefaultTLSAddress("edge-tls-default"); got != "proxy.example.com" {
+		t.Fatalf("DefaultTLSAddress() = %q, want proxy.example.com", got)
+	}
+
+	form = url.Values{
+		"agent_id":            {"edge-invalid-tls"},
+		"csrf_token":          {fixture.session.CSRFToken},
+		"default_tls_address": {"https://proxy.example.com"},
+		"ttl_seconds":         {"900"},
+	}.Encode()
+	request = fixture.authenticatedMutationRequest(http.MethodPost, "/servers", form)
+	response = httptest.NewRecorder()
+	fixture.handler.ServeHTTP(response, request)
+	if response.Code != http.StatusBadRequest ||
+		!strings.Contains(response.Body.String(), "DNS hostname only") {
+		t.Fatalf("invalid address response = %d, body = %s", response.Code, response.Body.String())
 	}
 }
 
@@ -2063,9 +2106,10 @@ func TestEnrollmentRateLimitReturnsTooManyRequests(t *testing.T) {
 	fixture := newWebFixture(t)
 	for index := 0; index < enrollmentLimit; index++ {
 		form := url.Values{
-			"agent_id":    {fmt.Sprintf("edge-%d", index)},
-			"csrf_token":  {fixture.session.CSRFToken},
-			"ttl_seconds": {"900"},
+			"agent_id":            {fmt.Sprintf("edge-%d", index)},
+			"csrf_token":          {fixture.session.CSRFToken},
+			"default_tls_address": {""},
+			"ttl_seconds":         {"900"},
 		}.Encode()
 		request := fixture.authenticatedMutationRequest(http.MethodPost, "/servers", form)
 		response := httptest.NewRecorder()
@@ -2076,9 +2120,10 @@ func TestEnrollmentRateLimitReturnsTooManyRequests(t *testing.T) {
 	}
 
 	form := url.Values{
-		"agent_id":    {"edge-limited"},
-		"csrf_token":  {fixture.session.CSRFToken},
-		"ttl_seconds": {"900"},
+		"agent_id":            {"edge-limited"},
+		"csrf_token":          {fixture.session.CSRFToken},
+		"default_tls_address": {""},
+		"ttl_seconds":         {"900"},
 	}.Encode()
 	request := fixture.authenticatedMutationRequest(http.MethodPost, "/servers", form)
 	response := httptest.NewRecorder()
@@ -2104,9 +2149,10 @@ func TestEnrollmentPersistenceFailureReturnsInternalServerError(t *testing.T) {
 	}
 	fixture := newWebFixtureWithRegistry(t, registry)
 	form := url.Values{
-		"agent_id":    {"edge-storage-failure"},
-		"csrf_token":  {fixture.session.CSRFToken},
-		"ttl_seconds": {"900"},
+		"agent_id":            {"edge-storage-failure"},
+		"csrf_token":          {fixture.session.CSRFToken},
+		"default_tls_address": {""},
+		"ttl_seconds":         {"900"},
 	}.Encode()
 	request := fixture.authenticatedMutationRequest(http.MethodPost, "/servers", form)
 	response := httptest.NewRecorder()

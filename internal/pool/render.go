@@ -89,7 +89,21 @@ func Render(reg *Registry, logical []byte, source DeriveSource) ([]byte, []strin
 			}
 			family = parsed
 		}
-		rendered = append(rendered, resolveRef(reg, source, tag, ref, family))
+		server := ""
+		if serverRaw, exists := object["server"]; exists {
+			var serverValue string
+			if err := json.Unmarshal(serverRaw, &serverValue); err != nil {
+				rendered = append(rendered, directFallback(tag))
+				continue
+			}
+			normalized, err := NormalizeTLSAddress(serverValue)
+			if err != nil || normalized == "" {
+				rendered = append(rendered, directFallback(tag))
+				continue
+			}
+			server = normalized
+		}
+		rendered = append(rendered, resolveRef(reg, source, tag, ref, family, server))
 	}
 
 	// No refs after all (the marker string appeared elsewhere): preserve the
@@ -163,11 +177,17 @@ func parseLogicalDocument(logical []byte) (map[string]json.RawMessage, error) {
 // with the ref object's tag whenever the ref cannot be resolved. family pins
 // agent refs to one IP family (FamilyAuto walks v4 then v6); manual refs
 // ignore it.
-func resolveRef(reg *Registry, source DeriveSource, tag, ref string, family Family) json.RawMessage {
+func resolveRef(
+	reg *Registry,
+	source DeriveSource,
+	tag, ref string,
+	family Family,
+	server string,
+) json.RawMessage {
 	if materialized := resolveManualRef(reg, tag, ref); materialized != nil {
 		return materialized
 	}
-	if materialized := resolveAgentRef(reg, source, tag, ref, family); materialized != nil {
+	if materialized := resolveAgentRef(reg, source, tag, ref, family, server); materialized != nil {
 		return materialized
 	}
 	return directFallback(tag)
@@ -207,23 +227,30 @@ func resolveManualRef(reg *Registry, tag, ref string) json.RawMessage {
 	return materialized
 }
 
-func resolveAgentRef(reg *Registry, source DeriveSource, tag, ref string, family Family) json.RawMessage {
+func resolveAgentRef(
+	reg *Registry,
+	source DeriveSource,
+	tag, ref string,
+	family Family,
+	server string,
+) json.RawMessage {
 	agentID, inboundTag, userComponent, ok := parseAgentRef(ref)
 	if !ok {
 		return nil
 	}
-	address, hasAddress := reg.AgentAddressForFamily(agentID, family)
-	if !hasAddress {
-		return nil
-	}
-	// Defensive: the resolved address must match the requested family. The
-	// registry already filters by family, but a v4 string in an ipv6 ref
-	// (or vice versa) must degrade to a dead ref rather than render a
-	// broken outbound.
-	if family == FamilyIPv4 || family == FamilyIPv6 {
-		parsed, err := netip.ParseAddr(address)
-		if err != nil || parsed.Is4() != (family == FamilyIPv4) {
+	address := server
+	if address == "" {
+		var hasAddress bool
+		address, hasAddress = reg.AgentAddressForFamily(agentID, family)
+		if !hasAddress {
 			return nil
+		}
+		// Defensive: the resolved address must match the requested family.
+		if family == FamilyIPv4 || family == FamilyIPv6 {
+			parsed, err := netip.ParseAddr(address)
+			if err != nil || parsed.Is4() != (family == FamilyIPv4) {
+				return nil
+			}
 		}
 	}
 	if source == nil {
@@ -241,6 +268,11 @@ func resolveAgentRef(reg *Registry, source DeriveSource, tag, ref string, family
 		inbound, err := parseInbound(rawInbound)
 		if err != nil || inbound.Tag != inboundTag || !supportedInboundType(inbound.Type) {
 			continue
+		}
+		// A DNS override is intentionally limited to TLS-capable protocols.
+		// Shadowsocks pool refs continue to use the selected IP family.
+		if server != "" && inbound.Type == "shadowsocks" {
+			return nil
 		}
 		return materializeAgentInbound(config, inbound, tag, address, userComponent)
 	}

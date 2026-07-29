@@ -168,6 +168,29 @@ func TestRenderAnytlsACMEAndFiles(t *testing.T) {
 	}
 }
 
+func TestRenderTLSHostnameOverride(t *testing.T) {
+	registry := renderTestRegistry(t)
+	logical := logicalConfig(`[
+		{"type":"theatropolis-pool-ref","tag":"via-domain","ref":"agent/edge-paris-1/tls-acme/alice","server":"Edge.Example.COM."},
+		{"type":"theatropolis-pool-ref","tag":"ss-domain","ref":"agent/edge-paris-1/ss-key/_server","server":"edge.example.com"}
+	]`)
+	rendered, _, err := Render(registry, logical, renderSource(t))
+	if err != nil {
+		t.Fatalf("Render() error = %v", err)
+	}
+	outbound := renderOutbound(t, rendered, "via-domain")
+	if outbound["type"] != "anytls" || outbound["server"] != "edge.example.com" {
+		t.Fatalf("TLS hostname outbound = %v", outbound)
+	}
+	tlsBlock, ok := outbound["tls"].(map[string]any)
+	if !ok || tlsBlock["server_name"] != "paris.example.com" || tlsBlock["insecure"] != false {
+		t.Fatalf("TLS hostname verification changed unexpectedly: %v", outbound["tls"])
+	}
+	if fallback := renderOutbound(t, rendered, "ss-domain"); fallback["type"] != "direct" {
+		t.Fatalf("Shadowsocks hostname override = %v, want direct fallback", fallback)
+	}
+}
+
 func TestRenderHysteria2(t *testing.T) {
 	registry := renderTestRegistry(t)
 	logical := logicalConfig(`[

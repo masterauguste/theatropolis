@@ -52,6 +52,41 @@ func TestOpenRequiresPath(t *testing.T) {
 	}
 }
 
+func TestDefaultTLSAddressValidationAndReload(t *testing.T) {
+	registry, path := openTestRegistry(t)
+	if err := registry.SetDefaultTLSAddress("edge-1", " Proxy.Example.COM. "); err != nil {
+		t.Fatalf("SetDefaultTLSAddress() error = %v", err)
+	}
+	if got := registry.DefaultTLSAddress("edge-1"); got != "proxy.example.com" {
+		t.Fatalf("DefaultTLSAddress() = %q, want proxy.example.com", got)
+	}
+	if registry.PoolVersion() != 1 {
+		t.Fatalf("PoolVersion() = %d, want 1", registry.PoolVersion())
+	}
+	reloaded := reopenTestRegistry(t, path)
+	if got := reloaded.DefaultTLSAddress("edge-1"); got != "proxy.example.com" {
+		t.Fatalf("reloaded DefaultTLSAddress() = %q, want proxy.example.com", got)
+	}
+	for _, invalid := range []string{
+		"localhost",
+		"https://proxy.example.com",
+		"proxy.example.com:443",
+		"*.example.com",
+		"203.0.113.10",
+		"-proxy.example.com",
+	} {
+		if err := registry.SetDefaultTLSAddress("edge-2", invalid); !errors.Is(err, ErrInvalidTLSAddress) {
+			t.Errorf("SetDefaultTLSAddress(%q) error = %v, want ErrInvalidTLSAddress", invalid, err)
+		}
+	}
+	if err := registry.SetDefaultTLSAddress("edge-1", ""); err != nil {
+		t.Fatalf("clear SetDefaultTLSAddress() error = %v", err)
+	}
+	if got := registry.DefaultTLSAddress("edge-1"); got != "" {
+		t.Fatalf("cleared DefaultTLSAddress() = %q, want empty", got)
+	}
+}
+
 func TestManualCRUDAndReload(t *testing.T) {
 	registry, path := openTestRegistry(t)
 

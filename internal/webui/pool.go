@@ -54,16 +54,17 @@ type poolView struct {
 }
 
 type poolOption struct {
-	Ref        string `json:"ref"`
-	AgentID    string `json:"agent_id,omitempty"`
-	InboundTag string `json:"inbound_tag,omitempty"`
-	User       string `json:"user,omitempty"`
-	Type       string `json:"type"`
-	Port       int    `json:"port,omitempty"`
-	IPv4       string `json:"ipv4,omitempty"`
-	IPv6       string `json:"ipv6,omitempty"`
-	Available  bool   `json:"available"`
-	Manual     bool   `json:"manual"`
+	Ref               string `json:"ref"`
+	AgentID           string `json:"agent_id,omitempty"`
+	InboundTag        string `json:"inbound_tag,omitempty"`
+	User              string `json:"user,omitempty"`
+	Type              string `json:"type"`
+	Port              int    `json:"port,omitempty"`
+	IPv4              string `json:"ipv4,omitempty"`
+	IPv6              string `json:"ipv6,omitempty"`
+	DefaultTLSAddress string `json:"default_tls_address,omitempty"`
+	Available         bool   `json:"available"`
+	Manual            bool   `json:"manual"`
 }
 
 type poolOptionsResponse struct {
@@ -389,16 +390,17 @@ func (h *Handler) serverPoolOptions(response http.ResponseWriter, request *http.
 		entries, diagnostics := h.derivePoolEntries(request.Context(), agentID)
 		for _, entry := range entries {
 			result.Options = append(result.Options, poolOption{
-				Ref:        entry.Ref,
-				AgentID:    entry.AgentID,
-				InboundTag: entry.InboundTag,
-				User:       poolUserLabel(entry),
-				Type:       entry.Type,
-				Port:       entry.Port,
-				IPv4:       entry.IPv4,
-				IPv6:       entry.IPv6,
-				Available:  entry.Available,
-				Manual:     entry.Manual,
+				Ref:               entry.Ref,
+				AgentID:           entry.AgentID,
+				InboundTag:        entry.InboundTag,
+				User:              poolUserLabel(entry),
+				Type:              entry.Type,
+				Port:              entry.Port,
+				IPv4:              entry.IPv4,
+				IPv6:              entry.IPv6,
+				DefaultTLSAddress: h.controller.PoolRegistry().DefaultTLSAddress(entry.AgentID),
+				Available:         entry.Available,
+				Manual:            entry.Manual,
 			})
 		}
 		if len(diagnostics) > 0 {
@@ -485,6 +487,68 @@ func (h *Handler) setServerAddress(response http.ResponseWriter, request *http.R
 	h.controller.PropagateManualPoolChange(request.Context())
 	h.logger.Info("pool address override saved", "agent_id", snapshot.ID)
 	http.Redirect(response, request, "/pool", http.StatusSeeOther)
+}
+
+func (h *Handler) setServerTLSAddress(response http.ResponseWriter, request *http.Request) {
+	sessionToken, ok := h.sessionToken(request)
+	if !ok {
+		h.redirectToLogin(response, request)
+		return
+	}
+	if h.rejectInvalidMutationOrigin(response, request) {
+		return
+	}
+	form, err := readExactForm(
+		response,
+		request,
+		maxEnrollmentBodyBytes,
+		"csrf_token",
+		"default_tls_address",
+	)
+	if err != nil || !h.access.AuthorizeCSRF(sessionToken, form.Get("csrf_token")) {
+		http.Error(response, "request was not authorized", http.StatusForbidden)
+		return
+	}
+	if _, err := h.access.Authenticate(sessionToken); err != nil {
+		h.redirectToLogin(response, request)
+		return
+	}
+	snapshot, ok := h.agentSnapshot(request.PathValue("agent_id"))
+	if !ok {
+		http.NotFound(response, request)
+		return
+	}
+	registry := h.controller.PoolRegistry()
+	if registry == nil {
+		http.Error(response, "the outbound pool is unavailable", http.StatusConflict)
+		return
+	}
+	if err := registry.SetDefaultTLSAddress(snapshot.ID, form.Get("default_tls_address")); err != nil {
+		if errors.Is(err, pool.ErrInvalidTLSAddress) {
+			http.Error(
+				response,
+				"enter a DNS hostname without a scheme, port, path, wildcard, or IP address",
+				http.StatusBadRequest,
+			)
+			return
+		}
+		h.logger.Error("save agent default TLS address", "agent_id", snapshot.ID, "error", err)
+		http.Error(response, "the default TLS address could not be saved", http.StatusInternalServerError)
+		return
+	}
+	h.logger.Info(
+		"agent default TLS address saved",
+		"agent_id",
+		snapshot.ID,
+		"default_tls_address",
+		registry.DefaultTLSAddress(snapshot.ID),
+	)
+	http.Redirect(
+		response,
+		request,
+		"/servers/"+url.PathEscape(snapshot.ID)+"/manage",
+		http.StatusSeeOther,
+	)
 }
 
 // requestAddressProbe asks the SOURCE agent (the path agent_id, whose pool

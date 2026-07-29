@@ -377,7 +377,10 @@ if (configTextarea && configurationForm && configurationEditor) {
     return `${entry.agent_id} · ${entry.inbound_tag} · ${entry.user || "unnamed user"}`;
   }
 
-  function destinationKey(ref, family = "") {
+  function destinationKey(ref, family = "", server = "") {
+    if (server) {
+      return `pool/tls/${encodeURIComponent(server)}/${ref}`;
+    }
     return `pool/${family || "manual"}/${ref}`;
   }
 
@@ -387,11 +390,24 @@ if (configTextarea && configurationForm && configurationEditor) {
     const separator = remainder.indexOf("/");
     if (separator < 0) return null;
     const family = remainder.slice(0, separator);
-    const ref = remainder.slice(separator + 1);
+    let ref = remainder.slice(separator + 1);
     if (!ref) return null;
+    let server = "";
+    if (family === "tls") {
+      const serverSeparator = ref.indexOf("/");
+      if (serverSeparator < 0) return null;
+      try {
+        server = decodeURIComponent(ref.slice(0, serverSeparator));
+      } catch {
+        return null;
+      }
+      ref = ref.slice(serverSeparator + 1);
+      if (!server || !ref) return null;
+    }
     return {
       ref,
       family: POOL_FAMILIES.includes(family) ? family : "",
+      server,
     };
   }
 
@@ -408,6 +424,15 @@ if (configTextarea && configurationForm && configurationEditor) {
           label: `${poolOptionLabel(entry)}${detail ? ` · ${detail}` : ""}`,
         });
         continue;
+      }
+      if (
+        entry.default_tls_address &&
+        (entry.type === "anytls" || entry.type === "hysteria2")
+      ) {
+        options.push({
+          value: destinationKey(entry.ref, "", entry.default_tls_address),
+          label: `${poolOptionLabel(entry)} 路 TLS ${entry.default_tls_address}${detail ? ` 路 ${detail}` : ""}`,
+        });
       }
       for (const family of POOL_FAMILIES) {
         const address = entry[family];
@@ -726,6 +751,7 @@ if (configTextarea && configurationForm && configurationEditor) {
       return destinationKey(
         outbound.ref,
         POOL_FAMILIES.includes(outbound.family) ? outbound.family : "",
+        typeof outbound.server === "string" ? outbound.server : "",
       );
     }
     return "builtin/direct";
@@ -928,6 +954,7 @@ if (configTextarea && configurationForm && configurationEditor) {
         ref: destination.ref,
       };
       if (destination.family) outbound.family = destination.family;
+      if (destination.server) outbound.server = destination.server;
       outbounds.push(outbound);
       tags.set(key, tag);
     }

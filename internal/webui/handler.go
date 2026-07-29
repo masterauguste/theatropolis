@@ -164,6 +164,7 @@ type pageData struct {
 	Username              string
 	LegacyLogin           bool
 	AgentID               string
+	DefaultTLSAddress     string
 	TTLSeconds            int64
 	Stats                 fleetStats
 	Agents                []agentView
@@ -231,6 +232,7 @@ type agentDetailView struct {
 	UpdateTarget          string
 	Update                *agentUpdateView
 	RevokeLabel           string
+	DefaultTLSAddress     string
 }
 
 type agentUpdateView struct {
@@ -382,6 +384,10 @@ func (h *Handler) routes() {
 	h.mux.HandleFunc(
 		"POST /servers/{agent_id}/address",
 		h.setServerAddress,
+	)
+	h.mux.HandleFunc(
+		"POST /servers/{agent_id}/tls-address",
+		h.setServerTLSAddress,
 	)
 	h.mux.HandleFunc(
 		"POST /servers/{agent_id}/probe-address",
@@ -1402,6 +1408,9 @@ func (h *Handler) serverPageData(
 		Configuration:       defaultConfigurationJSON,
 		RevokeLabel:         "Remove server entry",
 	}
+	if registry := h.controller.PoolRegistry(); registry != nil {
+		detail.DefaultTLSAddress = registry.DefaultTLSAddress(snapshot.ID)
+	}
 	if info, exists := h.sessions.AgentInfo(snapshot.ID); exists {
 		detail.AgentVersion = info.Version
 		detail.SingBoxVersion = info.SingBoxVersion
@@ -1774,6 +1783,7 @@ func (h *Handler) createServer(response http.ResponseWriter, request *http.Reque
 		maxEnrollmentBodyBytes,
 		"agent_id",
 		"csrf_token",
+		"default_tls_address",
 		"ttl_seconds",
 	)
 	if err != nil || !h.access.AuthorizeCSRF(sessionToken, form.Get("csrf_token")) {
@@ -1787,6 +1797,20 @@ func (h *Handler) createServer(response http.ResponseWriter, request *http.Reque
 	}
 
 	agentID := strings.TrimSpace(form.Get("agent_id"))
+	defaultTLSAddress, tlsAddressErr := pool.NormalizeTLSAddress(form.Get("default_tls_address"))
+	if tlsAddressErr != nil {
+		h.renderNewServerError(
+			response,
+			http.StatusBadRequest,
+			session,
+			agentID,
+			form.Get("default_tls_address"),
+			900,
+			"Enter a DNS hostname only, without a scheme, port, path, wildcard, or IP address.",
+			"default_tls_address",
+		)
+		return
+	}
 	ttlSeconds, parseErr := strconv.ParseInt(form.Get("ttl_seconds"), 10, 64)
 	ttl, ttlAllowed := allowedTTLs[ttlSeconds]
 	if parseErr != nil || !ttlAllowed {
@@ -1795,6 +1819,7 @@ func (h *Handler) createServer(response http.ResponseWriter, request *http.Reque
 			http.StatusBadRequest,
 			session,
 			agentID,
+			defaultTLSAddress,
 			900,
 			"Choose a supported enrollment lifetime.",
 			"ttl_seconds",
@@ -1808,6 +1833,7 @@ func (h *Handler) createServer(response http.ResponseWriter, request *http.Reque
 			http.StatusTooManyRequests,
 			session,
 			agentID,
+			defaultTLSAddress,
 			ttlSeconds,
 			"Too many enrollment credentials were created. Wait one minute and try again.",
 			"",
@@ -1818,8 +1844,47 @@ func (h *Handler) createServer(response http.ResponseWriter, request *http.Reque
 	expiresAt := h.currentTime().Add(ttl)
 	h.agentMutationMu.Lock()
 	defer h.agentMutationMu.Unlock()
+	poolRegistry := h.controller.PoolRegistry()
+	if poolRegistry == nil && defaultTLSAddress != "" {
+		http.Error(response, "the outbound pool is unavailable", http.StatusInternalServerError)
+		return
+	}
+	previousTLSAddress := ""
+	if poolRegistry != nil {
+		previousTLSAddress = poolRegistry.DefaultTLSAddress(agentID)
+		if err := poolRegistry.SetDefaultTLSAddress(agentID, defaultTLSAddress); err != nil {
+			if errors.Is(err, pool.ErrInvalidName) {
+				h.renderNewServerError(
+					response,
+					http.StatusBadRequest,
+					session,
+					agentID,
+					defaultTLSAddress,
+					ttlSeconds,
+					"Use a valid server ID: letters, numbers, dots, underscores, and hyphens only.",
+					"agent_id",
+				)
+				return
+			}
+			h.logger.Error("store agent default TLS address", "agent_id", agentID, "error", err)
+			http.Error(response, "the server entry could not be created", http.StatusInternalServerError)
+			return
+		}
+	}
 	token, err := h.registry.CreateEnrollment(request.Context(), agentID, expiresAt)
 	if err != nil {
+		if poolRegistry != nil {
+			rollbackErr := poolRegistry.SetDefaultTLSAddress(agentID, previousTLSAddress)
+			if rollbackErr != nil {
+				h.logger.Error(
+					"roll back agent default TLS address",
+					"agent_id",
+					agentID,
+					"error",
+					rollbackErr,
+				)
+			}
+		}
 		message := "The server entry could not be created."
 		status := http.StatusInternalServerError
 		errorField := ""
@@ -1848,6 +1913,7 @@ func (h *Handler) createServer(response http.ResponseWriter, request *http.Reque
 			status,
 			session,
 			agentID,
+			defaultTLSAddress,
 			ttlSeconds,
 			message,
 			errorField,
@@ -1881,18 +1947,20 @@ func (h *Handler) renderNewServerError(
 	status int,
 	session Session,
 	agentID string,
+	defaultTLSAddress string,
 	ttlSeconds int64,
 	message string,
 	errorField string,
 ) {
 	h.render(response, status, "new-server.html", pageData{
-		Title:      "Add server",
-		ActiveNav:  "servers",
-		CSRFToken:  session.CSRFToken,
-		AgentID:    agentID,
-		TTLSeconds: ttlSeconds,
-		Error:      message,
-		ErrorField: errorField,
+		Title:             "Add server",
+		ActiveNav:         "servers",
+		CSRFToken:         session.CSRFToken,
+		AgentID:           agentID,
+		DefaultTLSAddress: defaultTLSAddress,
+		TTLSeconds:        ttlSeconds,
+		Error:             message,
+		ErrorField:        errorField,
 	})
 }
 

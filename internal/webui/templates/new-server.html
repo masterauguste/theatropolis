@@ -63,6 +63,26 @@
             </label>
 
             <label class="field">
+              <span>Default TLS address <span class="field__optional">Optional</span></span>
+              <input
+                id="default-tls-address"
+                name="default_tls_address"
+                type="text"
+                value="{{.DefaultTLSAddress}}"
+                placeholder="proxy.example.com"
+                autocomplete="off"
+                autocapitalize="none"
+                spellcheck="false"
+                inputmode="url"
+                maxlength="253"
+                {{if eq .ErrorField "default_tls_address"}}autofocus{{end}}
+                aria-invalid="{{if eq .ErrorField "default_tls_address"}}true{{else}}false{{end}}"
+                aria-describedby="default-tls-address-help{{if eq .ErrorField "default_tls_address"}} server-form-error{{end}}"
+              >
+              <small id="default-tls-address-help">Preferred hostname when this server's AnyTLS or Hysteria2 inbounds are used as outbounds. IPv4 and IPv6 remain available.</small>
+            </label>
+
+            <label class="field">
               <span>Enrollment lifetime</span>
               <select
                 id="ttl-seconds"
