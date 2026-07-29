@@ -358,6 +358,26 @@ func TestQueueAgentUpdateSendsExactVersionAndAcceptsMatchingReport(t *testing.T)
 	}
 }
 
+func TestAgentUpdateAcceptsStaleTerminalReportAfterMasterRestart(t *testing.T) {
+	t.Parallel()
+
+	server := newTestServer(deployment.NewMemoryStore(), nil)
+	err := server.handleAgentUpdateReport("edge-update", &controlv1.AgentUpdateReport{
+		RequestId:      "update_0123456789abcdef",
+		TargetVersion:  "v1.14.0-beta.7",
+		RunningVersion: "v0.0.9",
+		Status:         controlv1.AgentUpdateStatus_AGENT_UPDATE_STATUS_FAILED,
+		Diagnostic:     "release asset was unavailable",
+		ObservedAtUnix: time.Now().Unix(),
+	})
+	if err != nil {
+		t.Fatalf("stale terminal report was not acknowledged: %v", err)
+	}
+	if _, exists := server.LatestAgentUpdate("edge-update"); exists {
+		t.Fatal("stale terminal report created a visible update record")
+	}
+}
+
 func TestQueueSingBoxUpdateSupportsExactPrerelease(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()

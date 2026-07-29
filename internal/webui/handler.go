@@ -142,6 +142,9 @@ type Handler struct {
 	resultMu sync.Mutex
 	results  map[string]enrollmentResult
 
+	updateViewMu       sync.Mutex
+	sessionAgentUpdate map[[sha256.Size]byte]map[string]string
+
 	// agentMutationMu keeps web-originated enrollment creation/result storage
 	// and revocation/result removal in one order. Without it, a concurrent
 	// revoke could leave the browser holding a newly stored but already
@@ -325,6 +328,9 @@ func New(options Options) (http.Handler, error) {
 		templates:       templates,
 		mux:             http.NewServeMux(),
 		results:         make(map[string]enrollmentResult),
+		sessionAgentUpdate: make(
+			map[[sha256.Size]byte]map[string]string,
+		),
 	}
 	handler.routes()
 	return handler, nil
@@ -539,6 +545,10 @@ func (h *Handler) logout(response http.ResponseWriter, request *http.Request) {
 		http.Error(response, "logout could not be completed", http.StatusInternalServerError)
 		return
 	}
+	h.updateViewMu.Lock()
+	tokenDigest, _ := credentialDigest(sessionToken)
+	delete(h.sessionAgentUpdate, tokenDigest)
+	h.updateViewMu.Unlock()
 	http.SetCookie(response, DeleteSessionCookie())
 	http.Redirect(response, request, "/login", http.StatusSeeOther)
 }
@@ -601,7 +611,13 @@ func (h *Handler) settingsPageData(session Session) pageData {
 	var masterUpdate *agentUpdateView
 	if h.masterUpdater != nil {
 		if result, exists, err := h.masterUpdater.LoadResult(); err == nil && exists {
-			masterUpdate = updateResultViewFor(result)
+			if result.Status == "failed" {
+				if err := h.masterUpdater.AcknowledgeResult(result.RequestID); err != nil {
+					h.logger.Warn("discard stale master update failure", "error", err)
+				}
+			} else {
+				masterUpdate = updateResultViewFor(result)
+			}
 		}
 	}
 	return pageData{
@@ -793,6 +809,19 @@ func (h *Handler) deployServerConfiguration(
 			session,
 			snapshot,
 			string(config),
+			err.Error(),
+			"config_json",
+		)
+		return
+	}
+	config, err = ensureRequiredRouteSniff(config)
+	if err != nil {
+		h.renderServerError(
+			response,
+			http.StatusBadRequest,
+			session,
+			snapshot,
+			form.Get("config_json"),
 			err.Error(),
 			"config_json",
 		)
@@ -1047,6 +1076,40 @@ func (h *Handler) updateAgent(response http.ResponseWriter, request *http.Reques
 		)
 		return
 	}
+	if h.releases == nil {
+		h.renderAgentUpdateError(
+			response,
+			http.StatusServiceUnavailable,
+			session,
+			snapshot,
+			targetVersion,
+			"The release catalog could not be checked. Try again.",
+		)
+		return
+	}
+	releases, releaseErr := h.releases.Versions(request.Context())
+	if releaseErr != nil {
+		h.renderAgentUpdateError(
+			response,
+			http.StatusServiceUnavailable,
+			session,
+			snapshot,
+			targetVersion,
+			"The release catalog could not be checked. Try again.",
+		)
+		return
+	}
+	if !containsRelease(releases, targetVersion) {
+		h.renderAgentUpdateError(
+			response,
+			http.StatusBadRequest,
+			session,
+			snapshot,
+			targetVersion,
+			"That release does not have the required downloadable binaries.",
+		)
+		return
+	}
 	if snapshot.State != identity.AgentStateEnrolled ||
 		!h.controller.CanUpdateAgent(snapshot.ID) {
 		h.renderAgentUpdateError(
@@ -1091,6 +1154,7 @@ func (h *Handler) updateAgent(response http.ResponseWriter, request *http.Reques
 		)
 		return
 	}
+	h.rememberAgentUpdate(sessionToken, snapshot.ID, requestID)
 	http.Redirect(response, request, "/servers/"+url.PathEscape(snapshot.ID)+"/manage", http.StatusSeeOther)
 }
 
@@ -1373,7 +1437,10 @@ func (h *Handler) serverPageData(
 		detail.Configuration = configurationOverride
 	}
 	if update, exists := h.controller.LatestAgentUpdate(snapshot.ID); exists {
-		detail.Update = agentUpdateViewFor(update)
+		if update.Status != "failed" && update.Status != "rejected" ||
+			h.sessionOwnsAgentUpdate(session.Token, snapshot.ID, update.RequestID) {
+			detail.Update = agentUpdateViewFor(update)
+		}
 	}
 	if update, exists := h.controller.LatestSingBoxUpdate(snapshot.ID); exists {
 		detail.SingBoxUpdate = singBoxUpdateViewFor(update)
@@ -1384,6 +1451,44 @@ func (h *Handler) serverPageData(
 		CSRFToken: session.CSRFToken,
 		Agent:     detail,
 	}, nil
+}
+
+func containsRelease(releases []AgentRelease, target string) bool {
+	for _, release := range releases {
+		if release.Tag == target {
+			return true
+		}
+	}
+	return false
+}
+
+func (h *Handler) rememberAgentUpdate(sessionToken, agentID, requestID string) {
+	tokenDigest, valid := credentialDigest(sessionToken)
+	if valid != 1 {
+		return
+	}
+	h.updateViewMu.Lock()
+	defer h.updateViewMu.Unlock()
+	requests := h.sessionAgentUpdate[tokenDigest]
+	if requests == nil {
+		requests = make(map[string]string)
+		h.sessionAgentUpdate[tokenDigest] = requests
+	}
+	requests[agentID] = requestID
+}
+
+func (h *Handler) sessionOwnsAgentUpdate(
+	sessionToken string,
+	agentID string,
+	requestID string,
+) bool {
+	tokenDigest, valid := credentialDigest(sessionToken)
+	if valid != 1 {
+		return false
+	}
+	h.updateViewMu.Lock()
+	defer h.updateViewMu.Unlock()
+	return h.sessionAgentUpdate[tokenDigest][agentID] == requestID
 }
 
 type versionCatalogResponse struct {

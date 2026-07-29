@@ -16,6 +16,9 @@ long-lived bidirectional stream to the master, and run/supervise sing-box.
 
 ## Layout
 
+- Release catalog note: Theatropolis versions now come from GitHub release metadata and are offered only when `checksums.txt` plus both supported Linux tarballs exist; only the sing-box catalog continues to use Git `info/refs`. This supersedes the older `releases.go` transport note below.
+- Routing normalization note: the guided editor preserves sniff actions outside its draggable route cards and automatically prepends `{"action":"sniff"}` when domain, geosite/custom rule-set, protocol, or client matching needs it. `ensureRequiredRouteSniff` repeats this normalization at the deployment boundary; destination-IP/geoip-only rules stay unchanged.
+
 - `cmd/theatropolis-master/` — master binary. Subcommands: `serve`, `apply-update`, `create-enrollment`, `set-web-admin`, `version` (main.go:58).
 - `cmd/theatropolis-agent/` — agent binary. Subcommands: default run, `apply-update`, `apply-sing-box-update`.
 - `internal/control/server.go` — gRPC `AgentControlService`: `Enroll` (token → Ed25519 key binding), `Connect` (long-lived bidirectional stream with nonce challenge, monotonic sequence numbers, 75 s heartbeat timeout). Also master-local methods the web UI calls: `QueueValidation`, `QueueDeployment`, `QueueAgentUpdate`, `QueueSingBoxUpdate`, `RevokeAgent`, plus `SessionRegistry`. `QueueValidation`/`QueueDeployment` render pool refs at the boundary (`pool.Render`) — records keep the LOGICAL config, agents only receive rendered JSON + its digest.

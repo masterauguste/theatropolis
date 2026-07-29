@@ -16,19 +16,23 @@ func TestGitHubReleaseCatalogDiscoversAndSortsTags(t *testing.T) {
 	var requests atomic.Int32
 	server := httptest.NewServer(http.HandlerFunc(func(response http.ResponseWriter, _ *http.Request) {
 		requests.Add(1)
-		response.Header().Set("Content-Type", "application/x-git-upload-pack-advertisement")
-		fmt.Fprint(response, strings.Join([]string{
-			"001e# service=git-upload-pack\n0000",
-			"0040deadbeef refs/tags/v0.0.9\n",
-			"0041deadbeef refs/tags/v0.0.16\n",
-			"0049deadbeef refs/tags/v0.0.16^{}\n",
-			"0048deadbeef refs/tags/not-a-version\n",
-		}, ""))
+		response.Header().Set("Content-Type", "application/json")
+		fmt.Fprint(response, `[
+			{"tag_name":"v0.0.9","assets":[
+				{"name":"checksums.txt"},
+				{"name":"theatropolis_linux_amd64.tar.gz"},
+				{"name":"theatropolis_linux_arm64.tar.gz"}]},
+			{"tag_name":"v0.0.16","assets":[
+				{"name":"checksums.txt"},
+				{"name":"theatropolis_linux_amd64.tar.gz"},
+				{"name":"theatropolis_linux_arm64.tar.gz"}]},
+			{"tag_name":"not-a-version","assets":[]}
+		]`)
 	}))
 	defer server.Close()
 
 	catalog := NewGitHubReleaseCatalog(server.Client())
-	catalog.refsURL = server.URL
+	catalog.releasesURL = server.URL
 	catalog.now = func() time.Time {
 		return time.Date(2026, 7, 28, 0, 0, 0, 0, time.UTC)
 	}
@@ -44,6 +48,30 @@ func TestGitHubReleaseCatalogDiscoversAndSortsTags(t *testing.T) {
 	}
 	if requests.Load() != 1 {
 		t.Fatalf("catalog requests = %d, want cached single request", requests.Load())
+	}
+}
+
+func TestGitHubReleaseCatalogOmitsTagsWithoutCompleteBinaryAssets(t *testing.T) {
+	t.Parallel()
+	server := httptest.NewServer(http.HandlerFunc(func(response http.ResponseWriter, _ *http.Request) {
+		response.Header().Set("Content-Type", "application/json")
+		fmt.Fprint(response, `[
+			{"tag_name":"v0.0.18","assets":[{"name":"checksums.txt"}]},
+			{"tag_name":"v0.0.17","assets":[
+				{"name":"checksums.txt"},
+				{"name":"theatropolis_linux_amd64.tar.gz"},
+				{"name":"theatropolis_linux_arm64.tar.gz"}]}
+		]`)
+	}))
+	defer server.Close()
+	catalog := NewGitHubReleaseCatalog(server.Client())
+	catalog.releasesURL = server.URL
+	releases, err := catalog.Versions(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(releases) != 1 || releases[0].Tag != "v0.0.17" {
+		t.Fatalf("releases = %+v, want only v0.0.17", releases)
 	}
 }
 
@@ -84,9 +112,37 @@ func TestGitHubReleaseCatalogReportsUpstreamStatus(t *testing.T) {
 	}))
 	defer server.Close()
 	catalog := NewGitHubReleaseCatalog(server.Client())
-	catalog.refsURL = server.URL
+	catalog.releasesURL = server.URL
 	_, err := catalog.Versions(context.Background())
 	if err == nil || !strings.Contains(catalogDiagnostic(err), "status 502") {
 		t.Fatalf("catalog error = %v", err)
+	}
+}
+
+func TestGitHubReleaseCatalogRetriesAfterFailure(t *testing.T) {
+	t.Parallel()
+	var requests atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(response http.ResponseWriter, _ *http.Request) {
+		if requests.Add(1) == 1 {
+			http.Error(response, "temporary failure", http.StatusBadGateway)
+			return
+		}
+		fmt.Fprint(response, `[{"tag_name":"v0.0.17","assets":[
+			{"name":"checksums.txt"},
+			{"name":"theatropolis_linux_amd64.tar.gz"},
+			{"name":"theatropolis_linux_arm64.tar.gz"}]}]`)
+	}))
+	defer server.Close()
+	catalog := NewGitHubReleaseCatalog(server.Client())
+	catalog.releasesURL = server.URL
+	if _, err := catalog.Versions(context.Background()); err == nil {
+		t.Fatal("first version lookup unexpectedly succeeded")
+	}
+	releases, err := catalog.Versions(context.Background())
+	if err != nil {
+		t.Fatalf("retry version lookup: %v", err)
+	}
+	if len(releases) != 1 || releases[0].Tag != "v0.0.17" || requests.Load() != 2 {
+		t.Fatalf("retry releases = %+v, requests = %d", releases, requests.Load())
 	}
 }

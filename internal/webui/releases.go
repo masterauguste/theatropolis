@@ -2,6 +2,7 @@ package webui
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -35,17 +36,20 @@ type ReleaseCatalog interface {
 	Versions(context.Context) ([]AgentRelease, error)
 }
 
-// GitHubReleaseCatalog discovers tags through GitHub's public Git transport.
-// Unlike the REST API this endpoint is not subject to unauthenticated API rate
-// limits and does not include large release asset metadata.
+// GitHubReleaseCatalog discovers Theatropolis releases through GitHub's release
+// metadata so a tag is not offered until every supported binary and its checksum
+// manifest exist. The sing-box catalog uses the public Git transport because its
+// platform-specific asset names are validated by the sing-box updater itself.
 type GitHubReleaseCatalog struct {
-	client       *http.Client
-	now          func() time.Time
-	mu           sync.Mutex
-	cached       []AgentRelease
-	expiresAt    time.Time
-	refsURL      string
-	validVersion func(string) bool
+	client         *http.Client
+	now            func() time.Time
+	mu             sync.Mutex
+	cached         []AgentRelease
+	expiresAt      time.Time
+	refsURL        string
+	releasesURL    string
+	requiredAssets []string
+	validVersion   func(string) bool
 }
 
 func NewGitHubReleaseCatalog(client *http.Client) *GitHubReleaseCatalog {
@@ -53,7 +57,9 @@ func NewGitHubReleaseCatalog(client *http.Client) *GitHubReleaseCatalog {
 		client = &http.Client{
 			Timeout: 12 * time.Second,
 			CheckRedirect: func(request *http.Request, _ []*http.Request) error {
-				if request.URL.Scheme != "https" || request.URL.Hostname() != "github.com" {
+				host := request.URL.Hostname()
+				if request.URL.Scheme != "https" ||
+					(host != "github.com" && host != "api.github.com") {
 					return errors.New("version catalog redirected to an untrusted host")
 				}
 				return nil
@@ -61,15 +67,22 @@ func NewGitHubReleaseCatalog(client *http.Client) *GitHubReleaseCatalog {
 		}
 	}
 	return &GitHubReleaseCatalog{
-		client:       client,
-		now:          time.Now,
-		refsURL:      "https://github.com/masterauguste/theatropolis.git/info/refs?service=git-upload-pack",
+		client:      client,
+		now:         time.Now,
+		releasesURL: "https://api.github.com/repos/masterauguste/theatropolis/releases?per_page=100",
+		requiredAssets: []string{
+			"checksums.txt",
+			"theatropolis_linux_amd64.tar.gz",
+			"theatropolis_linux_arm64.tar.gz",
+		},
 		validVersion: agentupdate.ValidVersion,
 	}
 }
 
 func NewSingBoxReleaseCatalog(client *http.Client) *GitHubReleaseCatalog {
 	catalog := NewGitHubReleaseCatalog(client)
+	catalog.releasesURL = ""
+	catalog.requiredAssets = nil
 	catalog.refsURL = "https://github.com/SagerNet/sing-box.git/info/refs?service=git-upload-pack"
 	catalog.validVersion = singboxupdate.ValidVersion
 	return catalog
@@ -95,6 +108,88 @@ func (c *GitHubReleaseCatalog) Versions(ctx context.Context) ([]AgentRelease, er
 }
 
 func (c *GitHubReleaseCatalog) fetch(ctx context.Context) ([]AgentRelease, error) {
+	if c.releasesURL != "" {
+		return c.fetchPublishedReleases(ctx)
+	}
+	return c.fetchTags(ctx)
+}
+
+type githubRelease struct {
+	TagName     string    `json:"tag_name"`
+	Prerelease  bool      `json:"prerelease"`
+	PublishedAt time.Time `json:"published_at"`
+	Draft       bool      `json:"draft"`
+	Assets      []struct {
+		Name string `json:"name"`
+	} `json:"assets"`
+}
+
+func (c *GitHubReleaseCatalog) fetchPublishedReleases(
+	ctx context.Context,
+) ([]AgentRelease, error) {
+	request, err := http.NewRequestWithContext(ctx, http.MethodGet, c.releasesURL, nil)
+	if err != nil {
+		return nil, fmt.Errorf("prepare release discovery: %w", err)
+	}
+	request.Header.Set("Accept", "application/vnd.github+json")
+	request.Header.Set("X-GitHub-Api-Version", "2022-11-28")
+	response, err := c.client.Do(request)
+	if err != nil {
+		return nil, fmt.Errorf("request GitHub releases: %w", err)
+	}
+	defer response.Body.Close()
+	if response.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("GitHub release discovery returned status %d", response.StatusCode)
+	}
+	if response.ContentLength > maxReleaseResponseSize {
+		return nil, errors.New("GitHub release response exceeds the size limit")
+	}
+	encoded, err := io.ReadAll(io.LimitReader(response.Body, maxReleaseResponseSize+1))
+	if err != nil {
+		return nil, fmt.Errorf("read GitHub releases: %w", err)
+	}
+	if len(encoded) > maxReleaseResponseSize {
+		return nil, errors.New("GitHub release response exceeds the size limit")
+	}
+	var published []githubRelease
+	if err := json.Unmarshal(encoded, &published); err != nil {
+		return nil, fmt.Errorf("decode GitHub releases: %w", err)
+	}
+	releases := make([]AgentRelease, 0, len(published))
+	for _, release := range published {
+		if release.Draft || !c.validVersion(release.TagName) ||
+			!hasReleaseAssets(release, c.requiredAssets) {
+			continue
+		}
+		releases = append(releases, AgentRelease{
+			Tag:         release.TagName,
+			Prerelease:  release.Prerelease,
+			PublishedAt: release.PublishedAt,
+		})
+	}
+	if len(releases) == 0 {
+		return nil, errors.New("GitHub returned no supported releases with downloadable binaries")
+	}
+	sort.SliceStable(releases, func(left, right int) bool {
+		return compareVersionTags(releases[left].Tag, releases[right].Tag) > 0
+	})
+	return releases, nil
+}
+
+func hasReleaseAssets(release githubRelease, required []string) bool {
+	assets := make(map[string]struct{}, len(release.Assets))
+	for _, asset := range release.Assets {
+		assets[asset.Name] = struct{}{}
+	}
+	for _, name := range required {
+		if _, exists := assets[name]; !exists {
+			return false
+		}
+	}
+	return true
+}
+
+func (c *GitHubReleaseCatalog) fetchTags(ctx context.Context) ([]AgentRelease, error) {
 	request, err := http.NewRequestWithContext(ctx, http.MethodGet, c.refsURL, nil)
 	if err != nil {
 		return nil, fmt.Errorf("prepare tag discovery: %w", err)

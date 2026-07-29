@@ -961,6 +961,17 @@ func (s *Server) handleAgentUpdateReport(
 	if !exists ||
 		current.RequestID != report.GetRequestId() ||
 		current.TargetVersion != report.GetTargetVersion() {
+		// The helper result intentionally survives an agent restart until the
+		// master accepts it. A master restart loses the in-memory request map,
+		// so reject only unmatched non-terminal reports. Silently accepting an
+		// old terminal report lets the authenticated agent acknowledge and
+		// remove it without allowing it to mutate a newer request.
+		if report.GetStatus() ==
+			controlv1.AgentUpdateStatus_AGENT_UPDATE_STATUS_APPLIED ||
+			report.GetStatus() ==
+				controlv1.AgentUpdateStatus_AGENT_UPDATE_STATUS_FAILED {
+			return nil
+		}
 		return status.Error(codes.PermissionDenied, "agent update report does not match its request")
 	}
 	switch report.GetStatus() {

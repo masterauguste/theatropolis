@@ -894,6 +894,15 @@ if (configTextarea && configurationForm && configurationEditor) {
     return rule;
   }
 
+  function routeRuleNeedsSniff(rule) {
+    if (["protocol", "client", "domain", "domain_suffix", "domain_keyword", "domain_regex"]
+      .some((name) => rule[name] !== undefined)) {
+      return true;
+    }
+    const ruleSets = listValue(rule.rule_set);
+    return ruleSets.some((tag) => !String(tag).startsWith("geoip-"));
+  }
+
   function syncGuidedConfiguration() {
     const next = clone(documentModel);
     const unsupportedInbounds = listValue(next.inbounds).filter(
@@ -919,10 +928,17 @@ if (configTextarea && configurationForm && configurationEditor) {
     ];
     const managed = buildManagedOutbounds(destinationKeys);
     next.outbounds = managed.outbounds;
-    route.rules = Array.from(
+    const managedRules = Array.from(
       routeRuleList.querySelectorAll("[data-route-rule-card]"),
       (card) => serializeRouteRule(card, managed.tags),
     );
+    const preservedSniffRules = listValue(route.rules).filter(
+      (rule) => rule?.action === "sniff",
+    );
+    if (managedRules.some(routeRuleNeedsSniff) && preservedSniffRules.length === 0) {
+      preservedSniffRules.push({ action: "sniff" });
+    }
+    route.rules = [...preservedSniffRules, ...managedRules];
     // Rule sets are derived from the routing rules: every referenced
     // geosite-*/geoip-* tag gets a remote binary SRS entry (spreading the
     // original entry first so extras like download_detour survive), custom
@@ -959,7 +975,7 @@ if (configTextarea && configurationForm && configurationEditor) {
     configTextarea.value = `${JSON.stringify(next, null, 2)}\n`;
     configTextarea.setCustomValidity("");
     documentModel = next;
-    summary.textContent = `${next.inbounds.length} inbound(s), ${next.outbounds.length} outbound(s), ${route.rules.length} rule(s)`;
+    summary.textContent = `${next.inbounds.length} inbound(s), ${next.outbounds.length} outbound(s), ${managedRules.length} rule(s)`;
     return next;
   }
 
@@ -983,6 +999,7 @@ if (configTextarea && configurationForm && configurationEditor) {
     );
     const route = objectValue(documentModel.route) ? documentModel.route : {};
     for (const rule of listValue(route.rules)) {
+      if (rule?.action === "sniff") continue;
       addRouteRule(rule, outboundByTag);
     }
     replaceSelectOptions(
@@ -999,7 +1016,10 @@ if (configTextarea && configurationForm && configurationEditor) {
     } else {
       setWarning("");
     }
-    summary.textContent = `${listValue(documentModel.inbounds).length} inbound(s), ${listValue(documentModel.outbounds).length} outbound(s), ${listValue(route.rules).length} rule(s)`;
+    const visibleRouteRules = listValue(route.rules).filter(
+      (rule) => rule?.action !== "sniff",
+    ).length;
+    summary.textContent = `${listValue(documentModel.inbounds).length} inbound(s), ${listValue(documentModel.outbounds).length} outbound(s), ${visibleRouteRules} rule(s)`;
     updateResourceCounts();
   }
 

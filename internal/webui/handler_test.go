@@ -1259,6 +1259,76 @@ func TestAgentUpdateRejectsUnversionedTarget(t *testing.T) {
 	}
 }
 
+func TestAgentUpdateRejectsTagWithoutPublishedBinaries(t *testing.T) {
+	t.Parallel()
+
+	fixture := newWebFixture(t)
+	enrollAgent(t, fixture.registry, "edge-online")
+	form := url.Values{
+		"csrf_token":     {fixture.session.CSRFToken},
+		"target_version": {"v1.14.0-beta.8"},
+	}.Encode()
+	request := fixture.authenticatedMutationRequest(
+		http.MethodPost,
+		"/servers/edge-online/agent-update",
+		form,
+	)
+	response := httptest.NewRecorder()
+	fixture.handler.ServeHTTP(response, request)
+	if response.Code != http.StatusBadRequest ||
+		!strings.Contains(response.Body.String(), "required downloadable binaries") {
+		t.Fatalf("unpublished update response = %d %q", response.Code, response.Body.String())
+	}
+	if _, exists := fixture.controller.updates["edge-online"]; exists {
+		t.Fatal("release without binaries was queued")
+	}
+}
+
+func TestAgentUpdateFailureIsVisibleOnlyToRequestingSession(t *testing.T) {
+	t.Parallel()
+
+	fixture := newWebFixture(t)
+	enrollAgent(t, fixture.registry, "edge-online")
+	form := url.Values{
+		"csrf_token":     {fixture.session.CSRFToken},
+		"target_version": {"v1.14.0-beta.7"},
+	}.Encode()
+	request := fixture.authenticatedMutationRequest(
+		http.MethodPost,
+		"/servers/edge-online/agent-update",
+		form,
+	)
+	response := httptest.NewRecorder()
+	fixture.handler.ServeHTTP(response, request)
+	update := fixture.controller.updates["edge-online"]
+	update.Status = "failed"
+	update.Diagnostic = "download failed"
+	fixture.controller.updates["edge-online"] = update
+
+	request = fixture.authenticatedRequest(
+		http.MethodGet,
+		"/servers/edge-online/manage",
+		"",
+	)
+	response = httptest.NewRecorder()
+	fixture.handler.ServeHTTP(response, request)
+	if !strings.Contains(response.Body.String(), "download failed") {
+		t.Fatal("requesting session did not receive its update failure")
+	}
+
+	other, err := fixture.access.Login(fixture.username, fixture.password)
+	if err != nil {
+		t.Fatal(err)
+	}
+	request = fixture.request(http.MethodGet, "/servers/edge-online/manage", "")
+	request.AddCookie(NewSessionCookie(other.Token, other.ExpiresAt))
+	response = httptest.NewRecorder()
+	fixture.handler.ServeHTTP(response, request)
+	if strings.Contains(response.Body.String(), "download failed") {
+		t.Fatal("agent update failure leaked into a later browser session")
+	}
+}
+
 func TestSingBoxUpdateQueuesExactPrerelease(t *testing.T) {
 	t.Parallel()
 	fixture := newWebFixture(t)
@@ -1595,6 +1665,47 @@ func TestMasterUpdateRejectsClientSelectedVersion(t *testing.T) {
 	}
 	if _, err := os.Stat(filepath.Join(stateDirectory, "update-request.json")); !errors.Is(err, os.ErrNotExist) {
 		t.Fatalf("client-selected master update created a request: %v", err)
+	}
+}
+
+func TestMasterUpdateFailureIsDiscardedWhenSettingsSessionLoads(t *testing.T) {
+	t.Parallel()
+
+	fixture := newWebFixture(t)
+	stateDirectory := t.TempDir()
+	updater, err := agentupdate.NewScheduler(stateDirectory)
+	if err != nil {
+		t.Fatal(err)
+	}
+	handler := fixture.handler.(*Handler)
+	handler.masterUpdater = updater
+	result := agentupdate.Result{
+		Version:        1,
+		RequestID:      "master_0123456789abcdef",
+		TargetVersion:  "v1.14.0-beta.7",
+		RunningVersion: "v1.13.2",
+		Status:         "failed",
+		Diagnostic:     "release asset was missing",
+		ObservedAt:     time.Now().UTC(),
+	}
+	encoded, err := json.Marshal(result)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resultPath := filepath.Join(stateDirectory, "update-result.json")
+	if err := os.WriteFile(resultPath, append(encoded, '\n'), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	request := fixture.authenticatedRequest(http.MethodGet, "/settings", "")
+	response := httptest.NewRecorder()
+	fixture.handler.ServeHTTP(response, request)
+	if response.Code != http.StatusOK ||
+		strings.Contains(response.Body.String(), "release asset was missing") {
+		t.Fatalf("settings retained stale failure: %d %q", response.Code, response.Body.String())
+	}
+	if _, err := os.Stat(resultPath); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("stale result still exists: %v", err)
 	}
 }
 
@@ -2076,9 +2187,12 @@ func newWebFixtureWithAccess(
 		Sessions:   sessions,
 		Controller: controller,
 		Access:     access,
-		PublicURL:  testPublicURL,
-		Version:    "test",
-		Now:        func() time.Time { return now },
+		Releases: testReleaseCatalog{releases: []AgentRelease{
+			{Tag: "v1.14.0-beta.7", Prerelease: true},
+		}},
+		PublicURL: testPublicURL,
+		Version:   "test",
+		Now:       func() time.Time { return now },
 	})
 	if err != nil {
 		t.Fatal(err)
