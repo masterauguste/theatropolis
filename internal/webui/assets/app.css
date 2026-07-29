@@ -911,29 +911,42 @@ textarea[aria-invalid="true"]:focus {
   opacity: 1;
 }
 
-.select-box__chevron {
+.select-box__chevron,
+.route-match-chevron {
   display: inline-flex;
-  width: 1rem;
-  height: 1rem;
-  margin-right: 0.7rem;
+  width: 2.55rem;
+  min-height: calc(2.55rem - 2px);
+  align-self: stretch;
   flex: 0 0 auto;
+  align-items: center;
+  justify-content: center;
   color: var(--ink-500);
+  background: var(--surface-sunken);
+  border-left: 1px solid var(--ink-300);
+  border-radius: 0 calc(var(--radius-sm) - 1px) calc(var(--radius-sm) - 1px) 0;
   pointer-events: none;
-  transition: transform var(--ease), color var(--ease);
+  transition: color var(--ease), background-color var(--ease), border-color var(--ease);
 }
 
-.select-box__chevron svg {
-  width: 100%;
-  height: 100%;
+.select-box__chevron svg,
+.route-match-chevron svg {
+  width: 1rem;
+  height: 1rem;
   fill: none;
   stroke: currentColor;
   stroke-linecap: round;
   stroke-linejoin: round;
   stroke-width: 1.7;
+  transition: transform var(--ease);
 }
 
 .select-box.is-open .select-box__chevron {
   color: var(--accent-700);
+  background: var(--accent-100);
+  border-left-color: var(--accent-600);
+}
+
+.select-box.is-open .select-box__chevron svg {
   transform: rotate(180deg);
 }
 
@@ -1917,6 +1930,62 @@ body:has(dialog[open]) {
   position: relative;
 }
 
+.route-match-control {
+  position: relative;
+}
+
+.route-match-trigger {
+  display: flex;
+  width: 100%;
+  min-height: 2.55rem;
+  align-items: stretch;
+  color: var(--ink-900);
+  background: var(--surface);
+  border: 1px solid var(--ink-300);
+  border-radius: var(--radius-sm);
+  transition: border-color var(--ease), box-shadow var(--ease), background-color var(--ease);
+}
+
+.route-match-trigger:hover {
+  border-color: var(--ink-400);
+}
+
+.route-match-control:focus-within .route-match-trigger,
+.route-match-control.is-open .route-match-trigger {
+  border-color: var(--accent-600);
+  box-shadow: 0 0 0 3px rgb(127 45 45 / 14%);
+  outline: none;
+}
+
+.route-match-trigger input,
+.route-match-trigger input:hover:not(:disabled):not([readonly]),
+.route-match-trigger input:focus {
+  min-width: 0;
+  min-height: calc(2.55rem - 2px);
+  padding: 0.55rem 0.7rem;
+  flex: 1;
+  background: transparent;
+  border: 0;
+  border-radius: inherit;
+  box-shadow: none;
+  outline: none;
+}
+
+.route-match-control.is-open .route-match-trigger {
+  border-radius: var(--radius-sm) var(--radius-sm) 0 0;
+}
+
+.route-match-control.is-open .route-match-chevron {
+  color: var(--accent-700);
+  background: var(--accent-100);
+  border-left-color: var(--accent-600);
+  border-bottom-right-radius: 0;
+}
+
+.route-match-control.is-open .route-match-chevron svg {
+  transform: rotate(180deg);
+}
+
 .geo-chips {
   display: flex;
   flex-wrap: wrap;
@@ -1950,16 +2019,18 @@ body:has(dialog[open]) {
 
 .geo-options {
   position: absolute;
-  z-index: 10;
-  top: 100%;
+  z-index: 20;
+  top: calc(100% - 1px);
   right: 0;
   left: 0;
   max-height: 14rem;
-  margin-top: 0.25rem;
+  margin: 0;
+  overflow-x: hidden;
   overflow-y: auto;
+  overscroll-behavior: contain;
   background: var(--surface);
-  border: 1px solid var(--ink-200);
-  border-radius: var(--radius-md);
+  border: 1px solid var(--accent-600);
+  border-radius: 0 0 var(--radius-sm) var(--radius-sm);
   box-shadow: var(--shadow-md);
 }
 

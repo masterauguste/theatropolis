@@ -268,14 +268,19 @@
               </div>
               <div class="builder-card__editor route-rule-card__editor">
                 <div class="builder-fields builder-fields--three">
-                  <label class="field"><span>Applies to</span><select data-route-field="scope_type"><option value="all">All traffic on this agent</option><option value="inbound">A specific inbound</option><option value="auth_user">A specific authenticated user</option></select></label>
+                  <label class="field"><span>Applies to</span><select data-route-field="scope_type"><option value="all">All traffic on this agent</option><option value="inbound">A specific inbound</option><option value="auth_user">User</option></select></label>
                   <label class="field" data-route-scope-value hidden><span data-route-scope-label>Inbound</span><select data-route-field="scope_value"></select></label>
                   <label class="field"><span>Rule type</span><select data-route-field="match_type"><option value="protocol">Protocol</option><option value="domain">Exact domain</option><option value="domain_suffix">Domain suffix</option><option value="domain_keyword">Domain keyword</option><option value="domain_regex">Domain regular expression</option><option value="ip_cidr">IP address or CIDR</option><option value="geosite">Geosite domains</option><option value="geoip">GeoIP ranges</option><option value="rule_set">Custom rule-set tag</option><option value="network">Network</option></select></label>
                   <div class="field geo-combobox route-match-combobox">
                     <span data-route-match-label>Match values</span>
                     <div class="geo-chips" data-route-match-chips></div>
-                    <input type="text" data-route-match-filter placeholder="Type a value and press Enter…" autocomplete="off" spellcheck="false">
-                    <div class="geo-options" data-route-match-options hidden></div>
+                    <div class="route-match-control">
+                      <div class="route-match-trigger">
+                        <input type="text" data-route-match-filter role="combobox" aria-autocomplete="list" aria-haspopup="listbox" aria-expanded="false" placeholder="Type a value and press Enter…" autocomplete="off" spellcheck="false">
+                        <span class="route-match-chevron" aria-hidden="true"><svg viewBox="0 0 20 20"><path d="m5.5 7.5 4.5 4.5 4.5-4.5"/></svg></span>
+                      </div>
+                      <div class="geo-options" data-route-match-options role="listbox" hidden></div>
+                    </div>
                     <small data-route-match-hint></small>
                   </div>
                   <label class="field"><span>Outbound</span><select data-route-field="destination" required><option value="builtin/direct">Direct</option><option value="builtin/reject">Reject</option></select></label>

@@ -597,6 +597,8 @@ if (configTextarea && configurationForm && configurationEditor) {
       option.type = "button";
       option.className = "geo-option";
       option.dataset.routeMatchOption = value;
+      option.setAttribute("role", "option");
+      option.setAttribute("aria-selected", String(selection.includes(value)));
       option.textContent = value;
       if (selection.includes(value)) option.classList.add("is-selected");
       list.append(option);
@@ -609,8 +611,17 @@ if (configTextarea && configurationForm && configurationEditor) {
     }
   }
 
+  function setMatchOptionsOpen(card, open) {
+    const list = card.querySelector("[data-route-match-options]");
+    const input = card.querySelector("[data-route-match-filter]");
+    const control = card.querySelector(".route-match-control");
+    list.hidden = !open;
+    input.setAttribute("aria-expanded", String(open));
+    control.classList.toggle("is-open", open);
+  }
+
   function openMatchOptions(card) {
-    card.querySelector("[data-route-match-options]").hidden = false;
+    setMatchOptionsOpen(card, true);
     renderMatchOptions(card);
   }
 
@@ -1031,6 +1042,15 @@ if (configTextarea && configurationForm && configurationEditor) {
   }
 
   configurationEditor.addEventListener("click", (event) => {
+    const matchTrigger = event.target.closest(".route-match-trigger");
+    if (matchTrigger) {
+      const card = matchTrigger.closest("[data-route-rule-card]");
+      if (card) {
+        card.querySelector("[data-route-match-filter]").focus();
+        openMatchOptions(card);
+      }
+      return;
+    }
     const button = event.target.closest("button");
     if (!button) return;
     if (button.dataset.configTab) {
@@ -1152,14 +1172,17 @@ if (configTextarea && configurationForm && configurationEditor) {
       if (selection.length) removeMatchChip(card, selection[selection.length - 1]);
     } else if (event.key === "Escape") {
       event.preventDefault();
-      card.querySelector("[data-route-match-options]").hidden = true;
+      setMatchOptionsOpen(card, false);
     }
   });
 
   document.addEventListener("click", (event) => {
     for (const list of routeRuleList.querySelectorAll("[data-route-match-options]:not([hidden])")) {
       const combobox = list.closest(".route-match-combobox");
-      if (combobox && !combobox.contains(event.target)) list.hidden = true;
+      if (combobox && !combobox.contains(event.target)) {
+        const card = combobox.closest("[data-route-rule-card]");
+        if (card) setMatchOptionsOpen(card, false);
+      }
     }
   });
 

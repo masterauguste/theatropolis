@@ -599,10 +599,13 @@ func TestServerPageRoutesDirectlyThroughPoolDestinations(t *testing.T) {
 		`data-route-field="scope_value"`,
 		`data-route-field="match_type"`,
 		`data-route-match-filter`,
+		`class="route-match-trigger"`,
+		`class="route-match-chevron"`,
 		`data-route-field="destination"`,
 		`data-route-rule-card draggable="true"`,
 		`data-drag-handle`,
 		`data-route-final`,
+		`<option value="auth_user">User</option>`,
 		`<option value="builtin/direct">Direct</option>`,
 		`<option value="builtin/reject">Reject</option>`,
 	} {
