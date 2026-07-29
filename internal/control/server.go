@@ -11,7 +11,6 @@ import (
 	"slices"
 	"strings"
 	"sync"
-	"sync/atomic"
 	"time"
 	"unicode"
 
@@ -64,15 +63,6 @@ type Server struct {
 	// leaves configurations passing through unrendered.
 	poolRegistry *pool.Registry
 
-	// probeIntervalNanos is the re-probe interval in nanoseconds; atomic so
-	// tests can shrink it (SetProbeInterval) while the scheduler goroutine
-	// is already running. probeStop/probeWG/closeOnce manage that goroutine,
-	// which NewServer starts only when a pool registry is present.
-	probeIntervalNanos atomic.Int64
-	probeStop          chan struct{}
-	probeWG            sync.WaitGroup
-	closeOnce          sync.Once
-
 	// probedMu guards probedShadow, the control plane's copy of the probed
 	// address lists it wrote via pool.SetProbed. See mergeProbedAddress.
 	probedMu     sync.Mutex
@@ -114,16 +104,13 @@ func NewServer(
 		updates:          make(map[string]AgentUpdateState),
 		singBoxUpdates:   make(map[string]SingBoxUpdateState),
 	}
-	server.probeIntervalNanos.Store(int64(DefaultProbeRefreshInterval))
-	if poolRegistry != nil {
-		// The re-probe scheduler only makes sense with a pool to scan and
-		// persists through; without one (unit tests) no goroutine starts.
-		server.probeStop = make(chan struct{})
-		server.probeWG.Add(1)
-		go server.probeLoop()
-	}
 	return server
 }
+
+// Close is an idempotent no-op kept for the tests that call it: it used to
+// stop the master-side probe scheduler goroutine, which agent-side periodic
+// probing (ProbeScheduler in internal/agent) made redundant.
+func (s *Server) Close() {}
 
 // PoolRegistry exposes the outbound-pool registry so master-local callers
 // (the web interface) can manage manual entries. It may be nil.

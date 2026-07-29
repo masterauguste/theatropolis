@@ -124,6 +124,10 @@ func TestInvalidConfigurationReachesMasterNotificationWithoutSecrets(t *testing.
 			BinaryPath:     os.Args[0],
 			StateDirectory: filepath.Join(t.TempDir(), "agent-state"),
 		},
+		// Keep the test hermetic: a negative interval disables the agent's
+		// periodic public-address probing, which would otherwise dial real
+		// echo endpoints for families without a routable interface address.
+		Prober: &agent.ProbeScheduler{Interval: -1},
 	}
 	if err := runner.Enroll(ctx, client, token); err != nil {
 		t.Fatal(err)
@@ -361,6 +365,7 @@ func TestRevocationDisconnectsAuthenticatedControlStream(t *testing.T) {
 		AgentVersion:    "test",
 		PrivateKey:      privateKey,
 		HeartbeatPeriod: 20 * time.Millisecond,
+		Prober:          &agent.ProbeScheduler{Interval: -1}, // no real probe traffic
 	}
 	if err := runner.Enroll(ctx, client, token); err != nil {
 		t.Fatal(err)
@@ -456,6 +461,7 @@ func TestAgentReconnectsAfterControlStreamDisconnect(t *testing.T) {
 		AgentVersion:    "test",
 		PrivateKey:      privateKey,
 		HeartbeatPeriod: 20 * time.Millisecond,
+		Prober:          &agent.ProbeScheduler{Interval: -1}, // no real probe traffic
 	}
 	if err := runner.Enroll(ctx, client, token); err != nil {
 		t.Fatal(err)

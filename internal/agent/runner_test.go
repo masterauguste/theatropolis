@@ -315,6 +315,10 @@ func TestRunnerAnswersAddressProbeCommand(t *testing.T) {
 		AgentVersion:    "test",
 		PrivateKey:      privateKey,
 		HeartbeatPeriod: 10 * time.Millisecond, // interleave with probe reports
+		// Disable periodic probing: this test exercises the on-demand path
+		// only, and the private-only interface source would otherwise make
+		// the scheduler dial the real default echo endpoints.
+		Prober: &ProbeScheduler{Interval: -1},
 	}
 	runnerResult := make(chan error, 1)
 	go func() {
@@ -384,6 +388,104 @@ func TestRunnerAnswersAddressProbeCommand(t *testing.T) {
 	cancel()
 	if err := <-runnerResult; !errors.Is(err, context.Canceled) {
 		t.Fatalf("runner.Run returned %v, want context.Canceled", err)
+	}
+}
+
+// TestRunnerProbesPeriodicallyWithoutRoutableAddress wires the heartbeat
+// tick to the periodic scheduler: with no routable interface address the
+// agent probes on its own and reports the result without any master
+// command.
+func TestRunnerProbesPeriodicallyWithoutRoutableAddress(t *testing.T) {
+	// Not parallel: the test swaps the process-wide reportedAddresses.
+	var hits atomic.Int32
+	echo := echoServer(t, "203.0.113.50", &hits)
+	previous := reportedAddresses
+	reportedAddresses = &AddressReporter{
+		Source: interfaceSource("10.0.0.8"), // private only: v4 must be probed
+	}
+	t.Cleanup(func() { reportedAddresses = previous })
+
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+
+	listener := bufconn.Listen(1 << 20)
+	fake := &probeCommandServer{
+		hello:       make(chan *controlv1.AgentHello, 1),
+		agentFrames: make(chan *controlv1.AgentFrame, 64),
+		commands:    make(chan *controlv1.ProbeAddresses),
+	}
+	grpcServer := grpc.NewServer()
+	controlv1.RegisterAgentControlServiceServer(grpcServer, fake)
+	go func() {
+		_ = grpcServer.Serve(listener)
+	}()
+	defer grpcServer.Stop()
+
+	connection, err := grpc.NewClient(
+		"passthrough:///theatropolis-test",
+		grpc.WithContextDialer(func(context.Context, string) (net.Conn, error) {
+			return listener.Dial()
+		}),
+		grpc.WithTransportCredentials(insecure.NewCredentials()),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer connection.Close()
+	client := controlv1.NewAgentControlServiceClient(connection)
+
+	_, privateKey, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	runner := &Runner{
+		AgentID:         "edge-probe-periodic",
+		AgentVersion:    "test",
+		PrivateKey:      privateKey,
+		HeartbeatPeriod: 10 * time.Millisecond,
+		Prober: &ProbeScheduler{
+			EndpointsV4: []string{echo.URL},
+			// No v6 endpoints: the v6 refresh fails instantly instead of
+			// dialing the real default endpoints.
+			EndpointsV6: []string{},
+		},
+	}
+	runnerResult := make(chan error, 1)
+	go func() {
+		runnerResult <- runner.Run(ctx, client)
+	}()
+
+	select {
+	case <-fake.hello:
+	case <-ctx.Done():
+		t.Fatal("agent did not send its hello")
+	}
+
+	// No probe command is ever sent; the first heartbeat tick must trigger
+	// the periodic v4 probe and report its result.
+	for {
+		select {
+		case frame := <-fake.agentFrames:
+			report := frame.GetAddressProbeReport()
+			if report == nil {
+				continue
+			}
+			if report.GetFamily() != "ipv4" ||
+				report.GetAddress() != "203.0.113.50" ||
+				report.GetError() != "" {
+				t.Fatalf("periodic probe report = %+v, want the v4 echo address", report)
+			}
+			if hits.Load() == 0 {
+				t.Fatal("echo endpoint was never queried")
+			}
+			cancel()
+			if err := <-runnerResult; !errors.Is(err, context.Canceled) {
+				t.Fatalf("runner.Run returned %v, want context.Canceled", err)
+			}
+			return
+		case <-ctx.Done():
+			t.Fatal("no periodic probe report arrived")
+		}
 	}
 }
 

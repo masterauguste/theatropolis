@@ -45,9 +45,10 @@ if (configTextarea && configurationForm && configurationEditor) {
   const poolOptionsBase = (configurationForm.getAttribute("action") || "")
     .replace(/\/configuration$/, "/pool-options");
   const POOL_REF_PATTERN = /^(?:agent\/[A-Za-z0-9][A-Za-z0-9._-]{0,127}\/[A-Za-z0-9][A-Za-z0-9._-]{0,127}\/[A-Za-z0-9_][A-Za-z0-9._-]{0,127}|manual\/[A-Za-z0-9][A-Za-z0-9._-]{0,127})$/;
-  // Address families a pool ref may pin; "auto" walks IPv4 then IPv6 and is
-  // the default (no "family" key is serialized for it).
-  const POOL_FAMILIES = ["auto", "ipv4", "ipv6"];
+  // Address families a pool ref may pin. The guided editor is explicit-only
+  // (IPv4 default); the master still accepts "auto"/absent on the wire for
+  // backward compatibility with older saved configs.
+  const POOL_FAMILIES = ["ipv4", "ipv6"];
   let poolOptionState = ""; // "" | "loading" | "ok" | "error"
   let poolOptionValues = [];
 
@@ -373,7 +374,10 @@ if (configTextarea && configurationForm && configurationEditor) {
     }
     if (kind === "pool") {
       setValue(field(card, "outbound", "ref"), outbound.ref);
-      const family = POOL_FAMILIES.includes(outbound.family) ? outbound.family : "auto";
+      // Explicit ipv4/ipv6 only. Anything else (legacy "auto", absent,
+      // invalid) is resolved to a concrete default by syncPoolFamily once
+      // the pool catalog knows the entry's families.
+      const family = POOL_FAMILIES.includes(outbound.family) ? outbound.family : "";
       setValue(field(card, "outbound", "family"), family);
     }
     outboundList.append(card);
@@ -422,23 +426,34 @@ if (configTextarea && configurationForm && configurationEditor) {
   }
 
   // syncPoolFamily reflects the hidden family input onto the segmented
-  // control, disables families the selected entry has no address for, and
-  // shows the probe button when the wanted family is unknown.
+  // control, disables families the selected entry has no address for,
+  // defaults to IPv4 when available, and shows the probe button when the
+  // wanted family is unknown. Manual entries resolve address-free, so the
+  // whole control is hidden for them.
   function syncPoolFamily(card) {
     const input = field(card, "outbound", "family");
     if (!input) return;
-    let family = input.value;
+    const probe = card.querySelector("[data-pool-probe]");
+    const probeHint = card.querySelector("[data-pool-probe-hint]");
     const ref = field(card, "outbound", "ref").value.trim();
     const entry = poolOptionByRef(ref);
-    // Manual entries resolve address-free: every option stays enabled and
-    // the family selector has no effect on them.
+    if (entry && entry.manual) {
+      card.querySelector("[data-pool-family]").hidden = true;
+      probe.hidden = true;
+      probeHint.hidden = true;
+      probeHint.textContent = "";
+      return;
+    }
+    card.querySelector("[data-pool-family]").hidden = false;
+    let family = input.value;
     const known = {
-      auto: true,
-      ipv4: !entry || entry.manual || Boolean(entry.ipv4),
-      ipv6: !entry || entry.manual || Boolean(entry.ipv6),
+      ipv4: !entry || Boolean(entry.ipv4),
+      ipv6: !entry || Boolean(entry.ipv6),
     };
     if (!POOL_FAMILIES.includes(family) || !known[family]) {
-      family = "auto";
+      // Default to IPv4 when available, IPv6 when it is the only known
+      // family, IPv4 (greyed) when nothing is known yet.
+      family = known.ipv4 ? "ipv4" : known.ipv6 ? "ipv6" : "ipv4";
       input.value = family;
     }
     for (const option of card.querySelectorAll("[data-pool-family-option]")) {
@@ -451,14 +466,10 @@ if (configTextarea && configurationForm && configurationEditor) {
         option.removeAttribute("title");
       }
     }
-    const wantedKnown = family === "auto" ? known.ipv4 || known.ipv6 : known[family];
-    const probe = card.querySelector("[data-pool-probe]");
-    const probeHint = card.querySelector("[data-pool-probe-hint]");
-    const canProbe = entry && !entry.manual && !wantedKnown;
+    const canProbe = entry && !known[family];
     probe.hidden = !canProbe;
     if (canProbe) {
-      // Auto prefers IPv4, matching the master-side resolution order.
-      probe.dataset.probeFamily = family === "auto" ? (known.ipv4 ? "ipv6" : "ipv4") : family;
+      probe.dataset.probeFamily = family;
     } else {
       probeHint.hidden = true;
       probeHint.textContent = "";
@@ -827,9 +838,13 @@ if (configTextarea && configurationForm && configurationEditor) {
         throw new Error(`Pool import ${tag || "(untagged)"} has an invalid pool reference: ${ref}`);
       }
       const outbound = { type: "theatropolis-pool-ref", tag, ref };
+      // Agent refs always pin an explicit family; manual refs resolve
+      // address-free and carry none.
+      const entry = poolOptionByRef(ref);
       const familyValue = field(card, "outbound", "family")?.value;
-      const family = POOL_FAMILIES.includes(familyValue) ? familyValue : "auto";
-      if (family !== "auto") outbound.family = family;
+      if (!(entry && entry.manual) && POOL_FAMILIES.includes(familyValue)) {
+        outbound.family = familyValue;
+      }
       return outbound;
     }
     let outbound;

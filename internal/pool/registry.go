@@ -391,9 +391,11 @@ func (r *Registry) ManualByName(name string) (ManualEntry, bool) {
 
 // SetReported stores the addresses an agent reported for itself. Entries
 // that are not globally routable are silently dropped (see
-// normalizeAddresses). It persists only when the address set actually
-// changed, so callers may invoke it on every heartbeat. A change bumps the
-// pool version.
+// normalizeAddresses). A non-empty reported family clears that family's
+// probed addresses: a routable address bound to the agent is authoritative
+// over an older NAT-discovery result. It persists only when the effective
+// address state changed, so callers may invoke it on every heartbeat. A
+// change bumps the pool version.
 func (r *Registry) SetReported(agentID string, v4, v6 []string) (bool, error) {
 	if !validComponent(agentID) {
 		return false, ErrInvalidName
@@ -411,9 +413,19 @@ func (r *Registry) SetReported(agentID string, v4, v6 []string) (bool, error) {
 	defer r.mu.Unlock()
 
 	previous, existed := r.agents[agentID]
+	probedV4 := previous.probedV4
+	if len(normalizedV4) > 0 {
+		probedV4 = nil
+	}
+	probedV6 := previous.probedV6
+	if len(normalizedV6) > 0 {
+		probedV6 = nil
+	}
 	if existed &&
 		stringSlicesEqual(previous.reportedV4, normalizedV4) &&
-		stringSlicesEqual(previous.reportedV6, normalizedV6) {
+		stringSlicesEqual(previous.reportedV6, normalizedV6) &&
+		stringSlicesEqual(previous.probedV4, probedV4) &&
+		stringSlicesEqual(previous.probedV6, probedV6) {
 		return false, nil
 	}
 	if !existed && len(normalizedV4) == 0 && len(normalizedV6) == 0 {
@@ -424,8 +436,8 @@ func (r *Registry) SetReported(agentID string, v4, v6 []string) (bool, error) {
 		reportedV4: normalizedV4,
 		reportedV6: normalizedV6,
 		observed:   previous.observed,
-		probedV4:   previous.probedV4,
-		probedV6:   previous.probedV6,
+		probedV4:   probedV4,
+		probedV6:   probedV6,
 		override:   previous.override,
 		updatedAt:  r.now(),
 	}
@@ -443,11 +455,12 @@ func (r *Registry) SetReported(agentID string, v4, v6 []string) (bool, error) {
 	return true, nil
 }
 
-// SetProbed stores the addresses an on-demand agent probe returned. It shares
-// SetReported's semantics: family-checked parsing, silent dropping of
-// non-globally-routable entries, at most MaxAddressesPerFamily per family, a
-// no-op (no persist, no version bump) when the sets are unchanged, and a
-// persist + pool version bump on change.
+// SetProbed stores the addresses an agent probe returned. It shares
+// SetReported's validation semantics. A family with a routable interface
+// address already reported ignores probe results, preserving the invariant
+// that probing is only a fallback for families without a usable bound
+// address. Otherwise unchanged sets are a no-op and changes persist with a
+// pool-version bump.
 func (r *Registry) SetProbed(agentID string, v4, v6 []string) (bool, error) {
 	if !validComponent(agentID) {
 		return false, ErrInvalidName
@@ -465,6 +478,12 @@ func (r *Registry) SetProbed(agentID string, v4, v6 []string) (bool, error) {
 	defer r.mu.Unlock()
 
 	previous, existed := r.agents[agentID]
+	if len(previous.reportedV4) > 0 {
+		normalizedV4 = nil
+	}
+	if len(previous.reportedV6) > 0 {
+		normalizedV6 = nil
+	}
 	if existed &&
 		stringSlicesEqual(previous.probedV4, normalizedV4) &&
 		stringSlicesEqual(previous.probedV6, normalizedV6) {

@@ -169,26 +169,40 @@ func TestServerPoolOptionsEndpoint(t *testing.T) {
 	}
 }
 
-func TestSettingsPoolCRUD(t *testing.T) {
+func TestPoolPageCRUD(t *testing.T) {
 	t.Parallel()
 
 	fixture := newPoolFixture(t)
 
-	request := fixture.authenticatedRequest(http.MethodGet, "/settings", "")
+	request := fixture.authenticatedRequest(http.MethodGet, "/pool", "")
 	response := httptest.NewRecorder()
 	fixture.handler.ServeHTTP(response, request)
 	if response.Code != http.StatusOK {
-		t.Fatalf("GET /settings status = %d, body = %s", response.Code, response.Body.String())
+		t.Fatalf("GET /pool status = %d, body = %s", response.Code, response.Body.String())
 	}
 	for _, expected := range []string{
 		"Fleet outbound pool",
-		`action="/settings/pool"`,
+		`href="/pool" class="is-active"`,
+		`action="/pool"`,
 		`name="outbound_json"`,
 		"No manual entries yet.",
 	} {
 		if !strings.Contains(response.Body.String(), expected) {
-			t.Errorf("settings pool section does not contain %q", expected)
+			t.Errorf("pool page does not contain %q", expected)
 		}
+	}
+
+	// The old settings-page pool routes are gone.
+	oldForm := url.Values{
+		"csrf_token":    {fixture.session.CSRFToken},
+		"name":          {"backup"},
+		"outbound_json": {`{"type":"direct"}`},
+	}.Encode()
+	request = fixture.authenticatedMutationRequest(http.MethodPost, "/settings/pool", oldForm)
+	response = httptest.NewRecorder()
+	fixture.handler.ServeHTTP(response, request)
+	if response.Code != http.StatusNotFound && response.Code != http.StatusMethodNotAllowed {
+		t.Fatalf("removed /settings/pool route status = %d, want 404 or 405", response.Code)
 	}
 
 	validForm := url.Values{
@@ -198,7 +212,7 @@ func TestSettingsPoolCRUD(t *testing.T) {
 	}.Encode()
 
 	// Origin enforcement.
-	request = fixture.authenticatedRequest(http.MethodPost, "/settings/pool", validForm)
+	request = fixture.authenticatedRequest(http.MethodPost, "/pool", validForm)
 	response = httptest.NewRecorder()
 	fixture.handler.ServeHTTP(response, request)
 	if response.Code != http.StatusForbidden {
@@ -211,7 +225,7 @@ func TestSettingsPoolCRUD(t *testing.T) {
 		"name":          {"backup"},
 		"outbound_json": {`{"type":"direct"}`},
 	}.Encode()
-	request = fixture.authenticatedMutationRequest(http.MethodPost, "/settings/pool", badCSRF)
+	request = fixture.authenticatedMutationRequest(http.MethodPost, "/pool", badCSRF)
 	response = httptest.NewRecorder()
 	fixture.handler.ServeHTTP(response, request)
 	if response.Code != http.StatusForbidden {
@@ -219,10 +233,10 @@ func TestSettingsPoolCRUD(t *testing.T) {
 	}
 
 	// Valid upsert.
-	request = fixture.authenticatedMutationRequest(http.MethodPost, "/settings/pool", validForm)
+	request = fixture.authenticatedMutationRequest(http.MethodPost, "/pool", validForm)
 	response = httptest.NewRecorder()
 	fixture.handler.ServeHTTP(response, request)
-	if response.Code != http.StatusSeeOther || response.Header().Get("Location") != "/settings" {
+	if response.Code != http.StatusSeeOther || response.Header().Get("Location") != "/pool" {
 		t.Fatalf("pool upsert response = %d %q", response.Code, response.Header().Get("Location"))
 	}
 	entry, exists := fixture.controller.poolRegistry.ManualByName("backup")
@@ -233,13 +247,13 @@ func TestSettingsPoolCRUD(t *testing.T) {
 		t.Fatalf("propagation calls = %d, want 1", fixture.controller.propagateCalls)
 	}
 
-	// Validation errors re-render the settings page with the submitted values.
+	// Validation errors re-render the pool page with the submitted values.
 	badName := url.Values{
 		"csrf_token":    {fixture.session.CSRFToken},
 		"name":          {"bad name!"},
 		"outbound_json": {`{"type":"direct"}`},
 	}.Encode()
-	request = fixture.authenticatedMutationRequest(http.MethodPost, "/settings/pool", badName)
+	request = fixture.authenticatedMutationRequest(http.MethodPost, "/pool", badName)
 	response = httptest.NewRecorder()
 	fixture.handler.ServeHTTP(response, request)
 	if response.Code != http.StatusBadRequest {
@@ -256,7 +270,7 @@ func TestSettingsPoolCRUD(t *testing.T) {
 		"name":          {"relay"},
 		"outbound_json": {`{"tag":"x"}`},
 	}.Encode()
-	request = fixture.authenticatedMutationRequest(http.MethodPost, "/settings/pool", badJSON)
+	request = fixture.authenticatedMutationRequest(http.MethodPost, "/pool", badJSON)
 	response = httptest.NewRecorder()
 	fixture.handler.ServeHTTP(response, request)
 	if response.Code != http.StatusBadRequest {
@@ -270,12 +284,12 @@ func TestSettingsPoolCRUD(t *testing.T) {
 	}
 
 	// The saved entry is listed with a delete form.
-	request = fixture.authenticatedRequest(http.MethodGet, "/settings", "")
+	request = fixture.authenticatedRequest(http.MethodGet, "/pool", "")
 	response = httptest.NewRecorder()
 	fixture.handler.ServeHTTP(response, request)
-	for _, expected := range []string{"manual/backup", `action="/settings/pool/delete"`, `name="confirm_delete"`} {
+	for _, expected := range []string{"manual/backup", `action="/pool/delete"`, `name="confirm_delete"`} {
 		if !strings.Contains(response.Body.String(), expected) {
-			t.Errorf("settings pool list does not contain %q", expected)
+			t.Errorf("pool page list does not contain %q", expected)
 		}
 	}
 
@@ -285,7 +299,7 @@ func TestSettingsPoolCRUD(t *testing.T) {
 		"csrf_token":     {fixture.session.CSRFToken},
 		"name":           {"backup"},
 	}.Encode()
-	request = fixture.authenticatedMutationRequest(http.MethodPost, "/settings/pool/delete", deleteForm)
+	request = fixture.authenticatedMutationRequest(http.MethodPost, "/pool/delete", deleteForm)
 	response = httptest.NewRecorder()
 	fixture.handler.ServeHTTP(response, request)
 	if response.Code != http.StatusForbidden {
@@ -300,10 +314,10 @@ func TestSettingsPoolCRUD(t *testing.T) {
 		"csrf_token":     {fixture.session.CSRFToken},
 		"name":           {"backup"},
 	}.Encode()
-	request = fixture.authenticatedMutationRequest(http.MethodPost, "/settings/pool/delete", deleteForm)
+	request = fixture.authenticatedMutationRequest(http.MethodPost, "/pool/delete", deleteForm)
 	response = httptest.NewRecorder()
 	fixture.handler.ServeHTTP(response, request)
-	if response.Code != http.StatusSeeOther || response.Header().Get("Location") != "/settings" {
+	if response.Code != http.StatusSeeOther || response.Header().Get("Location") != "/pool" {
 		t.Fatalf("pool delete response = %d %q", response.Code, response.Header().Get("Location"))
 	}
 	if _, exists := fixture.controller.poolRegistry.ManualByName("backup"); exists {
@@ -314,7 +328,7 @@ func TestSettingsPoolCRUD(t *testing.T) {
 	}
 
 	// Deleting a missing entry re-renders with a 404.
-	request = fixture.authenticatedMutationRequest(http.MethodPost, "/settings/pool/delete", deleteForm)
+	request = fixture.authenticatedMutationRequest(http.MethodPost, "/pool/delete", deleteForm)
 	response = httptest.NewRecorder()
 	fixture.handler.ServeHTTP(response, request)
 	if response.Code != http.StatusNotFound ||
@@ -329,6 +343,8 @@ func TestServerAddressOverride(t *testing.T) {
 	fixture := newPoolFixture(t)
 	enrollAgent(t, fixture.registry, "edge-online")
 	enrollAgent(t, fixture.registry, "edge-offline")
+	seedPoolDeployment(t, fixture, "edge-online", poolTestConfig)
+	seedPoolDeployment(t, fixture, "edge-offline", poolTestConfig)
 	if _, err := fixture.controller.poolRegistry.SetReported(
 		"edge-offline",
 		[]string{"192.0.2.9"},
@@ -344,21 +360,49 @@ func TestServerAddressOverride(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	// The servers page shows reported/persisted addresses and the override form.
+	// The servers page shows one compact address line and no override form.
 	request := fixture.authenticatedRequest(http.MethodGet, "/servers", "")
 	response := httptest.NewRecorder()
 	fixture.handler.ServeHTTP(response, request)
 	if response.Code != http.StatusOK {
 		t.Fatalf("GET /servers status = %d, body = %s", response.Code, response.Body.String())
 	}
+	body := response.Body.String()
+	for _, expected := range []string{
+		`server-address">192.0.2.9<`,
+		`server-address">—<`,
+	} {
+		if !strings.Contains(body, expected) {
+			t.Errorf("servers page does not contain %q", expected)
+		}
+	}
+	for _, unexpected := range []string{
+		`name="address"`,
+		"Connected from:",
+		"Last known address:",
+		"No address reported",
+	} {
+		if strings.Contains(body, unexpected) {
+			t.Errorf("servers page still contains %q", unexpected)
+		}
+	}
+
+	// The override form lives on the pool page, showing the resolved address
+	// and its source for each agent group.
+	request = fixture.authenticatedRequest(http.MethodGet, "/pool", "")
+	response = httptest.NewRecorder()
+	fixture.handler.ServeHTTP(response, request)
+	if response.Code != http.StatusOK {
+		t.Fatalf("GET /pool status = %d, body = %s", response.Code, response.Body.String())
+	}
 	for _, expected := range []string{
 		`action="/servers/edge-online/address"`,
+		`action="/servers/edge-offline/address"`,
 		`name="address"`,
-		"Last known address: 192.0.2.9",
-		"Connected from: 203.0.113.10",
+		"Pool address: 192.0.2.9 (reported)",
 	} {
 		if !strings.Contains(response.Body.String(), expected) {
-			t.Errorf("servers page does not contain %q", expected)
+			t.Errorf("pool page does not contain %q", expected)
 		}
 	}
 
@@ -446,12 +490,19 @@ func TestServerAddressOverride(t *testing.T) {
 		t.Fatalf("propagation calls = %d, want 1", fixture.controller.propagateCalls)
 	}
 
-	// The servers page reflects the override as the pool address.
+	// The servers page reflects the override as the single address line, and
+	// the pool page labels its source.
 	request = fixture.authenticatedRequest(http.MethodGet, "/servers", "")
 	response = httptest.NewRecorder()
 	fixture.handler.ServeHTTP(response, request)
-	if !strings.Contains(response.Body.String(), "Pool address: 198.51.100.9") {
+	if !strings.Contains(response.Body.String(), `server-address">198.51.100.9<`) {
 		t.Errorf("servers page does not reflect the override: %s", response.Body.String())
+	}
+	request = fixture.authenticatedRequest(http.MethodGet, "/pool", "")
+	response = httptest.NewRecorder()
+	fixture.handler.ServeHTTP(response, request)
+	if !strings.Contains(response.Body.String(), "Pool address: 198.51.100.9 (override)") {
+		t.Errorf("pool page does not reflect the override: %s", response.Body.String())
 	}
 
 	// An empty submission clears the override.
@@ -518,7 +569,6 @@ func TestServerPageIncludesPoolImportControls(t *testing.T) {
 		`data-outbound-field="ref"`,
 		`data-pool-options`,
 		`data-outbound-field="family"`,
-		`data-pool-family-option="auto"`,
 		`data-pool-family-option="ipv4"`,
 		`data-pool-family-option="ipv6"`,
 		`class="segmented"`,
@@ -534,7 +584,7 @@ func TestServerPageIncludesPoolImportControls(t *testing.T) {
 	}
 }
 
-func TestSettingsPoolAddressFamilies(t *testing.T) {
+func TestPoolPageAddressFamilies(t *testing.T) {
 	t.Parallel()
 
 	fixture := newPoolFixture(t)
@@ -547,11 +597,11 @@ func TestSettingsPoolAddressFamilies(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	request := fixture.authenticatedRequest(http.MethodGet, "/settings", "")
+	request := fixture.authenticatedRequest(http.MethodGet, "/pool", "")
 	response := httptest.NewRecorder()
 	fixture.handler.ServeHTTP(response, request)
 	if response.Code != http.StatusOK {
-		t.Fatalf("GET /settings status = %d, body = %s", response.Code, response.Body.String())
+		t.Fatalf("GET /pool status = %d, body = %s", response.Code, response.Body.String())
 	}
 	body := response.Body.String()
 	for _, expected := range []string{
@@ -561,7 +611,7 @@ func TestSettingsPoolAddressFamilies(t *testing.T) {
 		"no address — unreachable",
 	} {
 		if !strings.Contains(body, expected) {
-			t.Errorf("settings pool table does not contain %q", expected)
+			t.Errorf("pool page table does not contain %q", expected)
 		}
 	}
 }

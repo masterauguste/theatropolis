@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"net/netip"
 	"runtime"
 	"strings"
 	"time"
@@ -48,6 +49,12 @@ type Runner struct {
 	SingBoxUpdater  *singboxupdate.Scheduler
 	HeartbeatPeriod time.Duration
 	Now             func() time.Time
+	// Prober drives periodic public-address probing for families without a
+	// globally routable interface address. Nil means a fresh default
+	// ProbeScheduler per control session (production); tests substitute a
+	// scoped scheduler, e.g. one with a negative Interval to disable
+	// periodic probing.
+	Prober *ProbeScheduler
 }
 
 func (r *Runner) Enroll(
@@ -259,6 +266,14 @@ func (r *Runner) runControlSession(
 	// select loop below remains the only sender and the only writer of
 	// agentSequence — the same pattern updateTicks uses for update results.
 	probeReports := make(chan *controlv1.AddressProbeReport, 4)
+	// The periodic prober is per-session: a reconnect re-arms its state, so
+	// the first probe of a fresh session re-reports the public address and
+	// the master re-learns it even though reports are change-only within a
+	// session.
+	prober := r.Prober
+	if prober == nil {
+		prober = &ProbeScheduler{}
+	}
 	for {
 		select {
 		case <-ctx.Done():
@@ -316,7 +331,7 @@ func (r *Runner) runControlSession(
 					// Reply asynchronously via probeReports; this slot's
 					// sequence number stays unused, which is fine because
 					// the master only requires monotonic increase.
-					go runAddressProbe(sessionContext, family, is6, probeReports)
+					go runAddressProbe(sessionContext, prober, family, is6, probeReports)
 				} else {
 					response.Payload = &controlv1.AgentFrame_AddressProbeReport{
 						AddressProbeReport: &controlv1.AddressProbeReport{
@@ -359,18 +374,33 @@ func (r *Runner) runControlSession(
 			}
 		case <-heartbeatTicker.C:
 			agentSequence++
+			v4, v6 := reportedAddresses.Addresses()
 			if err := stream.Send(&controlv1.AgentFrame{
 				Sequence: agentSequence,
 				Payload: &controlv1.AgentFrame_Heartbeat{
 					Heartbeat: &controlv1.AgentHeartbeat{
 						ObservedAtUnix:    r.now().Unix(),
 						SingBoxVersion:    r.SingBoxVersion,
-						ReportedAddresses: collectReportedAddresses(),
+						ReportedAddresses: append(v4, v6...),
 					},
 				},
 			}); err != nil {
 				return fmt.Errorf("send agent heartbeat: %w", err)
 			}
+			// Komari-style periodic probing: a family with no globally
+			// routable interface address (1:1 NAT) probes its public
+			// address and reports changes; direct-attach families never
+			// generate probe traffic.
+			prober.Maintain(
+				false,
+				len(v4) > 0,
+				periodicProbeReporter(sessionContext, "ipv4", probeReports),
+			)
+			prober.Maintain(
+				true,
+				len(v6) > 0,
+				periodicProbeReporter(sessionContext, "ipv6", probeReports),
+			)
 		case event := <-runtimeEvents:
 			agentSequence++
 			if err := stream.Send(&controlv1.AgentFrame{
@@ -386,8 +416,9 @@ func (r *Runner) runControlSession(
 }
 
 // reportedAddresses is the process-wide reporter: interface addresses are
-// collected per frame, and public-address probing runs only when the master
-// explicitly commands it (ProbeAddresses).
+// collected per frame, and public-address probing happens on master command
+// (ProbeAddresses) and periodically via ProbeScheduler for families without
+// a routable interface address.
 var reportedAddresses = &AddressReporter{}
 
 // maxProbeErrorBytes caps the failure reason carried in an
@@ -418,10 +449,12 @@ func probeFamilyIs6(family string) (is6, supported bool) {
 }
 
 // runAddressProbe executes a master-commanded probe off the control loop and
-// hands the report back through out. The send is bounded by ctx so a dead
-// session cannot leak the goroutine.
+// hands the report back through out. A successful result is also folded into
+// the periodic scheduler so it does not re-report the same address. The send
+// is bounded by ctx so a dead session cannot leak the goroutine.
 func runAddressProbe(
 	ctx context.Context,
+	prober *ProbeScheduler,
 	family string,
 	is6 bool,
 	out chan<- *controlv1.AddressProbeReport,
@@ -432,10 +465,32 @@ func runAddressProbe(
 		report.Error = sanitizeProbeError(err)
 	} else {
 		report.Address = addr.String()
+		prober.noteProbed(is6, addr)
 	}
 	select {
 	case out <- report:
 	case <-ctx.Done():
+	}
+}
+
+// periodicProbeReporter returns the report callback ProbeScheduler.Maintain
+// invokes with a changed probed address: it queues an AddressProbeReport for
+// the control loop's probeReports case, exactly like an on-demand probe
+// answer, bounded by the session context so a dead session drops it.
+func periodicProbeReporter(
+	ctx context.Context,
+	family string,
+	out chan<- *controlv1.AddressProbeReport,
+) func(netip.Addr) {
+	return func(addr netip.Addr) {
+		report := &controlv1.AddressProbeReport{
+			Family:  family,
+			Address: addr.String(),
+		}
+		select {
+		case out <- report:
+		case <-ctx.Done():
+		}
 	}
 }
 

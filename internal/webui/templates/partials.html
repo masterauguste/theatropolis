@@ -21,6 +21,7 @@
     {{template "brand" .}}
     <nav class="global-nav" aria-label="Primary navigation">
       <a href="/servers"{{if eq .ActiveNav "servers"}} class="is-active" aria-current="page"{{end}}>Servers</a>
+      <a href="/pool"{{if eq .ActiveNav "pool"}} class="is-active" aria-current="page"{{end}}>Pool</a>
       <a href="/settings"{{if eq .ActiveNav "settings"}} class="is-active" aria-current="page"{{end}}>Settings</a>
     </nav>
     <form action="/logout" method="post">

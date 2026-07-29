@@ -64,8 +64,9 @@ func newPoolTestServer(t *testing.T) (*Server, *pool.Registry, deployment.Store)
 		nil,
 		slog.New(slog.NewTextHandler(io.Discard, nil)),
 	)
-	// A registry-backed server runs the probe scheduler goroutine; stop it
-	// before the test (and its temp dir) goes away.
+	// Close is a no-op since the master-side probe scheduler was removed
+	// (freshness is agent-side now); kept so pool servers shut down
+	// uniformly with the other test servers.
 	t.Cleanup(server.Close)
 	return server, registry, store
 }

@@ -7,6 +7,7 @@ import (
 	"io"
 	"net/http"
 	"net/netip"
+	"net/url"
 	"slices"
 	"strings"
 
@@ -45,6 +46,14 @@ type poolInboundView struct {
 type poolAgentView struct {
 	ID       string
 	Inbounds []poolInboundView
+	// AddressURL is the address-override endpoint for this agent.
+	AddressURL string
+	// ResolvedAddress/ResolvedSource show the address auto resolution
+	// currently picks for the agent and which source won; the pool registry
+	// does not expose the raw override, so the override form displays this
+	// resolved address instead.
+	ResolvedAddress string
+	ResolvedSource  string
 }
 
 type poolManualView struct {
@@ -111,7 +120,7 @@ func (h *Handler) derivePoolEntries(
 	return entries, diagnostics
 }
 
-// poolPageView builds the read-only derived pool view for the settings page,
+// poolPageView builds the read-only derived pool view for the pool page,
 // or nil when the pool is not wired into this master.
 func (h *Handler) poolPageView(ctx context.Context) *poolView {
 	registry := h.controller.PoolRegistry()
@@ -127,7 +136,7 @@ func (h *Handler) poolPageView(ctx context.Context) *poolView {
 			continue
 		}
 		if len(view.Agents) == 0 || view.Agents[len(view.Agents)-1].ID != entry.AgentID {
-			view.Agents = append(view.Agents, poolAgentView{ID: entry.AgentID})
+			view.Agents = append(view.Agents, poolAgentViewFor(registry, entry.AgentID))
 		}
 		agent := &view.Agents[len(view.Agents)-1]
 		if len(agent.Inbounds) == 0 ||
@@ -148,7 +157,22 @@ func (h *Handler) poolPageView(ctx context.Context) *poolView {
 	return view
 }
 
-// poolEntryViewFor projects one derived entry for the settings table,
+// poolAgentViewFor starts the derived-view group for one agent, attaching
+// the address-override form endpoint and the address auto resolution
+// currently picks.
+func poolAgentViewFor(registry *pool.Registry, agentID string) poolAgentView {
+	view := poolAgentView{
+		ID:         agentID,
+		AddressURL: "/servers/" + url.PathEscape(agentID) + "/address",
+	}
+	if address, source, ok := registry.AddressSourceForFamily(agentID, pool.FamilyAuto); ok {
+		view.ResolvedAddress = address
+		view.ResolvedSource = source.String()
+	}
+	return view
+}
+
+// poolEntryViewFor projects one derived entry for the pool table,
 // labelling the address source of the family that auto resolution picks.
 func poolEntryViewFor(registry *pool.Registry, entry pool.Entry) poolEntryView {
 	view := poolEntryView{
@@ -207,36 +231,51 @@ func poolManualPort(outbound json.RawMessage) int {
 	return object.ServerPort
 }
 
-// poolAddressLines summarizes an enrolled agent's pool-reachable addresses
-// for the servers table, one element per line: live reported addresses while
-// online, the address the control connection arrives from, and otherwise the
-// last address persisted in the pool registry.
-func (h *Handler) poolAddressLines(agentID string, online bool) []string {
-	var lines []string
+// poolAddressLine summarizes an enrolled agent's address for the servers
+// table as one compact line: the pool-resolved address when the registry has
+// one, else the live reported addresses while the agent is online, else an
+// em-dash.
+func (h *Handler) poolAddressLine(agentID string, online bool) string {
+	if registry := h.controller.PoolRegistry(); registry != nil {
+		if address, ok := registry.AgentAddress(agentID); ok {
+			return address
+		}
+	}
 	if online {
 		if info, exists := h.sessions.AgentInfo(agentID); exists {
 			addresses := append(slices.Clone(info.ReportedIPv4), info.ReportedIPv6...)
 			if len(addresses) > 0 {
-				lines = append(lines, "Reported: "+strings.Join(addresses, ", "))
-			}
-			if info.ObservedAddress != "" {
-				lines = append(lines, "Connected from: "+info.ObservedAddress)
+				return strings.Join(addresses, ", ")
 			}
 		}
 	}
-	registry := h.controller.PoolRegistry()
-	if registry == nil {
-		return lines
+	return "—"
+}
+
+func (h *Handler) poolPage(response http.ResponseWriter, request *http.Request) {
+	session, ok := h.requireAuthentication(response, request)
+	if !ok {
+		return
 	}
-	if address, ok := registry.AgentAddress(agentID); ok {
-		if online {
-			lines = append(lines, "Pool address: "+address)
-		} else {
-			lines = append(lines, "Last known address: "+address)
-		}
-		return lines
+	if request.URL.RawQuery != "" {
+		http.NotFound(response, request)
+		return
 	}
-	return append(lines, "No address reported")
+	h.render(
+		response,
+		http.StatusOK,
+		"pool.html",
+		h.poolPageData(request.Context(), session),
+	)
+}
+
+func (h *Handler) poolPageData(ctx context.Context, session Session) pageData {
+	return pageData{
+		Title:     "Pool",
+		ActiveNav: "pool",
+		CSRFToken: session.CSRFToken,
+		Pool:      h.poolPageView(ctx),
+	}
 }
 
 func (h *Handler) upsertPoolEntry(response http.ResponseWriter, request *http.Request) {
@@ -289,17 +328,17 @@ func (h *Handler) upsertPoolEntry(response http.ResponseWriter, request *http.Re
 		default:
 			h.logger.Error("upsert pool manual entry", "name", name, "error", err)
 		}
-		data := h.settingsPageData(request.Context(), session)
+		data := h.poolPageData(request.Context(), session)
 		data.Error = message
 		data.ErrorField = errorField
 		data.PoolFormName = name
 		data.PoolFormJSON = outbound
-		h.render(response, status, "settings.html", data)
+		h.render(response, status, "pool.html", data)
 		return
 	}
 	h.controller.PropagateManualPoolChange(request.Context())
 	h.logger.Info("pool manual entry saved", "name", name)
-	http.Redirect(response, request, "/settings", http.StatusSeeOther)
+	http.Redirect(response, request, "/pool", http.StatusSeeOther)
 }
 
 func (h *Handler) deletePoolEntry(response http.ResponseWriter, request *http.Request) {
@@ -341,9 +380,9 @@ func (h *Handler) deletePoolEntry(response http.ResponseWriter, request *http.Re
 	}
 	if err := registry.RemoveManual(name); err != nil {
 		if errors.Is(err, pool.ErrManualNotFound) {
-			data := h.settingsPageData(request.Context(), session)
+			data := h.poolPageData(request.Context(), session)
 			data.Error = "That pool entry no longer exists."
-			h.render(response, http.StatusNotFound, "settings.html", data)
+			h.render(response, http.StatusNotFound, "pool.html", data)
 			return
 		}
 		h.logger.Error("delete pool manual entry", "name", name, "error", err)
@@ -352,7 +391,7 @@ func (h *Handler) deletePoolEntry(response http.ResponseWriter, request *http.Re
 	}
 	h.controller.PropagateManualPoolChange(request.Context())
 	h.logger.Info("pool manual entry deleted", "name", name)
-	http.Redirect(response, request, "/settings", http.StatusSeeOther)
+	http.Redirect(response, request, "/pool", http.StatusSeeOther)
 }
 
 func (h *Handler) serverPoolOptions(response http.ResponseWriter, request *http.Request) {

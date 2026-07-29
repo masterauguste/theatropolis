@@ -197,12 +197,10 @@ type agentView struct {
 	ConnectionClass string
 	Detail          string
 	URL             string
-	// AddressLines summarizes the agent's pool-reachable addresses, one
-	// element per display line; empty for non-enrolled agents or when no
-	// address information exists.
-	AddressLines []string
-	// AddressURL is the address-override endpoint; empty hides the form.
-	AddressURL string
+	// AddressLine is the agent's single compact address summary: the
+	// pool-resolved address, else the live reported addresses, else an
+	// em-dash. Empty for non-enrolled agents.
+	AddressLine string
 }
 
 type agentDetailView struct {
@@ -346,9 +344,10 @@ func (h *Handler) routes() {
 	h.mux.HandleFunc("POST /login", h.login)
 	h.mux.HandleFunc("POST /logout", h.logout)
 	h.mux.HandleFunc("GET /servers", h.serversPage)
+	h.mux.HandleFunc("GET /pool", h.poolPage)
+	h.mux.HandleFunc("POST /pool", h.upsertPoolEntry)
+	h.mux.HandleFunc("POST /pool/delete", h.deletePoolEntry)
 	h.mux.HandleFunc("GET /settings", h.settingsPage)
-	h.mux.HandleFunc("POST /settings/pool", h.upsertPoolEntry)
-	h.mux.HandleFunc("POST /settings/pool/delete", h.deletePoolEntry)
 	h.mux.HandleFunc("GET /settings/versions", h.masterVersions)
 	h.mux.HandleFunc("GET /settings/update-status", h.masterUpdateStatus)
 	h.mux.HandleFunc("GET /servers/new", h.newServerPage)
@@ -556,10 +555,7 @@ func (h *Handler) serversPage(response http.ResponseWriter, request *http.Reques
 			h.sessions.IsOnline(snapshot.ID)
 		view := agentViewFor(snapshot, now, online)
 		if snapshot.State == identity.AgentStateEnrolled {
-			view.AddressLines = h.poolAddressLines(snapshot.ID, online)
-			if h.controller.PoolRegistry() != nil {
-				view.AddressURL = "/servers/" + url.PathEscape(snapshot.ID) + "/address"
-			}
+			view.AddressLine = h.poolAddressLine(snapshot.ID, online)
 		}
 		agents = append(agents, view)
 		switch {
@@ -595,11 +591,11 @@ func (h *Handler) settingsPage(response http.ResponseWriter, request *http.Reque
 		response,
 		http.StatusOK,
 		"settings.html",
-		h.settingsPageData(request.Context(), session),
+		h.settingsPageData(session),
 	)
 }
 
-func (h *Handler) settingsPageData(ctx context.Context, session Session) pageData {
+func (h *Handler) settingsPageData(session Session) pageData {
 	var masterUpdate *agentUpdateView
 	if h.masterUpdater != nil {
 		if result, exists, err := h.masterUpdater.LoadResult(); err == nil && exists {
@@ -612,7 +608,6 @@ func (h *Handler) settingsPageData(ctx context.Context, session Session) pageDat
 		CSRFToken:     session.CSRFToken,
 		MasterVersion: h.version,
 		MasterUpdate:  masterUpdate,
-		Pool:          h.poolPageView(ctx),
 	}
 }
 
@@ -1338,10 +1333,10 @@ func (h *Handler) serverPageData(
 		detail.SingBoxUpdate = singBoxUpdateViewFor(update)
 	}
 	return pageData{
-		Title:         snapshot.ID,
-		ActiveNav:     "servers",
-		CSRFToken:     session.CSRFToken,
-		Agent:         detail,
+		Title:     snapshot.ID,
+		ActiveNav: "servers",
+		CSRFToken: session.CSRFToken,
+		Agent:     detail,
 	}, nil
 }
 

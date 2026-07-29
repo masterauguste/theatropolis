@@ -771,6 +771,7 @@ func TestAuthenticatedHeaderLinksServersAndSettings(t *testing.T) {
 	for _, expected := range []string{
 		`class="global-header"`,
 		`href="/servers"`,
+		`href="/pool"`,
 		`href="/settings"`,
 		`action="/logout"`,
 	} {

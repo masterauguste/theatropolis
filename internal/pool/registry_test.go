@@ -634,17 +634,20 @@ func TestParseFamily(t *testing.T) {
 	}
 }
 
-// seedHierarchyAgent fills one agent with every address source: a v4
-// override, a v6 observed address, probed and reported addresses of both
-// families.
+// seedHierarchyAgent fills one agent with every address source, including the
+// legacy on-disk state where probed and reported addresses coexist. Current
+// setters keep those two fallback sources mutually exclusive per family, but
+// resolution remains compatible with registries written by older releases.
 func seedHierarchyAgent(t *testing.T, registry *Registry, agentID string) {
 	t.Helper()
-	if _, err := registry.SetReported(agentID, []string{"203.0.113.10"}, []string{"2001:db8::10"}); err != nil {
-		t.Fatalf("SetReported() error = %v", err)
+	registry.mu.Lock()
+	registry.agents[agentID] = agentRecord{
+		reportedV4: []string{"203.0.113.10"},
+		reportedV6: []string{"2001:db8::10"},
+		probedV4:   []string{"203.0.113.20"},
+		probedV6:   []string{"2001:db8::20"},
 	}
-	if _, err := registry.SetProbed(agentID, []string{"203.0.113.20"}, []string{"2001:db8::20"}); err != nil {
-		t.Fatalf("SetProbed() error = %v", err)
-	}
+	registry.mu.Unlock()
 	if _, err := registry.SetObserved(agentID, "2001:db8::30"); err != nil {
 		t.Fatalf("SetObserved() error = %v", err)
 	}
@@ -882,19 +885,35 @@ func TestSetProbedSemantics(t *testing.T) {
 		t.Fatalf("SetProbed(empty new agent) = %v, %v, want false, nil", changed, err)
 	}
 
-	// SetProbed must not clobber reported addresses, and vice versa.
+	// A newly reported routable family replaces its older probe fallback;
+	// the other family's probe survives.
 	if _, err := registry.SetReported("edge-1", []string{"203.0.113.10"}, nil); err != nil {
 		t.Fatalf("SetReported() error = %v", err)
 	}
 	addr, source, ok := registry.AddressSourceForFamily("edge-1", FamilyIPv4)
-	if !ok || addr != "203.0.113.20" || source != SourceProbed {
-		t.Fatalf("AddressSourceForFamily() = %q, %v, %v, want probed ahead of reported", addr, source, ok)
+	if !ok || addr != "203.0.113.10" || source != SourceReported {
+		t.Fatalf("AddressSourceForFamily() = %q, %v, %v, want newly reported address", addr, source, ok)
 	}
 
 	reloaded := reopenTestRegistry(t, path)
 	addr, source, ok = reloaded.AddressSourceForFamily("edge-1", FamilyIPv6)
 	if !ok || addr != "2001:db8::20" || source != SourceProbed {
 		t.Fatalf("reloaded AddressSourceForFamily(ipv6) = %q, %v, %v", addr, source, ok)
+	}
+
+	// A late probe report cannot displace a currently reported routable
+	// address, including after persistence/reload.
+	changed, err = reloaded.SetProbed(
+		"edge-1",
+		[]string{"203.0.113.30"},
+		[]string{"2001:db8::20"},
+	)
+	if err != nil || changed {
+		t.Fatalf("SetProbed(masked family) = %v, %v, want false, nil", changed, err)
+	}
+	addr, source, ok = reloaded.AddressSourceForFamily("edge-1", FamilyIPv4)
+	if !ok || addr != "203.0.113.10" || source != SourceReported {
+		t.Fatalf("AddressSourceForFamily() = %q, %v, %v after late probe", addr, source, ok)
 	}
 }
 
