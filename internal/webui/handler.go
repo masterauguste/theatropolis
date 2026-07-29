@@ -335,6 +335,10 @@ func (h *Handler) routes() {
 	h.mux.HandleFunc("GET /assets/app.css", h.asset("assets/app.css", "text/css; charset=utf-8"))
 	h.mux.HandleFunc("GET /assets/app.js", h.asset("assets/app.js", "text/javascript; charset=utf-8"))
 	h.mux.HandleFunc(
+		"GET /assets/dropdown.js",
+		h.asset("assets/dropdown.js", "text/javascript; charset=utf-8"),
+	)
+	h.mux.HandleFunc(
 		"GET /assets/config-editor.js",
 		h.asset("assets/config-editor.js", "text/javascript; charset=utf-8"),
 	)

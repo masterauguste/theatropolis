@@ -1929,6 +1929,7 @@ func TestAssetsAreSelfHostedAndSecurityHeadersApplyToErrors(t *testing.T) {
 	for _, path := range []string{
 		"/assets/app.js",
 		"/assets/config-editor.js",
+		"/assets/dropdown.js",
 	} {
 		request := fixture.request(http.MethodGet, path, "")
 		response := httptest.NewRecorder()

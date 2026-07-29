@@ -1104,7 +1104,9 @@ if (configTextarea && configurationForm && configurationEditor) {
     } else if (button.matches("[data-pool-family-option]")) {
       const card = button.closest("[data-outbound-card]");
       if (card) {
-        field(card, "outbound", "family").value = button.dataset.poolFamilyOption;
+        const familySelect = field(card, "outbound", "family");
+        familySelect.value = button.dataset.poolFamilyOption;
+        familySelect.dispatchEvent(new Event("change", { bubbles: true }));
         syncPoolFamily(card);
       }
     } else if (button.matches("[data-pool-probe]")) {
