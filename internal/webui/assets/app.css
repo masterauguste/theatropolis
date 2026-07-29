@@ -2277,6 +2277,10 @@ body:has(dialog[open]) {
   margin-bottom: 0;
 }
 
+.settings-version-list + [data-master-version-refresh] {
+  margin-top: 0.75rem;
+}
+
 .update-progress {
   max-width: 560px;
   margin: 3rem auto 0;

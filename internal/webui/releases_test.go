@@ -8,7 +8,6 @@ import (
 	"strings"
 	"sync/atomic"
 	"testing"
-	"time"
 )
 
 func TestGitHubReleaseCatalogDiscoversAndSortsTags(t *testing.T) {
@@ -33,9 +32,6 @@ func TestGitHubReleaseCatalogDiscoversAndSortsTags(t *testing.T) {
 
 	catalog := NewGitHubReleaseCatalog(server.Client())
 	catalog.releasesURL = server.URL
-	catalog.now = func() time.Time {
-		return time.Date(2026, 7, 28, 0, 0, 0, 0, time.UTC)
-	}
 	releases, err := catalog.Versions(context.Background())
 	if err != nil {
 		t.Fatal(err)
@@ -46,8 +42,8 @@ func TestGitHubReleaseCatalogDiscoversAndSortsTags(t *testing.T) {
 	if _, err := catalog.Versions(context.Background()); err != nil {
 		t.Fatal(err)
 	}
-	if requests.Load() != 1 {
-		t.Fatalf("catalog requests = %d, want cached single request", requests.Load())
+	if requests.Load() != 2 {
+		t.Fatalf("catalog requests = %d, want a fresh request for every check", requests.Load())
 	}
 }
 
@@ -144,5 +140,36 @@ func TestGitHubReleaseCatalogRetriesAfterFailure(t *testing.T) {
 	}
 	if len(releases) != 1 || releases[0].Tag != "v0.0.17" || requests.Load() != 2 {
 		t.Fatalf("retry releases = %+v, requests = %d", releases, requests.Load())
+	}
+}
+
+func TestTheatropolisReleaseCatalogNeverCachesCompletedReleaseList(t *testing.T) {
+	t.Parallel()
+	var requests atomic.Int32
+	var newest atomic.Bool
+	server := httptest.NewServer(http.HandlerFunc(func(response http.ResponseWriter, _ *http.Request) {
+		requests.Add(1)
+		tag := "v0.0.29"
+		if newest.Load() {
+			tag = "v0.0.30"
+		}
+		fmt.Fprintf(response, `[{"tag_name":%q,"assets":[
+			{"name":"checksums.txt"},
+			{"name":"theatropolis_linux_amd64.tar.gz"},
+			{"name":"theatropolis_linux_arm64.tar.gz"}]}]`, tag)
+	}))
+	defer server.Close()
+
+	catalog := NewGitHubReleaseCatalog(server.Client())
+	catalog.releasesURL = server.URL
+	releases, err := catalog.Versions(context.Background())
+	if err != nil || releases[0].Tag != "v0.0.29" {
+		t.Fatalf("initial releases = %+v, err = %v", releases, err)
+	}
+
+	newest.Store(true)
+	releases, err = catalog.Versions(context.Background())
+	if err != nil || releases[0].Tag != "v0.0.30" || requests.Load() != 2 {
+		t.Fatalf("fresh releases = %+v, requests = %d, err = %v", releases, requests.Load(), err)
 	}
 }

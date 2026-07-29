@@ -797,6 +797,7 @@ func TestSettingsPageOwnsMasterSoftwareManagement(t *testing.T) {
 		"Master software",
 		`action="/master-update"`,
 		`data-master-latest-label`,
+		`data-master-version-refresh`,
 		`data-version-catalog-url="/settings/versions"`,
 		`href="/settings" class="is-active"`,
 	} {

@@ -630,6 +630,7 @@ func (h *Handler) settingsPageData(session Session) pageData {
 }
 
 func (h *Handler) masterVersions(response http.ResponseWriter, request *http.Request) {
+	response.Header().Set("Cache-Control", "no-store")
 	if _, ok := h.authenticate(request); !ok {
 		http.Error(response, "unauthorized", http.StatusUnauthorized)
 		return
@@ -1501,6 +1502,7 @@ type versionCatalogResponse struct {
 }
 
 func (h *Handler) serverVersions(response http.ResponseWriter, request *http.Request) {
+	response.Header().Set("Cache-Control", "no-store")
 	if _, ok := h.authenticate(request); !ok {
 		http.Error(response, "unauthorized", http.StatusUnauthorized)
 		return

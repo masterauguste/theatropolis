@@ -11,7 +11,6 @@ import (
 	"sort"
 	"strconv"
 	"strings"
-	"sync"
 	"time"
 	"unicode"
 
@@ -19,10 +18,7 @@ import (
 	"github.com/masterauguste/theatropolis/internal/singboxupdate"
 )
 
-const (
-	releaseCatalogTTL      = 10 * time.Minute
-	maxReleaseResponseSize = 2 << 20
-)
+const maxReleaseResponseSize = 2 << 20
 
 var gitTagReferencePattern = regexp.MustCompile(`refs/tags/([^\x00\s^]+)`)
 
@@ -42,10 +38,6 @@ type ReleaseCatalog interface {
 // platform-specific asset names are validated by the sing-box updater itself.
 type GitHubReleaseCatalog struct {
 	client         *http.Client
-	now            func() time.Time
-	mu             sync.Mutex
-	cached         []AgentRelease
-	expiresAt      time.Time
 	refsURL        string
 	releasesURL    string
 	requiredAssets []string
@@ -68,7 +60,6 @@ func NewGitHubReleaseCatalog(client *http.Client) *GitHubReleaseCatalog {
 	}
 	return &GitHubReleaseCatalog{
 		client:      client,
-		now:         time.Now,
 		releasesURL: "https://api.github.com/repos/masterauguste/theatropolis/releases?per_page=100",
 		requiredAssets: []string{
 			"checksums.txt",
@@ -89,22 +80,7 @@ func NewSingBoxReleaseCatalog(client *http.Client) *GitHubReleaseCatalog {
 }
 
 func (c *GitHubReleaseCatalog) Versions(ctx context.Context) ([]AgentRelease, error) {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	now := c.now().UTC()
-	if len(c.cached) != 0 && now.Before(c.expiresAt) {
-		return append([]AgentRelease(nil), c.cached...), nil
-	}
-	releases, err := c.fetch(ctx)
-	if err != nil {
-		if len(c.cached) != 0 {
-			return append([]AgentRelease(nil), c.cached...), nil
-		}
-		return nil, err
-	}
-	c.cached = append([]AgentRelease(nil), releases...)
-	c.expiresAt = now.Add(releaseCatalogTTL)
-	return releases, nil
+	return c.fetch(ctx)
 }
 
 func (c *GitHubReleaseCatalog) fetch(ctx context.Context) ([]AgentRelease, error) {

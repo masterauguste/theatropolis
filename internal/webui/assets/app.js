@@ -273,49 +273,73 @@ if (versionCatalogURL) {
     return data;
   };
 
-  if (document.querySelector("[data-latest-agent-version], [data-master-latest-label]")) {
-  fetchCatalog("agent").then((data) => {
-    const latest = data.latest_version || "";
+  const loadAgentCatalog = async () => {
+    const refreshButton = document.querySelector("[data-master-version-refresh]");
     const agentInput = document.querySelector("[data-latest-agent-version]");
     const agentLabel = document.querySelector("[data-latest-agent-version-label]");
-    const agentWarning = document.querySelector("[data-agent-catalog-warning]");
-    if (agentInput) agentInput.value = latest;
-    if (agentLabel) agentLabel.textContent = latest || "unavailable";
-    if (agentWarning && data.agent_catalog_warning) {
-      agentWarning.textContent = data.agent_catalog_warning;
-      agentWarning.hidden = false;
-    }
-
+    const warning = document.querySelector("[data-agent-catalog-warning]");
     const masterLabel = document.querySelector("[data-master-latest-label]");
     const masterButton = document.querySelector("[data-master-update-button]");
     const masterButtonText = document.querySelector("[data-master-button-text]");
-    if (masterLabel) masterLabel.textContent = latest || "unavailable";
-    if (masterButton && masterButtonText && latest) {
-      if (latest === document.body.dataset.masterVersion) {
-        masterButton.disabled = true;
-        masterButtonText.textContent = "Master is up to date";
-      } else {
-        masterButton.disabled = false;
-        masterButtonText.textContent = `Update master to ${latest}`;
-      }
-    } else if (masterButton && masterButtonText) {
-      masterButton.disabled = true;
-      masterButtonText.textContent = "Latest version unavailable";
+
+    if (refreshButton) {
+      refreshButton.disabled = true;
+      refreshButton.textContent = "Checking…";
     }
-  }).catch((error) => {
-    const agentLabel = document.querySelector("[data-latest-agent-version-label]");
-    const masterLabel = document.querySelector("[data-master-latest-label]");
-    const masterButtonText = document.querySelector("[data-master-button-text]");
-    if (agentLabel) agentLabel.textContent = "unavailable";
-    if (masterLabel) masterLabel.textContent = "unavailable";
-    if (masterButtonText) masterButtonText.textContent = "Latest version unavailable";
-    const warning = document.querySelector("[data-agent-catalog-warning]");
+    if (masterLabel) masterLabel.textContent = "checking…";
+    if (masterButton) masterButton.disabled = true;
     if (warning) {
-      warning.textContent = error.message;
-      warning.hidden = false;
+      warning.textContent = "";
+      warning.hidden = true;
     }
-  });
+
+    try {
+      const data = await fetchCatalog("agent");
+      const latest = data.latest_version || "";
+      if (agentInput) agentInput.value = latest;
+      if (agentLabel) agentLabel.textContent = latest || "unavailable";
+      if (warning && data.agent_catalog_warning) {
+        warning.textContent = data.agent_catalog_warning;
+        warning.hidden = false;
+      }
+
+      if (masterLabel) masterLabel.textContent = latest || "unavailable";
+      if (masterButton && masterButtonText && latest) {
+        if (latest === document.body.dataset.masterVersion) {
+          masterButton.disabled = true;
+          masterButtonText.textContent = "Master is up to date";
+        } else {
+          masterButton.disabled = false;
+          masterButtonText.textContent = `Update master to ${latest}`;
+        }
+      } else if (masterButton && masterButtonText) {
+        masterButton.disabled = true;
+        masterButtonText.textContent = "Latest version unavailable";
+      }
+    } catch (error) {
+      if (agentInput) agentInput.value = "";
+      if (agentLabel) agentLabel.textContent = "unavailable";
+      if (masterLabel) masterLabel.textContent = "unavailable";
+      if (masterButton) masterButton.disabled = true;
+      if (masterButtonText) masterButtonText.textContent = "Latest version unavailable";
+      if (warning) {
+        warning.textContent = error.message;
+        warning.hidden = false;
+      }
+    } finally {
+      if (refreshButton) {
+        refreshButton.disabled = false;
+        refreshButton.textContent = "Check again";
+      }
+    }
+  };
+
+  if (document.querySelector("[data-latest-agent-version], [data-master-latest-label]")) {
+    loadAgentCatalog();
   }
+  document
+    .querySelector("[data-master-version-refresh]")
+    ?.addEventListener("click", loadAgentCatalog);
 
   if (document.querySelector("[data-sing-box-version-select]")) {
   fetchCatalog("sing-box").then((data) => {
