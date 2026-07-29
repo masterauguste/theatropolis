@@ -11,13 +11,11 @@ if (configTextarea && configurationForm && configurationEditor) {
   const warning = configurationForm.querySelector("[data-guided-warning]");
   const summary = configurationForm.querySelector("[data-config-summary]");
   const inboundList = configurationEditor.querySelector("[data-inbound-list]");
-  const outboundList = configurationEditor.querySelector("[data-outbound-list]");
   const routeRuleList = configurationEditor.querySelector("[data-route-rule-list]");
   const routeFinal = configurationEditor.querySelector("[data-route-final]");
-  const outboundTags = configurationForm.querySelector("[data-outbound-tags]");
+  const poolRoutingWarning = configurationEditor.querySelector("[data-pool-routing-warning]");
   const inboundTemplate = document.getElementById("inbound-card-template");
   const userTemplate = document.getElementById("user-row-template");
-  const outboundTemplate = document.getElementById("outbound-card-template");
   const routeRuleTemplate = document.getElementById("route-rule-card-template");
   const originals = new WeakMap();
   const supportedInboundTypes = new Set(["shadowsocks", "anytls", "hysteria2"]);
@@ -27,15 +25,15 @@ if (configTextarea && configurationForm && configurationEditor) {
     "domain",
     "domain_suffix",
     "domain_keyword",
+    "domain_regex",
     "ip_cidr",
     "rule_set",
     "network",
-    "auth_user",
   ];
   let documentModel = {};
-  // Per-card geo rule set selections (geosite/geoip match types) and the
-  // lazily fetched option catalogs, keyed by kind ("geosite" / "geoip").
-  const geoSelections = new WeakMap();
+  // Every rule stores its match values independently of the combobox input.
+  // Geo catalogs are fetched once per page and shared between rule cards.
+  const matchSelections = new WeakMap();
   const geoOptionState = new Map();
   const geoOptionValues = new Map();
   const GEO_OPTION_RENDER_LIMIT = 50;
@@ -45,18 +43,14 @@ if (configTextarea && configurationForm && configurationEditor) {
   // page load, and shared by every pool outbound card.
   const poolOptionsBase = (configurationForm.getAttribute("action") || "")
     .replace(/\/configuration$/, "/pool-options");
-  const POOL_REF_PATTERN = /^(?:agent\/[A-Za-z0-9][A-Za-z0-9._-]{0,127}\/[A-Za-z0-9][A-Za-z0-9._-]{0,127}\/[A-Za-z0-9_][A-Za-z0-9._-]{0,127}|manual\/[A-Za-z0-9][A-Za-z0-9._-]{0,127})$/;
-  // Address families a pool ref may pin. The guided editor is explicit-only
-  // (IPv4 default); the master still accepts "auto"/absent on the wire for
-  // backward compatibility with older saved configs.
   const POOL_FAMILIES = ["ipv4", "ipv6"];
   let poolOptionState = ""; // "" | "loading" | "ok" | "error"
   let poolOptionValues = [];
+  let draggedRule = null;
 
   function updateResourceCounts() {
     const counts = {
       inbound: inboundList.querySelectorAll("[data-inbound-card]").length,
-      outbound: outboundList.querySelectorAll("[data-outbound-card]").length,
       "route-rule": routeRuleList.querySelectorAll("[data-route-rule-card]").length,
     };
     for (const [name, count] of Object.entries(counts)) {
@@ -373,61 +367,87 @@ if (configTextarea && configurationForm && configurationEditor) {
     validateSSKeys(card);
     setCardEditing(card, !inbound.tag);
     disableWhenReadonly(card);
+    refreshRoutingOptions();
     updateResourceCounts();
     return card;
   }
 
-  function updateOutboundVisibility(card) {
-    const kind = field(card, "outbound", "kind").value;
-    card.querySelector("[data-external-outbound-field]").hidden = kind !== "external";
-    card.querySelector("[data-pool-field]").hidden = kind !== "pool";
-    card.querySelector("[data-pool-family]").hidden = kind !== "pool";
-    field(card, "outbound", "json").required = kind === "external";
-    let meta = kind === "external" ? "External JSON" : kind;
-    if (kind === "pool") {
-      ensurePoolOptions();
-      updatePoolHint(card);
-      syncPoolFamily(card);
-      const ref = field(card, "outbound", "ref").value.trim();
-      meta = "pool · " + (ref ? ref.replace(/^agent\//, "") : "no entry selected");
-    }
-    updateCardSummary(
-      card,
-      field(card, "outbound", "tag").value || "New outbound",
-      meta,
-    );
+  function poolOptionLabel(entry) {
+    if (entry.manual) return `External · ${entry.ref.replace(/^manual\//, "")}`;
+    return `${entry.agent_id} · ${entry.inbound_tag} · ${entry.user || "unnamed user"}`;
   }
 
-  function addOutbound(outbound = {}) {
-    const card = outboundTemplate.content.firstElementChild.cloneNode(true);
-    originals.set(card, clone(outbound));
-    const kind = outbound.type === "direct" || outbound.type === "block"
-      ? outbound.type
-      : outbound.type === "theatropolis-pool-ref" ? "pool" : "external";
-    setValue(field(card, "outbound", "kind"), kind);
-    setValue(field(card, "outbound", "tag"), outbound.tag);
-    if (kind === "external") {
-      setValue(field(card, "outbound", "json"), JSON.stringify(outbound, null, 2));
-    }
-    if (kind === "pool") {
-      setValue(field(card, "outbound", "ref"), outbound.ref);
-      // Explicit ipv4/ipv6 only. Anything else (legacy "auto", absent,
-      // invalid) is resolved to a concrete default by syncPoolFamily once
-      // the pool catalog knows the entry's families.
-      const family = POOL_FAMILIES.includes(outbound.family) ? outbound.family : "";
-      setValue(field(card, "outbound", "family"), family);
-    }
-    outboundList.append(card);
-    updateOutboundVisibility(card);
-    setCardEditing(card, !outbound.tag);
-    disableWhenReadonly(card);
-    updateOutboundTagOptions();
-    updateResourceCounts();
-    return card;
+  function destinationKey(ref, family = "") {
+    return `pool/${family || "manual"}/${ref}`;
   }
 
-  // Fetch the pool entry catalog once; failures are remembered so the hint
-  // shows on every pool combobox and a free-text reference still works.
+  function parseDestinationKey(value) {
+    if (!value.startsWith("pool/")) return null;
+    const remainder = value.slice(5);
+    const separator = remainder.indexOf("/");
+    if (separator < 0) return null;
+    const family = remainder.slice(0, separator);
+    const ref = remainder.slice(separator + 1);
+    if (!ref) return null;
+    return {
+      ref,
+      family: POOL_FAMILIES.includes(family) ? family : "",
+    };
+  }
+
+  function destinationOptions() {
+    const options = [
+      { value: "builtin/direct", label: "Direct" },
+      { value: "builtin/reject", label: "Reject" },
+    ];
+    for (const entry of poolOptionValues) {
+      const detail = [entry.type, entry.port ? `port ${entry.port}` : ""].filter(Boolean).join(" · ");
+      if (entry.manual) {
+        options.push({
+          value: destinationKey(entry.ref),
+          label: `${poolOptionLabel(entry)}${detail ? ` · ${detail}` : ""}`,
+        });
+        continue;
+      }
+      for (const family of POOL_FAMILIES) {
+        const address = entry[family];
+        options.push({
+          value: destinationKey(entry.ref, family),
+          label: `${poolOptionLabel(entry)} · ${family === "ipv4" ? "IPv4" : "IPv6"}${address ? ` ${address}` : " unavailable"}${detail ? ` · ${detail}` : ""}`,
+          disabled: !address,
+        });
+      }
+    }
+    return options;
+  }
+
+  function replaceSelectOptions(select, options, selectedValue) {
+    select.replaceChildren();
+    for (const entry of options) {
+      const option = document.createElement("option");
+      option.value = entry.value;
+      option.textContent = entry.label;
+      option.disabled = Boolean(entry.disabled);
+      select.append(option);
+    }
+    if (selectedValue && !options.some((entry) => entry.value === selectedValue)) {
+      const saved = document.createElement("option");
+      saved.value = selectedValue;
+      saved.textContent = "Saved pool destination";
+      select.append(saved);
+    }
+    select.value = selectedValue || options[0]?.value || "";
+  }
+
+  function refreshDestinationOptions() {
+    const options = destinationOptions();
+    for (const select of configurationEditor.querySelectorAll(
+      "[data-route-final], [data-route-field=\"destination\"]",
+    )) {
+      replaceSelectOptions(select, options, select.value);
+    }
+  }
+
   function ensurePoolOptions() {
     if (poolOptionState) return;
     poolOptionState = "loading";
@@ -443,176 +463,23 @@ if (configTextarea && configurationForm && configurationEditor) {
         }
         poolOptionValues = body.options;
         poolOptionState = "ok";
+        poolRoutingWarning.hidden = !body.warning;
+        poolRoutingWarning.textContent = body.warning || "";
       })
       .catch(() => {
         poolOptionState = "error";
+        poolRoutingWarning.hidden = false;
+        poolRoutingWarning.textContent =
+          "The fleet outbound pool is unavailable. Direct and Reject remain usable.";
       })
-      .finally(() => {
-        for (const card of outboundList.querySelectorAll("[data-outbound-card]")) {
-          if (field(card, "outbound", "kind").value !== "pool") continue;
-          updatePoolHint(card);
-          renderPoolOptions(card);
-          syncPoolFamily(card);
-        }
-      });
+      .finally(refreshDestinationOptions);
   }
 
-  // poolOptionByRef finds the catalog entry for a typed/picked reference.
-  function poolOptionByRef(ref) {
-    return poolOptionValues.find((entry) => entry.ref === ref) || null;
-  }
-
-  // syncPoolFamily reflects the hidden family input onto the segmented
-  // control, disables families the selected entry has no address for,
-  // defaults to IPv4 when available, and shows the probe button when the
-  // wanted family is unknown. Manual entries resolve address-free, so the
-  // whole control is hidden for them.
-  function syncPoolFamily(card) {
-    const input = field(card, "outbound", "family");
-    if (!input) return;
-    const probe = card.querySelector("[data-pool-probe]");
-    const probeHint = card.querySelector("[data-pool-probe-hint]");
-    const ref = field(card, "outbound", "ref").value.trim();
-    const entry = poolOptionByRef(ref);
-    if (entry && entry.manual) {
-      card.querySelector("[data-pool-family]").hidden = true;
-      probe.hidden = true;
-      probeHint.hidden = true;
-      probeHint.textContent = "";
-      return;
-    }
-    card.querySelector("[data-pool-family]").hidden = false;
-    let family = input.value;
-    const known = {
-      ipv4: !entry || Boolean(entry.ipv4),
-      ipv6: !entry || Boolean(entry.ipv6),
-    };
-    if (!POOL_FAMILIES.includes(family) || !known[family]) {
-      // Default to IPv4 when available, IPv6 when it is the only known
-      // family, IPv4 (greyed) when nothing is known yet.
-      family = known.ipv4 ? "ipv4" : known.ipv6 ? "ipv6" : "ipv4";
-      input.value = family;
-    }
-    for (const option of card.querySelectorAll("[data-pool-family-option]")) {
-      const value = option.dataset.poolFamilyOption;
-      option.setAttribute("aria-pressed", String(value === family));
-      option.disabled = !known[value];
-      if (option.disabled) {
-        option.title = "address family unknown";
-      } else {
-        option.removeAttribute("title");
-      }
-    }
-    const canProbe = entry && !known[family];
-    probe.hidden = !canProbe;
-    if (canProbe) {
-      probe.dataset.probeFamily = family;
-    } else {
-      probeHint.hidden = true;
-      probeHint.textContent = "";
-    }
-  }
-
-  function requestPoolProbe(card, button) {
-    const entry = poolOptionByRef(field(card, "outbound", "ref").value.trim());
-    const family = button.dataset.probeFamily;
-    const hint = card.querySelector("[data-pool-probe-hint]");
-    if (!entry || entry.manual || !family) return;
-    const csrfToken = configurationForm.querySelector('input[name="csrf_token"]')?.value || "";
-    button.disabled = true;
-    fetch(`/servers/${encodeURIComponent(entry.agent_id)}/probe-address`, {
-      method: "POST",
-      credentials: "same-origin",
-      headers: {
-        "Content-Type": "application/x-www-form-urlencoded",
-        Accept: "application/json",
-      },
-      body: new URLSearchParams({ family, csrf_token: csrfToken }),
-    })
-      .then(async (response) => {
-        if (response.status === 202) {
-          hint.hidden = false;
-          hint.textContent = "probe requested — refresh in a few seconds";
-          window.setTimeout(() => {
-            // Bypass the once-per-load cache so the probed address shows up.
-            poolOptionState = "";
-            ensurePoolOptions();
-          }, 5000);
-          return;
-        }
-        const message = (await response.text()).trim();
-        throw new Error(message || `probe request failed (HTTP ${response.status})`);
-      })
-      .catch((error) => {
-        hint.hidden = false;
-        hint.textContent = error.message;
-      })
-      .finally(() => {
-        button.disabled = false;
-      });
-  }
-
-  function updatePoolHint(card) {
-    const hint = card.querySelector("[data-pool-hint]");
-    const failed = poolOptionState === "error";
-    hint.hidden = !failed;
-    hint.textContent = failed
-      ? "List unavailable — type a reference manually: agent/<id>/<inbound>/<user> or manual/<name>"
-      : "";
-  }
-
-  function poolOptionLabel(entry) {
-    if (entry.manual) return entry.ref;
-    return `${entry.agent_id}/${entry.inbound_tag}/${entry.user || "unnamed user"}`;
-  }
-
-  function poolOptionDetail(entry) {
-    const parts = [];
-    if (entry.type) parts.push(entry.type);
-    if (entry.port) parts.push(`port ${entry.port}`);
-    if (!entry.manual) {
-      parts.push(`v4 ${entry.ipv4 || "—"}`);
-      parts.push(`v6 ${entry.ipv6 || "—"}`);
-    }
-    return parts.length ? " · " + parts.join(" · ") : "";
-  }
-
-  function renderPoolOptions(card) {
-    const list = card.querySelector("[data-pool-options]");
-    if (list.hidden) return;
-    const refInput = field(card, "outbound", "ref");
-    const filterValue = refInput.value.trim().toLowerCase();
-    list.replaceChildren();
-    const matches = poolOptionValues.filter((entry) => {
-      if (!filterValue) return true;
-      return entry.ref.toLowerCase().includes(filterValue) ||
-        poolOptionLabel(entry).toLowerCase().includes(filterValue);
-    });
-    for (const entry of matches.slice(0, GEO_OPTION_RENDER_LIMIT)) {
-      const option = document.createElement("button");
-      option.type = "button";
-      option.className = "geo-option";
-      option.dataset.poolOption = entry.ref;
-      option.textContent = poolOptionLabel(entry) + poolOptionDetail(entry);
-      if (!entry.available) {
-        option.classList.add("is-unavailable");
-        option.textContent += " — no usable address";
-      }
-      if (refInput.value.trim() === entry.ref) option.classList.add("is-selected");
-      list.append(option);
-    }
-  }
-
-  function openPoolOptions(card) {
-    card.querySelector("[data-pool-options]").hidden = false;
-    renderPoolOptions(card);
-  }
-
-  function geoSelection(card) {
-    let selection = geoSelections.get(card);
+  function matchSelection(card) {
+    let selection = matchSelections.get(card);
     if (!selection) {
       selection = [];
-      geoSelections.set(card, selection);
+      matchSelections.set(card, selection);
     }
     return selection;
   }
@@ -630,8 +497,6 @@ if (configTextarea && configurationForm && configurationEditor) {
     return kind;
   }
 
-  // Fetch the rule set name catalog for a kind once; failures are remembered
-  // so the hint shows on every combobox of that kind and free text still works.
   function ensureGeoOptions(kind) {
     if (geoOptionState.has(kind)) return;
     geoOptionState.set(kind, "loading");
@@ -654,29 +519,54 @@ if (configTextarea && configurationForm && configurationEditor) {
       .finally(() => {
         for (const card of routeRuleList.querySelectorAll("[data-route-rule-card]")) {
           if (field(card, "route", "match_type").value !== kind) continue;
-          updateGeoHint(card);
-          renderGeoOptions(card);
+          updateMatchHint(card);
+          renderMatchOptions(card);
         }
       });
   }
 
-  function updateGeoHint(card) {
-    const hint = card.querySelector("[data-route-geo-hint]");
-    const failed = geoOptionState.get(field(card, "route", "match_type").value) === "error";
-    hint.hidden = !failed;
-    hint.textContent = failed ? "List unavailable — type a name manually" : "";
+  const matchPresets = {
+    protocol: ["bittorrent", "dns", "dtls", "http", "quic", "rdp", "ssh", "stun", "tls"],
+    network: ["tcp", "udp", "icmp"],
+  };
+
+  const matchLabels = {
+    protocol: ["Protocols", "Filter protocols or type a value…"],
+    network: ["Networks", "Filter networks…"],
+    domain: ["Exact domains", "Type a domain and press Enter…"],
+    domain_suffix: ["Domain suffixes", "Type a suffix and press Enter…"],
+    domain_keyword: ["Domain keywords", "Type a keyword and press Enter…"],
+    domain_regex: ["Domain expressions", "Type an expression and press Enter…"],
+    ip_cidr: ["IP addresses or CIDRs", "Type an IP or CIDR and press Enter…"],
+    geosite: ["Geosite rule sets", "Filter geosite rule sets…"],
+    geoip: ["GeoIP rule sets", "Filter GeoIP rule sets…"],
+    rule_set: ["Custom rule-set tags", "Type a rule-set tag and press Enter…"],
+  };
+
+  function updateMatchHint(card) {
+    const type = field(card, "route", "match_type").value;
+    const hint = card.querySelector("[data-route-match-hint]");
+    if ((type === "geosite" || type === "geoip") && geoOptionState.get(type) === "error") {
+      hint.textContent = "The cached catalog is unavailable; type a valid rule-set name manually.";
+      return;
+    }
+    hint.textContent = type === "domain" || type === "domain_suffix" ||
+      type === "domain_keyword" || type === "domain_regex" || type === "ip_cidr" ||
+      type === "rule_set"
+      ? "Press Enter after each value. Multiple values in one rule use OR semantics."
+      : "Choose one or more values. Multiple values in one rule use OR semantics.";
   }
 
-  function renderGeoChips(card) {
-    const container = card.querySelector("[data-route-geo-chips]");
+  function renderMatchChips(card) {
+    const container = card.querySelector("[data-route-match-chips]");
     container.replaceChildren();
-    for (const name of geoSelection(card)) {
+    for (const value of matchSelection(card)) {
       const chip = document.createElement("button");
       chip.type = "button";
       chip.className = "geo-chip";
-      chip.dataset.geoChip = name;
-      chip.title = `Remove ${name}`;
-      chip.append(document.createTextNode(name));
+      chip.dataset.routeMatchChip = value;
+      chip.title = `Remove ${value}`;
+      chip.append(document.createTextNode(value));
       const marker = document.createElement("span");
       marker.setAttribute("aria-hidden", "true");
       marker.textContent = "×";
@@ -685,69 +575,146 @@ if (configTextarea && configurationForm && configurationEditor) {
     }
   }
 
-  function renderGeoOptions(card) {
-    const list = card.querySelector("[data-route-geo-options]");
+  function matchOptionValues(card) {
+    const type = field(card, "route", "match_type").value;
+    if (type === "geosite" || type === "geoip") {
+      return geoOptionValues.get(type) || [];
+    }
+    return matchPresets[type] || [];
+  }
+
+  function renderMatchOptions(card) {
+    const list = card.querySelector("[data-route-match-options]");
     if (list.hidden) return;
-    const filterValue = card.querySelector("[data-route-geo-filter]").value.trim().toLowerCase();
-    const kind = field(card, "route", "match_type").value;
-    const selection = geoSelection(card);
+    const filterValue = card.querySelector("[data-route-match-filter]").value.trim().toLowerCase();
+    const selection = matchSelection(card);
     list.replaceChildren();
-    const matches = (geoOptionValues.get(kind) || [])
-      .filter((name) => !filterValue || name.includes(filterValue));
-    for (const name of matches.slice(0, GEO_OPTION_RENDER_LIMIT)) {
+    const matches = matchOptionValues(card).filter(
+      (value) => !filterValue || value.toLowerCase().includes(filterValue),
+    );
+    for (const value of matches.slice(0, GEO_OPTION_RENDER_LIMIT)) {
       const option = document.createElement("button");
       option.type = "button";
       option.className = "geo-option";
-      option.dataset.geoOption = name;
-      option.textContent = name;
-      if (selection.includes(name)) option.classList.add("is-selected");
+      option.dataset.routeMatchOption = value;
+      option.textContent = value;
+      if (selection.includes(value)) option.classList.add("is-selected");
       list.append(option);
+    }
+    if (matches.length === 0 && filterValue) {
+      const empty = document.createElement("span");
+      empty.className = "geo-option geo-option--empty";
+      empty.textContent = "Press Enter to add this value";
+      list.append(empty);
     }
   }
 
-  function openGeoOptions(card) {
-    card.querySelector("[data-route-geo-options]").hidden = false;
-    renderGeoOptions(card);
+  function openMatchOptions(card) {
+    card.querySelector("[data-route-match-options]").hidden = false;
+    renderMatchOptions(card);
   }
 
-  function addGeoChip(card, rawName) {
-    const name = rawName.trim().toLowerCase();
-    const selection = geoSelection(card);
-    if (!/^[a-z0-9_-]+$/.test(name) || selection.includes(name)) return;
-    selection.push(name);
-    renderGeoChips(card);
-    renderGeoOptions(card);
+  function addMatchChip(card, rawValue) {
+    const type = field(card, "route", "match_type").value;
+    const value = rawValue.trim();
+    const normalized = type === "geosite" || type === "geoip" ||
+      type === "protocol" || type === "network"
+      ? value.toLowerCase()
+      : value;
+    if (!normalized || normalized.length > 1024) return;
+    if ((type === "geosite" || type === "geoip") && !/^[a-z0-9_-]+$/.test(normalized)) {
+      return;
+    }
+    const selection = matchSelection(card);
+    if (selection.includes(normalized)) return;
+    selection.push(normalized);
+    renderMatchChips(card);
+    renderMatchOptions(card);
     updateRouteRuleVisibility(card);
   }
 
-  function removeGeoChip(card, name) {
-    const selection = geoSelection(card);
-    const index = selection.indexOf(name);
+  function removeMatchChip(card, value) {
+    const selection = matchSelection(card);
+    const index = selection.indexOf(value);
     if (index === -1) return;
     selection.splice(index, 1);
-    renderGeoChips(card);
-    renderGeoOptions(card);
+    renderMatchChips(card);
+    renderMatchOptions(card);
     updateRouteRuleVisibility(card);
   }
 
-  function addRouteRule(rule = {}) {
+  function destinationFromOutbound(outbound) {
+    if (!outbound) return "builtin/direct";
+    if (outbound.type === "direct") return "builtin/direct";
+    if (outbound.type === "block") return "builtin/reject";
+    if (outbound.type === "theatropolis-pool-ref" && outbound.ref) {
+      return destinationKey(
+        outbound.ref,
+        POOL_FAMILIES.includes(outbound.family) ? outbound.family : "",
+      );
+    }
+    return "builtin/direct";
+  }
+
+  function replaceScopeOptions(card, preferred = "") {
+    const type = field(card, "route", "scope_type").value;
+    const wrapper = card.querySelector("[data-route-scope-value]");
+    const select = field(card, "route", "scope_value");
+    wrapper.hidden = type === "all";
+    select.required = type !== "all";
+    if (type === "all") return;
+    card.querySelector("[data-route-scope-label]").textContent =
+      type === "inbound" ? "Inbound" : "Authenticated user";
+    const values = new Set();
+    for (const inbound of inboundList.querySelectorAll("[data-inbound-card]")) {
+      if (type === "inbound") {
+        const tag = field(inbound, "inbound", "tag").value.trim();
+        if (tag) values.add(tag);
+      } else {
+        for (const row of inbound.querySelectorAll("[data-user-row]")) {
+          const name = field(row, "user", "name").value.trim();
+          if (name) values.add(name);
+        }
+      }
+    }
+    const options = Array.from(values).sort().map((value) => ({ value, label: value }));
+    replaceSelectOptions(select, options, preferred || select.value);
+  }
+
+  function refreshRoutingOptions() {
+    for (const card of routeRuleList.querySelectorAll("[data-route-rule-card]")) {
+      replaceScopeOptions(card);
+    }
+    refreshDestinationOptions();
+  }
+
+  function addRouteRule(rule = {}, outboundByTag = new Map()) {
     const card = routeRuleTemplate.content.firstElementChild.cloneNode(true);
     originals.set(card, clone(rule));
-    setValue(field(card, "route", "inbound"), listValue(rule.inbound).join(", "));
+    const scopeType = listValue(rule.auth_user).length
+      ? "auth_user"
+      : listValue(rule.inbound).length ? "inbound" : "all";
+    const scopeValue = scopeType === "auth_user"
+      ? listValue(rule.auth_user)[0]
+      : scopeType === "inbound" ? listValue(rule.inbound)[0] : "";
+    setValue(field(card, "route", "scope_type"), scopeType);
     const geoKind = inferGeoMatchKind(rule.rule_set);
     const matchType = geoKind || routeMatchFields.find((name) => rule[name] !== undefined) || "protocol";
     setValue(field(card, "route", "match_type"), matchType);
     if (geoKind) {
-      for (const tag of rule.rule_set) geoSelection(card).push(tag.slice(geoKind.length + 1));
-      renderGeoChips(card);
+      for (const tag of rule.rule_set) matchSelection(card).push(tag.slice(geoKind.length + 1));
     } else {
       const values = Array.isArray(rule[matchType]) ? rule[matchType] : [rule[matchType]].filter(Boolean);
-      setValue(field(card, "route", "match_values"), values.join("\n"));
+      matchSelection(card).push(...values.map(String));
     }
-    setValue(field(card, "route", "outbound"), rule.outbound);
     routeRuleList.append(card);
+    replaceScopeOptions(card, scopeValue);
+    const destination = rule.action === "reject"
+      ? "builtin/reject"
+      : destinationFromOutbound(outboundByTag.get(rule.outbound));
+    replaceSelectOptions(field(card, "route", "destination"), destinationOptions(), destination);
+    renderMatchChips(card);
     updateRouteRuleVisibility(card);
-    setCardEditing(card, Object.keys(rule).length === 0);
     disableWhenReadonly(card);
     updateResourceCounts();
     return card;
@@ -755,40 +722,32 @@ if (configTextarea && configurationForm && configurationEditor) {
 
   function updateRouteRuleVisibility(card) {
     const type = field(card, "route", "match_type").value;
-    const geo = type === "geosite" || type === "geoip";
-    card.querySelector("[data-route-values-plain]").hidden = geo;
-    card.querySelector("[data-route-values-geo]").hidden = !geo;
-    const outbound = field(card, "route", "outbound").value || "no outbound";
-    if (geo) {
-      ensureGeoOptions(type);
-      updateGeoHint(card);
-      const names = geoSelection(card);
-      updateCardSummary(
-        card,
-        names[0] ? `${type}-${names[0]}` : "Routing rule",
-        `${type} · ${names.length} set${names.length === 1 ? "" : "s"} · ${outbound}`,
-      );
-      return;
+    if (card.dataset.routeMatchType && card.dataset.routeMatchType !== type) {
+      matchSelections.set(card, []);
+      renderMatchChips(card);
+      card.querySelector("[data-route-match-filter]").value = "";
     }
-    const values = splitValues(field(card, "route", "match_values").value);
+    card.dataset.routeMatchType = type;
+    const labels = matchLabels[type] || ["Match values", "Type a value and press Enter…"];
+    card.querySelector("[data-route-match-label]").textContent = labels[0];
+    card.querySelector("[data-route-match-filter]").placeholder = labels[1];
+    if (type === "geosite" || type === "geoip") {
+      ensureGeoOptions(type);
+    }
+    replaceScopeOptions(card);
+    updateMatchHint(card);
+    renderMatchOptions(card);
+    const values = matchSelection(card);
+    const scopeType = field(card, "route", "scope_type").value;
+    const scopeValue = field(card, "route", "scope_value").value;
+    const scope = scopeType === "all" ? "all traffic" : `${scopeType.replace("_", " ")} ${scopeValue}`;
+    const outbound = field(card, "route", "destination").selectedOptions[0]?.textContent ||
+      "no outbound";
     updateCardSummary(
       card,
-      values[0] || "Routing rule",
-      `${type.replaceAll("_", " ")} · ${outbound}`,
+      values[0] || `${type.replaceAll("_", " ")} rule`,
+      `${scope} · ${type.replaceAll("_", " ")} · ${outbound}`,
     );
-  }
-
-  function updateOutboundTagOptions() {
-    outboundTags.replaceChildren();
-    for (const input of outboundList.querySelectorAll('[data-outbound-field="tag"]')) {
-      const tag = input.value.trim();
-      if (!tag) {
-        continue;
-      }
-      const option = document.createElement("option");
-      option.value = tag;
-      outboundTags.append(option);
-    }
   }
 
   function serializeUsers(card) {
@@ -869,62 +828,58 @@ if (configTextarea && configurationForm && configurationEditor) {
     return inbound;
   }
 
-  function serializeOutbound(card) {
-    const kind = field(card, "outbound", "kind").value;
-    const tag = field(card, "outbound", "tag").value.trim();
-    if (kind === "direct" || kind === "block") {
-      return { type: kind, tag };
+  function buildManagedOutbounds(destinationKeys) {
+    const outbounds = [
+      { type: "direct", tag: "theatropolis-direct" },
+      { type: "block", tag: "theatropolis-reject" },
+    ];
+    const tags = new Map([
+      ["builtin/direct", "theatropolis-direct"],
+      ["builtin/reject", "theatropolis-reject"],
+    ]);
+    let poolIndex = 0;
+    for (const key of destinationKeys) {
+      if (tags.has(key)) continue;
+      const destination = parseDestinationKey(key);
+      if (!destination) continue;
+      const tag = `theatropolis-pool-${++poolIndex}`;
+      const outbound = {
+        type: "theatropolis-pool-ref",
+        tag,
+        ref: destination.ref,
+      };
+      if (destination.family) outbound.family = destination.family;
+      outbounds.push(outbound);
+      tags.set(key, tag);
     }
-    if (kind === "pool") {
-      const ref = field(card, "outbound", "ref").value.trim();
-      if (!ref) {
-        throw new Error(`Pool import ${tag || "(untagged)"} needs a pool entry — pick one from the list.`);
-      }
-      if (!POOL_REF_PATTERN.test(ref)) {
-        throw new Error(`Pool import ${tag || "(untagged)"} has an invalid pool reference: ${ref}`);
-      }
-      const outbound = { type: "theatropolis-pool-ref", tag, ref };
-      // Agent refs always pin an explicit family; manual refs resolve
-      // address-free and carry none.
-      const entry = poolOptionByRef(ref);
-      const familyValue = field(card, "outbound", "family")?.value;
-      if (!(entry && entry.manual) && POOL_FAMILIES.includes(familyValue)) {
-        outbound.family = familyValue;
-      }
-      return outbound;
-    }
-    let outbound;
-    try {
-      outbound = JSON.parse(field(card, "outbound", "json").value);
-    } catch {
-      throw new Error(`External outbound ${tag || "(untagged)"} is not valid JSON.`);
-    }
-    if (!objectValue(outbound)) {
-      throw new Error(`External outbound ${tag || "(untagged)"} must be a JSON object.`);
-    }
-    outbound.tag = tag;
-    return outbound;
+    return { outbounds, tags };
   }
 
-  function serializeRouteRule(card) {
+  function serializeRouteRule(card, outboundTags) {
     const rule = clone(originals.get(card) || {});
     const matchType = field(card, "route", "match_type").value;
     for (const name of routeMatchFields) {
       delete rule[name];
     }
-    const inbound = splitValues(field(card, "route", "inbound").value);
-    if (inbound.length) rule.inbound = inbound;
-    else delete rule.inbound;
+    delete rule.inbound;
+    delete rule.auth_user;
+    const scopeType = field(card, "route", "scope_type").value;
+    const scopeValue = field(card, "route", "scope_value").value;
+    if (scopeType === "inbound" && scopeValue) rule.inbound = [scopeValue];
+    if (scopeType === "auth_user" && scopeValue) rule.auth_user = [scopeValue];
+    const values = matchSelection(card);
+    if (values.length === 0) {
+      throw new Error("Every routing rule needs at least one match value.");
+    }
     if (matchType === "geosite" || matchType === "geoip") {
       // geosite/geoip are UI-level match types; the JSON field stays rule_set.
-      const names = geoSelection(card);
-      if (names.length) rule.rule_set = names.map((name) => `${matchType}-${name}`);
+      rule.rule_set = values.map((name) => `${matchType}-${name}`);
     } else {
-      const values = splitValues(field(card, "route", "match_values").value);
-      if (values.length) rule[matchType] = values;
+      rule[matchType] = values;
     }
     rule.action = "route";
-    rule.outbound = field(card, "route", "outbound").value.trim();
+    const destination = field(card, "route", "destination").value;
+    rule.outbound = outboundTags.get(destination) || "theatropolis-direct";
     return rule;
   }
 
@@ -941,16 +896,21 @@ if (configTextarea && configurationForm && configurationEditor) {
       ...Array.from(inboundList.querySelectorAll("[data-inbound-card]"), (card) =>
         serializeInbound(card, providers)),
     ];
-    next.outbounds = Array.from(
-      outboundList.querySelectorAll("[data-outbound-card]"),
-      serializeOutbound,
-    );
     if (providers.length) next.certificate_providers = providers;
     else delete next.certificate_providers;
     const route = objectValue(next.route) ? clone(next.route) : {};
+    const destinationKeys = [
+      routeFinal.value,
+      ...Array.from(
+        routeRuleList.querySelectorAll("[data-route-rule-card]"),
+        (card) => field(card, "route", "destination").value,
+      ),
+    ];
+    const managed = buildManagedOutbounds(destinationKeys);
+    next.outbounds = managed.outbounds;
     route.rules = Array.from(
       routeRuleList.querySelectorAll("[data-route-rule-card]"),
-      serializeRouteRule,
+      (card) => serializeRouteRule(card, managed.tags),
     );
     // Rule sets are derived from the routing rules: every referenced
     // geosite-*/geoip-* tag gets a remote binary SRS entry (spreading the
@@ -975,6 +935,7 @@ if (configTextarea && configurationForm && configurationEditor) {
         format: "binary",
         tag,
         url: `https://raw.githubusercontent.com/SagerNet/sing-${prefix}/rule-set/${tag}.srs`,
+        update_interval: "1d",
       });
     }
     for (const entry of originalRuleSets) {
@@ -982,9 +943,7 @@ if (configTextarea && configurationForm && configurationEditor) {
     }
     if (ruleSets.length) route.rule_set = ruleSets;
     else delete route.rule_set;
-    const finalOutbound = routeFinal.value.trim();
-    if (finalOutbound) route.final = finalOutbound;
-    else delete route.final;
+    route.final = managed.tags.get(routeFinal.value) || "theatropolis-direct";
     next.route = route;
     configTextarea.value = `${JSON.stringify(next, null, 2)}\n`;
     configTextarea.setCustomValidity("");
@@ -999,7 +958,6 @@ if (configTextarea && configurationForm && configurationEditor) {
     }
     documentModel = clone(model);
     inboundList.replaceChildren();
-    outboundList.replaceChildren();
     routeRuleList.replaceChildren();
     const unsupported = [];
     for (const inbound of listValue(documentModel.inbounds)) {
@@ -1009,15 +967,20 @@ if (configTextarea && configurationForm && configurationEditor) {
         unsupported.push(inbound?.tag || inbound?.type || "unnamed");
       }
     }
-    for (const outbound of listValue(documentModel.outbounds)) {
-      addOutbound(outbound);
-    }
+    const outboundByTag = new Map(
+      listValue(documentModel.outbounds).map((outbound) => [outbound?.tag, outbound]),
+    );
     const route = objectValue(documentModel.route) ? documentModel.route : {};
     for (const rule of listValue(route.rules)) {
-      addRouteRule(rule);
+      addRouteRule(rule, outboundByTag);
     }
-    setValue(routeFinal, route.final);
-    updateOutboundTagOptions();
+    replaceSelectOptions(
+      routeFinal,
+      destinationOptions(),
+      destinationFromOutbound(outboundByTag.get(route.final)),
+    );
+    refreshRoutingOptions();
+    ensurePoolOptions();
     if (unsupported.length) {
       setWarning(
         `Advanced-only inbounds are preserved unchanged: ${unsupported.join(", ")}. Edit them in Advanced JSON.`,
@@ -1076,45 +1039,36 @@ if (configTextarea && configurationForm && configurationEditor) {
     }
     if (button.matches("[data-add-inbound]")) {
       addInbound({ type: "shadowsocks", listen: "::" });
-    } else if (button.matches("[data-add-outbound]")) {
-      addOutbound({ type: "direct" });
     } else if (button.matches("[data-add-route-rule]")) {
       addRouteRule({});
-    } else if (button.matches("[data-geo-chip]")) {
+      refreshRoutingOptions();
+    } else if (button.matches("[data-route-match-chip]")) {
       const card = button.closest("[data-route-rule-card]");
-      if (card) removeGeoChip(card, button.dataset.geoChip);
-    } else if (button.matches("[data-geo-option]")) {
+      if (card) removeMatchChip(card, button.dataset.routeMatchChip);
+    } else if (button.matches("[data-route-match-option]")) {
       const card = button.closest("[data-route-rule-card]");
       if (card) {
-        addGeoChip(card, button.dataset.geoOption);
-        const filter = card.querySelector("[data-route-geo-filter]");
+        addMatchChip(card, button.dataset.routeMatchOption);
+        const filter = card.querySelector("[data-route-match-filter]");
         filter.value = "";
-        renderGeoOptions(card);
+        renderMatchOptions(card);
         filter.focus();
       }
-    } else if (button.matches("[data-pool-option]")) {
-      const card = button.closest("[data-outbound-card]");
-      if (card) {
-        const refInput = field(card, "outbound", "ref");
-        refInput.value = button.dataset.poolOption;
-        card.querySelector("[data-pool-options]").hidden = true;
-        updateOutboundVisibility(card);
-        refInput.focus();
-      }
-    } else if (button.matches("[data-pool-family-option]")) {
-      const card = button.closest("[data-outbound-card]");
-      if (card) {
-        const familySelect = field(card, "outbound", "family");
-        familySelect.value = button.dataset.poolFamilyOption;
-        familySelect.dispatchEvent(new Event("change", { bubbles: true }));
-        syncPoolFamily(card);
-      }
-    } else if (button.matches("[data-pool-probe]")) {
-      const card = button.closest("[data-outbound-card]");
-      if (card) requestPoolProbe(card, button);
+    } else if (button.matches("[data-move-rule]")) {
+      const card = button.closest("[data-route-rule-card]");
+      if (!card) return;
+      const sibling = button.dataset.moveRule === "up"
+        ? card.previousElementSibling
+        : card.nextElementSibling;
+      if (!sibling) return;
+      if (button.dataset.moveRule === "up") routeRuleList.insertBefore(card, sibling);
+      else routeRuleList.insertBefore(sibling, card);
+      card.focus({ preventScroll: true });
     } else if (button.matches("[data-remove-card]")) {
-      button.closest(".builder-card")?.remove();
-      updateOutboundTagOptions();
+      const card = button.closest(".builder-card");
+      const removedInbound = card?.matches("[data-inbound-card]");
+      card?.remove();
+      if (removedInbound) refreshRoutingOptions();
       updateResourceCounts();
     } else if (button.matches("[data-edit-card]")) {
       const card = button.closest(".builder-card");
@@ -1123,10 +1077,12 @@ if (configTextarea && configurationForm && configurationEditor) {
       const card = button.closest("[data-inbound-card]");
       addUser(card);
       updateInboundVisibility(card);
+      refreshRoutingOptions();
     } else if (button.matches("[data-remove-user]")) {
       const card = button.closest("[data-inbound-card]");
       button.closest("[data-user-row]")?.remove();
       if (card) updateInboundVisibility(card);
+      refreshRoutingOptions();
     } else if (button.matches("[data-generate-secret]")) {
       const card = button.closest("[data-inbound-card]");
       const name = button.dataset.generateSecret === "obfs" ? "obfs_password" : "password";
@@ -1151,20 +1107,18 @@ if (configTextarea && configurationForm && configurationEditor) {
   });
 
   configurationEditor.addEventListener("input", (event) => {
-    const card = event.target.closest("[data-inbound-card], [data-outbound-card], [data-route-rule-card]");
+    const card = event.target.closest("[data-inbound-card], [data-route-rule-card]");
     if (card?.matches("[data-inbound-card]")) {
       updateInboundVisibility(card);
       validateSSKeys(card);
+      if (event.target.matches('[data-inbound-field="tag"], [data-user-field="name"]')) {
+        refreshRoutingOptions();
+      }
     }
-    if (card?.matches("[data-outbound-card]")) updateOutboundVisibility(card);
     if (card?.matches("[data-route-rule-card]")) updateRouteRuleVisibility(card);
-    if (event.target.matches("[data-route-geo-filter]") && card) {
-      openGeoOptions(card);
+    if (event.target.matches("[data-route-match-filter]") && card) {
+      openMatchOptions(card);
     }
-    if (event.target.matches("[data-pool-filter]") && card) {
-      openPoolOptions(card);
-    }
-    if (event.target.matches('[data-outbound-field="tag"]')) updateOutboundTagOptions();
   });
 
   configurationEditor.addEventListener("change", (event) => {
@@ -1173,62 +1127,72 @@ if (configTextarea && configurationForm && configurationEditor) {
       updateInboundVisibility(inbound);
       validateSSKeys(inbound);
     }
-    const outbound = event.target.closest("[data-outbound-card]");
-    if (outbound) updateOutboundVisibility(outbound);
     const routeRule = event.target.closest("[data-route-rule-card]");
     if (routeRule) updateRouteRuleVisibility(routeRule);
   });
 
   configurationEditor.addEventListener("focusin", (event) => {
-    if (event.target.matches("[data-route-geo-filter]")) {
+    if (event.target.matches("[data-route-match-filter]")) {
       const card = event.target.closest("[data-route-rule-card]");
-      if (card) openGeoOptions(card);
-      return;
-    }
-    if (event.target.matches("[data-pool-filter]")) {
-      const card = event.target.closest("[data-outbound-card]");
-      if (card) openPoolOptions(card);
+      if (card) openMatchOptions(card);
     }
   });
 
   configurationEditor.addEventListener("keydown", (event) => {
-    if (event.target.matches("[data-pool-filter]")) {
-      const card = event.target.closest("[data-outbound-card]");
-      if (!card) return;
-      if (event.key === "Enter" || event.key === "Escape") {
-        // Enter must not submit the whole configuration form; the typed
-        // reference is authoritative on its own (free-text fallback).
-        event.preventDefault();
-        card.querySelector("[data-pool-options]").hidden = true;
-        updateOutboundVisibility(card);
-      }
-      return;
-    }
-    if (!event.target.matches("[data-route-geo-filter]")) return;
+    if (!event.target.matches("[data-route-match-filter]")) return;
     const card = event.target.closest("[data-route-rule-card]");
     if (!card) return;
     if (event.key === "Enter") {
-      // Free-text entry is allowed even when the catalog failed to load.
       event.preventDefault();
-      addGeoChip(card, event.target.value);
+      addMatchChip(card, event.target.value);
       event.target.value = "";
-      renderGeoOptions(card);
+      renderMatchOptions(card);
+    } else if (event.key === "Backspace" && event.target.value === "") {
+      const selection = matchSelection(card);
+      if (selection.length) removeMatchChip(card, selection[selection.length - 1]);
     } else if (event.key === "Escape") {
-      // Keep the Escape from bubbling up and closing the manager dialog.
       event.preventDefault();
-      card.querySelector("[data-route-geo-options]").hidden = true;
+      card.querySelector("[data-route-match-options]").hidden = true;
     }
   });
 
   document.addEventListener("click", (event) => {
-    for (const list of routeRuleList.querySelectorAll("[data-route-geo-options]:not([hidden])")) {
-      const combobox = list.closest("[data-route-values-geo]");
+    for (const list of routeRuleList.querySelectorAll("[data-route-match-options]:not([hidden])")) {
+      const combobox = list.closest(".route-match-combobox");
       if (combobox && !combobox.contains(event.target)) list.hidden = true;
     }
-    for (const list of outboundList.querySelectorAll("[data-pool-options]:not([hidden])")) {
-      const combobox = list.closest("[data-pool-field]");
-      if (combobox && !combobox.contains(event.target)) list.hidden = true;
+  });
+
+  routeRuleList.addEventListener("dragstart", (event) => {
+    const card = event.target.closest("[data-route-rule-card]");
+    if (!editable || !card) {
+      event.preventDefault();
+      return;
     }
+    draggedRule = card;
+    card.classList.add("is-dragging");
+    event.dataTransfer.effectAllowed = "move";
+    event.dataTransfer.setData("text/plain", "routing-rule");
+  });
+
+  routeRuleList.addEventListener("dragover", (event) => {
+    if (!draggedRule) return;
+    event.preventDefault();
+    event.dataTransfer.dropEffect = "move";
+    const target = event.target.closest("[data-route-rule-card]");
+    if (!target || target === draggedRule) return;
+    const bounds = target.getBoundingClientRect();
+    const after = event.clientY > bounds.top + bounds.height / 2;
+    routeRuleList.insertBefore(draggedRule, after ? target.nextElementSibling : target);
+  });
+
+  routeRuleList.addEventListener("drop", (event) => {
+    if (draggedRule) event.preventDefault();
+  });
+
+  routeRuleList.addEventListener("dragend", () => {
+    draggedRule?.classList.remove("is-dragging");
+    draggedRule = null;
   });
 
   configurationForm.addEventListener("submit", (event) => {

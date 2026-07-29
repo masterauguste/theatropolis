@@ -138,6 +138,12 @@ func serve(arguments []string) error {
 	if flags.NArg() != 0 {
 		return errors.New("unexpected positional arguments")
 	}
+	ctx, stop := signal.NotifyContext(
+		context.Background(),
+		os.Interrupt,
+		syscall.SIGTERM,
+	)
+	defer stop()
 
 	grpcListener, err := listenLoopback(*grpcAddress)
 	if err != nil {
@@ -200,6 +206,17 @@ func serve(arguments []string) error {
 	if err != nil {
 		return fmt.Errorf("configure master updater: %w", err)
 	}
+	ruleSetCacheDirectory := filepath.Join(*stateDirectory, "rule-set-catalogs")
+	geositeRuleSets := webui.NewGeositeRuleSetCatalog(
+		nil,
+		filepath.Join(ruleSetCacheDirectory, "geosite.json"),
+	)
+	geoipRuleSets := webui.NewGeoipRuleSetCatalog(
+		nil,
+		filepath.Join(ruleSetCacheDirectory, "geoip.json"),
+	)
+	geositeRuleSets.Start(ctx)
+	geoipRuleSets.Start(ctx)
 	webHandler, err := webui.New(webui.Options{
 		Registry:        identities,
 		Sessions:        server.Sessions,
@@ -207,8 +224,8 @@ func serve(arguments []string) error {
 		Access:          access,
 		Releases:        webui.NewGitHubReleaseCatalog(nil),
 		SingBoxReleases: webui.NewSingBoxReleaseCatalog(nil),
-		GeositeRuleSets: webui.NewGeositeRuleSetCatalog(nil),
-		GeoipRuleSets:   webui.NewGeoipRuleSetCatalog(nil),
+		GeositeRuleSets: geositeRuleSets,
+		GeoipRuleSets:   geoipRuleSets,
 		MasterUpdater:   masterUpdater,
 		PublicURL:       *publicURL,
 		Version:         version,
@@ -255,12 +272,6 @@ func serve(arguments []string) error {
 		MaxHeaderBytes:    8 << 10,
 	}
 
-	ctx, stop := signal.NotifyContext(
-		context.Background(),
-		os.Interrupt,
-		syscall.SIGTERM,
-	)
-	defer stop()
 	errorsChannel := make(chan error, 3)
 	go func() {
 		errorsChannel <- grpcServer.Serve(grpcListener)

@@ -577,7 +577,7 @@ func TestServerAddressOverride(t *testing.T) {
 	}
 }
 
-func TestServerPageIncludesPoolImportControls(t *testing.T) {
+func TestServerPageRoutesDirectlyThroughPoolDestinations(t *testing.T) {
 	t.Parallel()
 
 	fixture := newPoolFixture(t)
@@ -595,21 +595,28 @@ func TestServerPageIncludesPoolImportControls(t *testing.T) {
 	}
 	body := response.Body.String()
 	for _, expected := range []string{
-		`<option value="pool">Fleet pool import</option>`,
-		`data-outbound-field="ref"`,
-		`data-pool-options`,
-		`data-outbound-field="family"`,
-		`data-pool-family-option="ipv4"`,
-		`data-pool-family-option="ipv6"`,
-		`class="segmented"`,
-		`data-pool-probe`,
-		`data-pool-probe-hint`,
-		"Request probe",
-		`{"type":"theatropolis-pool-ref","tag":"…","ref":"agent/&lt;id&gt;/&lt;inbound&gt;/&lt;user&gt;"}`,
-		`"manual/&lt;name&gt;"`,
+		`data-route-field="scope_type"`,
+		`data-route-field="scope_value"`,
+		`data-route-field="match_type"`,
+		`data-route-match-filter`,
+		`data-route-field="destination"`,
+		`data-route-rule-card draggable="true"`,
+		`data-drag-handle`,
+		`data-route-final`,
+		`<option value="builtin/direct">Direct</option>`,
+		`<option value="builtin/reject">Reject</option>`,
 	} {
 		if !strings.Contains(body, expected) {
 			t.Errorf("server management page does not contain %q", expected)
+		}
+	}
+	for _, removed := range []string{
+		`id="outbound-manager-dialog"`,
+		`data-outbound-card`,
+		`data-add-outbound`,
+	} {
+		if strings.Contains(body, removed) {
+			t.Errorf("server management page still contains %q", removed)
 		}
 	}
 }

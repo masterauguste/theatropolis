@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"path/filepath"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -122,8 +123,45 @@ func TestRuleSetCatalogFallsBackToStaleCacheOnError(t *testing.T) {
 	if len(options) != 1 || options[0] != "cn" {
 		t.Fatalf("stale options = %v, want [cn]", options)
 	}
+	deadline := time.Now().Add(time.Second)
+	for requests.Load() != 2 && time.Now().Before(deadline) {
+		time.Sleep(time.Millisecond)
+	}
 	if requests.Load() != 2 {
-		t.Fatalf("catalog requests = %d, want 2", requests.Load())
+		t.Fatalf("catalog requests = %d, want asynchronous refresh", requests.Load())
+	}
+}
+
+func TestRuleSetCatalogPersistsAndReloadsLastGoodOptions(t *testing.T) {
+	t.Parallel()
+	var requests atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(response http.ResponseWriter, _ *http.Request) {
+		requests.Add(1)
+		fmt.Fprint(response, `{"tree":[{"path":"geosite-cn.srs"},{"path":"geosite-openai.srs"}],"truncated":false}`)
+	}))
+	defer server.Close()
+
+	cachePath := filepath.Join(t.TempDir(), "catalog", "geosite.json")
+	now := time.Date(2026, 7, 29, 0, 0, 0, 0, time.UTC)
+	catalog := NewGeositeRuleSetCatalog(server.Client(), cachePath)
+	catalog.treeURL = server.URL
+	catalog.now = func() time.Time { return now }
+	if _, err := catalog.Options(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+
+	reloaded := NewGeositeRuleSetCatalog(server.Client(), cachePath)
+	reloaded.treeURL = server.URL
+	reloaded.now = func() time.Time { return now.Add(time.Hour) }
+	options, err := reloaded.Options(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Join(options, ",") != "cn,openai" {
+		t.Fatalf("reloaded options = %v", options)
+	}
+	if requests.Load() != 1 {
+		t.Fatalf("upstream requests = %d, want disk cache without a refetch", requests.Load())
 	}
 }
 

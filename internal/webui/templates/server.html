@@ -112,16 +112,9 @@
                   <button class="button button--secondary button--small" type="button" data-dialog-open="inbound-manager-dialog">Manage</button>
                 </div>
               </section>
-              <section class="builder-section" aria-labelledby="outbound-builder-heading">
-                <div class="resource-summary">
-                  <div><h3 id="outbound-builder-heading">Outbounds</h3><p>Direct, block, fleet pool imports, or externally supplied outbound JSON.</p></div>
-                  <span class="resource-summary__count" data-resource-count="outbound">0 configured</span>
-                  <button class="button button--secondary button--small" type="button" data-dialog-open="outbound-manager-dialog">Manage</button>
-                </div>
-              </section>
               <section class="builder-section" aria-labelledby="route-builder-heading">
                 <div class="resource-summary">
-                  <div><h3 id="route-builder-heading">Routing rules</h3><p>Route by inbound, protocol, domain, IP, user, network, or rule set.</p></div>
+                  <div><h3 id="route-builder-heading">Routing rules</h3><p>Route agent, inbound, or user traffic through built-in or fleet-pool destinations.</p></div>
                   <span class="resource-summary__count" data-resource-count="route-rule">0 configured</span>
                   <button class="button button--secondary button--small" type="button" data-dialog-open="route-rule-manager-dialog">Manage</button>
                 </div>
@@ -145,10 +138,9 @@
                   {{if eq .ErrorField "config_json"}}autofocus aria-invalid="true" aria-describedby="configuration-help configuration-form-error"{{else}}aria-invalid="false" aria-describedby="configuration-help"{{end}}
                 >{{.Agent.Configuration}}</textarea>
                 <small id="configuration-help">{{.Agent.ConfigurationHint}}</small>
-                <small>Fleet pool imports: <code>{"type":"theatropolis-pool-ref","tag":"…","ref":"agent/&lt;id&gt;/&lt;inbound&gt;/&lt;user&gt;"}</code> or <code>"manual/&lt;name&gt;"</code>. Refs that cannot be resolved deploy as <code>direct</code>.</small>
+                <small>The guided editor derives outbounds from routing destinations. Advanced JSON remains available for complete sing-box control.</small>
               </label>
             </section>
-            <datalist id="outbound-tags" data-outbound-tags></datalist>
 
             <div class="configuration-form__actions">
               <span class="muted" data-config-summary>Maximum size: 4 MiB</span>
@@ -176,33 +168,23 @@
             </div>
           </dialog>
 
-          <dialog class="modal resource-modal" id="outbound-manager-dialog" aria-labelledby="outbound-manager-title">
-            <div class="modal__surface">
-              <header class="modal__header">
-                <div><p class="eyebrow">Configuration resource</p><h2 id="outbound-manager-title">Manage outbounds</h2><p>Add, edit, or remove routing destinations.</p></div>
-                <button class="button button--secondary button--icon-only" type="button" data-dialog-close aria-label="Close outbound manager">×</button>
-              </header>
-              <div class="modal__body"><div class="builder-list" data-outbound-list></div></div>
-              <footer class="modal__footer">
-                <button class="button button--secondary" type="button" data-add-outbound {{if not .Agent.ConfigurationEditable}}disabled{{end}}>Add outbound</button>
-                <button class="button button--primary" type="button" data-dialog-close>Close</button>
-              </footer>
-            </div>
-          </dialog>
-
           <dialog class="modal resource-modal" id="route-rule-manager-dialog" aria-labelledby="route-rule-manager-title">
             <div class="modal__surface">
               <header class="modal__header">
-                <div><p class="eyebrow">Configuration resource</p><h2 id="route-rule-manager-title">Manage routing rules</h2><p>Add, edit, reorder in JSON, or remove match rules.</p></div>
+                <div><p class="eyebrow">Configuration resource</p><h2 id="route-rule-manager-title">Manage routing rules</h2><p>Rules are evaluated from top to bottom. Drag cards to change their priority.</p></div>
                 <button class="button button--secondary button--icon-only" type="button" data-dialog-close aria-label="Close routing-rule manager">×</button>
               </header>
               <div class="modal__body">
                 <label class="field builder-final-outbound">
                   <span>Default outbound</span>
-                  <input type="text" data-route-final list="outbound-tags" placeholder="direct-out" {{if not .Agent.ConfigurationEditable}}disabled{{end}}>
+                  <select data-route-final {{if not .Agent.ConfigurationEditable}}disabled{{end}}>
+                    <option value="builtin/direct">Direct</option>
+                    <option value="builtin/reject">Reject</option>
+                  </select>
                   <small>Used when no routing rule matches.</small>
                 </label>
-                <div class="builder-list" data-route-rule-list></div>
+                <div class="notice notice--warning" data-pool-routing-warning hidden></div>
+                <div class="builder-list route-rule-list" data-route-rule-list></div>
               </div>
               <footer class="modal__footer">
                 <button class="button button--secondary" type="button" data-add-route-rule {{if not .Agent.ConfigurationEditable}}disabled{{end}}>Add rule</button>
@@ -274,59 +256,31 @@
             </div>
           </template>
 
-          <template id="outbound-card-template">
-            <article class="builder-card" data-outbound-card>
-              <div class="builder-card__header"><div class="builder-card__identity"><strong data-card-title>New outbound</strong><small data-card-meta>Not configured</small></div><button class="button button--secondary button--small" type="button" data-edit-card>Edit</button></div>
-              <div class="builder-card__editor" data-card-editor hidden>
-              <div class="builder-fields">
-                <label class="field"><span>Kind</span><select data-outbound-field="kind"><option value="direct">Direct</option><option value="block">Block</option><option value="pool">Fleet pool import</option><option value="external">External outbound JSON</option></select></label>
-                <label class="field"><span>Tag</span><input type="text" data-outbound-field="tag" placeholder="direct-out" maxlength="128" required></label>
-              </div>
-              <div class="field geo-combobox" data-pool-field hidden>
-                <span>Pool entry</span>
-                <input type="text" data-outbound-field="ref" data-pool-filter placeholder="Type to filter pool entries…" autocomplete="off" spellcheck="false">
-                <div class="geo-options" data-pool-options hidden></div>
-                <small data-pool-hint hidden></small>
-              </div>
-              <div class="field" data-pool-family hidden>
-                <span>Address family</span>
-                <input type="hidden" data-outbound-field="family" value="ipv4">
-                <div class="segmented" role="group" aria-label="Address family">
-                  <button class="segmented__option" type="button" data-pool-family-option="ipv4" aria-pressed="true">IPv4</button>
-                  <button class="segmented__option" type="button" data-pool-family-option="ipv6" aria-pressed="false">IPv6</button>
-                </div>
-                <small data-pool-family-hint hidden></small>
-                <div class="pool-probe">
-                  <button class="button button--secondary button--small" type="button" data-pool-probe hidden>Request probe</button>
-                  <small data-pool-probe-hint hidden></small>
-                </div>
-              </div>
-              <label class="field" data-external-outbound-field hidden><span>Outbound JSON object</span><textarea data-outbound-field="json" rows="8" spellcheck="false" placeholder='{"type":"socks","server":"127.0.0.1","server_port":1080}'></textarea><small>The tag above is authoritative and will be merged into this object.</small></label>
-              <div class="builder-card__actions"><button class="button-link button-link--danger" type="button" data-remove-card>Remove outbound</button></div>
-              </div>
-            </article>
-          </template>
-
           <template id="route-rule-card-template">
-            <article class="builder-card" data-route-rule-card>
-              <div class="builder-card__header"><div class="builder-card__identity"><strong data-card-title>Routing rule</strong><small data-card-meta>Not configured</small></div><button class="button button--secondary button--small" type="button" data-edit-card>Edit</button></div>
-              <div class="builder-card__editor" data-card-editor hidden>
-              <div class="builder-fields builder-fields--three">
-                <label class="field"><span>Inbound tags</span><input type="text" data-route-field="inbound" placeholder="proxy-in, another-in"></label>
-                <label class="field"><span>Match</span><select data-route-field="match_type"><option value="protocol">Protocol</option><option value="domain">Exact domain</option><option value="domain_suffix">Domain suffix</option><option value="domain_keyword">Domain keyword</option><option value="ip_cidr">IP/CIDR</option><option value="geosite">Geosite domains</option><option value="geoip">GeoIP ranges</option><option value="rule_set">Custom rule set tag</option><option value="network">Network</option><option value="auth_user">Authenticated user</option></select></label>
-                <div data-route-values-plain>
-                  <label class="field"><span>Match values</span><textarea data-route-field="match_values" rows="3" placeholder="tls, quic"></textarea></label>
+            <article class="builder-card route-rule-card" data-route-rule-card draggable="true" tabindex="-1">
+              <div class="builder-card__header route-rule-card__header">
+                <button class="route-drag-handle" type="button" data-drag-handle aria-label="Drag to reorder rule" title="Drag to reorder"><svg viewBox="0 0 20 20" aria-hidden="true"><circle cx="7" cy="5" r="1"/><circle cx="13" cy="5" r="1"/><circle cx="7" cy="10" r="1"/><circle cx="13" cy="10" r="1"/><circle cx="7" cy="15" r="1"/><circle cx="13" cy="15" r="1"/></svg></button>
+                <div class="builder-card__identity"><strong data-card-title>Routing rule</strong><small data-card-meta>Not configured</small></div>
+                <div class="route-rule-card__actions">
+                  <button class="button button--secondary button--icon-only" type="button" data-move-rule="up" aria-label="Move rule up" title="Move up"><svg viewBox="0 0 20 20" aria-hidden="true"><path d="m5 12 5-5 5 5"/></svg></button>
+                  <button class="button button--secondary button--icon-only" type="button" data-move-rule="down" aria-label="Move rule down" title="Move down"><svg viewBox="0 0 20 20" aria-hidden="true"><path d="m5 8 5 5 5-5"/></svg></button>
                 </div>
-                <div class="field geo-combobox" data-route-values-geo hidden>
-                  <span>Rule sets</span>
-                  <div class="geo-chips" data-route-geo-chips></div>
-                  <input type="text" data-route-geo-filter placeholder="Type to filter rule sets…" autocomplete="off">
-                  <div class="geo-options" data-route-geo-options hidden></div>
-                  <small data-route-geo-hint hidden></small>
-                </div>
-                <label class="field"><span>Outbound</span><input type="text" data-route-field="outbound" list="outbound-tags" placeholder="direct-out" required></label>
               </div>
-              <div class="builder-card__actions"><button class="button-link button-link--danger" type="button" data-remove-card>Remove rule</button></div>
+              <div class="builder-card__editor route-rule-card__editor">
+                <div class="builder-fields builder-fields--three">
+                  <label class="field"><span>Applies to</span><select data-route-field="scope_type"><option value="all">All traffic on this agent</option><option value="inbound">A specific inbound</option><option value="auth_user">A specific authenticated user</option></select></label>
+                  <label class="field" data-route-scope-value hidden><span data-route-scope-label>Inbound</span><select data-route-field="scope_value"></select></label>
+                  <label class="field"><span>Rule type</span><select data-route-field="match_type"><option value="protocol">Protocol</option><option value="domain">Exact domain</option><option value="domain_suffix">Domain suffix</option><option value="domain_keyword">Domain keyword</option><option value="domain_regex">Domain regular expression</option><option value="ip_cidr">IP address or CIDR</option><option value="geosite">Geosite domains</option><option value="geoip">GeoIP ranges</option><option value="rule_set">Custom rule-set tag</option><option value="network">Network</option></select></label>
+                  <div class="field geo-combobox route-match-combobox">
+                    <span data-route-match-label>Match values</span>
+                    <div class="geo-chips" data-route-match-chips></div>
+                    <input type="text" data-route-match-filter placeholder="Type a value and press Enter…" autocomplete="off" spellcheck="false">
+                    <div class="geo-options" data-route-match-options hidden></div>
+                    <small data-route-match-hint></small>
+                  </div>
+                  <label class="field"><span>Outbound</span><select data-route-field="destination" required><option value="builtin/direct">Direct</option><option value="builtin/reject">Reject</option></select></label>
+                </div>
+                <div class="builder-card__actions"><button class="button-link button-link--danger" type="button" data-remove-card>Remove rule</button></div>
               </div>
             </article>
           </template>

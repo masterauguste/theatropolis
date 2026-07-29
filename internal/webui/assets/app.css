@@ -855,15 +855,12 @@ textarea[aria-invalid="true"]:focus {
   display: flex;
   width: 100%;
   min-height: 2.55rem;
-  padding: 0.55rem 0.7rem;
   align-items: center;
-  gap: 0.65rem;
   color: var(--ink-900);
   background: var(--surface);
   border: 1px solid var(--ink-300);
   border-radius: var(--radius-sm);
-  cursor: pointer;
-  text-align: left;
+  cursor: text;
   transition: border-color var(--ease), box-shadow var(--ease), background-color var(--ease);
 }
 
@@ -871,7 +868,7 @@ textarea[aria-invalid="true"]:focus {
   border-color: var(--ink-400);
 }
 
-.select-box__trigger:focus-visible,
+.select-box:focus-within .select-box__trigger,
 .select-box.is-open .select-box__trigger {
   border-color: var(--accent-600);
   box-shadow: 0 0 0 3px rgb(127 45 45 / 14%);
@@ -882,30 +879,46 @@ textarea[aria-invalid="true"]:focus {
   border-color: var(--red-700);
 }
 
-.select-box.is-invalid .select-box__trigger:focus-visible {
+.select-box.is-invalid:focus-within .select-box__trigger {
   box-shadow: 0 0 0 3px rgb(153 55 42 / 14%);
 }
 
-.select-box__trigger:disabled {
+.select-box.is-disabled .select-box__trigger {
   background: var(--ink-100);
   cursor: not-allowed;
   opacity: 0.7;
 }
 
-.select-box__value {
+.select-box__input,
+.select-box__input:hover:not(:disabled):not([readonly]),
+.select-box__input:focus {
+  width: 100%;
   min-width: 0;
+  min-height: calc(2.55rem - 2px);
+  padding: 0.55rem 0.7rem;
   flex: 1;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+  color: inherit;
+  background: transparent;
+  border: 0;
+  border-radius: inherit;
+  box-shadow: none;
+  outline: none;
+}
+
+.select-box__input:disabled {
+  background: transparent;
+  cursor: not-allowed;
+  opacity: 1;
 }
 
 .select-box__chevron {
   display: inline-flex;
   width: 1rem;
   height: 1rem;
+  margin-right: 0.7rem;
   flex: 0 0 auto;
   color: var(--ink-500);
+  pointer-events: none;
   transition: transform var(--ease), color var(--ease);
 }
 
@@ -986,6 +999,14 @@ textarea[aria-invalid="true"]:focus {
 .select-box__option:disabled {
   cursor: not-allowed;
   opacity: 0.48;
+}
+
+.select-box__empty {
+  display: block;
+  padding: 0.65rem;
+  color: var(--ink-400);
+  font-size: 0.82rem;
+  text-align: center;
 }
 
 @keyframes select-menu-enter {
@@ -1731,6 +1752,86 @@ body:has(dialog[open]) {
   justify-content: flex-end;
 }
 
+.route-rule-card {
+  position: relative;
+}
+
+.route-rule-card.is-dragging {
+  opacity: 0.55;
+  border-color: var(--accent-600);
+  box-shadow: var(--shadow-md);
+}
+
+.route-rule-card__header {
+  justify-content: flex-start;
+}
+
+.route-rule-card__header .builder-card__identity {
+  min-width: 0;
+  flex: 1;
+}
+
+.route-rule-card__header .builder-card__identity small {
+  display: block;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.route-rule-card__actions {
+  display: flex;
+  gap: 0.35rem;
+}
+
+.route-rule-card__actions .button {
+  width: 2rem;
+  height: 2rem;
+}
+
+.route-drag-handle {
+  display: inline-flex;
+  width: 2rem;
+  height: 2rem;
+  padding: 0;
+  flex: 0 0 auto;
+  align-items: center;
+  justify-content: center;
+  color: var(--ink-400);
+  background: transparent;
+  border: 0;
+  border-radius: var(--radius-sm);
+  cursor: grab;
+}
+
+.route-drag-handle:hover,
+.route-drag-handle:focus-visible {
+  color: var(--accent-700);
+  background: var(--accent-100);
+  outline: none;
+}
+
+.route-drag-handle:active {
+  cursor: grabbing;
+}
+
+.route-drag-handle svg {
+  width: 1.15rem;
+  height: 1.15rem;
+  fill: currentColor;
+}
+
+.route-rule-card__editor {
+  padding-top: 0.9rem;
+}
+
+.route-rule-card__editor > *:first-child {
+  margin-top: 0;
+}
+
+.route-match-combobox {
+  grid-column: span 2;
+}
+
 .builder-fields {
   display: grid;
   gap: 0.75rem;
@@ -1887,6 +1988,15 @@ body:has(dialog[open]) {
 
 .geo-option.is-unavailable:hover {
   color: var(--ink-900);
+}
+
+.geo-option--empty {
+  color: var(--ink-400);
+  cursor: default;
+}
+
+.geo-option--empty:hover {
+  background: transparent;
 }
 
 /* ---------- Fleet outbound pool ---------- */
@@ -2248,6 +2358,10 @@ body:has(dialog[open]) {
   .builder-fields--three,
   .field-grid--two {
     grid-template-columns: 1fr;
+  }
+
+  .route-match-combobox {
+    grid-column: auto;
   }
 
   .pool-user {
