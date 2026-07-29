@@ -352,7 +352,9 @@ func (h *Handler) routes() {
 	h.mux.HandleFunc("POST /login", h.login)
 	h.mux.HandleFunc("POST /logout", h.logout)
 	h.mux.HandleFunc("GET /servers", h.serversPage)
+	h.mux.HandleFunc("GET /servers/content", h.serversContent)
 	h.mux.HandleFunc("GET /pool", h.poolPage)
+	h.mux.HandleFunc("GET /pool/content", h.poolContent)
 	h.mux.HandleFunc("POST /pool", h.upsertPoolEntry)
 	h.mux.HandleFunc("POST /pool/delete", h.deletePoolEntry)
 	h.mux.HandleFunc("GET /settings", h.settingsPage)
@@ -558,6 +560,27 @@ func (h *Handler) serversPage(response http.ResponseWriter, request *http.Reques
 	if !ok {
 		return
 	}
+	h.render(response, http.StatusOK, "servers.html", pageData{
+		Title:     "Servers",
+		ActiveNav: "servers",
+		CSRFToken: session.CSRFToken,
+	})
+}
+
+func (h *Handler) serversContent(response http.ResponseWriter, request *http.Request) {
+	session, ok := h.authenticate(request)
+	if !ok {
+		http.Error(response, "unauthorized", http.StatusUnauthorized)
+		return
+	}
+	if request.URL.RawQuery != "" {
+		http.NotFound(response, request)
+		return
+	}
+	h.render(response, http.StatusOK, "servers-content", h.serversPageData(session))
+}
+
+func (h *Handler) serversPageData(session Session) pageData {
 	now := h.currentTime()
 	snapshots := h.registry.Snapshot(now)
 	agents := make([]agentView, 0, len(snapshots))
@@ -581,13 +604,13 @@ func (h *Handler) serversPage(response http.ResponseWriter, request *http.Reques
 			stats.Attention++
 		}
 	}
-	h.render(response, http.StatusOK, "servers.html", pageData{
+	return pageData{
 		Title:     "Servers",
 		ActiveNav: "servers",
 		CSRFToken: session.CSRFToken,
 		Stats:     stats,
 		Agents:    agents,
-	})
+	}
 }
 
 func (h *Handler) settingsPage(response http.ResponseWriter, request *http.Request) {

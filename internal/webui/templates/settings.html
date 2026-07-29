@@ -27,9 +27,10 @@
       {{end}}
       <dl class="detail-list settings-version-list">
         <div><dt>Running version</dt><dd><code>{{.MasterVersion}}</code></dd></div>
-        <div><dt>Latest available</dt><dd><code data-master-latest-label>loading…</code></dd></div>
+        <div><dt>Latest available</dt><dd class="inline-loading"><span class="loading-spinner loading-spinner--small" data-agent-catalog-loading aria-hidden="true"></span><code data-master-latest-label>loading…</code></dd></div>
       </dl>
       <button class="button button--secondary button--small" type="button" data-master-version-refresh>Check again</button>
+      <small data-agent-catalog-warning hidden class="field-warning"></small>
       <form action="/master-update" method="post" data-master-update-form>
         <input type="hidden" name="csrf_token" value="{{.CSRFToken}}">
         <button class="button button--primary" type="submit" data-submit-button data-submit-label="Scheduling…" data-master-update-button disabled>

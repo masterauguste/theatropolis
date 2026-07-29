@@ -317,6 +317,7 @@
                       <select name="target_version" data-sing-box-version-select {{if not .Agent.SingBoxUpdateEnabled}}disabled{{end}} {{if eq .ErrorField "sing_box_target_version"}}aria-invalid="true"{{else}}aria-invalid="false"{{end}}>
                         <option value="" disabled selected>loading available versions…</option>
                       </select>
+                      <small class="inline-loading" data-sing-box-catalog-loading><span class="loading-spinner loading-spinner--small" aria-hidden="true"></span><span>Loading releases…</span></small>
                       <small>{{.Agent.SingBoxUpdateHint}}</small>
                       <small data-sing-box-catalog-warning hidden class="field-warning"></small>
                       <small data-sing-box-catalog-info>Stable, beta, and alpha builds are loaded from the official SagerNet GitHub releases. Any version 1.14 or newer can be installed, including downgrades.</small>
@@ -364,7 +365,7 @@
                 <input type="hidden" name="target_version" value="" data-latest-agent-version>
                 <dl class="detail-list detail-list--compact">
                   <div><dt>Current version</dt><dd><code>{{if .Agent.AgentVersion}}{{.Agent.AgentVersion}}{{else}}unknown{{end}}</code></dd></div>
-                  <div><dt>Latest available</dt><dd><code data-latest-agent-version-label>loading…</code></dd></div>
+                  <div><dt>Latest available</dt><dd class="inline-loading"><span class="loading-spinner loading-spinner--small" data-agent-catalog-loading aria-hidden="true"></span><code data-latest-agent-version-label>loading…</code></dd></div>
                 </dl>
                 <small>{{.Agent.UpdateHint}}</small>
                 <small data-agent-catalog-warning hidden class="field-warning"></small>

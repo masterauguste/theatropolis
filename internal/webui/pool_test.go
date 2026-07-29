@@ -183,6 +183,8 @@ func TestPoolPageCRUD(t *testing.T) {
 	for _, expected := range []string{
 		"Fleet outbound pool",
 		`href="/pool" class="is-active"`,
+		`data-async-url="/pool/content"`,
+		"Loading fleet outbounds…",
 		`action="/pool"`,
 		`name="outbound_json"`,
 		"No manual entries yet.",
@@ -190,6 +192,12 @@ func TestPoolPageCRUD(t *testing.T) {
 		if !strings.Contains(response.Body.String(), expected) {
 			t.Errorf("pool page does not contain %q", expected)
 		}
+	}
+	if fixture.controller.deploymentListCalls != 0 {
+		t.Fatalf(
+			"GET /pool loaded deployment records before rendering: %d calls",
+			fixture.controller.deploymentListCalls,
+		)
 	}
 
 	// The old settings-page pool routes are gone.
@@ -362,11 +370,11 @@ func TestServerAddressOverride(t *testing.T) {
 
 	// The servers page shows connection establishment plus independently
 	// resolved IPv4 and IPv6 addresses, with no override form.
-	request := fixture.authenticatedRequest(http.MethodGet, "/servers", "")
+	request := fixture.authenticatedRequest(http.MethodGet, "/servers/content", "")
 	response := httptest.NewRecorder()
 	fixture.handler.ServeHTTP(response, request)
 	if response.Code != http.StatusOK {
-		t.Fatalf("GET /servers status = %d, body = %s", response.Code, response.Body.String())
+		t.Fatalf("GET /servers/content status = %d, body = %s", response.Code, response.Body.String())
 	}
 	body := response.Body.String()
 	for _, expected := range []string{
@@ -393,11 +401,11 @@ func TestServerAddressOverride(t *testing.T) {
 
 	// The override form lives in each pool summary dialog, and the displayed
 	// addresses deliberately omit their internal source attribution.
-	request = fixture.authenticatedRequest(http.MethodGet, "/pool", "")
+	request = fixture.authenticatedRequest(http.MethodGet, "/pool/content", "")
 	response = httptest.NewRecorder()
 	fixture.handler.ServeHTTP(response, request)
 	if response.Code != http.StatusOK {
-		t.Fatalf("GET /pool status = %d, body = %s", response.Code, response.Body.String())
+		t.Fatalf("GET /pool/content status = %d, body = %s", response.Code, response.Body.String())
 	}
 	for _, expected := range []string{
 		`action="/servers/edge-online/address"`,
@@ -517,14 +525,14 @@ func TestServerAddressOverride(t *testing.T) {
 	}
 
 	// Both pages reflect both overrides without exposing source labels.
-	request = fixture.authenticatedRequest(http.MethodGet, "/servers", "")
+	request = fixture.authenticatedRequest(http.MethodGet, "/servers/content", "")
 	response = httptest.NewRecorder()
 	fixture.handler.ServeHTTP(response, request)
 	if !strings.Contains(response.Body.String(), `IPv4 <code>198.51.100.9</code>`) ||
 		!strings.Contains(response.Body.String(), `IPv6 <code>2001:db8::99</code>`) {
 		t.Errorf("servers page does not reflect the override: %s", response.Body.String())
 	}
-	request = fixture.authenticatedRequest(http.MethodGet, "/pool", "")
+	request = fixture.authenticatedRequest(http.MethodGet, "/pool/content", "")
 	response = httptest.NewRecorder()
 	fixture.handler.ServeHTTP(response, request)
 	if !strings.Contains(response.Body.String(), `value="198.51.100.9"`) ||
@@ -637,11 +645,11 @@ func TestPoolPageAddressFamilies(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	request := fixture.authenticatedRequest(http.MethodGet, "/pool", "")
+	request := fixture.authenticatedRequest(http.MethodGet, "/pool/content", "")
 	response := httptest.NewRecorder()
 	fixture.handler.ServeHTTP(response, request)
 	if response.Code != http.StatusOK {
-		t.Fatalf("GET /pool status = %d, body = %s", response.Code, response.Body.String())
+		t.Fatalf("GET /pool/content status = %d, body = %s", response.Code, response.Body.String())
 	}
 	body := response.Body.String()
 	for _, expected := range []string{
@@ -675,11 +683,11 @@ func TestPoolPageCollapsesUsersButRoutingOptionsRetainThem(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	request := fixture.authenticatedRequest(http.MethodGet, "/pool", "")
+	request := fixture.authenticatedRequest(http.MethodGet, "/pool/content", "")
 	response := httptest.NewRecorder()
 	fixture.handler.ServeHTTP(response, request)
 	if response.Code != http.StatusOK {
-		t.Fatalf("GET /pool status = %d, body = %s", response.Code, response.Body.String())
+		t.Fatalf("GET /pool/content status = %d, body = %s", response.Code, response.Body.String())
 	}
 	body := response.Body.String()
 	if got := strings.Count(body, `class="pool-summary-card"`); got != 1 {

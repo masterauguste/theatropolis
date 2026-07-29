@@ -73,24 +73,26 @@ type probeRequest struct {
 }
 
 type testAgentController struct {
-	registry       *identity.Registry
-	sessions       testSessions
-	store          deployment.Store
-	deployable     map[string]bool
-	updatable      map[string]bool
-	updates        map[string]control.AgentUpdateState
-	singBoxUpdates map[string]control.SingBoxUpdateState
-	queueErr       error
-	revokeErr      error
-	poolRegistry   *pool.Registry
-	propagateCalls int
-	probeErr       error
-	probeRequests  []probeRequest
+	registry            *identity.Registry
+	sessions            testSessions
+	store               deployment.Store
+	deployable          map[string]bool
+	updatable           map[string]bool
+	updates             map[string]control.AgentUpdateState
+	singBoxUpdates      map[string]control.SingBoxUpdateState
+	queueErr            error
+	revokeErr           error
+	poolRegistry        *pool.Registry
+	propagateCalls      int
+	deploymentListCalls int
+	probeErr            error
+	probeRequests       []probeRequest
 }
 
 func (c *testAgentController) DeploymentRecords(
 	ctx context.Context,
 ) ([]deployment.Record, error) {
+	c.deploymentListCalls++
 	return c.store.List(ctx)
 }
 
@@ -720,8 +722,20 @@ func TestServersPageUsesRealEnrollmentAndConnectionState(t *testing.T) {
 	request := fixture.authenticatedRequest(http.MethodGet, "/servers", "")
 	response := httptest.NewRecorder()
 	fixture.handler.ServeHTTP(response, request)
+	if response.Code != http.StatusOK ||
+		!strings.Contains(response.Body.String(), `data-async-url="/servers/content"`) ||
+		!strings.Contains(response.Body.String(), "Loading servers…") {
+		t.Fatalf("GET /servers did not render the loading shell: %d %s", response.Code, response.Body.String())
+	}
+	if strings.Contains(response.Body.String(), "edge-online") {
+		t.Fatal("GET /servers blocked on and embedded fleet data instead of rendering its shell")
+	}
+
+	request = fixture.authenticatedRequest(http.MethodGet, "/servers/content", "")
+	response = httptest.NewRecorder()
+	fixture.handler.ServeHTTP(response, request)
 	if response.Code != http.StatusOK {
-		t.Fatalf("GET /servers status = %d, body = %s", response.Code, response.Body.String())
+		t.Fatalf("GET /servers/content status = %d, body = %s", response.Code, response.Body.String())
 	}
 	body := response.Body.String()
 	for _, expected := range []string{
@@ -797,6 +811,7 @@ func TestSettingsPageOwnsMasterSoftwareManagement(t *testing.T) {
 		"Master software",
 		`action="/master-update"`,
 		`data-master-latest-label`,
+		`data-agent-catalog-loading`,
 		`data-master-version-refresh`,
 		`data-version-catalog-url="/settings/versions"`,
 		`href="/settings" class="is-active"`,
@@ -903,7 +918,7 @@ func TestReservedLookingAgentIDsUseUnambiguousManagementRoute(t *testing.T) {
 		}
 	}
 
-	request := fixture.authenticatedRequest(http.MethodGet, "/servers", "")
+	request := fixture.authenticatedRequest(http.MethodGet, "/servers/content", "")
 	response := httptest.NewRecorder()
 	fixture.handler.ServeHTTP(response, request)
 	for _, expected := range []string{

@@ -2,30 +2,89 @@
 
 const dialogTriggers = new WeakMap();
 
-for (const button of document.querySelectorAll("[data-dialog-open]")) {
-  button.addEventListener("click", () => {
+document.addEventListener("click", (event) => {
+  const button = event.target.closest("[data-dialog-open]");
+  if (button) {
     const dialog = document.getElementById(button.dataset.dialogOpen);
     if (!(dialog instanceof HTMLDialogElement)) {
       return;
     }
     dialogTriggers.set(dialog, button);
     dialog.showModal();
-  });
+    return;
+  }
+
+  const closeButton = event.target.closest("[data-dialog-close]");
+  if (closeButton) {
+    closeButton.closest("dialog")?.close();
+    return;
+  }
+
+  if (event.target.matches("dialog.modal")) {
+    event.target.close();
+  }
+});
+
+document.addEventListener("close", (event) => {
+  if (event.target.matches("dialog.modal")) {
+    dialogTriggers.get(event.target)?.focus();
+  }
+}, true);
+
+const loadAsyncRegion = async (region) => {
+  const url = region.dataset.asyncUrl;
+  if (!url || region.dataset.asyncLoading === "true") return;
+  region.dataset.asyncLoading = "true";
+  region.setAttribute("aria-busy", "true");
+  region.innerHTML = `
+    <div class="loading-state" role="status">
+      <span class="loading-spinner" aria-hidden="true"></span>
+      <span>${region.dataset.asyncLoadingLabel || "Loading…"}</span>
+    </div>`;
+  try {
+    const response = await fetch(url, {
+      cache: "no-store",
+      credentials: "same-origin",
+      headers: { Accept: "text/html" },
+    });
+    if (response.status === 401) {
+      window.location.assign("/login");
+      return;
+    }
+    if (!response.ok) {
+      throw new Error(`request returned ${response.status}`);
+    }
+    region.innerHTML = await response.text();
+    region.setAttribute("aria-busy", "false");
+  } catch {
+    region.innerHTML = `
+      <div class="notice notice--error async-error" role="alert">
+        <span>This section could not be loaded.</span>
+        <button class="button button--secondary button--small" type="button" data-async-retry>Try again</button>
+      </div>`;
+    region.setAttribute("aria-busy", "false");
+  } finally {
+    delete region.dataset.asyncLoading;
+  }
+};
+
+for (const region of document.querySelectorAll("[data-async-region]")) {
+  loadAsyncRegion(region);
 }
 
-for (const dialog of document.querySelectorAll("dialog.modal")) {
-  dialog.addEventListener("click", (event) => {
-    if (event.target === dialog) {
-      dialog.close();
-    }
-  });
-  dialog.addEventListener("close", () => {
-    dialogTriggers.get(dialog)?.focus();
-  });
-  for (const button of dialog.querySelectorAll("[data-dialog-close]")) {
-    button.addEventListener("click", () => dialog.close());
+document.addEventListener("click", (event) => {
+  const retry = event.target.closest("[data-async-retry]");
+  if (retry) {
+    const region = retry.closest("[data-async-region]");
+    if (region) loadAsyncRegion(region);
+    return;
   }
-}
+  const reload = event.target.closest("[data-async-reload]");
+  if (reload) {
+    const region = document.getElementById(reload.dataset.asyncReload);
+    if (region) loadAsyncRegion(region);
+  }
+});
 
 for (const button of document.querySelectorAll("[data-copy-target]")) {
   button.addEventListener("click", async () => {
@@ -274,6 +333,7 @@ if (versionCatalogURL) {
   };
 
   const loadAgentCatalog = async () => {
+    const loadingIndicators = document.querySelectorAll("[data-agent-catalog-loading]");
     const refreshButton = document.querySelector("[data-master-version-refresh]");
     const agentInput = document.querySelector("[data-latest-agent-version]");
     const agentLabel = document.querySelector("[data-latest-agent-version-label]");
@@ -286,6 +346,7 @@ if (versionCatalogURL) {
       refreshButton.disabled = true;
       refreshButton.textContent = "Checking…";
     }
+    for (const indicator of loadingIndicators) indicator.hidden = false;
     if (masterLabel) masterLabel.textContent = "checking…";
     if (masterButton) masterButton.disabled = true;
     if (warning) {
@@ -327,6 +388,7 @@ if (versionCatalogURL) {
         warning.hidden = false;
       }
     } finally {
+      for (const indicator of loadingIndicators) indicator.hidden = true;
       if (refreshButton) {
         refreshButton.disabled = false;
         refreshButton.textContent = "Check again";
@@ -342,44 +404,48 @@ if (versionCatalogURL) {
     ?.addEventListener("click", loadAgentCatalog);
 
   if (document.querySelector("[data-sing-box-version-select]")) {
-  fetchCatalog("sing-box").then((data) => {
-    const select = document.querySelector("[data-sing-box-version-select]");
-    if (select) {
-      select.innerHTML = "";
-      for (const version of data.sing_box_versions || []) {
-        const option = document.createElement("option");
-        option.value = version.Tag;
-        option.textContent = `${version.Tag} (${version.Branch})`;
-        select.appendChild(option);
+    const singBoxLoading = document.querySelector("[data-sing-box-catalog-loading]");
+    if (singBoxLoading) singBoxLoading.hidden = false;
+    fetchCatalog("sing-box").then((data) => {
+      const select = document.querySelector("[data-sing-box-version-select]");
+      if (select) {
+        select.innerHTML = "";
+        for (const version of data.sing_box_versions || []) {
+          const option = document.createElement("option");
+          option.value = version.Tag;
+          option.textContent = `${version.Tag} (${version.Branch})`;
+          select.appendChild(option);
+        }
+        if (data.latest_sing_box_version) {
+          select.value = data.latest_sing_box_version;
+        }
+        if (select.options.length === 0) {
+          const option = document.createElement("option");
+          option.value = "";
+          option.textContent = "No versions available";
+          select.appendChild(option);
+        }
       }
-      if (data.latest_sing_box_version) {
-        select.value = data.latest_sing_box_version;
+      const warning = document.querySelector("[data-sing-box-catalog-warning]");
+      const info = document.querySelector("[data-sing-box-catalog-info]");
+      if (warning && data.sing_box_catalog_warning) {
+        warning.textContent = data.sing_box_catalog_warning;
+        warning.hidden = false;
+        if (info) info.hidden = true;
       }
-      if (select.options.length === 0) {
-        const option = document.createElement("option");
-        option.value = "";
-        option.textContent = "No versions available";
-        select.appendChild(option);
+    }).catch((error) => {
+      const select = document.querySelector("[data-sing-box-version-select]");
+      if (select) {
+        select.innerHTML = '<option value="">Versions unavailable</option>';
       }
-    }
-    const warning = document.querySelector("[data-sing-box-catalog-warning]");
-    const info = document.querySelector("[data-sing-box-catalog-info]");
-    if (warning && data.sing_box_catalog_warning) {
-      warning.textContent = data.sing_box_catalog_warning;
-      warning.hidden = false;
-      if (info) info.hidden = true;
-    }
-  }).catch((error) => {
-    const select = document.querySelector("[data-sing-box-version-select]");
-    if (select) {
-      select.innerHTML = '<option value="">Versions unavailable</option>';
-    }
-    const warning = document.querySelector("[data-sing-box-catalog-warning]");
-    if (warning) {
-      warning.textContent = error.message;
-      warning.hidden = false;
-    }
-  });
+      const warning = document.querySelector("[data-sing-box-catalog-warning]");
+      if (warning) {
+        warning.textContent = error.message;
+        warning.hidden = false;
+      }
+    }).finally(() => {
+      if (singBoxLoading) singBoxLoading.hidden = true;
+    });
   }
 }
 

@@ -1,3 +1,91 @@
+{{define "pool-content"}}
+{{if .Pool}}
+{{if .Pool.Diagnostics}}
+<small class="field-warning">Some pool entries were skipped: {{range $index, $note := .Pool.Diagnostics}}{{if $index}}; {{end}}{{$note}}{{end}}</small>
+{{end}}
+{{if .Pool.Inbounds}}
+<div class="pool-summary-grid">
+  {{range .Pool.Inbounds}}
+  <button class="pool-summary-card" type="button" data-dialog-open="{{.DialogID}}" aria-haspopup="dialog">
+    <span class="pool-summary-card__heading">
+      <strong>{{.AgentID}}</strong>
+      <code>{{.Tag}}</code>
+    </span>
+    <span class="pool-summary-card__facts">
+      <span><small>Protocol</small><strong>{{.Type}}</strong></span>
+      <span><small>Port</small><strong>{{.Port}}</strong></span>
+      <span><small>IPv4</small>{{if .IPv4}}<code>{{.IPv4}}</code>{{else}}<span class="muted">—</span>{{end}}</span>
+      <span><small>IPv6</small>{{if .IPv6}}<code>{{.IPv6}}</code>{{else}}<span class="muted">—</span>{{end}}</span>
+    </span>
+    <span class="pool-summary-card__action">View users and address settings <span aria-hidden="true">→</span></span>
+  </button>
+
+  <dialog class="modal resource-modal" id="{{.DialogID}}" aria-labelledby="{{.DialogID}}-title">
+    <div class="modal__surface">
+      <header class="modal__header">
+        <div>
+          <p class="eyebrow">{{.AgentID}}</p>
+          <h2 id="{{.DialogID}}-title">{{.Tag}}</h2>
+          <p>{{.Type}} on port {{.Port}}</p>
+        </div>
+        <button class="button button--secondary button--icon-only" type="button" data-dialog-close aria-label="Close outbound details">×</button>
+      </header>
+      <div class="modal__body stack">
+        <section aria-labelledby="{{.DialogID}}-addresses">
+          <h3 id="{{.DialogID}}-addresses">Server addresses</h3>
+          <div class="pool-address-grid">
+            <span><small>IPv4</small>{{if .IPv4}}<code>{{.IPv4}}</code>{{else}}<span class="muted">Unavailable</span>{{end}}</span>
+            <span><small>IPv6</small>{{if .IPv6}}<code>{{.IPv6}}</code>{{else}}<span class="muted">Unavailable</span>{{end}}</span>
+          </div>
+        </section>
+
+        <section aria-labelledby="{{.DialogID}}-users">
+          <h3 id="{{.DialogID}}-users">Users</h3>
+          <div class="pool-user-list">
+            {{range .Users}}
+            <div class="pool-user">
+              <strong>{{.Label}}</strong>
+              <code>{{.Ref}}</code>
+            </div>
+            {{end}}
+          </div>
+          <small class="muted">Choose among these users when importing this outbound in an agent's routing editor.</small>
+        </section>
+
+        <section aria-labelledby="{{.DialogID}}-overrides">
+          <h3 id="{{.DialogID}}-overrides">Address overrides</h3>
+          <form action="{{.AddressURL}}" method="post" class="stack">
+            <input type="hidden" name="csrf_token" value="{{$.CSRFToken}}">
+            <div class="field-grid field-grid--two">
+              <label class="field">
+                <span>IPv4 override</span>
+                <input type="text" name="override_ipv4" value="{{.OverrideV4}}" placeholder="Automatic" maxlength="64" inputmode="decimal">
+              </label>
+              <label class="field">
+                <span>IPv6 override</span>
+                <input type="text" name="override_ipv6" value="{{.OverrideV6}}" placeholder="Automatic" maxlength="64">
+              </label>
+            </div>
+            <small>Overrides must be public IP addresses. Leave a field empty to use automatic discovery for that family.</small>
+            <button class="button button--primary" type="submit">Save address overrides</button>
+          </form>
+        </section>
+      </div>
+      <footer class="modal__footer">
+        <button class="button button--secondary" type="button" data-dialog-close>Close</button>
+      </footer>
+    </div>
+  </dialog>
+  {{end}}
+</div>
+{{else}}
+<p class="muted">No deployed inbounds are in the pool yet. Deploy a configuration with Shadowsocks, AnyTLS, or Hysteria2 inbounds to share them here.</p>
+{{end}}
+{{else}}
+<div class="notice notice--error" role="alert">The outbound pool is not available on this master.</div>
+{{end}}
+{{end}}
+
 {{define "pool.html"}}
 <!doctype html>
 <html lang="en">
@@ -21,87 +109,12 @@
       {{if .Error}}
       <div class="notice notice--error" role="alert" tabindex="-1" data-error-summary>{{.Error}}</div>
       {{end}}
-      {{if .Pool.Diagnostics}}
-      <small class="field-warning">Some pool entries were skipped: {{range $index, $note := .Pool.Diagnostics}}{{if $index}}; {{end}}{{$note}}{{end}}</small>
-      {{end}}
-      {{if .Pool.Inbounds}}
-      <div class="pool-summary-grid">
-        {{range .Pool.Inbounds}}
-        <button class="pool-summary-card" type="button" data-dialog-open="{{.DialogID}}" aria-haspopup="dialog">
-          <span class="pool-summary-card__heading">
-            <strong>{{.AgentID}}</strong>
-            <code>{{.Tag}}</code>
-          </span>
-          <span class="pool-summary-card__facts">
-            <span><small>Protocol</small><strong>{{.Type}}</strong></span>
-            <span><small>Port</small><strong>{{.Port}}</strong></span>
-            <span><small>IPv4</small>{{if .IPv4}}<code>{{.IPv4}}</code>{{else}}<span class="muted">—</span>{{end}}</span>
-            <span><small>IPv6</small>{{if .IPv6}}<code>{{.IPv6}}</code>{{else}}<span class="muted">—</span>{{end}}</span>
-          </span>
-          <span class="pool-summary-card__action">View users and address settings <span aria-hidden="true">→</span></span>
-        </button>
-
-        <dialog class="modal resource-modal" id="{{.DialogID}}" aria-labelledby="{{.DialogID}}-title">
-          <div class="modal__surface">
-            <header class="modal__header">
-              <div>
-                <p class="eyebrow">{{.AgentID}}</p>
-                <h2 id="{{.DialogID}}-title">{{.Tag}}</h2>
-                <p>{{.Type}} on port {{.Port}}</p>
-              </div>
-              <button class="button button--secondary button--icon-only" type="button" data-dialog-close aria-label="Close outbound details">×</button>
-            </header>
-            <div class="modal__body stack">
-              <section aria-labelledby="{{.DialogID}}-addresses">
-                <h3 id="{{.DialogID}}-addresses">Server addresses</h3>
-                <div class="pool-address-grid">
-                  <span><small>IPv4</small>{{if .IPv4}}<code>{{.IPv4}}</code>{{else}}<span class="muted">Unavailable</span>{{end}}</span>
-                  <span><small>IPv6</small>{{if .IPv6}}<code>{{.IPv6}}</code>{{else}}<span class="muted">Unavailable</span>{{end}}</span>
-                </div>
-              </section>
-
-              <section aria-labelledby="{{.DialogID}}-users">
-                <h3 id="{{.DialogID}}-users">Users</h3>
-                <div class="pool-user-list">
-                  {{range .Users}}
-                  <div class="pool-user">
-                    <strong>{{.Label}}</strong>
-                    <code>{{.Ref}}</code>
-                  </div>
-                  {{end}}
-                </div>
-                <small class="muted">Choose among these users when importing this outbound in an agent's routing editor.</small>
-              </section>
-
-              <section aria-labelledby="{{.DialogID}}-overrides">
-                <h3 id="{{.DialogID}}-overrides">Address overrides</h3>
-                <form action="{{.AddressURL}}" method="post" class="stack">
-                  <input type="hidden" name="csrf_token" value="{{$.CSRFToken}}">
-                  <div class="field-grid field-grid--two">
-                    <label class="field">
-                      <span>IPv4 override</span>
-                      <input type="text" name="override_ipv4" value="{{.OverrideV4}}" placeholder="Automatic" maxlength="64" inputmode="decimal">
-                    </label>
-                    <label class="field">
-                      <span>IPv6 override</span>
-                      <input type="text" name="override_ipv6" value="{{.OverrideV6}}" placeholder="Automatic" maxlength="64">
-                    </label>
-                  </div>
-                  <small>Overrides must be public IP addresses. Leave a field empty to use automatic discovery for that family.</small>
-                  <button class="button button--primary" type="submit">Save address overrides</button>
-                </form>
-              </section>
-            </div>
-            <footer class="modal__footer">
-              <button class="button button--secondary" type="button" data-dialog-close>Close</button>
-            </footer>
-          </div>
-        </dialog>
-        {{end}}
+      <div id="pool-content" class="async-region" data-async-region data-async-url="/pool/content" data-async-loading-label="Loading fleet outbounds…" aria-live="polite" aria-busy="true">
+        <div class="loading-state" role="status">
+          <span class="loading-spinner" aria-hidden="true"></span>
+          <span>Loading fleet outbounds…</span>
+        </div>
       </div>
-      {{else}}
-      <p class="muted">No deployed inbounds are in the pool yet. Deploy a configuration with Shadowsocks, AnyTLS, or Hysteria2 inbounds to share them here.</p>
-      {{end}}
 
       <h3>Manual entries</h3>
       {{if .Pool.Manual}}

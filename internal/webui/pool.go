@@ -216,13 +216,44 @@ func (h *Handler) poolPage(response http.ResponseWriter, request *http.Request) 
 	)
 }
 
-func (h *Handler) poolPageData(ctx context.Context, session Session) pageData {
+func (h *Handler) poolPageData(_ context.Context, session Session) pageData {
+	registry := h.controller.PoolRegistry()
+	var view *poolView
+	if registry != nil {
+		view = &poolView{}
+		for _, manual := range registry.Manual() {
+			view.Manual = append(view.Manual, poolManualView{
+				Name:     manual.Name,
+				Type:     poolManualType(manual.Outbound),
+				Port:     poolManualPort(manual.Outbound),
+				Outbound: string(manual.Outbound),
+			})
+		}
+	}
 	return pageData{
 		Title:     "Pool",
 		ActiveNav: "pool",
 		CSRFToken: session.CSRFToken,
-		Pool:      h.poolPageView(ctx),
+		Pool:      view,
 	}
+}
+
+func (h *Handler) poolContent(response http.ResponseWriter, request *http.Request) {
+	session, ok := h.authenticate(request)
+	if !ok {
+		http.Error(response, "unauthorized", http.StatusUnauthorized)
+		return
+	}
+	if request.URL.RawQuery != "" {
+		http.NotFound(response, request)
+		return
+	}
+	h.render(response, http.StatusOK, "pool-content", pageData{
+		Title:     "Pool",
+		ActiveNav: "pool",
+		CSRFToken: session.CSRFToken,
+		Pool:      h.poolPageView(request.Context()),
+	})
 }
 
 func (h *Handler) upsertPoolEntry(response http.ResponseWriter, request *http.Request) {

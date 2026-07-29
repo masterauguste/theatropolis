@@ -744,6 +744,63 @@ tbody tr:last-child td {
   margin: 0;
 }
 
+/* ---------- Asynchronous sections ---------- */
+
+.async-region {
+  min-height: 5rem;
+}
+
+.loading-state {
+  display: flex;
+  min-height: 5rem;
+  align-items: center;
+  justify-content: center;
+  gap: 0.65rem;
+  color: var(--ink-500);
+  font-size: 0.88rem;
+}
+
+.loading-spinner {
+  width: 1rem;
+  height: 1rem;
+  flex: none;
+  border: 2px solid var(--ink-200);
+  border-top-color: var(--accent-700);
+  border-radius: 50%;
+  animation: loading-spin 700ms linear infinite;
+}
+
+.loading-spinner--small {
+  width: 0.75rem;
+  height: 0.75rem;
+}
+
+.inline-loading {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.45rem;
+}
+
+.async-error {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+}
+
+@keyframes loading-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .loading-spinner {
+    animation: none;
+    border-color: var(--accent-700);
+  }
+}
+
 /* ---------- Forms ---------- */
 
 .stack {
