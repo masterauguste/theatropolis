@@ -22,6 +22,7 @@ import (
 	"github.com/masterauguste/theatropolis/internal/control"
 	"github.com/masterauguste/theatropolis/internal/deployment"
 	"github.com/masterauguste/theatropolis/internal/identity"
+	"github.com/masterauguste/theatropolis/internal/pool"
 )
 
 const testPublicURL = "https://master.example.com:8443"
@@ -54,12 +55,21 @@ func (s testSessions) AgentInfo(agentID string) (control.AgentInfo, bool) {
 	if !s[agentID] {
 		return control.AgentInfo{}, false
 	}
-	return control.AgentInfo{
+	info := control.AgentInfo{
 		Version:         "v0.0.9",
 		SingBoxVersion:  "v1.14.0-beta.2",
 		OperatingSystem: "linux",
 		Architecture:    "amd64",
-	}, true
+	}
+	if agentID == "edge-online" {
+		info.ObservedAddress = "203.0.113.10"
+	}
+	return info, true
+}
+
+type probeRequest struct {
+	agentID string
+	family  string
 }
 
 type testAgentController struct {
@@ -72,6 +82,32 @@ type testAgentController struct {
 	singBoxUpdates map[string]control.SingBoxUpdateState
 	queueErr       error
 	revokeErr      error
+	poolRegistry   *pool.Registry
+	propagateCalls int
+	probeErr       error
+	probeRequests  []probeRequest
+}
+
+func (c *testAgentController) DeploymentRecords(
+	ctx context.Context,
+) ([]deployment.Record, error) {
+	return c.store.List(ctx)
+}
+
+func (c *testAgentController) PoolRegistry() *pool.Registry {
+	return c.poolRegistry
+}
+
+func (c *testAgentController) PropagateManualPoolChange(context.Context) {
+	c.propagateCalls++
+}
+
+func (c *testAgentController) RequestAddressProbe(agentID, family string) error {
+	if c.probeErr != nil {
+		return c.probeErr
+	}
+	c.probeRequests = append(c.probeRequests, probeRequest{agentID: agentID, family: family})
+	return nil
 }
 
 func (c *testAgentController) CanUpdateAgent(agentID string) bool {

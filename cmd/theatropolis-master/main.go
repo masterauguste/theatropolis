@@ -25,6 +25,7 @@ import (
 	"github.com/masterauguste/theatropolis/internal/control"
 	"github.com/masterauguste/theatropolis/internal/deployment"
 	"github.com/masterauguste/theatropolis/internal/identity"
+	"github.com/masterauguste/theatropolis/internal/pool"
 	"github.com/masterauguste/theatropolis/internal/webui"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/health"
@@ -171,9 +172,16 @@ func serve(arguments []string) error {
 	if err != nil {
 		return fmt.Errorf("open deployment storage: %w", err)
 	}
+	// poolRegistry is passed to the control server now and will be handed
+	// to the web interface for manual-entry management in a later phase.
+	poolRegistry, err := pool.Open(filepath.Join(*stateDirectory, "outbound-pool.json"))
+	if err != nil {
+		return fmt.Errorf("open outbound pool registry: %w", err)
+	}
 	server := control.NewServer(
 		identities,
 		deployments,
+		poolRegistry,
 		logNotifier{logger: logger},
 		logger,
 	)

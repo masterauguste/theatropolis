@@ -40,6 +40,16 @@ if (configTextarea && configurationForm && configurationEditor) {
   const GEO_OPTION_RENDER_LIMIT = 50;
   const ruleSetOptionsBase = (configurationForm.getAttribute("action") || "")
     .replace(/\/configuration$/, "/rule-set-options");
+  // Pool import picker state: the entry catalog is fetched lazily, once per
+  // page load, and shared by every pool outbound card.
+  const poolOptionsBase = (configurationForm.getAttribute("action") || "")
+    .replace(/\/configuration$/, "/pool-options");
+  const POOL_REF_PATTERN = /^(?:agent\/[A-Za-z0-9][A-Za-z0-9._-]{0,127}\/[A-Za-z0-9][A-Za-z0-9._-]{0,127}\/[A-Za-z0-9_][A-Za-z0-9._-]{0,127}|manual\/[A-Za-z0-9][A-Za-z0-9._-]{0,127})$/;
+  // Address families a pool ref may pin; "auto" walks IPv4 then IPv6 and is
+  // the default (no "family" key is serialized for it).
+  const POOL_FAMILIES = ["auto", "ipv4", "ipv6"];
+  let poolOptionState = ""; // "" | "loading" | "ok" | "error"
+  let poolOptionValues = [];
 
   function updateResourceCounts() {
     const counts = {
@@ -332,22 +342,39 @@ if (configTextarea && configurationForm && configurationEditor) {
   function updateOutboundVisibility(card) {
     const kind = field(card, "outbound", "kind").value;
     card.querySelector("[data-external-outbound-field]").hidden = kind !== "external";
+    card.querySelector("[data-pool-field]").hidden = kind !== "pool";
+    card.querySelector("[data-pool-family]").hidden = kind !== "pool";
     field(card, "outbound", "json").required = kind === "external";
+    let meta = kind === "external" ? "External JSON" : kind;
+    if (kind === "pool") {
+      ensurePoolOptions();
+      updatePoolHint(card);
+      syncPoolFamily(card);
+      const ref = field(card, "outbound", "ref").value.trim();
+      meta = "pool · " + (ref ? ref.replace(/^agent\//, "") : "no entry selected");
+    }
     updateCardSummary(
       card,
       field(card, "outbound", "tag").value || "New outbound",
-      kind === "external" ? "External JSON" : kind,
+      meta,
     );
   }
 
   function addOutbound(outbound = {}) {
     const card = outboundTemplate.content.firstElementChild.cloneNode(true);
     originals.set(card, clone(outbound));
-    const kind = outbound.type === "direct" || outbound.type === "block" ? outbound.type : "external";
+    const kind = outbound.type === "direct" || outbound.type === "block"
+      ? outbound.type
+      : outbound.type === "theatropolis-pool-ref" ? "pool" : "external";
     setValue(field(card, "outbound", "kind"), kind);
     setValue(field(card, "outbound", "tag"), outbound.tag);
     if (kind === "external") {
       setValue(field(card, "outbound", "json"), JSON.stringify(outbound, null, 2));
+    }
+    if (kind === "pool") {
+      setValue(field(card, "outbound", "ref"), outbound.ref);
+      const family = POOL_FAMILIES.includes(outbound.family) ? outbound.family : "auto";
+      setValue(field(card, "outbound", "family"), family);
     }
     outboundList.append(card);
     updateOutboundVisibility(card);
@@ -356,6 +383,181 @@ if (configTextarea && configurationForm && configurationEditor) {
     updateOutboundTagOptions();
     updateResourceCounts();
     return card;
+  }
+
+  // Fetch the pool entry catalog once; failures are remembered so the hint
+  // shows on every pool combobox and a free-text reference still works.
+  function ensurePoolOptions() {
+    if (poolOptionState) return;
+    poolOptionState = "loading";
+    fetch(poolOptionsBase, {
+      credentials: "same-origin",
+      headers: { Accept: "application/json" },
+    })
+      .then(async (response) => {
+        if (!response.ok) throw new Error(`pool-options HTTP ${response.status}`);
+        const body = await response.json();
+        if (!body || !Array.isArray(body.options)) {
+          throw new Error(body?.error || "pool-options returned no options");
+        }
+        poolOptionValues = body.options;
+        poolOptionState = "ok";
+      })
+      .catch(() => {
+        poolOptionState = "error";
+      })
+      .finally(() => {
+        for (const card of outboundList.querySelectorAll("[data-outbound-card]")) {
+          if (field(card, "outbound", "kind").value !== "pool") continue;
+          updatePoolHint(card);
+          renderPoolOptions(card);
+          syncPoolFamily(card);
+        }
+      });
+  }
+
+  // poolOptionByRef finds the catalog entry for a typed/picked reference.
+  function poolOptionByRef(ref) {
+    return poolOptionValues.find((entry) => entry.ref === ref) || null;
+  }
+
+  // syncPoolFamily reflects the hidden family input onto the segmented
+  // control, disables families the selected entry has no address for, and
+  // shows the probe button when the wanted family is unknown.
+  function syncPoolFamily(card) {
+    const input = field(card, "outbound", "family");
+    if (!input) return;
+    let family = input.value;
+    const ref = field(card, "outbound", "ref").value.trim();
+    const entry = poolOptionByRef(ref);
+    // Manual entries resolve address-free: every option stays enabled and
+    // the family selector has no effect on them.
+    const known = {
+      auto: true,
+      ipv4: !entry || entry.manual || Boolean(entry.ipv4),
+      ipv6: !entry || entry.manual || Boolean(entry.ipv6),
+    };
+    if (!POOL_FAMILIES.includes(family) || !known[family]) {
+      family = "auto";
+      input.value = family;
+    }
+    for (const option of card.querySelectorAll("[data-pool-family-option]")) {
+      const value = option.dataset.poolFamilyOption;
+      option.setAttribute("aria-pressed", String(value === family));
+      option.disabled = !known[value];
+      if (option.disabled) {
+        option.title = "address family unknown";
+      } else {
+        option.removeAttribute("title");
+      }
+    }
+    const wantedKnown = family === "auto" ? known.ipv4 || known.ipv6 : known[family];
+    const probe = card.querySelector("[data-pool-probe]");
+    const probeHint = card.querySelector("[data-pool-probe-hint]");
+    const canProbe = entry && !entry.manual && !wantedKnown;
+    probe.hidden = !canProbe;
+    if (canProbe) {
+      // Auto prefers IPv4, matching the master-side resolution order.
+      probe.dataset.probeFamily = family === "auto" ? (known.ipv4 ? "ipv6" : "ipv4") : family;
+    } else {
+      probeHint.hidden = true;
+      probeHint.textContent = "";
+    }
+  }
+
+  function requestPoolProbe(card, button) {
+    const entry = poolOptionByRef(field(card, "outbound", "ref").value.trim());
+    const family = button.dataset.probeFamily;
+    const hint = card.querySelector("[data-pool-probe-hint]");
+    if (!entry || entry.manual || !family) return;
+    const csrfToken = configurationForm.querySelector('input[name="csrf_token"]')?.value || "";
+    button.disabled = true;
+    fetch(`/servers/${encodeURIComponent(entry.agent_id)}/probe-address`, {
+      method: "POST",
+      credentials: "same-origin",
+      headers: {
+        "Content-Type": "application/x-www-form-urlencoded",
+        Accept: "application/json",
+      },
+      body: new URLSearchParams({ family, csrf_token: csrfToken }),
+    })
+      .then(async (response) => {
+        if (response.status === 202) {
+          hint.hidden = false;
+          hint.textContent = "probe requested — refresh in a few seconds";
+          window.setTimeout(() => {
+            // Bypass the once-per-load cache so the probed address shows up.
+            poolOptionState = "";
+            ensurePoolOptions();
+          }, 5000);
+          return;
+        }
+        const message = (await response.text()).trim();
+        throw new Error(message || `probe request failed (HTTP ${response.status})`);
+      })
+      .catch((error) => {
+        hint.hidden = false;
+        hint.textContent = error.message;
+      })
+      .finally(() => {
+        button.disabled = false;
+      });
+  }
+
+  function updatePoolHint(card) {
+    const hint = card.querySelector("[data-pool-hint]");
+    const failed = poolOptionState === "error";
+    hint.hidden = !failed;
+    hint.textContent = failed
+      ? "List unavailable — type a reference manually: agent/<id>/<inbound>/<user> or manual/<name>"
+      : "";
+  }
+
+  function poolOptionLabel(entry) {
+    if (entry.manual) return entry.ref;
+    return `${entry.agent_id}/${entry.inbound_tag}/${entry.user || "unnamed user"}`;
+  }
+
+  function poolOptionDetail(entry) {
+    const parts = [];
+    if (entry.type) parts.push(entry.type);
+    if (entry.port) parts.push(`port ${entry.port}`);
+    if (!entry.manual) {
+      parts.push(`v4 ${entry.ipv4 || "—"}`);
+      parts.push(`v6 ${entry.ipv6 || "—"}`);
+    }
+    return parts.length ? " · " + parts.join(" · ") : "";
+  }
+
+  function renderPoolOptions(card) {
+    const list = card.querySelector("[data-pool-options]");
+    if (list.hidden) return;
+    const refInput = field(card, "outbound", "ref");
+    const filterValue = refInput.value.trim().toLowerCase();
+    list.replaceChildren();
+    const matches = poolOptionValues.filter((entry) => {
+      if (!filterValue) return true;
+      return entry.ref.toLowerCase().includes(filterValue) ||
+        poolOptionLabel(entry).toLowerCase().includes(filterValue);
+    });
+    for (const entry of matches.slice(0, GEO_OPTION_RENDER_LIMIT)) {
+      const option = document.createElement("button");
+      option.type = "button";
+      option.className = "geo-option";
+      option.dataset.poolOption = entry.ref;
+      option.textContent = poolOptionLabel(entry) + poolOptionDetail(entry);
+      if (!entry.available) {
+        option.classList.add("is-unavailable");
+        option.textContent += " — no usable address";
+      }
+      if (refInput.value.trim() === entry.ref) option.classList.add("is-selected");
+      list.append(option);
+    }
+  }
+
+  function openPoolOptions(card) {
+    card.querySelector("[data-pool-options]").hidden = false;
+    renderPoolOptions(card);
   }
 
   function geoSelection(card) {
@@ -616,6 +818,20 @@ if (configTextarea && configurationForm && configurationEditor) {
     if (kind === "direct" || kind === "block") {
       return { type: kind, tag };
     }
+    if (kind === "pool") {
+      const ref = field(card, "outbound", "ref").value.trim();
+      if (!ref) {
+        throw new Error(`Pool import ${tag || "(untagged)"} needs a pool entry — pick one from the list.`);
+      }
+      if (!POOL_REF_PATTERN.test(ref)) {
+        throw new Error(`Pool import ${tag || "(untagged)"} has an invalid pool reference: ${ref}`);
+      }
+      const outbound = { type: "theatropolis-pool-ref", tag, ref };
+      const familyValue = field(card, "outbound", "family")?.value;
+      const family = POOL_FAMILIES.includes(familyValue) ? familyValue : "auto";
+      if (family !== "auto") outbound.family = family;
+      return outbound;
+    }
     let outbound;
     try {
       outbound = JSON.parse(field(card, "outbound", "json").value);
@@ -815,6 +1031,24 @@ if (configTextarea && configurationForm && configurationEditor) {
         renderGeoOptions(card);
         filter.focus();
       }
+    } else if (button.matches("[data-pool-option]")) {
+      const card = button.closest("[data-outbound-card]");
+      if (card) {
+        const refInput = field(card, "outbound", "ref");
+        refInput.value = button.dataset.poolOption;
+        card.querySelector("[data-pool-options]").hidden = true;
+        updateOutboundVisibility(card);
+        refInput.focus();
+      }
+    } else if (button.matches("[data-pool-family-option]")) {
+      const card = button.closest("[data-outbound-card]");
+      if (card) {
+        field(card, "outbound", "family").value = button.dataset.poolFamilyOption;
+        syncPoolFamily(card);
+      }
+    } else if (button.matches("[data-pool-probe]")) {
+      const card = button.closest("[data-outbound-card]");
+      if (card) requestPoolProbe(card, button);
     } else if (button.matches("[data-remove-card]")) {
       button.closest(".builder-card")?.remove();
       updateOutboundTagOptions();
@@ -864,6 +1098,9 @@ if (configTextarea && configurationForm && configurationEditor) {
     if (event.target.matches("[data-route-geo-filter]") && card) {
       openGeoOptions(card);
     }
+    if (event.target.matches("[data-pool-filter]") && card) {
+      openPoolOptions(card);
+    }
     if (event.target.matches('[data-outbound-field="tag"]')) updateOutboundTagOptions();
   });
 
@@ -880,12 +1117,30 @@ if (configTextarea && configurationForm && configurationEditor) {
   });
 
   configurationEditor.addEventListener("focusin", (event) => {
-    if (!event.target.matches("[data-route-geo-filter]")) return;
-    const card = event.target.closest("[data-route-rule-card]");
-    if (card) openGeoOptions(card);
+    if (event.target.matches("[data-route-geo-filter]")) {
+      const card = event.target.closest("[data-route-rule-card]");
+      if (card) openGeoOptions(card);
+      return;
+    }
+    if (event.target.matches("[data-pool-filter]")) {
+      const card = event.target.closest("[data-outbound-card]");
+      if (card) openPoolOptions(card);
+    }
   });
 
   configurationEditor.addEventListener("keydown", (event) => {
+    if (event.target.matches("[data-pool-filter]")) {
+      const card = event.target.closest("[data-outbound-card]");
+      if (!card) return;
+      if (event.key === "Enter" || event.key === "Escape") {
+        // Enter must not submit the whole configuration form; the typed
+        // reference is authoritative on its own (free-text fallback).
+        event.preventDefault();
+        card.querySelector("[data-pool-options]").hidden = true;
+        updateOutboundVisibility(card);
+      }
+      return;
+    }
     if (!event.target.matches("[data-route-geo-filter]")) return;
     const card = event.target.closest("[data-route-rule-card]");
     if (!card) return;
@@ -905,6 +1160,10 @@ if (configTextarea && configurationForm && configurationEditor) {
   document.addEventListener("click", (event) => {
     for (const list of routeRuleList.querySelectorAll("[data-route-geo-options]:not([hidden])")) {
       const combobox = list.closest("[data-route-values-geo]");
+      if (combobox && !combobox.contains(event.target)) list.hidden = true;
+    }
+    for (const list of outboundList.querySelectorAll("[data-pool-options]:not([hidden])")) {
+      const combobox = list.closest("[data-pool-field]");
       if (combobox && !combobox.contains(event.target)) list.hidden = true;
     }
   });

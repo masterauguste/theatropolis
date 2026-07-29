@@ -1,0 +1,709 @@
+package webui
+
+import (
+	"context"
+	"encoding/json"
+	"net/http"
+	"net/http/httptest"
+	"net/url"
+	"path/filepath"
+	"strings"
+	"testing"
+	"time"
+
+	"github.com/masterauguste/theatropolis/internal/control"
+	"github.com/masterauguste/theatropolis/internal/deployment"
+	"github.com/masterauguste/theatropolis/internal/pool"
+)
+
+const poolTestConfig = `{"inbounds":[{"type":"hysteria2","tag":"hy2-in","listen_port":8443,"users":[{"name":"alice","password":"secret"}]}],"outbounds":[]}`
+
+func openTestPoolRegistry(t *testing.T) *pool.Registry {
+	t.Helper()
+	registry, err := pool.Open(filepath.Join(t.TempDir(), "outbound-pool.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	return registry
+}
+
+func newPoolFixture(t *testing.T) webFixture {
+	t.Helper()
+	fixture := newWebFixture(t)
+	fixture.controller.poolRegistry = openTestPoolRegistry(t)
+	return fixture
+}
+
+func seedPoolDeployment(t *testing.T, fixture webFixture, agentID, config string) {
+	t.Helper()
+	record, err := deployment.New(
+		"dep_"+agentID,
+		agentID,
+		"rev_"+agentID,
+		[]byte(config),
+		time.Now().UTC(),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := fixture.controller.store.Create(context.Background(), record); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestServerPoolOptionsEndpoint(t *testing.T) {
+	t.Parallel()
+
+	fixture := newPoolFixture(t)
+	enrollAgent(t, fixture.registry, "edge-online")
+	enrollAgent(t, fixture.registry, "edge-source")
+	enrollAgent(t, fixture.registry, "edge-quiet")
+	seedPoolDeployment(t, fixture, "edge-source", poolTestConfig)
+	seedPoolDeployment(t, fixture, "edge-quiet", poolTestConfig)
+	registry := fixture.controller.poolRegistry
+	if _, err := registry.SetReported(
+		"edge-source",
+		[]string{"203.0.113.7"},
+		[]string{"2001:db8::7"},
+	); err != nil {
+		t.Fatal(err)
+	}
+	if err := registry.UpsertManual("backup", json.RawMessage(`{"type":"direct"}`)); err != nil {
+		t.Fatal(err)
+	}
+
+	request := fixture.request(
+		http.MethodGet,
+		"/servers/edge-online/pool-options",
+		"",
+	)
+	response := httptest.NewRecorder()
+	fixture.handler.ServeHTTP(response, request)
+	if response.Code != http.StatusUnauthorized {
+		t.Fatalf("unauthenticated pool options status = %d, want %d", response.Code, http.StatusUnauthorized)
+	}
+
+	request = fixture.authenticatedRequest(
+		http.MethodGet,
+		"/servers/unknown/pool-options",
+		"",
+	)
+	response = httptest.NewRecorder()
+	fixture.handler.ServeHTTP(response, request)
+	if response.Code != http.StatusNotFound {
+		t.Fatalf("unknown agent pool options status = %d, want %d", response.Code, http.StatusNotFound)
+	}
+
+	request = fixture.authenticatedRequest(
+		http.MethodGet,
+		"/servers/edge-online/pool-options",
+		"",
+	)
+	response = httptest.NewRecorder()
+	fixture.handler.ServeHTTP(response, request)
+	if response.Code != http.StatusOK {
+		t.Fatalf("pool options status = %d, body = %s", response.Code, response.Body.String())
+	}
+	if contentType := response.Header().Get("Content-Type"); contentType != "application/json" {
+		t.Fatalf("pool options Content-Type = %q", contentType)
+	}
+	for _, expected := range []string{
+		`"ipv4":"203.0.113.7"`,
+		`"ipv6":"2001:db8::7"`,
+		`"available":true`,
+		`"available":false`,
+	} {
+		if !strings.Contains(response.Body.String(), expected) {
+			t.Errorf("pool options JSON does not contain %q", expected)
+		}
+	}
+	var result poolOptionsResponse
+	if err := json.Unmarshal(response.Body.Bytes(), &result); err != nil {
+		t.Fatalf("decode pool options: %v", err)
+	}
+	byRef := make(map[string]poolOption, len(result.Options))
+	for _, option := range result.Options {
+		byRef[option.Ref] = option
+	}
+	source, exists := byRef["agent/edge-source/hy2-in/alice"]
+	if !exists {
+		t.Fatalf("pool options missing edge-source entry: %+v", result.Options)
+	}
+	if !source.Available || source.IPv4 != "203.0.113.7" || source.IPv6 != "2001:db8::7" ||
+		source.Type != "hysteria2" || source.Port != 8443 ||
+		source.AgentID != "edge-source" || source.InboundTag != "hy2-in" ||
+		source.User != "alice" || source.Manual {
+		t.Fatalf("unexpected edge-source option: %+v", source)
+	}
+	quiet, exists := byRef["agent/edge-quiet/hy2-in/alice"]
+	if !exists || quiet.Available || quiet.IPv4 != "" || quiet.IPv6 != "" {
+		t.Fatalf("edge-quiet option should be present and unavailable: %+v", quiet)
+	}
+	manual, exists := byRef["manual/backup"]
+	if !exists || !manual.Manual || !manual.Available || manual.Type != "direct" {
+		t.Fatalf("unexpected manual option: %+v", manual)
+	}
+
+	// The requesting agent never imports its own inbounds.
+	request = fixture.authenticatedRequest(
+		http.MethodGet,
+		"/servers/edge-source/pool-options",
+		"",
+	)
+	response = httptest.NewRecorder()
+	fixture.handler.ServeHTTP(response, request)
+	if response.Code != http.StatusOK {
+		t.Fatalf("self pool options status = %d, body = %s", response.Code, response.Body.String())
+	}
+	result = poolOptionsResponse{}
+	if err := json.Unmarshal(response.Body.Bytes(), &result); err != nil {
+		t.Fatalf("decode self pool options: %v", err)
+	}
+	for _, option := range result.Options {
+		if option.AgentID == "edge-source" {
+			t.Fatalf("pool options offered the agent its own entry: %+v", option)
+		}
+	}
+	if len(result.Options) != 2 {
+		t.Fatalf("self pool options count = %d, want 2 (edge-quiet + manual)", len(result.Options))
+	}
+}
+
+func TestSettingsPoolCRUD(t *testing.T) {
+	t.Parallel()
+
+	fixture := newPoolFixture(t)
+
+	request := fixture.authenticatedRequest(http.MethodGet, "/settings", "")
+	response := httptest.NewRecorder()
+	fixture.handler.ServeHTTP(response, request)
+	if response.Code != http.StatusOK {
+		t.Fatalf("GET /settings status = %d, body = %s", response.Code, response.Body.String())
+	}
+	for _, expected := range []string{
+		"Fleet outbound pool",
+		`action="/settings/pool"`,
+		`name="outbound_json"`,
+		"No manual entries yet.",
+	} {
+		if !strings.Contains(response.Body.String(), expected) {
+			t.Errorf("settings pool section does not contain %q", expected)
+		}
+	}
+
+	validForm := url.Values{
+		"csrf_token":    {fixture.session.CSRFToken},
+		"name":          {"backup"},
+		"outbound_json": {`{"type":"direct"}`},
+	}.Encode()
+
+	// Origin enforcement.
+	request = fixture.authenticatedRequest(http.MethodPost, "/settings/pool", validForm)
+	response = httptest.NewRecorder()
+	fixture.handler.ServeHTTP(response, request)
+	if response.Code != http.StatusForbidden {
+		t.Fatalf("pool upsert without Origin status = %d, want 403", response.Code)
+	}
+
+	// CSRF enforcement.
+	badCSRF := url.Values{
+		"csrf_token":    {"wrong"},
+		"name":          {"backup"},
+		"outbound_json": {`{"type":"direct"}`},
+	}.Encode()
+	request = fixture.authenticatedMutationRequest(http.MethodPost, "/settings/pool", badCSRF)
+	response = httptest.NewRecorder()
+	fixture.handler.ServeHTTP(response, request)
+	if response.Code != http.StatusForbidden {
+		t.Fatalf("pool upsert with bad CSRF status = %d, want 403", response.Code)
+	}
+
+	// Valid upsert.
+	request = fixture.authenticatedMutationRequest(http.MethodPost, "/settings/pool", validForm)
+	response = httptest.NewRecorder()
+	fixture.handler.ServeHTTP(response, request)
+	if response.Code != http.StatusSeeOther || response.Header().Get("Location") != "/settings" {
+		t.Fatalf("pool upsert response = %d %q", response.Code, response.Header().Get("Location"))
+	}
+	entry, exists := fixture.controller.poolRegistry.ManualByName("backup")
+	if !exists || string(entry.Outbound) != `{"type":"direct"}` {
+		t.Fatalf("pool upsert stored %+v (exists=%v)", entry, exists)
+	}
+	if fixture.controller.propagateCalls != 1 {
+		t.Fatalf("propagation calls = %d, want 1", fixture.controller.propagateCalls)
+	}
+
+	// Validation errors re-render the settings page with the submitted values.
+	badName := url.Values{
+		"csrf_token":    {fixture.session.CSRFToken},
+		"name":          {"bad name!"},
+		"outbound_json": {`{"type":"direct"}`},
+	}.Encode()
+	request = fixture.authenticatedMutationRequest(http.MethodPost, "/settings/pool", badName)
+	response = httptest.NewRecorder()
+	fixture.handler.ServeHTTP(response, request)
+	if response.Code != http.StatusBadRequest {
+		t.Fatalf("bad-name pool upsert status = %d, want 400", response.Code)
+	}
+	body := response.Body.String()
+	if !strings.Contains(body, "Use a valid entry name") ||
+		!strings.Contains(body, `value="bad name!"`) {
+		t.Fatalf("bad-name pool upsert did not re-render the error: %s", body)
+	}
+
+	badJSON := url.Values{
+		"csrf_token":    {fixture.session.CSRFToken},
+		"name":          {"relay"},
+		"outbound_json": {`{"tag":"x"}`},
+	}.Encode()
+	request = fixture.authenticatedMutationRequest(http.MethodPost, "/settings/pool", badJSON)
+	response = httptest.NewRecorder()
+	fixture.handler.ServeHTTP(response, request)
+	if response.Code != http.StatusBadRequest {
+		t.Fatalf("bad-JSON pool upsert status = %d, want 400", response.Code)
+	}
+	if !strings.Contains(response.Body.String(), "Enter one complete outbound JSON object") {
+		t.Fatalf("bad-JSON pool upsert did not re-render the error: %s", response.Body.String())
+	}
+	if fixture.controller.propagateCalls != 1 {
+		t.Fatalf("failed upserts triggered propagation: %d calls", fixture.controller.propagateCalls)
+	}
+
+	// The saved entry is listed with a delete form.
+	request = fixture.authenticatedRequest(http.MethodGet, "/settings", "")
+	response = httptest.NewRecorder()
+	fixture.handler.ServeHTTP(response, request)
+	for _, expected := range []string{"manual/backup", `action="/settings/pool/delete"`, `name="confirm_delete"`} {
+		if !strings.Contains(response.Body.String(), expected) {
+			t.Errorf("settings pool list does not contain %q", expected)
+		}
+	}
+
+	// Delete requires the explicit confirmation.
+	deleteForm := url.Values{
+		"confirm_delete": {"no"},
+		"csrf_token":     {fixture.session.CSRFToken},
+		"name":           {"backup"},
+	}.Encode()
+	request = fixture.authenticatedMutationRequest(http.MethodPost, "/settings/pool/delete", deleteForm)
+	response = httptest.NewRecorder()
+	fixture.handler.ServeHTTP(response, request)
+	if response.Code != http.StatusForbidden {
+		t.Fatalf("unconfirmed pool delete status = %d, want 403", response.Code)
+	}
+	if _, exists := fixture.controller.poolRegistry.ManualByName("backup"); !exists {
+		t.Fatal("unconfirmed pool delete removed the entry")
+	}
+
+	deleteForm = url.Values{
+		"confirm_delete": {"yes"},
+		"csrf_token":     {fixture.session.CSRFToken},
+		"name":           {"backup"},
+	}.Encode()
+	request = fixture.authenticatedMutationRequest(http.MethodPost, "/settings/pool/delete", deleteForm)
+	response = httptest.NewRecorder()
+	fixture.handler.ServeHTTP(response, request)
+	if response.Code != http.StatusSeeOther || response.Header().Get("Location") != "/settings" {
+		t.Fatalf("pool delete response = %d %q", response.Code, response.Header().Get("Location"))
+	}
+	if _, exists := fixture.controller.poolRegistry.ManualByName("backup"); exists {
+		t.Fatal("pool delete kept the entry")
+	}
+	if fixture.controller.propagateCalls != 2 {
+		t.Fatalf("propagation calls = %d, want 2", fixture.controller.propagateCalls)
+	}
+
+	// Deleting a missing entry re-renders with a 404.
+	request = fixture.authenticatedMutationRequest(http.MethodPost, "/settings/pool/delete", deleteForm)
+	response = httptest.NewRecorder()
+	fixture.handler.ServeHTTP(response, request)
+	if response.Code != http.StatusNotFound ||
+		!strings.Contains(response.Body.String(), "no longer exists") {
+		t.Fatalf("missing pool delete = %d %s", response.Code, response.Body.String())
+	}
+}
+
+func TestServerAddressOverride(t *testing.T) {
+	t.Parallel()
+
+	fixture := newPoolFixture(t)
+	enrollAgent(t, fixture.registry, "edge-online")
+	enrollAgent(t, fixture.registry, "edge-offline")
+	if _, err := fixture.controller.poolRegistry.SetReported(
+		"edge-offline",
+		[]string{"192.0.2.9"},
+		nil,
+	); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := fixture.registry.CreateEnrollment(
+		context.Background(),
+		"edge-pending",
+		time.Now().Add(time.Hour),
+	); err != nil {
+		t.Fatal(err)
+	}
+
+	// The servers page shows reported/persisted addresses and the override form.
+	request := fixture.authenticatedRequest(http.MethodGet, "/servers", "")
+	response := httptest.NewRecorder()
+	fixture.handler.ServeHTTP(response, request)
+	if response.Code != http.StatusOK {
+		t.Fatalf("GET /servers status = %d, body = %s", response.Code, response.Body.String())
+	}
+	for _, expected := range []string{
+		`action="/servers/edge-online/address"`,
+		`name="address"`,
+		"Last known address: 192.0.2.9",
+		"Connected from: 203.0.113.10",
+	} {
+		if !strings.Contains(response.Body.String(), expected) {
+			t.Errorf("servers page does not contain %q", expected)
+		}
+	}
+
+	form := url.Values{
+		"address":    {"198.51.100.9"},
+		"csrf_token": {fixture.session.CSRFToken},
+	}.Encode()
+
+	// Origin and CSRF enforcement.
+	request = fixture.authenticatedRequest(
+		http.MethodPost,
+		"/servers/edge-online/address",
+		form,
+	)
+	response = httptest.NewRecorder()
+	fixture.handler.ServeHTTP(response, request)
+	if response.Code != http.StatusForbidden {
+		t.Fatalf("address override without Origin status = %d, want 403", response.Code)
+	}
+	badCSRF := url.Values{
+		"address":    {"198.51.100.9"},
+		"csrf_token": {"wrong"},
+	}.Encode()
+	request = fixture.authenticatedMutationRequest(
+		http.MethodPost,
+		"/servers/edge-online/address",
+		badCSRF,
+	)
+	response = httptest.NewRecorder()
+	fixture.handler.ServeHTTP(response, request)
+	if response.Code != http.StatusForbidden {
+		t.Fatalf("address override with bad CSRF status = %d, want 403", response.Code)
+	}
+
+	// The address must parse as an IP or be empty.
+	invalid := url.Values{
+		"address":    {"not-an-ip"},
+		"csrf_token": {fixture.session.CSRFToken},
+	}.Encode()
+	request = fixture.authenticatedMutationRequest(
+		http.MethodPost,
+		"/servers/edge-online/address",
+		invalid,
+	)
+	response = httptest.NewRecorder()
+	fixture.handler.ServeHTTP(response, request)
+	if response.Code != http.StatusBadRequest {
+		t.Fatalf("invalid address status = %d, want 400", response.Code)
+	}
+
+	// Private/ULA overrides are rejected by the registry as non-routable.
+	for _, address := range []string{"10.0.0.8", "192.168.1.2", "100.64.0.9", "fd12:3456::1"} {
+		private := url.Values{
+			"address":    {address},
+			"csrf_token": {fixture.session.CSRFToken},
+		}.Encode()
+		request = fixture.authenticatedMutationRequest(
+			http.MethodPost,
+			"/servers/edge-online/address",
+			private,
+		)
+		response = httptest.NewRecorder()
+		fixture.handler.ServeHTTP(response, request)
+		if response.Code != http.StatusBadRequest {
+			t.Fatalf("private override %q status = %d, want 400", address, response.Code)
+		}
+	}
+
+	// Valid override.
+	request = fixture.authenticatedMutationRequest(
+		http.MethodPost,
+		"/servers/edge-online/address",
+		form,
+	)
+	response = httptest.NewRecorder()
+	fixture.handler.ServeHTTP(response, request)
+	if response.Code != http.StatusSeeOther || response.Header().Get("Location") != "/servers" {
+		t.Fatalf("address override response = %d %q", response.Code, response.Header().Get("Location"))
+	}
+	address, ok := fixture.controller.poolRegistry.AgentAddress("edge-online")
+	if !ok || address != "198.51.100.9" {
+		t.Fatalf("resolved pool address = %q (ok=%v), want 198.51.100.9", address, ok)
+	}
+	if fixture.controller.propagateCalls != 1 {
+		t.Fatalf("propagation calls = %d, want 1", fixture.controller.propagateCalls)
+	}
+
+	// The servers page reflects the override as the pool address.
+	request = fixture.authenticatedRequest(http.MethodGet, "/servers", "")
+	response = httptest.NewRecorder()
+	fixture.handler.ServeHTTP(response, request)
+	if !strings.Contains(response.Body.String(), "Pool address: 198.51.100.9") {
+		t.Errorf("servers page does not reflect the override: %s", response.Body.String())
+	}
+
+	// An empty submission clears the override.
+	clearForm := url.Values{
+		"address":    {""},
+		"csrf_token": {fixture.session.CSRFToken},
+	}.Encode()
+	request = fixture.authenticatedMutationRequest(
+		http.MethodPost,
+		"/servers/edge-online/address",
+		clearForm,
+	)
+	response = httptest.NewRecorder()
+	fixture.handler.ServeHTTP(response, request)
+	if response.Code != http.StatusSeeOther {
+		t.Fatalf("clear override status = %d, want 303", response.Code)
+	}
+	if _, ok := fixture.controller.poolRegistry.AgentAddress("edge-online"); ok {
+		t.Fatal("clearing the override left a resolved address")
+	}
+
+	// Pending and unknown agents cannot take an override.
+	request = fixture.authenticatedMutationRequest(
+		http.MethodPost,
+		"/servers/edge-pending/address",
+		form,
+	)
+	response = httptest.NewRecorder()
+	fixture.handler.ServeHTTP(response, request)
+	if response.Code != http.StatusConflict {
+		t.Fatalf("pending agent override status = %d, want 409", response.Code)
+	}
+	request = fixture.authenticatedMutationRequest(
+		http.MethodPost,
+		"/servers/unknown/address",
+		form,
+	)
+	response = httptest.NewRecorder()
+	fixture.handler.ServeHTTP(response, request)
+	if response.Code != http.StatusNotFound {
+		t.Fatalf("unknown agent override status = %d, want 404", response.Code)
+	}
+}
+
+func TestServerPageIncludesPoolImportControls(t *testing.T) {
+	t.Parallel()
+
+	fixture := newPoolFixture(t)
+	enrollAgent(t, fixture.registry, "edge-online")
+
+	request := fixture.authenticatedRequest(
+		http.MethodGet,
+		"/servers/edge-online/manage",
+		"",
+	)
+	response := httptest.NewRecorder()
+	fixture.handler.ServeHTTP(response, request)
+	if response.Code != http.StatusOK {
+		t.Fatalf("GET server management status = %d, body = %s", response.Code, response.Body.String())
+	}
+	body := response.Body.String()
+	for _, expected := range []string{
+		`<option value="pool">Fleet pool import</option>`,
+		`data-outbound-field="ref"`,
+		`data-pool-options`,
+		`data-outbound-field="family"`,
+		`data-pool-family-option="auto"`,
+		`data-pool-family-option="ipv4"`,
+		`data-pool-family-option="ipv6"`,
+		`class="segmented"`,
+		`data-pool-probe`,
+		`data-pool-probe-hint`,
+		"Request probe",
+		`{"type":"theatropolis-pool-ref","tag":"…","ref":"agent/&lt;id&gt;/&lt;inbound&gt;/&lt;user&gt;"}`,
+		`"manual/&lt;name&gt;"`,
+	} {
+		if !strings.Contains(body, expected) {
+			t.Errorf("server management page does not contain %q", expected)
+		}
+	}
+}
+
+func TestSettingsPoolAddressFamilies(t *testing.T) {
+	t.Parallel()
+
+	fixture := newPoolFixture(t)
+	enrollAgent(t, fixture.registry, "edge-source")
+	enrollAgent(t, fixture.registry, "edge-quiet")
+	seedPoolDeployment(t, fixture, "edge-source", poolTestConfig)
+	seedPoolDeployment(t, fixture, "edge-quiet", poolTestConfig)
+	registry := fixture.controller.poolRegistry
+	if _, err := registry.SetReported("edge-source", []string{"203.0.113.7"}, nil); err != nil {
+		t.Fatal(err)
+	}
+
+	request := fixture.authenticatedRequest(http.MethodGet, "/settings", "")
+	response := httptest.NewRecorder()
+	fixture.handler.ServeHTTP(response, request)
+	if response.Code != http.StatusOK {
+		t.Fatalf("GET /settings status = %d, body = %s", response.Code, response.Body.String())
+	}
+	body := response.Body.String()
+	for _, expected := range []string{
+		// The auto-resolved family carries the winning source label.
+		"v4 <code>203.0.113.7</code> (reported)",
+		"v6 —",
+		"no address — unreachable",
+	} {
+		if !strings.Contains(body, expected) {
+			t.Errorf("settings pool table does not contain %q", expected)
+		}
+	}
+}
+
+func TestServerProbeAddressEndpoint(t *testing.T) {
+	t.Parallel()
+
+	fixture := newPoolFixture(t)
+	enrollAgent(t, fixture.registry, "edge-online")
+	if _, err := fixture.registry.CreateEnrollment(
+		context.Background(),
+		"edge-pending",
+		time.Now().Add(time.Hour),
+	); err != nil {
+		t.Fatal(err)
+	}
+	validForm := url.Values{
+		"family":     {"ipv6"},
+		"csrf_token": {fixture.session.CSRFToken},
+	}.Encode()
+
+	// Session, Origin, and CSRF enforcement.
+	request := fixture.request(http.MethodPost, "/servers/edge-online/probe-address", validForm)
+	response := httptest.NewRecorder()
+	fixture.handler.ServeHTTP(response, request)
+	if response.Code != http.StatusUnauthorized {
+		t.Fatalf("unauthenticated probe status = %d, want 401", response.Code)
+	}
+
+	request = fixture.authenticatedRequest(http.MethodPost, "/servers/edge-online/probe-address", validForm)
+	response = httptest.NewRecorder()
+	fixture.handler.ServeHTTP(response, request)
+	if response.Code != http.StatusForbidden {
+		t.Fatalf("probe without Origin status = %d, want 403", response.Code)
+	}
+
+	badCSRF := url.Values{
+		"family":     {"ipv6"},
+		"csrf_token": {"wrong"},
+	}.Encode()
+	request = fixture.authenticatedMutationRequest(http.MethodPost, "/servers/edge-online/probe-address", badCSRF)
+	response = httptest.NewRecorder()
+	fixture.handler.ServeHTTP(response, request)
+	if response.Code != http.StatusForbidden {
+		t.Fatalf("probe with bad CSRF status = %d, want 403", response.Code)
+	}
+
+	// The family must pin one explicit IP family.
+	for _, family := range []string{"", "auto", "ipv7"} {
+		form := url.Values{
+			"family":     {family},
+			"csrf_token": {fixture.session.CSRFToken},
+		}.Encode()
+		request = fixture.authenticatedMutationRequest(
+			http.MethodPost,
+			"/servers/edge-online/probe-address",
+			form,
+		)
+		response = httptest.NewRecorder()
+		fixture.handler.ServeHTTP(response, request)
+		if response.Code != http.StatusBadRequest {
+			t.Fatalf("probe with family %q status = %d, want 400", family, response.Code)
+		}
+	}
+
+	// Unknown and not-yet-enrolled agents cannot be probed.
+	request = fixture.authenticatedMutationRequest(http.MethodPost, "/servers/unknown/probe-address", validForm)
+	response = httptest.NewRecorder()
+	fixture.handler.ServeHTTP(response, request)
+	if response.Code != http.StatusNotFound {
+		t.Fatalf("unknown agent probe status = %d, want 404", response.Code)
+	}
+	request = fixture.authenticatedMutationRequest(http.MethodPost, "/servers/edge-pending/probe-address", validForm)
+	response = httptest.NewRecorder()
+	fixture.handler.ServeHTTP(response, request)
+	if response.Code != http.StatusConflict {
+		t.Fatalf("pending agent probe status = %d, want 409", response.Code)
+	}
+
+	// Controller failures map to conflict/bad-request statuses.
+	for _, test := range []struct {
+		name     string
+		err      error
+		wantCode int
+		wantBody string
+	}{
+		{"offline", control.ErrAgentOffline, http.StatusConflict, "agent is offline"},
+		{
+			"unsupported",
+			control.ErrAgentProbeUnsupported,
+			http.StatusConflict,
+			"does not support address probes",
+		},
+		{"family rejected", control.ErrProbeFamilyInvalid, http.StatusBadRequest, "ipv4 or ipv6"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			fixture.controller.probeErr = test.err
+			defer func() { fixture.controller.probeErr = nil }()
+			request := fixture.authenticatedMutationRequest(
+				http.MethodPost,
+				"/servers/edge-online/probe-address",
+				validForm,
+			)
+			response := httptest.NewRecorder()
+			fixture.handler.ServeHTTP(response, request)
+			if response.Code != test.wantCode ||
+				!strings.Contains(response.Body.String(), test.wantBody) {
+				t.Fatalf(
+					"%s probe response = %d %q, want %d containing %q",
+					test.name,
+					response.Code,
+					response.Body.String(),
+					test.wantCode,
+					test.wantBody,
+				)
+			}
+			if len(fixture.controller.probeRequests) != 0 {
+				t.Fatalf("%s probe reached the controller: %+v", test.name, fixture.controller.probeRequests)
+			}
+		})
+	}
+
+	// Happy path: 202 JSON, and the family reaches the controller unchanged.
+	request = fixture.authenticatedMutationRequest(
+		http.MethodPost,
+		"/servers/edge-online/probe-address",
+		validForm,
+	)
+	response = httptest.NewRecorder()
+	fixture.handler.ServeHTTP(response, request)
+	if response.Code != http.StatusAccepted ||
+		response.Header().Get("Content-Type") != "application/json" ||
+		!strings.Contains(response.Body.String(), `{"status":"probe requested"}`) {
+		t.Fatalf(
+			"probe response = %d %q %q",
+			response.Code,
+			response.Header().Get("Content-Type"),
+			response.Body.String(),
+		)
+	}
+	if len(fixture.controller.probeRequests) != 1 ||
+		fixture.controller.probeRequests[0] != (probeRequest{agentID: "edge-online", family: "ipv6"}) {
+		t.Fatalf("probe requests = %+v, want one ipv6 probe for edge-online", fixture.controller.probeRequests)
+	}
+}

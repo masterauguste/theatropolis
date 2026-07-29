@@ -92,6 +92,15 @@
                 </td>
                 <td data-label="Details">
                   <span class="muted">{{.Detail}}</span>
+                  {{range .AddressLines}}<small class="muted server-address">{{.}}</small>{{end}}
+                  {{if .AddressURL}}
+                  <form action="{{.AddressURL}}" method="post" class="address-form">
+                    <input type="hidden" name="csrf_token" value="{{$.CSRFToken}}">
+                    <input type="text" name="address" placeholder="Address override (IP)" maxlength="64" aria-label="Address override for {{.ID}}">
+                    <button class="button button--secondary button--small" type="submit">Set</button>
+                  </form>
+                  <small class="muted">An override must be a public address; it replaces reported addresses pool-wide. Submit empty to clear it.</small>
+                  {{end}}
                 </td>
                 <td data-label="Actions">
                   <a class="button button--secondary button--small" href="{{.URL}}">Manage</a>

@@ -427,6 +427,7 @@ type AgentFrame struct {
 	//	*AgentFrame_ConfigRuntimeReport
 	//	*AgentFrame_AgentUpdateReport
 	//	*AgentFrame_SingBoxUpdateReport
+	//	*AgentFrame_AddressProbeReport
 	Payload       isAgentFrame_Payload `protobuf_oneof:"payload"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
@@ -548,6 +549,15 @@ func (x *AgentFrame) GetSingBoxUpdateReport() *SingBoxUpdateReport {
 	return nil
 }
 
+func (x *AgentFrame) GetAddressProbeReport() *AddressProbeReport {
+	if x != nil {
+		if x, ok := x.Payload.(*AgentFrame_AddressProbeReport); ok {
+			return x.AddressProbeReport
+		}
+	}
+	return nil
+}
+
 type isAgentFrame_Payload interface {
 	isAgentFrame_Payload()
 }
@@ -584,6 +594,10 @@ type AgentFrame_SingBoxUpdateReport struct {
 	SingBoxUpdateReport *SingBoxUpdateReport `protobuf:"bytes,17,opt,name=sing_box_update_report,json=singBoxUpdateReport,proto3,oneof"`
 }
 
+type AgentFrame_AddressProbeReport struct {
+	AddressProbeReport *AddressProbeReport `protobuf:"bytes,18,opt,name=address_probe_report,json=addressProbeReport,proto3,oneof"`
+}
+
 func (*AgentFrame_Hello) isAgentFrame_Payload() {}
 
 func (*AgentFrame_Proof) isAgentFrame_Payload() {}
@@ -600,6 +614,8 @@ func (*AgentFrame_AgentUpdateReport) isAgentFrame_Payload() {}
 
 func (*AgentFrame_SingBoxUpdateReport) isAgentFrame_Payload() {}
 
+func (*AgentFrame_AddressProbeReport) isAgentFrame_Payload() {}
+
 type MasterFrame struct {
 	state    protoimpl.MessageState `protogen:"open.v1"`
 	Sequence uint64                 `protobuf:"varint,1,opt,name=sequence,proto3" json:"sequence,omitempty"`
@@ -611,6 +627,7 @@ type MasterFrame struct {
 	//	*MasterFrame_DeployConfig
 	//	*MasterFrame_UpdateAgent
 	//	*MasterFrame_UpdateSingBox
+	//	*MasterFrame_ProbeAddresses
 	Payload       isMasterFrame_Payload `protobuf_oneof:"payload"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
@@ -714,6 +731,15 @@ func (x *MasterFrame) GetUpdateSingBox() *SingBoxUpdateCommand {
 	return nil
 }
 
+func (x *MasterFrame) GetProbeAddresses() *ProbeAddresses {
+	if x != nil {
+		if x, ok := x.Payload.(*MasterFrame_ProbeAddresses); ok {
+			return x.ProbeAddresses
+		}
+	}
+	return nil
+}
+
 type isMasterFrame_Payload interface {
 	isMasterFrame_Payload()
 }
@@ -742,6 +768,10 @@ type MasterFrame_UpdateSingBox struct {
 	UpdateSingBox *SingBoxUpdateCommand `protobuf:"bytes,15,opt,name=update_sing_box,json=updateSingBox,proto3,oneof"`
 }
 
+type MasterFrame_ProbeAddresses struct {
+	ProbeAddresses *ProbeAddresses `protobuf:"bytes,16,opt,name=probe_addresses,json=probeAddresses,proto3,oneof"`
+}
+
 func (*MasterFrame_Challenge) isMasterFrame_Payload() {}
 
 func (*MasterFrame_AuthenticationResult) isMasterFrame_Payload() {}
@@ -754,6 +784,8 @@ func (*MasterFrame_UpdateAgent) isMasterFrame_Payload() {}
 
 func (*MasterFrame_UpdateSingBox) isMasterFrame_Payload() {}
 
+func (*MasterFrame_ProbeAddresses) isMasterFrame_Payload() {}
+
 type AgentHello struct {
 	state           protoimpl.MessageState `protogen:"open.v1"`
 	AgentId         string                 `protobuf:"bytes,1,opt,name=agent_id,json=agentId,proto3" json:"agent_id,omitempty"`
@@ -763,8 +795,11 @@ type AgentHello struct {
 	Architecture    string                 `protobuf:"bytes,5,opt,name=architecture,proto3" json:"architecture,omitempty"`
 	Capabilities    []string               `protobuf:"bytes,6,rep,name=capabilities,proto3" json:"capabilities,omitempty"`
 	SingBoxVersion  string                 `protobuf:"bytes,7,opt,name=sing_box_version,json=singBoxVersion,proto3" json:"sing_box_version,omitempty"`
-	unknownFields   protoimpl.UnknownFields
-	sizeCache       protoimpl.SizeCache
+	// Global-unicast interface addresses observed on the agent host, as plain
+	// IP strings (both families mixed; the master splits them by parsing).
+	ReportedAddresses []string `protobuf:"bytes,8,rep,name=reported_addresses,json=reportedAddresses,proto3" json:"reported_addresses,omitempty"`
+	unknownFields     protoimpl.UnknownFields
+	sizeCache         protoimpl.SizeCache
 }
 
 func (x *AgentHello) Reset() {
@@ -844,6 +879,13 @@ func (x *AgentHello) GetSingBoxVersion() string {
 		return x.SingBoxVersion
 	}
 	return ""
+}
+
+func (x *AgentHello) GetReportedAddresses() []string {
+	if x != nil {
+		return x.ReportedAddresses
+	}
+	return nil
 }
 
 type AgentChallenge struct {
@@ -999,8 +1041,11 @@ type AgentHeartbeat struct {
 	ObservedAtUnix   int64                  `protobuf:"varint,1,opt,name=observed_at_unix,json=observedAtUnix,proto3" json:"observed_at_unix,omitempty"`
 	ActiveRevisionId string                 `protobuf:"bytes,2,opt,name=active_revision_id,json=activeRevisionId,proto3" json:"active_revision_id,omitempty"`
 	SingBoxVersion   string                 `protobuf:"bytes,3,opt,name=sing_box_version,json=singBoxVersion,proto3" json:"sing_box_version,omitempty"`
-	unknownFields    protoimpl.UnknownFields
-	sizeCache        protoimpl.SizeCache
+	// Current global-unicast interface addresses, same encoding as in
+	// AgentHello; refreshed on every heartbeat.
+	ReportedAddresses []string `protobuf:"bytes,4,rep,name=reported_addresses,json=reportedAddresses,proto3" json:"reported_addresses,omitempty"`
+	unknownFields     protoimpl.UnknownFields
+	sizeCache         protoimpl.SizeCache
 }
 
 func (x *AgentHeartbeat) Reset() {
@@ -1052,6 +1097,13 @@ func (x *AgentHeartbeat) GetSingBoxVersion() string {
 		return x.SingBoxVersion
 	}
 	return ""
+}
+
+func (x *AgentHeartbeat) GetReportedAddresses() []string {
+	if x != nil {
+		return x.ReportedAddresses
+	}
+	return nil
 }
 
 type ValidateConfigCommand struct {
@@ -1730,6 +1782,114 @@ func (x *SingBoxUpdateReport) GetObservedAtUnix() int64 {
 	return 0
 }
 
+type ProbeAddresses struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// Address family to probe: exactly "ipv4" or "ipv6".
+	Family        string `protobuf:"bytes,1,opt,name=family,proto3" json:"family,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *ProbeAddresses) Reset() {
+	*x = ProbeAddresses{}
+	mi := &file_theatropolis_control_v1_control_proto_msgTypes[18]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *ProbeAddresses) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*ProbeAddresses) ProtoMessage() {}
+
+func (x *ProbeAddresses) ProtoReflect() protoreflect.Message {
+	mi := &file_theatropolis_control_v1_control_proto_msgTypes[18]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use ProbeAddresses.ProtoReflect.Descriptor instead.
+func (*ProbeAddresses) Descriptor() ([]byte, []int) {
+	return file_theatropolis_control_v1_control_proto_rawDescGZIP(), []int{18}
+}
+
+func (x *ProbeAddresses) GetFamily() string {
+	if x != nil {
+		return x.Family
+	}
+	return ""
+}
+
+type AddressProbeReport struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// Echoes the requested family (even when it was unsupported).
+	Family string `protobuf:"bytes,1,opt,name=family,proto3" json:"family,omitempty"`
+	// Probed public address as a plain IP string; empty on failure.
+	Address string `protobuf:"bytes,2,opt,name=address,proto3" json:"address,omitempty"`
+	// Failure reason; empty on success.
+	Error         string `protobuf:"bytes,3,opt,name=error,proto3" json:"error,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *AddressProbeReport) Reset() {
+	*x = AddressProbeReport{}
+	mi := &file_theatropolis_control_v1_control_proto_msgTypes[19]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *AddressProbeReport) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*AddressProbeReport) ProtoMessage() {}
+
+func (x *AddressProbeReport) ProtoReflect() protoreflect.Message {
+	mi := &file_theatropolis_control_v1_control_proto_msgTypes[19]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use AddressProbeReport.ProtoReflect.Descriptor instead.
+func (*AddressProbeReport) Descriptor() ([]byte, []int) {
+	return file_theatropolis_control_v1_control_proto_rawDescGZIP(), []int{19}
+}
+
+func (x *AddressProbeReport) GetFamily() string {
+	if x != nil {
+		return x.Family
+	}
+	return ""
+}
+
+func (x *AddressProbeReport) GetAddress() string {
+	if x != nil {
+		return x.Address
+	}
+	return ""
+}
+
+func (x *AddressProbeReport) GetError() string {
+	if x != nil {
+		return x.Error
+	}
+	return ""
+}
+
 var File_theatropolis_control_v1_control_proto protoreflect.FileDescriptor
 
 const file_theatropolis_control_v1_control_proto_rawDesc = "" +
@@ -1742,7 +1902,7 @@ const file_theatropolis_control_v1_control_proto_rawDesc = "" +
 	"public_key\x18\x03 \x01(\fR\tpublicKey\"U\n" +
 	"\x0eEnrollResponse\x12\x19\n" +
 	"\bagent_id\x18\x01 \x01(\tR\aagentId\x12(\n" +
-	"\x10enrolled_at_unix\x18\x02 \x01(\x03R\x0eenrolledAtUnix\"\xf7\x05\n" +
+	"\x10enrolled_at_unix\x18\x02 \x01(\x03R\x0eenrolledAtUnix\"\xd8\x06\n" +
 	"\n" +
 	"AgentFrame\x12\x1a\n" +
 	"\bsequence\x18\x01 \x01(\x04R\bsequence\x12;\n" +
@@ -1754,8 +1914,9 @@ const file_theatropolis_control_v1_control_proto_rawDesc = "" +
 	"\x18config_deployment_report\x18\x0e \x01(\v2/.theatropolis.control.v1.ConfigDeploymentReportH\x00R\x16configDeploymentReport\x12b\n" +
 	"\x15config_runtime_report\x18\x0f \x01(\v2,.theatropolis.control.v1.ConfigRuntimeReportH\x00R\x13configRuntimeReport\x12\\\n" +
 	"\x13agent_update_report\x18\x10 \x01(\v2*.theatropolis.control.v1.AgentUpdateReportH\x00R\x11agentUpdateReport\x12c\n" +
-	"\x16sing_box_update_report\x18\x11 \x01(\v2,.theatropolis.control.v1.SingBoxUpdateReportH\x00R\x13singBoxUpdateReportB\t\n" +
-	"\apayload\"\xbe\x04\n" +
+	"\x16sing_box_update_report\x18\x11 \x01(\v2,.theatropolis.control.v1.SingBoxUpdateReportH\x00R\x13singBoxUpdateReport\x12_\n" +
+	"\x14address_probe_report\x18\x12 \x01(\v2+.theatropolis.control.v1.AddressProbeReportH\x00R\x12addressProbeReportB\t\n" +
+	"\apayload\"\x92\x05\n" +
 	"\vMasterFrame\x12\x1a\n" +
 	"\bsequence\x18\x01 \x01(\x04R\bsequence\x12G\n" +
 	"\tchallenge\x18\n" +
@@ -1764,8 +1925,9 @@ const file_theatropolis_control_v1_control_proto_rawDesc = "" +
 	"\x0fvalidate_config\x18\f \x01(\v2..theatropolis.control.v1.ValidateConfigCommandH\x00R\x0evalidateConfig\x12S\n" +
 	"\rdeploy_config\x18\r \x01(\v2,.theatropolis.control.v1.DeployConfigCommandH\x00R\fdeployConfig\x12P\n" +
 	"\fupdate_agent\x18\x0e \x01(\v2+.theatropolis.control.v1.AgentUpdateCommandH\x00R\vupdateAgent\x12W\n" +
-	"\x0fupdate_sing_box\x18\x0f \x01(\v2-.theatropolis.control.v1.SingBoxUpdateCommandH\x00R\rupdateSingBoxB\t\n" +
-	"\apayload\"\x94\x02\n" +
+	"\x0fupdate_sing_box\x18\x0f \x01(\v2-.theatropolis.control.v1.SingBoxUpdateCommandH\x00R\rupdateSingBox\x12R\n" +
+	"\x0fprobe_addresses\x18\x10 \x01(\v2'.theatropolis.control.v1.ProbeAddressesH\x00R\x0eprobeAddressesB\t\n" +
+	"\apayload\"\xc3\x02\n" +
 	"\n" +
 	"AgentHello\x12\x19\n" +
 	"\bagent_id\x18\x01 \x01(\tR\aagentId\x12)\n" +
@@ -1774,7 +1936,8 @@ const file_theatropolis_control_v1_control_proto_rawDesc = "" +
 	"\x10operating_system\x18\x04 \x01(\tR\x0foperatingSystem\x12\"\n" +
 	"\farchitecture\x18\x05 \x01(\tR\farchitecture\x12\"\n" +
 	"\fcapabilities\x18\x06 \x03(\tR\fcapabilities\x12(\n" +
-	"\x10sing_box_version\x18\a \x01(\tR\x0esingBoxVersion\"N\n" +
+	"\x10sing_box_version\x18\a \x01(\tR\x0esingBoxVersion\x12-\n" +
+	"\x12reported_addresses\x18\b \x03(\tR\x11reportedAddresses\"N\n" +
 	"\x0eAgentChallenge\x12\x14\n" +
 	"\x05nonce\x18\x01 \x01(\fR\x05nonce\x12&\n" +
 	"\x0fexpires_at_unix\x18\x02 \x01(\x03R\rexpiresAtUnix\"*\n" +
@@ -1784,11 +1947,12 @@ const file_theatropolis_control_v1_control_proto_rawDesc = "" +
 	"\x14AuthenticationResult\x12$\n" +
 	"\rauthenticated\x18\x01 \x01(\bR\rauthenticated\x12\x1d\n" +
 	"\n" +
-	"error_code\x18\x02 \x01(\tR\terrorCode\"\x92\x01\n" +
+	"error_code\x18\x02 \x01(\tR\terrorCode\"\xc1\x01\n" +
 	"\x0eAgentHeartbeat\x12(\n" +
 	"\x10observed_at_unix\x18\x01 \x01(\x03R\x0eobservedAtUnix\x12,\n" +
 	"\x12active_revision_id\x18\x02 \x01(\tR\x10activeRevisionId\x12(\n" +
-	"\x10sing_box_version\x18\x03 \x01(\tR\x0esingBoxVersion\"\xcc\x01\n" +
+	"\x10sing_box_version\x18\x03 \x01(\tR\x0esingBoxVersion\x12-\n" +
+	"\x12reported_addresses\x18\x04 \x03(\tR\x11reportedAddresses\"\xcc\x01\n" +
 	"\x15ValidateConfigCommand\x12#\n" +
 	"\rdeployment_id\x18\x01 \x01(\tR\fdeploymentId\x12\x1f\n" +
 	"\vrevision_id\x18\x02 \x01(\tR\n" +
@@ -1861,7 +2025,13 @@ const file_theatropolis_control_v1_control_proto_rawDesc = "" +
 	"\n" +
 	"diagnostic\x18\x05 \x01(\tR\n" +
 	"diagnostic\x12(\n" +
-	"\x10observed_at_unix\x18\x06 \x01(\x03R\x0eobservedAtUnix*\xb9\x01\n" +
+	"\x10observed_at_unix\x18\x06 \x01(\x03R\x0eobservedAtUnix\"(\n" +
+	"\x0eProbeAddresses\x12\x16\n" +
+	"\x06family\x18\x01 \x01(\tR\x06family\"\\\n" +
+	"\x12AddressProbeReport\x12\x16\n" +
+	"\x06family\x18\x01 \x01(\tR\x06family\x12\x18\n" +
+	"\aaddress\x18\x02 \x01(\tR\aaddress\x12\x14\n" +
+	"\x05error\x18\x03 \x01(\tR\x05error*\xb9\x01\n" +
 	"\x16ConfigValidationStatus\x12(\n" +
 	"$CONFIG_VALIDATION_STATUS_UNSPECIFIED\x10\x00\x12\"\n" +
 	"\x1eCONFIG_VALIDATION_STATUS_VALID\x10\x01\x12$\n" +
@@ -1911,7 +2081,7 @@ func file_theatropolis_control_v1_control_proto_rawDescGZIP() []byte {
 }
 
 var file_theatropolis_control_v1_control_proto_enumTypes = make([]protoimpl.EnumInfo, 5)
-var file_theatropolis_control_v1_control_proto_msgTypes = make([]protoimpl.MessageInfo, 18)
+var file_theatropolis_control_v1_control_proto_msgTypes = make([]protoimpl.MessageInfo, 20)
 var file_theatropolis_control_v1_control_proto_goTypes = []any{
 	(ConfigValidationStatus)(0),    // 0: theatropolis.control.v1.ConfigValidationStatus
 	(ConfigDeploymentStatus)(0),    // 1: theatropolis.control.v1.ConfigDeploymentStatus
@@ -1936,6 +2106,8 @@ var file_theatropolis_control_v1_control_proto_goTypes = []any{
 	(*AgentUpdateReport)(nil),      // 20: theatropolis.control.v1.AgentUpdateReport
 	(*SingBoxUpdateCommand)(nil),   // 21: theatropolis.control.v1.SingBoxUpdateCommand
 	(*SingBoxUpdateReport)(nil),    // 22: theatropolis.control.v1.SingBoxUpdateReport
+	(*ProbeAddresses)(nil),         // 23: theatropolis.control.v1.ProbeAddresses
+	(*AddressProbeReport)(nil),     // 24: theatropolis.control.v1.AddressProbeReport
 }
 var file_theatropolis_control_v1_control_proto_depIdxs = []int32{
 	9,  // 0: theatropolis.control.v1.AgentFrame.hello:type_name -> theatropolis.control.v1.AgentHello
@@ -1946,26 +2118,28 @@ var file_theatropolis_control_v1_control_proto_depIdxs = []int32{
 	18, // 5: theatropolis.control.v1.AgentFrame.config_runtime_report:type_name -> theatropolis.control.v1.ConfigRuntimeReport
 	20, // 6: theatropolis.control.v1.AgentFrame.agent_update_report:type_name -> theatropolis.control.v1.AgentUpdateReport
 	22, // 7: theatropolis.control.v1.AgentFrame.sing_box_update_report:type_name -> theatropolis.control.v1.SingBoxUpdateReport
-	10, // 8: theatropolis.control.v1.MasterFrame.challenge:type_name -> theatropolis.control.v1.AgentChallenge
-	12, // 9: theatropolis.control.v1.MasterFrame.authentication_result:type_name -> theatropolis.control.v1.AuthenticationResult
-	14, // 10: theatropolis.control.v1.MasterFrame.validate_config:type_name -> theatropolis.control.v1.ValidateConfigCommand
-	16, // 11: theatropolis.control.v1.MasterFrame.deploy_config:type_name -> theatropolis.control.v1.DeployConfigCommand
-	19, // 12: theatropolis.control.v1.MasterFrame.update_agent:type_name -> theatropolis.control.v1.AgentUpdateCommand
-	21, // 13: theatropolis.control.v1.MasterFrame.update_sing_box:type_name -> theatropolis.control.v1.SingBoxUpdateCommand
-	0,  // 14: theatropolis.control.v1.ConfigValidationReport.status:type_name -> theatropolis.control.v1.ConfigValidationStatus
-	1,  // 15: theatropolis.control.v1.ConfigDeploymentReport.status:type_name -> theatropolis.control.v1.ConfigDeploymentStatus
-	2,  // 16: theatropolis.control.v1.ConfigRuntimeReport.status:type_name -> theatropolis.control.v1.ConfigRuntimeStatus
-	3,  // 17: theatropolis.control.v1.AgentUpdateReport.status:type_name -> theatropolis.control.v1.AgentUpdateStatus
-	4,  // 18: theatropolis.control.v1.SingBoxUpdateReport.status:type_name -> theatropolis.control.v1.SingBoxUpdateStatus
-	5,  // 19: theatropolis.control.v1.AgentControlService.Enroll:input_type -> theatropolis.control.v1.EnrollRequest
-	7,  // 20: theatropolis.control.v1.AgentControlService.Connect:input_type -> theatropolis.control.v1.AgentFrame
-	6,  // 21: theatropolis.control.v1.AgentControlService.Enroll:output_type -> theatropolis.control.v1.EnrollResponse
-	8,  // 22: theatropolis.control.v1.AgentControlService.Connect:output_type -> theatropolis.control.v1.MasterFrame
-	21, // [21:23] is the sub-list for method output_type
-	19, // [19:21] is the sub-list for method input_type
-	19, // [19:19] is the sub-list for extension type_name
-	19, // [19:19] is the sub-list for extension extendee
-	0,  // [0:19] is the sub-list for field type_name
+	24, // 8: theatropolis.control.v1.AgentFrame.address_probe_report:type_name -> theatropolis.control.v1.AddressProbeReport
+	10, // 9: theatropolis.control.v1.MasterFrame.challenge:type_name -> theatropolis.control.v1.AgentChallenge
+	12, // 10: theatropolis.control.v1.MasterFrame.authentication_result:type_name -> theatropolis.control.v1.AuthenticationResult
+	14, // 11: theatropolis.control.v1.MasterFrame.validate_config:type_name -> theatropolis.control.v1.ValidateConfigCommand
+	16, // 12: theatropolis.control.v1.MasterFrame.deploy_config:type_name -> theatropolis.control.v1.DeployConfigCommand
+	19, // 13: theatropolis.control.v1.MasterFrame.update_agent:type_name -> theatropolis.control.v1.AgentUpdateCommand
+	21, // 14: theatropolis.control.v1.MasterFrame.update_sing_box:type_name -> theatropolis.control.v1.SingBoxUpdateCommand
+	23, // 15: theatropolis.control.v1.MasterFrame.probe_addresses:type_name -> theatropolis.control.v1.ProbeAddresses
+	0,  // 16: theatropolis.control.v1.ConfigValidationReport.status:type_name -> theatropolis.control.v1.ConfigValidationStatus
+	1,  // 17: theatropolis.control.v1.ConfigDeploymentReport.status:type_name -> theatropolis.control.v1.ConfigDeploymentStatus
+	2,  // 18: theatropolis.control.v1.ConfigRuntimeReport.status:type_name -> theatropolis.control.v1.ConfigRuntimeStatus
+	3,  // 19: theatropolis.control.v1.AgentUpdateReport.status:type_name -> theatropolis.control.v1.AgentUpdateStatus
+	4,  // 20: theatropolis.control.v1.SingBoxUpdateReport.status:type_name -> theatropolis.control.v1.SingBoxUpdateStatus
+	5,  // 21: theatropolis.control.v1.AgentControlService.Enroll:input_type -> theatropolis.control.v1.EnrollRequest
+	7,  // 22: theatropolis.control.v1.AgentControlService.Connect:input_type -> theatropolis.control.v1.AgentFrame
+	6,  // 23: theatropolis.control.v1.AgentControlService.Enroll:output_type -> theatropolis.control.v1.EnrollResponse
+	8,  // 24: theatropolis.control.v1.AgentControlService.Connect:output_type -> theatropolis.control.v1.MasterFrame
+	23, // [23:25] is the sub-list for method output_type
+	21, // [21:23] is the sub-list for method input_type
+	21, // [21:21] is the sub-list for extension type_name
+	21, // [21:21] is the sub-list for extension extendee
+	0,  // [0:21] is the sub-list for field type_name
 }
 
 func init() { file_theatropolis_control_v1_control_proto_init() }
@@ -1982,6 +2156,7 @@ func file_theatropolis_control_v1_control_proto_init() {
 		(*AgentFrame_ConfigRuntimeReport)(nil),
 		(*AgentFrame_AgentUpdateReport)(nil),
 		(*AgentFrame_SingBoxUpdateReport)(nil),
+		(*AgentFrame_AddressProbeReport)(nil),
 	}
 	file_theatropolis_control_v1_control_proto_msgTypes[3].OneofWrappers = []any{
 		(*MasterFrame_Challenge)(nil),
@@ -1990,6 +2165,7 @@ func file_theatropolis_control_v1_control_proto_init() {
 		(*MasterFrame_DeployConfig)(nil),
 		(*MasterFrame_UpdateAgent)(nil),
 		(*MasterFrame_UpdateSingBox)(nil),
+		(*MasterFrame_ProbeAddresses)(nil),
 	}
 	type x struct{}
 	out := protoimpl.TypeBuilder{
@@ -1997,7 +2173,7 @@ func file_theatropolis_control_v1_control_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_theatropolis_control_v1_control_proto_rawDesc), len(file_theatropolis_control_v1_control_proto_rawDesc)),
 			NumEnums:      5,
-			NumMessages:   18,
+			NumMessages:   20,
 			NumExtensions: 0,
 			NumServices:   1,
 		},

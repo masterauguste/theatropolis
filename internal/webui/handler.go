@@ -29,6 +29,7 @@ import (
 	"github.com/masterauguste/theatropolis/internal/control"
 	"github.com/masterauguste/theatropolis/internal/deployment"
 	"github.com/masterauguste/theatropolis/internal/identity"
+	"github.com/masterauguste/theatropolis/internal/pool"
 	"github.com/masterauguste/theatropolis/internal/singbox"
 	"github.com/masterauguste/theatropolis/internal/singboxupdate"
 )
@@ -82,6 +83,18 @@ type AgentController interface {
 		time.Duration,
 	) (deployment.Record, error)
 	RevokeAgent(context.Context, string) error
+	// DeploymentRecords lists the latest deployment record per agent for
+	// outbound-pool derivation.
+	DeploymentRecords(context.Context) ([]deployment.Record, error)
+	// PoolRegistry exposes the fleet-wide outbound pool; it may be nil, in
+	// which case every pool control is hidden.
+	PoolRegistry() *pool.Registry
+	// PropagateManualPoolChange redeploys agents whose configuration
+	// references pool entries after an operator pool mutation.
+	PropagateManualPoolChange(context.Context)
+	// RequestAddressProbe asks an online, probe-capable agent to resolve
+	// its public address for one explicit family ("ipv4" or "ipv6").
+	RequestAddressProbe(agentID, family string) error
 }
 
 type Options struct {
@@ -163,6 +176,9 @@ type pageData struct {
 	MasterUpdateEnabled   bool
 	MasterUpdate          *agentUpdateView
 	MasterUpdateRequestID string
+	Pool                  *poolView
+	PoolFormName          string
+	PoolFormJSON          string
 }
 
 type fleetStats struct {
@@ -181,6 +197,12 @@ type agentView struct {
 	ConnectionClass string
 	Detail          string
 	URL             string
+	// AddressLines summarizes the agent's pool-reachable addresses, one
+	// element per display line; empty for non-enrolled agents or when no
+	// address information exists.
+	AddressLines []string
+	// AddressURL is the address-override endpoint; empty hides the form.
+	AddressURL string
 }
 
 type agentDetailView struct {
@@ -325,6 +347,8 @@ func (h *Handler) routes() {
 	h.mux.HandleFunc("POST /logout", h.logout)
 	h.mux.HandleFunc("GET /servers", h.serversPage)
 	h.mux.HandleFunc("GET /settings", h.settingsPage)
+	h.mux.HandleFunc("POST /settings/pool", h.upsertPoolEntry)
+	h.mux.HandleFunc("POST /settings/pool/delete", h.deletePoolEntry)
 	h.mux.HandleFunc("GET /settings/versions", h.masterVersions)
 	h.mux.HandleFunc("GET /settings/update-status", h.masterUpdateStatus)
 	h.mux.HandleFunc("GET /servers/new", h.newServerPage)
@@ -341,6 +365,18 @@ func (h *Handler) routes() {
 	h.mux.HandleFunc(
 		"GET /servers/{agent_id}/rule-set-options",
 		h.serverRuleSetOptions,
+	)
+	h.mux.HandleFunc(
+		"GET /servers/{agent_id}/pool-options",
+		h.serverPoolOptions,
+	)
+	h.mux.HandleFunc(
+		"POST /servers/{agent_id}/address",
+		h.setServerAddress,
+	)
+	h.mux.HandleFunc(
+		"POST /servers/{agent_id}/probe-address",
+		h.requestAddressProbe,
 	)
 	h.mux.HandleFunc(
 		"POST /servers/{agent_id}/configuration",
@@ -519,6 +555,12 @@ func (h *Handler) serversPage(response http.ResponseWriter, request *http.Reques
 		online := snapshot.State == identity.AgentStateEnrolled &&
 			h.sessions.IsOnline(snapshot.ID)
 		view := agentViewFor(snapshot, now, online)
+		if snapshot.State == identity.AgentStateEnrolled {
+			view.AddressLines = h.poolAddressLines(snapshot.ID, online)
+			if h.controller.PoolRegistry() != nil {
+				view.AddressURL = "/servers/" + url.PathEscape(snapshot.ID) + "/address"
+			}
+		}
 		agents = append(agents, view)
 		switch {
 		case snapshot.State == identity.AgentStatePending:
@@ -549,19 +591,29 @@ func (h *Handler) settingsPage(response http.ResponseWriter, request *http.Reque
 		http.NotFound(response, request)
 		return
 	}
+	h.render(
+		response,
+		http.StatusOK,
+		"settings.html",
+		h.settingsPageData(request.Context(), session),
+	)
+}
+
+func (h *Handler) settingsPageData(ctx context.Context, session Session) pageData {
 	var masterUpdate *agentUpdateView
 	if h.masterUpdater != nil {
 		if result, exists, err := h.masterUpdater.LoadResult(); err == nil && exists {
 			masterUpdate = updateResultViewFor(result)
 		}
 	}
-	h.render(response, http.StatusOK, "settings.html", pageData{
+	return pageData{
 		Title:         "Settings",
 		ActiveNav:     "settings",
 		CSRFToken:     session.CSRFToken,
 		MasterVersion: h.version,
 		MasterUpdate:  masterUpdate,
-	})
+		Pool:          h.poolPageView(ctx),
+	}
 }
 
 func (h *Handler) masterVersions(response http.ResponseWriter, request *http.Request) {

@@ -99,6 +99,7 @@ func newTestServer(store deployment.Store, notifier deployment.Notifier) *Server
 	return NewServer(
 		identity.NewRegistry(),
 		store,
+		nil,
 		notifier,
 		slog.New(slog.NewTextHandler(io.Discard, nil)),
 	)
@@ -556,6 +557,7 @@ func TestRevokeAgentDurablyInvalidatesActiveSession(t *testing.T) {
 	server := NewServer(
 		identities,
 		deployment.NewMemoryStore(),
+		nil,
 		nil,
 		slog.New(slog.NewTextHandler(io.Discard, nil)),
 	)

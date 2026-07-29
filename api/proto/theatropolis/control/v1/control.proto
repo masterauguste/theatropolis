@@ -37,6 +37,7 @@ message AgentFrame {
     ConfigRuntimeReport config_runtime_report = 15;
     AgentUpdateReport agent_update_report = 16;
     SingBoxUpdateReport sing_box_update_report = 17;
+    AddressProbeReport address_probe_report = 18;
   }
 }
 
@@ -50,6 +51,7 @@ message MasterFrame {
     DeployConfigCommand deploy_config = 13;
     AgentUpdateCommand update_agent = 14;
     SingBoxUpdateCommand update_sing_box = 15;
+    ProbeAddresses probe_addresses = 16;
   }
 }
 
@@ -61,6 +63,9 @@ message AgentHello {
   string architecture = 5;
   repeated string capabilities = 6;
   string sing_box_version = 7;
+  // Global-unicast interface addresses observed on the agent host, as plain
+  // IP strings (both families mixed; the master splits them by parsing).
+  repeated string reported_addresses = 8;
 }
 
 message AgentChallenge {
@@ -81,6 +86,9 @@ message AgentHeartbeat {
   int64 observed_at_unix = 1;
   string active_revision_id = 2;
   string sing_box_version = 3;
+  // Current global-unicast interface addresses, same encoding as in
+  // AgentHello; refreshed on every heartbeat.
+  repeated string reported_addresses = 4;
 }
 
 message ValidateConfigCommand {
@@ -194,4 +202,18 @@ message SingBoxUpdateReport {
   SingBoxUpdateStatus status = 4;
   string diagnostic = 5;
   int64 observed_at_unix = 6;
+}
+
+message ProbeAddresses {
+  // Address family to probe: exactly "ipv4" or "ipv6".
+  string family = 1;
+}
+
+message AddressProbeReport {
+  // Echoes the requested family (even when it was unsupported).
+  string family = 1;
+  // Probed public address as a plain IP string; empty on failure.
+  string address = 2;
+  // Failure reason; empty on success.
+  string error = 3;
 }

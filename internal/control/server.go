@@ -7,8 +7,11 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"net/netip"
+	"slices"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 	"unicode"
 
@@ -16,6 +19,7 @@ import (
 	"github.com/masterauguste/theatropolis/internal/agentupdate"
 	"github.com/masterauguste/theatropolis/internal/deployment"
 	"github.com/masterauguste/theatropolis/internal/identity"
+	"github.com/masterauguste/theatropolis/internal/pool"
 	"github.com/masterauguste/theatropolis/internal/singbox"
 	"github.com/masterauguste/theatropolis/internal/singboxupdate"
 	"google.golang.org/grpc/codes"
@@ -28,6 +32,8 @@ const (
 	AgentUpdateCapability   = "agent-update-v1"
 	SingBoxUpdateCapability = "sing-box-update-v1"
 	HeartbeatCapability     = "heartbeat-v1"
+	CapabilityAddressReport = "address-report-v1"
+	CapabilityAddressProbe  = "address-probe-v1"
 	DefaultChallengeTTL     = 30 * time.Second
 	DefaultCommandQueue     = 16
 	DefaultMaxConfigBytes   = 4 << 20
@@ -53,6 +59,25 @@ type Server struct {
 	Now              func() time.Time
 	HeartbeatTimeout time.Duration
 
+	// poolRegistry is the fleet-wide outbound pool. It may be nil (unit
+	// tests); every pool code path degrades to a no-op in that case, which
+	// leaves configurations passing through unrendered.
+	poolRegistry *pool.Registry
+
+	// probeIntervalNanos is the re-probe interval in nanoseconds; atomic so
+	// tests can shrink it (SetProbeInterval) while the scheduler goroutine
+	// is already running. probeStop/probeWG/closeOnce manage that goroutine,
+	// which NewServer starts only when a pool registry is present.
+	probeIntervalNanos atomic.Int64
+	probeStop          chan struct{}
+	probeWG            sync.WaitGroup
+	closeOnce          sync.Once
+
+	// probedMu guards probedShadow, the control plane's copy of the probed
+	// address lists it wrote via pool.SetProbed. See mergeProbedAddress.
+	probedMu     sync.Mutex
+	probedShadow map[string]*probedAddressState
+
 	// authorizationMu linearizes enrollment, the final Connect authorization
 	// check/session registration, and revocation. Without this barrier a
 	// Connect call could authenticate with a public key fetched just before
@@ -66,6 +91,7 @@ type Server struct {
 func NewServer(
 	identities *identity.Registry,
 	deployments deployment.Store,
+	poolRegistry *pool.Registry,
 	notifier deployment.Notifier,
 	logger *slog.Logger,
 ) *Server {
@@ -75,17 +101,50 @@ func NewServer(
 	if logger == nil {
 		logger = slog.Default()
 	}
-	return &Server{
+	server := &Server{
 		Identities:       identities,
 		Deployments:      deployments,
+		poolRegistry:     poolRegistry,
 		Notifier:         notifier,
 		Sessions:         NewSessionRegistry(),
 		Logger:           logger,
 		Now:              time.Now,
 		HeartbeatTimeout: DefaultHeartbeatTimeout,
+		probedShadow:     make(map[string]*probedAddressState),
 		updates:          make(map[string]AgentUpdateState),
 		singBoxUpdates:   make(map[string]SingBoxUpdateState),
 	}
+	server.probeIntervalNanos.Store(int64(DefaultProbeRefreshInterval))
+	if poolRegistry != nil {
+		// The re-probe scheduler only makes sense with a pool to scan and
+		// persists through; without one (unit tests) no goroutine starts.
+		server.probeStop = make(chan struct{})
+		server.probeWG.Add(1)
+		go server.probeLoop()
+	}
+	return server
+}
+
+// PoolRegistry exposes the outbound-pool registry so master-local callers
+// (the web interface) can manage manual entries. It may be nil.
+func (s *Server) PoolRegistry() *pool.Registry {
+	return s.poolRegistry
+}
+
+// DeploymentRecords lists the latest stored deployment record per agent so
+// master-local callers (the web interface's outbound-pool view) can derive
+// pool entries without reaching the store directly.
+func (s *Server) DeploymentRecords(ctx context.Context) ([]deployment.Record, error) {
+	return s.Deployments.List(ctx)
+}
+
+// PropagateManualPoolChange re-renders and redeploys every agent whose
+// logical configuration references pool entries after a manual entry was
+// upserted or removed through PoolRegistry. It never returns an error:
+// per-agent failures are logged and the stale pool-version check on agent
+// reconnect is the backstop.
+func (s *Server) PropagateManualPoolChange(ctx context.Context) {
+	s.propagatePoolChange(ctx, "manual pool change", "")
 }
 
 func (s *Server) Enroll(
@@ -139,21 +198,36 @@ func (s *Server) Enroll(
 // revocation entry point for master-local callers such as the web interface.
 func (s *Server) RevokeAgent(ctx context.Context, agentID string) error {
 	s.authorizationMu.Lock()
-	defer s.authorizationMu.Unlock()
-
 	if err := s.Deployments.RemoveAgent(ctx, agentID); err != nil &&
 		!errors.Is(err, deployment.ErrNotFound) {
+		s.authorizationMu.Unlock()
 		return fmt.Errorf("remove agent deployment data: %w", err)
 	}
 	if err := s.Identities.Revoke(ctx, agentID); err != nil {
+		s.authorizationMu.Unlock()
 		return err
 	}
 	connected := s.Sessions.Disconnect(agentID)
+	s.authorizationMu.Unlock()
 	s.Logger.Info(
 		"agent revoked",
 		"agent_id", agentID,
 		"was_connected", connected,
 	)
+
+	// Pool cleanup and dependent propagation run after authorizationMu is
+	// released: propagatePoolChange reaches QueueDeployment, which acquires
+	// that same mutex.
+	if s.poolRegistry != nil {
+		if err := s.poolRegistry.RemoveAgent(agentID); err != nil {
+			s.Logger.Error(
+				"remove agent from outbound pool failed",
+				"agent_id", agentID,
+				"error", err,
+			)
+		}
+		s.propagatePoolChange(ctx, "agent revoked", agentID)
+	}
 	return nil
 }
 
@@ -245,6 +319,11 @@ func (s *Server) Connect(stream controlv1.AgentControlService_ConnectServer) err
 		return status.Error(codes.AlreadyExists, "agent already has an active session")
 	}
 	defer s.Sessions.Unregister(session)
+	// authorizationMu is released at this point; the calls below may reach
+	// QueueDeployment, which acquires it.
+	s.syncPoolAddresses(ctx, hello.GetAgentId(), session.info.ReportedIPv4, session.info.ReportedIPv6)
+	s.syncObservedAddress(ctx, hello.GetAgentId(), observedAddress(ctx))
+	s.catchUpPoolDeployment(ctx, hello.GetAgentId())
 	outgoing := make(chan *controlv1.MasterFrame)
 	sendResults := make(chan error, 1)
 	go sendMasterFrames(stream, outgoing, sendResults)
@@ -411,10 +490,17 @@ func (s *Server) QueueValidation(
 	config []byte,
 	timeout time.Duration,
 ) (deployment.Record, error) {
-	if len(config) == 0 || len(config) > DefaultMaxConfigBytes {
+	// config is the logical document and may contain pool refs. Only the
+	// rendered document is size/policy checked, digested, and sent to the
+	// agent; the record keeps the logical bytes plus the rendered digest.
+	rendered, renderedSHA, err := s.renderLogicalConfig(config)
+	if err != nil {
+		return deployment.Record{}, err
+	}
+	if len(rendered) == 0 || len(rendered) > DefaultMaxConfigBytes {
 		return deployment.Record{}, errors.New("candidate configuration is empty or exceeds the size limit")
 	}
-	if err := singbox.ValidateManagedConfig(config); err != nil {
+	if err := singbox.ValidateManagedConfig(rendered); err != nil {
 		return deployment.Record{}, err
 	}
 	s.authorizationMu.Lock()
@@ -424,6 +510,7 @@ func (s *Server) QueueValidation(
 	if err != nil {
 		return deployment.Record{}, err
 	}
+	record.RenderedSHA256 = renderedSHA
 	if err := s.Deployments.Create(ctx, record); err != nil {
 		return deployment.Record{}, err
 	}
@@ -449,8 +536,8 @@ func (s *Server) QueueValidation(
 			ValidateConfig: &controlv1.ValidateConfigCommand{
 				DeploymentId:   record.ID,
 				RevisionId:     record.RevisionID,
-				ConfigSha256:   record.ConfigSHA256[:],
-				ConfigJson:     append([]byte(nil), config...),
+				ConfigSha256:   renderedSHA[:],
+				ConfigJson:     append([]byte(nil), rendered...),
 				TimeoutSeconds: uint32(max(1, int(timeout/time.Second))),
 			},
 		},
@@ -483,10 +570,17 @@ func (s *Server) QueueDeployment(
 	config []byte,
 	timeout time.Duration,
 ) (deployment.Record, error) {
-	if len(config) == 0 || len(config) > DefaultMaxConfigBytes {
+	// config is the logical document and may contain pool refs. Only the
+	// rendered document is size/policy checked, digested, and sent to the
+	// agent; the record keeps the logical bytes plus the rendered digest.
+	rendered, renderedSHA, err := s.renderLogicalConfig(config)
+	if err != nil {
+		return deployment.Record{}, err
+	}
+	if len(rendered) == 0 || len(rendered) > DefaultMaxConfigBytes {
 		return deployment.Record{}, errors.New("candidate configuration is empty or exceeds the size limit")
 	}
-	if err := singbox.ValidateManagedConfig(config); err != nil {
+	if err := singbox.ValidateManagedConfig(rendered); err != nil {
 		return deployment.Record{}, err
 	}
 	s.authorizationMu.Lock()
@@ -524,6 +618,7 @@ func (s *Server) QueueDeployment(
 	if err != nil {
 		return deployment.Record{}, err
 	}
+	record.RenderedSHA256 = renderedSHA
 	if err := s.Deployments.Create(ctx, record); err != nil {
 		return deployment.Record{}, err
 	}
@@ -548,8 +643,8 @@ func (s *Server) QueueDeployment(
 			DeployConfig: &controlv1.DeployConfigCommand{
 				DeploymentId:   record.ID,
 				RevisionId:     record.RevisionID,
-				ConfigSha256:   record.ConfigSHA256[:],
-				ConfigJson:     append([]byte(nil), config...),
+				ConfigSha256:   renderedSHA[:],
+				ConfigJson:     append([]byte(nil), rendered...),
 				TimeoutSeconds: uint32(max(1, int(timeout/time.Second))),
 			},
 		},
@@ -639,6 +734,12 @@ func (s *Server) handleAgentFrame(
 			agentID,
 			payload.Heartbeat.GetSingBoxVersion(),
 		)
+		reportedV4, reportedV6 := sanitizeReportedAddresses(
+			payload.Heartbeat.GetReportedAddresses(),
+		)
+		if s.Sessions.SetReportedAddresses(agentID, reportedV4, reportedV6) {
+			s.syncPoolAddresses(ctx, agentID, reportedV4, reportedV6)
+		}
 		return nil
 	case *controlv1.AgentFrame_ConfigValidationReport:
 		return s.handleValidationReport(ctx, agentID, payload.ConfigValidationReport)
@@ -653,6 +754,8 @@ func (s *Server) handleAgentFrame(
 			agentID,
 			payload.SingBoxUpdateReport,
 		)
+	case *controlv1.AgentFrame_AddressProbeReport:
+		return s.handleAddressProbeReport(ctx, agentID, payload.AddressProbeReport)
 	default:
 		return status.Error(codes.InvalidArgument, "unexpected agent frame")
 	}
@@ -907,9 +1010,10 @@ func (s *Server) handleValidationReport(
 	if err != nil {
 		return status.Error(codes.NotFound, "deployment not found")
 	}
+	renderedDigest := record.RenderedDigest()
 	if record.AgentID != agentID ||
 		record.RevisionID != report.GetRevisionId() ||
-		!bytes.Equal(record.ConfigSHA256[:], report.GetConfigSha256()) {
+		!bytes.Equal(renderedDigest[:], report.GetConfigSha256()) {
 		return status.Error(codes.PermissionDenied, "validation report does not match its deployment")
 	}
 
@@ -976,9 +1080,10 @@ func (s *Server) handleDeploymentReport(
 	if err != nil {
 		return status.Error(codes.NotFound, "deployment not found")
 	}
+	renderedDigest := record.RenderedDigest()
 	if record.AgentID != agentID ||
 		record.RevisionID != report.GetRevisionId() ||
-		!bytes.Equal(record.ConfigSHA256[:], report.GetConfigSha256()) {
+		!bytes.Equal(renderedDigest[:], report.GetConfigSha256()) {
 		return status.Error(codes.PermissionDenied, "deployment report does not match its request")
 	}
 
@@ -1029,6 +1134,23 @@ func (s *Server) handleDeploymentReport(
 		"deployment_id", record.ID,
 		"status", next,
 	)
+	if next == deployment.StatusApplied && s.poolRegistry != nil {
+		// The agent now runs this rendered document: stamp its render state
+		// so the reconnect staleness check does not flag it, then let every
+		// dependent re-render against the inbound set this config provides.
+		if err := s.poolRegistry.MarkRendered(
+			agentID,
+			s.poolRegistry.PoolVersion(),
+			record.RenderedDigest(),
+		); err != nil {
+			s.Logger.Error(
+				"outbound pool render stamp failed",
+				"agent_id", agentID,
+				"error", err,
+			)
+		}
+		s.propagatePoolChange(ctx, "deployment applied", agentID)
+	}
 	return nil
 }
 
@@ -1052,7 +1174,8 @@ func (s *Server) handleRuntimeReport(
 	if err != nil {
 		return status.Error(codes.Internal, "deployment state could not be loaded")
 	}
-	if !bytes.Equal(record.ConfigSHA256[:], report.GetConfigSha256()) {
+	renderedDigest := record.RenderedDigest()
+	if !bytes.Equal(renderedDigest[:], report.GetConfigSha256()) {
 		// A buffered event for the previously active configuration can arrive
 		// after a newer candidate becomes the latest master record.
 		return nil
@@ -1162,6 +1285,11 @@ type AgentInfo struct {
 	SingBoxVersion  string
 	OperatingSystem string
 	Architecture    string
+	// ObservedAddress is the address the agent's control connection arrives
+	// from (X-Forwarded-For through Caddy, else the transport peer).
+	ObservedAddress string
+	ReportedIPv4    []string
+	ReportedIPv6    []string
 }
 
 func newSession(agentID string) *session {
@@ -1181,6 +1309,8 @@ func newSessionFromHello(hello *controlv1.AgentHello) *session {
 		OperatingSystem: hello.GetOperatingSystem(),
 		Architecture:    hello.GetArchitecture(),
 	}
+	session.info.ReportedIPv4, session.info.ReportedIPv6 =
+		sanitizeReportedAddresses(hello.GetReportedAddresses())
 	return session
 }
 
@@ -1191,7 +1321,12 @@ func (r *SessionRegistry) AgentInfo(agentID string) (AgentInfo, bool) {
 	if !exists {
 		return AgentInfo{}, false
 	}
-	return session.info, true
+	// Clone the address slices so a caller mutating the returned struct
+	// cannot race the registry's stored state.
+	info := session.info
+	info.ReportedIPv4 = slices.Clone(info.ReportedIPv4)
+	info.ReportedIPv6 = slices.Clone(info.ReportedIPv6)
+	return info, true
 }
 
 func (r *SessionRegistry) SetSingBoxVersion(agentID, version string) {
@@ -1200,6 +1335,103 @@ func (r *SessionRegistry) SetSingBoxVersion(agentID, version string) {
 	if session, exists := r.sessions[agentID]; exists {
 		session.info.SingBoxVersion = version
 	}
+}
+
+// SetObservedAddress records the address the agent's control connection
+// arrived from. It mirrors SetSingBoxVersion: the write happens under the
+// same registry mutex that guards session lookup.
+func (r *SessionRegistry) SetObservedAddress(agentID, addr string) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if session, exists := r.sessions[agentID]; exists {
+		session.info.ObservedAddress = addr
+	}
+}
+
+// SetReportedAddresses replaces the stored interface addresses for a
+// connected agent and reports whether they differ from what was stored. It
+// mirrors SetSingBoxVersion: the comparison and the write happen under the
+// same registry mutex that guards session lookup, so a heartbeat racing an
+// unregister simply becomes a no-op. Both the stored and incoming slices are
+// deduplicated and deterministically ordered by the agent (preferred
+// addresses first), which makes a plain slice compare an exact compare.
+// Copies are stored so later mutation of the caller's slices cannot alias
+// registry state.
+func (r *SessionRegistry) SetReportedAddresses(
+	agentID string,
+	v4, v6 []string,
+) (changed bool) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	session, exists := r.sessions[agentID]
+	if !exists {
+		return false
+	}
+	if slices.Equal(session.info.ReportedIPv4, v4) &&
+		slices.Equal(session.info.ReportedIPv6, v6) {
+		return false
+	}
+	session.info.ReportedIPv4 = slices.Clone(v4)
+	session.info.ReportedIPv6 = slices.Clone(v6)
+	return true
+}
+
+const (
+	// maxReportedAddressesPerFamily caps how many addresses per IP family
+	// the master retains for an agent. maxReportedAddressEntries caps how
+	// many raw strings of a single frame are even looked at, so a
+	// misbehaving agent cannot turn heartbeat handling into unbounded work.
+	maxReportedAddressesPerFamily = 8
+	maxReportedAddressEntries     = 256
+)
+
+// sanitizeReportedAddresses parses the plain address strings an agent
+// reports into canonical IPv4/IPv6 lists. The master never trusts wire data:
+// unparseable entries are dropped, IPv4-in-IPv6 forms are unmapped into the
+// v4 family, duplicates are removed, each family is capped, and only
+// globally routable addresses are kept (globallyRoutable — no RFC 1918, ULA,
+// CGNAT, or reserved space, same rule the agent applies at collection and
+// the pool registry at write). The agent's ORDER IS PRESERVED, not
+// re-sorted: the pool's first-entry selection relies on the agent's
+// deterministic order, so change detection and persistence churn stay
+// stable. (Public addresses discovered by on-command probes travel in probe
+// reports, not here.)
+func sanitizeReportedAddresses(reported []string) (v4, v6 []string) {
+	seen4 := make(map[netip.Addr]struct{})
+	seen6 := make(map[netip.Addr]struct{})
+	for index, entry := range reported {
+		if index >= maxReportedAddressEntries {
+			break
+		}
+		addr, err := netip.ParseAddr(entry)
+		if err != nil {
+			continue
+		}
+		addr = addr.Unmap()
+		if !globallyRoutable(addr) {
+			continue
+		}
+		if addr.Is4() {
+			if _, duplicate := seen4[addr]; duplicate {
+				continue
+			}
+			if len(v4) >= maxReportedAddressesPerFamily {
+				continue
+			}
+			seen4[addr] = struct{}{}
+			v4 = append(v4, addr.String())
+		} else {
+			if _, duplicate := seen6[addr]; duplicate {
+				continue
+			}
+			if len(v6) >= maxReportedAddressesPerFamily {
+				continue
+			}
+			seen6[addr] = struct{}{}
+			v6 = append(v6, addr.String())
+		}
+	}
+	return v4, v6
 }
 
 type SessionRegistry struct {

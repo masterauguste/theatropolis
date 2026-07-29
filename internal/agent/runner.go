@@ -182,7 +182,10 @@ func (r *Runner) runControlSession(
 	hello.Capabilities = append(
 		hello.Capabilities,
 		control.HeartbeatCapability,
+		control.CapabilityAddressReport,
+		control.CapabilityAddressProbe,
 	)
+	hello.ReportedAddresses = collectReportedAddresses()
 	if err := stream.Send(&controlv1.AgentFrame{
 		Sequence: agentSequence,
 		Payload: &controlv1.AgentFrame_Hello{
@@ -251,6 +254,11 @@ func (r *Runner) runControlSession(
 	}
 	heartbeatTicker := time.NewTicker(r.heartbeatPeriod())
 	defer heartbeatTicker.Stop()
+	// Address probes run off the control loop (worst case ~2*probeTimeout);
+	// finished reports are serialized back through this channel so the
+	// select loop below remains the only sender and the only writer of
+	// agentSequence — the same pattern updateTicks uses for update results.
+	probeReports := make(chan *controlv1.AddressProbeReport, 4)
 	for {
 		select {
 		case <-ctx.Done():
@@ -302,11 +310,39 @@ func (r *Runner) runControlSession(
 						command.UpdateSingBox,
 					),
 				}
+			case *controlv1.MasterFrame_ProbeAddresses:
+				family := command.ProbeAddresses.GetFamily()
+				if is6, supported := probeFamilyIs6(family); supported {
+					// Reply asynchronously via probeReports; this slot's
+					// sequence number stays unused, which is fine because
+					// the master only requires monotonic increase.
+					go runAddressProbe(sessionContext, family, is6, probeReports)
+				} else {
+					response.Payload = &controlv1.AgentFrame_AddressProbeReport{
+						AddressProbeReport: &controlv1.AddressProbeReport{
+							Family: family,
+							Error:  "unsupported family",
+						},
+					}
+				}
 			default:
 				return errors.New("master sent an unsupported command")
 			}
+			if response.Payload == nil {
+				continue
+			}
 			if err := stream.Send(response); err != nil {
 				return fmt.Errorf("send configuration report: %w", err)
+			}
+		case report := <-probeReports:
+			agentSequence++
+			if err := stream.Send(&controlv1.AgentFrame{
+				Sequence: agentSequence,
+				Payload: &controlv1.AgentFrame_AddressProbeReport{
+					AddressProbeReport: report,
+				},
+			}); err != nil {
+				return fmt.Errorf("send address probe report: %w", err)
 			}
 		case <-updateTicks:
 			if err := r.sendPendingUpdateResult(
@@ -327,8 +363,9 @@ func (r *Runner) runControlSession(
 				Sequence: agentSequence,
 				Payload: &controlv1.AgentFrame_Heartbeat{
 					Heartbeat: &controlv1.AgentHeartbeat{
-						ObservedAtUnix: r.now().Unix(),
-						SingBoxVersion: r.SingBoxVersion,
+						ObservedAtUnix:    r.now().Unix(),
+						SingBoxVersion:    r.SingBoxVersion,
+						ReportedAddresses: collectReportedAddresses(),
 					},
 				},
 			}); err != nil {
@@ -346,6 +383,68 @@ func (r *Runner) runControlSession(
 			}
 		}
 	}
+}
+
+// reportedAddresses is the process-wide reporter: interface addresses are
+// collected per frame, and public-address probing runs only when the master
+// explicitly commands it (ProbeAddresses).
+var reportedAddresses = &AddressReporter{}
+
+// maxProbeErrorBytes caps the failure reason carried in an
+// AddressProbeReport; the endpoints are hardcoded, so the underlying error
+// never contains credentials, only potentially long transport messages.
+const maxProbeErrorBytes = 256
+
+// collectReportedAddresses snapshots the host's interface addresses as plain
+// strings (both families mixed; the master splits them by parsing). No
+// probing happens here — collection is a cheap syscall done on hello and
+// every heartbeat. Failure is non-fatal: the frame goes out with no
+// addresses and the master keeps whatever it last saw.
+func collectReportedAddresses() []string {
+	v4, v6 := reportedAddresses.Addresses()
+	return append(v4, v6...)
+}
+
+// probeFamilyIs6 maps a ProbeAddresses family string to the probe's boolean
+// family selector; only exactly "ipv4" and "ipv6" are supported.
+func probeFamilyIs6(family string) (is6, supported bool) {
+	switch family {
+	case "ipv4":
+		return false, true
+	case "ipv6":
+		return true, true
+	}
+	return false, false
+}
+
+// runAddressProbe executes a master-commanded probe off the control loop and
+// hands the report back through out. The send is bounded by ctx so a dead
+// session cannot leak the goroutine.
+func runAddressProbe(
+	ctx context.Context,
+	family string,
+	is6 bool,
+	out chan<- *controlv1.AddressProbeReport,
+) {
+	report := &controlv1.AddressProbeReport{Family: family}
+	addr, err := reportedAddresses.Probe(ctx, is6)
+	if err != nil {
+		report.Error = sanitizeProbeError(err)
+	} else {
+		report.Address = addr.String()
+	}
+	select {
+	case out <- report:
+	case <-ctx.Done():
+	}
+}
+
+func sanitizeProbeError(err error) string {
+	text := err.Error()
+	if len(text) > maxProbeErrorBytes {
+		text = text[:maxProbeErrorBytes]
+	}
+	return text
 }
 
 func (r *Runner) scheduleSingBoxUpdate(

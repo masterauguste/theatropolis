@@ -2,13 +2,24 @@ package agent
 
 import (
 	"context"
+	"crypto/ed25519"
+	"crypto/rand"
 	"crypto/sha256"
 	"errors"
+	"fmt"
+	"net"
+	"slices"
+	"sync/atomic"
 	"testing"
 	"time"
 
 	controlv1 "github.com/masterauguste/theatropolis/api/gen/theatropolis/control/v1"
+	"github.com/masterauguste/theatropolis/internal/control"
+	"github.com/masterauguste/theatropolis/internal/identity"
 	"github.com/masterauguste/theatropolis/internal/singbox"
+	"google.golang.org/grpc"
+	"google.golang.org/grpc/credentials/insecure"
+	"google.golang.org/grpc/test/bufconn"
 )
 
 type testConfigurationManager struct {
@@ -162,5 +173,226 @@ func TestRuntimeReportMapsEveryManagerStatus(t *testing.T) {
 				t.Fatalf("runtimeReport(%q) produced unspecified status", test.manager)
 			}
 		})
+	}
+}
+
+// probeCommandServer is a minimal fake master: it runs the handshake, then
+// forwards command payloads from the test to the stream and agent frames
+// back to the test. Master sequence numbers are assigned on send.
+type probeCommandServer struct {
+	controlv1.UnimplementedAgentControlServiceServer
+
+	hello       chan *controlv1.AgentHello
+	agentFrames chan *controlv1.AgentFrame
+	commands    chan *controlv1.ProbeAddresses
+}
+
+func (s *probeCommandServer) Connect(
+	stream controlv1.AgentControlService_ConnectServer,
+) error {
+	helloFrame, err := stream.Recv()
+	if err != nil {
+		return err
+	}
+	select {
+	case s.hello <- helloFrame.GetHello():
+	case <-stream.Context().Done():
+		return stream.Context().Err()
+	}
+	nonce := make([]byte, identity.ChallengeNonceBytes)
+	if _, err := rand.Read(nonce); err != nil {
+		return err
+	}
+	var masterSequence uint64 = 1
+	if err := stream.Send(&controlv1.MasterFrame{
+		Sequence: masterSequence,
+		Payload: &controlv1.MasterFrame_Challenge{
+			Challenge: &controlv1.AgentChallenge{
+				Nonce:         nonce,
+				ExpiresAtUnix: time.Now().Add(time.Minute).Unix(),
+			},
+		},
+	}); err != nil {
+		return err
+	}
+	if _, err := stream.Recv(); err != nil { // proof
+		return err
+	}
+	masterSequence++
+	if err := stream.Send(&controlv1.MasterFrame{
+		Sequence: masterSequence,
+		Payload: &controlv1.MasterFrame_AuthenticationResult{
+			AuthenticationResult: &controlv1.AuthenticationResult{
+				Authenticated: true,
+			},
+		},
+	}); err != nil {
+		return err
+	}
+
+	recvDone := make(chan error, 1)
+	go func() {
+		for {
+			frame, err := stream.Recv()
+			if err != nil {
+				recvDone <- err
+				return
+			}
+			select {
+			case s.agentFrames <- frame:
+			case <-stream.Context().Done():
+				recvDone <- stream.Context().Err()
+				return
+			}
+		}
+	}()
+	for {
+		select {
+		case command := <-s.commands:
+			masterSequence++
+			if err := stream.Send(&controlv1.MasterFrame{
+				Sequence: masterSequence,
+				Payload: &controlv1.MasterFrame_ProbeAddresses{
+					ProbeAddresses: command,
+				},
+			}); err != nil {
+				return err
+			}
+		case err := <-recvDone:
+			return err
+		case <-stream.Context().Done():
+			return stream.Context().Err()
+		}
+	}
+}
+
+func TestRunnerAnswersAddressProbeCommand(t *testing.T) {
+	// Not parallel: the test swaps the process-wide reportedAddresses.
+	var hits atomic.Int32
+	echo := echoServer(t, "203.0.113.50", &hits)
+	previous := reportedAddresses
+	reportedAddresses = &AddressReporter{
+		Source:      interfaceSource("10.0.0.8"),
+		EndpointsV4: []string{echo.URL},
+	}
+	t.Cleanup(func() { reportedAddresses = previous })
+
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+
+	listener := bufconn.Listen(1 << 20)
+	fake := &probeCommandServer{
+		hello:       make(chan *controlv1.AgentHello, 1),
+		agentFrames: make(chan *controlv1.AgentFrame, 64),
+		commands:    make(chan *controlv1.ProbeAddresses),
+	}
+	grpcServer := grpc.NewServer()
+	controlv1.RegisterAgentControlServiceServer(grpcServer, fake)
+	go func() {
+		_ = grpcServer.Serve(listener)
+	}()
+	defer grpcServer.Stop()
+
+	connection, err := grpc.NewClient(
+		"passthrough:///theatropolis-test",
+		grpc.WithContextDialer(func(context.Context, string) (net.Conn, error) {
+			return listener.Dial()
+		}),
+		grpc.WithTransportCredentials(insecure.NewCredentials()),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer connection.Close()
+	client := controlv1.NewAgentControlServiceClient(connection)
+
+	_, privateKey, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	runner := &Runner{
+		AgentID:         "edge-probe-1",
+		AgentVersion:    "test",
+		PrivateKey:      privateKey,
+		HeartbeatPeriod: 10 * time.Millisecond, // interleave with probe reports
+	}
+	runnerResult := make(chan error, 1)
+	go func() {
+		runnerResult <- runner.Run(ctx, client)
+	}()
+
+	var hello *controlv1.AgentHello
+	select {
+	case hello = <-fake.hello:
+	case <-ctx.Done():
+		t.Fatal("agent did not send its hello")
+	}
+	if !slices.Contains(hello.GetCapabilities(), control.CapabilityAddressProbe) {
+		t.Fatalf("hello capabilities %v lack %q", hello.GetCapabilities(), control.CapabilityAddressProbe)
+	}
+
+	// nextFrame returns the next post-auth agent frame, asserting the agent
+	// sequence is strictly monotonic even while heartbeats race the
+	// asynchronous probe report (run with -race to cover the data race).
+	var lastAgentSequence uint64 = 2 // hello=1, proof=2
+	nextFrame := func() *controlv1.AgentFrame {
+		t.Helper()
+		select {
+		case frame := <-fake.agentFrames:
+			if frame.GetSequence() <= lastAgentSequence {
+				t.Fatalf(
+					"agent sequence %d not monotonic after %d",
+					frame.GetSequence(),
+					lastAgentSequence,
+				)
+			}
+			lastAgentSequence = frame.GetSequence()
+			return frame
+		case <-ctx.Done():
+			t.Fatal("timed out waiting for an agent frame")
+			return nil
+		}
+	}
+	nextProbeReport := func() *controlv1.AddressProbeReport {
+		t.Helper()
+		for {
+			if report := nextFrame().GetAddressProbeReport(); report != nil {
+				return report
+			}
+		}
+	}
+
+	fake.commands <- &controlv1.ProbeAddresses{Family: "ipv4"}
+	report := nextProbeReport()
+	if report.GetFamily() != "ipv4" ||
+		report.GetAddress() != "203.0.113.50" ||
+		report.GetError() != "" {
+		t.Fatalf("probe report = %+v, want probed echo address", report)
+	}
+	if hits.Load() == 0 {
+		t.Fatal("echo endpoint was never queried")
+	}
+
+	fake.commands <- &controlv1.ProbeAddresses{Family: "ipx"}
+	report = nextProbeReport()
+	if report.GetFamily() != "ipx" ||
+		report.GetError() != "unsupported family" ||
+		report.GetAddress() != "" {
+		t.Fatalf("unsupported-family report = %+v", report)
+	}
+
+	cancel()
+	if err := <-runnerResult; !errors.Is(err, context.Canceled) {
+		t.Fatalf("runner.Run returned %v, want context.Canceled", err)
+	}
+}
+
+func TestSanitizeProbeErrorCapsLength(t *testing.T) {
+	long := fmt.Sprintf("%0*d", maxProbeErrorBytes*2, 0)
+	if got := sanitizeProbeError(errors.New(long)); len(got) != maxProbeErrorBytes {
+		t.Fatalf("sanitizeProbeError length = %d, want %d", len(got), maxProbeErrorBytes)
+	}
+	if got := sanitizeProbeError(errors.New("short")); got != "short" {
+		t.Fatalf("sanitizeProbeError = %q, want unchanged", got)
 	}
 }

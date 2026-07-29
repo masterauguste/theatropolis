@@ -105,7 +105,7 @@
               </section>
               <section class="builder-section" aria-labelledby="outbound-builder-heading">
                 <div class="resource-summary">
-                  <div><h3 id="outbound-builder-heading">Outbounds</h3><p>Direct, block, or externally supplied outbound JSON.</p></div>
+                  <div><h3 id="outbound-builder-heading">Outbounds</h3><p>Direct, block, fleet pool imports, or externally supplied outbound JSON.</p></div>
                   <span class="resource-summary__count" data-resource-count="outbound">0 configured</span>
                   <button class="button button--secondary button--small" type="button" data-dialog-open="outbound-manager-dialog">Manage</button>
                 </div>
@@ -136,6 +136,7 @@
                   {{if eq .ErrorField "config_json"}}autofocus aria-invalid="true" aria-describedby="configuration-help configuration-form-error"{{else}}aria-invalid="false" aria-describedby="configuration-help"{{end}}
                 >{{.Agent.Configuration}}</textarea>
                 <small id="configuration-help">{{.Agent.ConfigurationHint}}</small>
+                <small>Fleet pool imports: <code>{"type":"theatropolis-pool-ref","tag":"…","ref":"agent/&lt;id&gt;/&lt;inbound&gt;/&lt;user&gt;"}</code> or <code>"manual/&lt;name&gt;"</code>. Refs that cannot be resolved deploy as <code>direct</code>.</small>
               </label>
             </section>
             <datalist id="outbound-tags" data-outbound-tags></datalist>
@@ -268,8 +269,28 @@
               <div class="builder-card__header"><div class="builder-card__identity"><strong data-card-title>New outbound</strong><small data-card-meta>Not configured</small></div><button class="button button--secondary button--small" type="button" data-edit-card>Edit</button></div>
               <div class="builder-card__editor" data-card-editor hidden>
               <div class="builder-fields">
-                <label class="field"><span>Kind</span><select data-outbound-field="kind"><option value="direct">Direct</option><option value="block">Block</option><option value="external">External outbound JSON</option></select></label>
+                <label class="field"><span>Kind</span><select data-outbound-field="kind"><option value="direct">Direct</option><option value="block">Block</option><option value="pool">Fleet pool import</option><option value="external">External outbound JSON</option></select></label>
                 <label class="field"><span>Tag</span><input type="text" data-outbound-field="tag" placeholder="direct-out" maxlength="128" required></label>
+              </div>
+              <div class="field geo-combobox" data-pool-field hidden>
+                <span>Pool entry</span>
+                <input type="text" data-outbound-field="ref" data-pool-filter placeholder="Type to filter pool entries…" autocomplete="off" spellcheck="false">
+                <div class="geo-options" data-pool-options hidden></div>
+                <small data-pool-hint hidden></small>
+              </div>
+              <div class="field" data-pool-family hidden>
+                <span>Address family</span>
+                <input type="hidden" data-outbound-field="family" value="auto">
+                <div class="segmented" role="group" aria-label="Address family">
+                  <button class="segmented__option" type="button" data-pool-family-option="auto" aria-pressed="true">Auto</button>
+                  <button class="segmented__option" type="button" data-pool-family-option="ipv4" aria-pressed="false">IPv4</button>
+                  <button class="segmented__option" type="button" data-pool-family-option="ipv6" aria-pressed="false">IPv6</button>
+                </div>
+                <small data-pool-family-hint hidden></small>
+                <div class="pool-probe">
+                  <button class="button button--secondary button--small" type="button" data-pool-probe hidden>Request probe</button>
+                  <small data-pool-probe-hint hidden></small>
+                </div>
               </div>
               <label class="field" data-external-outbound-field hidden><span>Outbound JSON object</span><textarea data-outbound-field="json" rows="8" spellcheck="false" placeholder='{"type":"socks","server":"127.0.0.1","server_port":1080}'></textarea><small>The tag above is authoritative and will be merged into this object.</small></label>
               <div class="builder-card__actions"><button class="button-link button-link--danger" type="button" data-remove-card>Remove outbound</button></div>

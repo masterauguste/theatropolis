@@ -765,6 +765,137 @@ func hexDigest(contents []byte) string {
 	return hex.EncodeToString(digest[:])
 }
 
+func TestRenderedDigestFallsBackForLegacyRecords(t *testing.T) {
+	t.Parallel()
+
+	config := []byte(`{"inbounds":[]}`)
+	record, err := New("deployment-1", "agent-1", "revision-1", config, time.Now().UTC())
+	if err != nil {
+		t.Fatal(err)
+	}
+	// New leaves RenderedSHA256 zero; the legacy fallback treats the logical
+	// digest as the rendered one.
+	if record.RenderedSHA256 != ([sha256.Size]byte{}) {
+		t.Fatal("New() set a rendered digest")
+	}
+	if record.RenderedDigest() != record.ConfigSHA256 {
+		t.Fatal("RenderedDigest() did not fall back to ConfigSHA256")
+	}
+	rendered := []byte(`{"outbounds":[{"type":"direct","tag":"via-a"}]}`)
+	record.RenderedSHA256 = sha256.Sum256(rendered)
+	if record.RenderedDigest() != record.RenderedSHA256 {
+		t.Fatal("RenderedDigest() ignored the rendered digest")
+	}
+}
+
+func TestDiskStoreRoundTripsRenderedDigestAndLegacyAbsence(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	directory := t.TempDir()
+	now := time.Now().UTC().Truncate(time.Microsecond)
+	store, err := NewDiskStore(directory)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	legacy, err := New("deployment-legacy", "agent-legacy", "revision-1", []byte(`{}`), now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.Create(ctx, legacy); err != nil {
+		t.Fatal(err)
+	}
+	rendered, err := New("deployment-rendered", "agent-rendered", "revision-1", []byte(`{"outbounds":[]}`), now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	rendered.RenderedSHA256 = sha256.Sum256([]byte(`{"outbounds":[{"type":"direct","tag":"x"}]}`))
+	if err := store.Create(ctx, rendered); err != nil {
+		t.Fatal(err)
+	}
+
+	reopened, err := NewDiskStore(directory)
+	if err != nil {
+		t.Fatal(err)
+	}
+	loadedLegacy, err := reopened.LatestForAgent(ctx, legacy.AgentID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if loadedLegacy.RenderedSHA256 != ([sha256.Size]byte{}) ||
+		loadedLegacy.RenderedDigest() != loadedLegacy.ConfigSHA256 {
+		t.Fatalf("legacy record did not reload with a fallback digest: %#v", loadedLegacy)
+	}
+	loadedRendered, err := reopened.LatestForAgent(ctx, rendered.AgentID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if loadedRendered.RenderedSHA256 != rendered.RenderedSHA256 {
+		t.Fatalf("rendered digest did not round-trip: %#v", loadedRendered)
+	}
+}
+
+func TestStoreListReturnsLatestRecordsSortedByAgent(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	now := time.Now().UTC()
+	for _, newStore := range []struct {
+		name string
+		open func(t *testing.T) Store
+	}{
+		{name: "memory", open: func(*testing.T) Store { return NewMemoryStore() }},
+		{name: "disk", open: func(t *testing.T) Store {
+			t.Helper()
+			store, err := NewDiskStore(t.TempDir())
+			if err != nil {
+				t.Fatal(err)
+			}
+			return store
+		}},
+	} {
+		t.Run(newStore.name, func(t *testing.T) {
+			t.Parallel()
+			store := newStore.open(t)
+			records, err := store.List(ctx)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(records) != 0 {
+				t.Fatalf("empty store listed %d records", len(records))
+			}
+			for _, agentID := range []string{"agent-c", "agent-a", "agent-b"} {
+				record, err := New("deployment-"+agentID, agentID, "revision-1", []byte(`{}`), now)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if err := store.Create(ctx, record); err != nil {
+					t.Fatal(err)
+				}
+			}
+			records, err = store.List(ctx)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(records) != 3 ||
+				records[0].AgentID != "agent-a" ||
+				records[1].AgentID != "agent-b" ||
+				records[2].AgentID != "agent-c" {
+				t.Fatalf("List() order = %#v", records)
+			}
+			records[0].ConfigJSON[0] = '['
+			again, err := store.Get(ctx, "deployment-agent-a")
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !bytes.Equal(again.ConfigJSON, []byte(`{}`)) {
+				t.Fatal("List() returned caller-owned config")
+			}
+		})
+	}
+}
+
 func jsonMarshalForTest(value any) ([]byte, error) {
 	return json.Marshal(value)
 }

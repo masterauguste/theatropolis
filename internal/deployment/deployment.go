@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -41,15 +42,35 @@ var (
 )
 
 type Record struct {
-	ID           string
-	AgentID      string
-	RevisionID   string
+	ID         string
+	AgentID    string
+	RevisionID string
+	// ConfigJSON is the logical configuration exactly as the operator
+	// submitted it; it may contain theatropolis-pool-ref outbounds.
+	// ConfigSHA256 is its digest.
 	ConfigJSON   []byte
 	ConfigSHA256 [sha256.Size]byte
-	Status       Status
-	Diagnostic   string
-	CreatedAt    time.Time
-	UpdatedAt    time.Time
+	// RenderedSHA256 is the digest of the rendered configuration: the
+	// document with every pool ref resolved, which is what the agent
+	// receives, digests, and reports against. It is zero for records
+	// written before the outbound-pool feature existed; those predate
+	// refs, so their logical and rendered configurations are identical
+	// and RenderedDigest falls back to ConfigSHA256.
+	RenderedSHA256 [sha256.Size]byte
+	Status         Status
+	Diagnostic     string
+	CreatedAt      time.Time
+	UpdatedAt      time.Time
+}
+
+// RenderedDigest returns the digest of the configuration the agent received.
+// Records without a rendered digest predate pool refs, so for them the
+// rendered document is the logical one and ConfigSHA256 is the right value.
+func (r Record) RenderedDigest() [sha256.Size]byte {
+	if r.RenderedSHA256 == ([sha256.Size]byte{}) {
+		return r.ConfigSHA256
+	}
+	return r.RenderedSHA256
 }
 
 func New(id, agentID, revisionID string, config []byte, now time.Time) (Record, error) {
@@ -66,6 +87,9 @@ func New(id, agentID, revisionID string, config []byte, now time.Time) (Record, 
 		return Record{}, err
 	}
 
+	// RenderedSHA256 stays zero here: New only sees the logical
+	// configuration. Callers that render pool refs (the control server) set
+	// Record.RenderedSHA256 to the rendered digest before Store.Create.
 	return Record{
 		ID:           id,
 		AgentID:      agentID,
@@ -82,6 +106,10 @@ type Store interface {
 	Create(context.Context, Record) error
 	Get(context.Context, string) (Record, error)
 	LatestForAgent(context.Context, string) (Record, error)
+	// List returns every stored record (one per agent, the latest) sorted by
+	// agent ID. The outbound-pool propagation scan uses it to find every
+	// logical configuration referencing pool entries.
+	List(context.Context) ([]Record, error)
 	Transition(context.Context, string, Status, string, time.Time) (Record, error)
 	RemoveAgent(context.Context, string) error
 }
@@ -147,6 +175,20 @@ func (s *MemoryStore) LatestForAgent(
 		return Record{}, ErrNotFound
 	}
 	return cloneRecord(s.records[id]), nil
+}
+
+func (s *MemoryStore) List(_ context.Context) ([]Record, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	records := make([]Record, 0, len(s.records))
+	for _, record := range s.records {
+		records = append(records, cloneRecord(record))
+	}
+	sort.Slice(records, func(left, right int) bool {
+		return records[left].AgentID < records[right].AgentID
+	})
+	return records, nil
 }
 
 func (s *MemoryStore) Transition(

@@ -1706,6 +1706,104 @@ body:has(dialog[open]) {
   background: var(--surface-sunken);
 }
 
+.geo-option.is-unavailable {
+  color: var(--ink-400);
+}
+
+.geo-option.is-unavailable:hover {
+  color: var(--ink-900);
+}
+
+/* ---------- Fleet outbound pool ---------- */
+
+.server-address {
+  display: block;
+  margin-top: 0.2rem;
+}
+
+.address-form {
+  display: flex;
+  gap: 0.4rem;
+  align-items: center;
+  margin-top: 0.35rem;
+}
+
+.address-form input[type="text"] {
+  max-width: 13rem;
+  padding: 0.3rem 0.5rem;
+  font-family: var(--font-mono);
+  font-size: 0.8rem;
+}
+
+.pool-delete-form {
+  display: flex;
+  gap: 0.6rem;
+  align-items: center;
+}
+
+.pool-delete-form .danger-confirm {
+  margin-bottom: 0;
+}
+
+.pool-outbound-json {
+  display: inline-block;
+  max-width: 26rem;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  vertical-align: bottom;
+}
+
+.pool-address-line {
+  display: block;
+}
+
+/* Segmented control (pool address family switch in the guided editor) */
+
+.segmented {
+  display: inline-flex;
+  overflow: hidden;
+  border: 1px solid var(--ink-300);
+  border-radius: var(--radius-sm);
+}
+
+.segmented__option {
+  min-height: 32px;
+  padding: 0.35rem 0.7rem;
+  color: var(--ink-700);
+  background: var(--surface);
+  border: none;
+  cursor: pointer;
+  font-size: 0.82rem;
+  font-weight: 600;
+  transition: color var(--ease), background-color var(--ease);
+}
+
+.segmented__option + .segmented__option {
+  border-left: 1px solid var(--ink-300);
+}
+
+.segmented__option:hover:not(:disabled) {
+  background: var(--surface-sunken);
+}
+
+.segmented__option[aria-pressed="true"] {
+  color: var(--surface);
+  background: var(--accent-700);
+}
+
+.segmented__option:disabled {
+  color: var(--ink-400);
+  cursor: not-allowed;
+}
+
+.pool-probe {
+  display: flex;
+  gap: 0.5rem;
+  align-items: center;
+  margin-top: 0.4rem;
+}
+
 /* ---------- Settings / update progress ---------- */
 
 .settings-panel form {
