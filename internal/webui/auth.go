@@ -10,6 +10,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -49,6 +50,7 @@ const (
 
 	DefaultSessionIdleTimeout     = 30 * time.Minute
 	DefaultSessionAbsoluteTimeout = 12 * time.Hour
+	defaultSessionPersistInterval = time.Minute
 	DefaultLoginFailureLimit      = 10
 	DefaultLoginFailureWindow     = time.Minute
 	defaultMaxSessions            = 64
@@ -112,16 +114,16 @@ type memorySession struct {
 }
 
 type sessionDocument struct {
-	Version           int                 `json:"version"`
-	CredentialBinding string              `json:"credential_binding_sha256"`
-	Sessions          []persistedSession  `json:"sessions"`
+	Version           int                `json:"version"`
+	CredentialBinding string             `json:"credential_binding_sha256"`
+	Sessions          []persistedSession `json:"sessions"`
 }
 
 type persistedSession struct {
-	TokenSHA256      string    `json:"token_sha256"`
-	CSRFSecret       string    `json:"csrf_secret"`
-	CreatedAt        time.Time `json:"created_at"`
-	LastSeenAt       time.Time `json:"last_seen_at"`
+	TokenSHA256       string    `json:"token_sha256"`
+	CSRFSecret        string    `json:"csrf_secret"`
+	CreatedAt         time.Time `json:"created_at"`
+	LastSeenAt        time.Time `json:"last_seen_at"`
 	AbsoluteExpiresAt time.Time `json:"absolute_expires_at"`
 }
 
@@ -145,9 +147,15 @@ type AccessManager struct {
 	derivePassword  passwordDeriver
 	passwordKDFGate chan struct{}
 
-	mu       sync.Mutex
-	sessions map[[sha256.Size]byte]*memorySession
-	failures loginFailureLimiter
+	mu          sync.Mutex
+	lifecycleMu sync.Mutex
+	sessions    map[[sha256.Size]byte]*memorySession
+	failures    loginFailureLimiter
+
+	activityPersisting  bool
+	activityPersistedAt time.Time
+	activityInterval    time.Duration
+	persistSnapshotHook func(map[[sha256.Size]byte]*memorySession) error
 
 	sessionIdleTimeout     time.Duration
 	sessionAbsoluteTimeout time.Duration
@@ -850,19 +858,29 @@ func (m *AccessManager) loadSessions() error {
 			m.sessions[digest] = session
 		}
 	}
+	m.activityPersistedAt = now
 	return nil
 }
 
 func (m *AccessManager) persistSessionsLocked() error {
+	return m.persistSessionSnapshot(m.sessions)
+}
+
+func (m *AccessManager) persistSessionSnapshot(
+	sessions map[[sha256.Size]byte]*memorySession,
+) error {
+	if m.persistSnapshotHook != nil {
+		return m.persistSnapshotHook(sessions)
+	}
 	if m.sessionPath == "" {
 		return nil
 	}
 	document := sessionDocument{
 		Version:           sessionFileVersion,
 		CredentialBinding: base64.RawURLEncoding.EncodeToString(m.credentialBinding[:]),
-		Sessions:          make([]persistedSession, 0, len(m.sessions)),
+		Sessions:          make([]persistedSession, 0, len(sessions)),
 	}
-	for digest, session := range m.sessions {
+	for digest, session := range sessions {
 		document.Sessions = append(document.Sessions, persistedSession{
 			TokenSHA256:       base64.RawURLEncoding.EncodeToString(digest[:]),
 			CSRFSecret:        base64.RawURLEncoding.EncodeToString(session.csrfSecret[:]),
@@ -931,6 +949,7 @@ func newAccessManager() *AccessManager {
 		loginFailureLimit:      DefaultLoginFailureLimit,
 		loginFailureWindow:     DefaultLoginFailureWindow,
 		maxSessions:            defaultMaxSessions,
+		activityInterval:       defaultSessionPersistInterval,
 		now:                    time.Now,
 		random:                 rand.Reader,
 	}
@@ -996,6 +1015,8 @@ func (m *AccessManager) Login(username, password string) (Session, error) {
 		absoluteExpiresAt: absoluteExpiresAt,
 	}
 
+	m.lifecycleMu.Lock()
+	defer m.lifecycleMu.Unlock()
 	m.mu.Lock()
 	previousSessions := cloneSessions(m.sessions)
 	m.failures = loginFailureLimiter{}
@@ -1009,6 +1030,7 @@ func (m *AccessManager) Login(username, password string) (Session, error) {
 		m.mu.Unlock()
 		return Session{}, fmt.Errorf("persist browser session: %w", err)
 	}
+	m.activityPersistedAt = now
 	m.mu.Unlock()
 
 	return Session{
@@ -1192,27 +1214,27 @@ func (m *AccessManager) Authenticate(sessionToken string) (Session, error) {
 	now := m.currentTime()
 
 	m.mu.Lock()
-	defer m.mu.Unlock()
 	session, exists := m.sessions[tokenDigest]
 	if valid != 1 || !exists {
+		m.mu.Unlock()
 		return Session{}, ErrAuthenticationFailed
 	}
 	if m.sessionExpiredLocked(session, now) {
-		delete(m.sessions, tokenDigest)
-		_ = m.persistSessionsLocked()
+		m.mu.Unlock()
 		return Session{}, ErrAuthenticationFailed
 	}
-	previousLastSeen := session.lastSeenAt
 	m.touchSessionLocked(session, now)
-	if err := m.persistSessionsLocked(); err != nil {
-		session.lastSeenAt = previousLastSeen
-		return Session{}, fmt.Errorf("persist browser session activity: %w", err)
-	}
-	return Session{
+	result := Session{
 		Token:     sessionToken,
 		CSRFToken: base64.RawURLEncoding.EncodeToString(session.csrfSecret[:]),
 		ExpiresAt: session.absoluteExpiresAt,
-	}, nil
+	}
+	persist := m.scheduleActivityPersistenceLocked(now)
+	m.mu.Unlock()
+	if persist {
+		go m.persistSessionActivity()
+	}
+	return result, nil
 }
 
 // AuthorizeCSRF verifies both the session token and its synchronizer CSRF
@@ -1224,25 +1246,25 @@ func (m *AccessManager) AuthorizeCSRF(sessionToken, csrfToken string) bool {
 	now := m.currentTime()
 
 	m.mu.Lock()
-	defer m.mu.Unlock()
 	session, exists := m.sessions[tokenDigest]
 	if tokenValid != 1 || !exists {
+		m.mu.Unlock()
 		return false
 	}
 	if m.sessionExpiredLocked(session, now) {
-		delete(m.sessions, tokenDigest)
-		_ = m.persistSessionsLocked()
+		m.mu.Unlock()
 		return false
 	}
 	matches := subtle.ConstantTimeCompare(session.csrfSecret[:], candidateCSRF[:]) & csrfValid
 	if matches != 1 {
+		m.mu.Unlock()
 		return false
 	}
-	previousLastSeen := session.lastSeenAt
 	m.touchSessionLocked(session, now)
-	if err := m.persistSessionsLocked(); err != nil {
-		session.lastSeenAt = previousLastSeen
-		return false
+	persist := m.scheduleActivityPersistenceLocked(now)
+	m.mu.Unlock()
+	if persist {
+		go m.persistSessionActivity()
 	}
 	return true
 }
@@ -1253,6 +1275,8 @@ func (m *AccessManager) Logout(sessionToken string) error {
 	if valid != 1 {
 		return nil
 	}
+	m.lifecycleMu.Lock()
+	defer m.lifecycleMu.Unlock()
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	previousSessions := cloneSessions(m.sessions)
@@ -1267,6 +1291,8 @@ func (m *AccessManager) Logout(sessionToken string) error {
 // InvalidateAllSessions revokes every browser session, for example after a
 // synchronized live credential reload.
 func (m *AccessManager) InvalidateAllSessions() error {
+	m.lifecycleMu.Lock()
+	defer m.lifecycleMu.Unlock()
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	previousSessions := cloneSessions(m.sessions)
@@ -1372,6 +1398,40 @@ func (m *AccessManager) sessionExpiredLocked(session *memorySession, now time.Ti
 func (m *AccessManager) touchSessionLocked(session *memorySession, now time.Time) {
 	if now.After(session.lastSeenAt) {
 		session.lastSeenAt = now
+	}
+}
+
+func (m *AccessManager) scheduleActivityPersistenceLocked(now time.Time) bool {
+	if m.sessionPath == "" || m.activityInterval <= 0 || m.activityPersisting {
+		return false
+	}
+	if !m.activityPersistedAt.IsZero() &&
+		now.Before(m.activityPersistedAt.Add(m.activityInterval)) {
+		return false
+	}
+	m.activityPersisting = true
+	return true
+}
+
+// persistSessionActivity coalesces sliding-idle updates without keeping the
+// request-path session mutex held during filesystem I/O. lifecycleMu prevents
+// an older activity snapshot from overwriting a concurrent login or logout.
+func (m *AccessManager) persistSessionActivity() {
+	m.lifecycleMu.Lock()
+	m.mu.Lock()
+	snapshot := cloneSessions(m.sessions)
+	m.mu.Unlock()
+	err := m.persistSessionSnapshot(snapshot)
+	now := m.currentTime()
+	m.mu.Lock()
+	m.activityPersisting = false
+	if err == nil {
+		m.activityPersistedAt = now
+	}
+	m.mu.Unlock()
+	m.lifecycleMu.Unlock()
+	if err != nil {
+		slog.Error("persist browser session activity", "error", err)
 	}
 }
 

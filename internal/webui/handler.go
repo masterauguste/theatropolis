@@ -816,13 +816,17 @@ func (h *Handler) deployServerConfiguration(
 		http.Error(response, "request form is invalid", http.StatusBadRequest)
 		return
 	}
-	if !h.access.AuthorizeCSRF(sessionToken, form.Get("csrf_token")) {
-		http.Error(response, "request was not authorized", http.StatusForbidden)
-		return
-	}
 	session, err := h.access.Authenticate(sessionToken)
 	if err != nil {
-		h.redirectToLogin(response, request)
+		if strings.Contains(request.Header.Get("Accept"), "application/json") {
+			http.Error(response, "unauthorized", http.StatusUnauthorized)
+		} else {
+			h.redirectToLogin(response, request)
+		}
+		return
+	}
+	if !h.access.AuthorizeCSRF(sessionToken, form.Get("csrf_token")) {
+		http.Error(response, "request was not authorized", http.StatusForbidden)
 		return
 	}
 	snapshot, ok := h.agentSnapshot(request.PathValue("agent_id"))
@@ -2279,7 +2283,9 @@ func (h *Handler) render(
 	response.Header().Set("Content-Type", "text/html; charset=utf-8")
 	response.Header().Set("Cache-Control", "no-store")
 	response.WriteHeader(status)
-	_, _ = response.Write(rendered.Bytes())
+	if _, err := response.Write(rendered.Bytes()); err != nil {
+		h.logger.Warn("write web UI response", "template", templateName, "error", err)
+	}
 }
 
 func (h *Handler) authenticate(request *http.Request) (Session, bool) {

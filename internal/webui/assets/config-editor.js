@@ -638,10 +638,7 @@ if (configTextarea && configurationForm && configurationEditor) {
       option.setAttribute("aria-selected", String(selection.includes(value)));
       option.textContent = value;
       if (selection.includes(value)) option.classList.add("is-selected");
-      // Popovers are promoted into the browser's top layer. Bind selection to
-      // the option itself instead of relying on the editor's delegated click
-      // handler, whose event path is not consistent for top-layer children.
-      option.addEventListener("click", (event) => {
+      const selectOption = (event) => {
         event.preventDefault();
         event.stopPropagation();
         addMatchChip(card, value);
@@ -654,7 +651,12 @@ if (configTextarea && configurationForm && configurationEditor) {
           renderMatchOptions(card);
           filter.focus();
         }
-      });
+      };
+      // Commit on pointerdown, before focusing or scrolling a top-layer
+      // popover can close it and cancel the later click. Click remains the
+      // keyboard activation path for a focused option.
+      option.addEventListener("pointerdown", selectOption);
+      option.addEventListener("click", selectOption);
       list.append(option);
     }
     if (matches.length === 0 && filterValue) {
@@ -733,8 +735,11 @@ if (configTextarea && configurationForm && configurationEditor) {
       ? value.toLowerCase()
       : value;
     if (!normalized || normalized.length > 1024) return;
-    if ((type === "geosite" || type === "geoip") && !/^[a-z0-9_-]+$/.test(normalized)) {
-      return;
+    if (type === "geosite" || type === "geoip") {
+      const catalogValue = matchOptionValues(card).some(
+        (option) => option.toLowerCase() === normalized,
+      );
+      if (!catalogValue && !/^[a-z0-9_-]+$/.test(normalized)) return;
     }
     const selection = matchSelection(card);
     if (type === "geosite" || type === "geoip") {

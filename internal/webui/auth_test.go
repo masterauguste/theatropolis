@@ -780,6 +780,57 @@ func TestSessionAuthenticationIdleExpiryCSRFAndLogout(t *testing.T) {
 	}
 }
 
+func TestSessionActivityPersistenceDoesNotBlockAuthentication(t *testing.T) {
+	t.Parallel()
+
+	manager, username, password := newTestAdminAccessManager(t)
+	session, err := manager.Login(username, password)
+	if err != nil {
+		t.Fatal(err)
+	}
+	started := make(chan struct{})
+	release := make(chan struct{})
+	finished := make(chan struct{})
+	manager.sessionPath = "activity-persistence-enabled-for-test"
+	manager.activityInterval = time.Nanosecond
+	manager.activityPersistedAt = time.Time{}
+	manager.persistSnapshotHook = func(map[[sha256.Size]byte]*memorySession) error {
+		close(started)
+		<-release
+		close(finished)
+		return nil
+	}
+
+	if _, err := manager.Authenticate(session.Token); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-started:
+	case <-time.After(time.Second):
+		t.Fatal("activity persistence did not start")
+	}
+
+	authenticated := make(chan error, 1)
+	go func() {
+		_, err := manager.Authenticate(session.Token)
+		authenticated <- err
+	}()
+	select {
+	case err := <-authenticated:
+		if err != nil {
+			t.Fatalf("concurrent Authenticate() error = %v", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("authentication blocked on session persistence")
+	}
+	close(release)
+	select {
+	case <-finished:
+	case <-time.After(time.Second):
+		t.Fatal("activity persistence did not finish")
+	}
+}
+
 func TestPersistentSessionSurvivesManagerRestartAndLogout(t *testing.T) {
 	t.Parallel()
 	directory := t.TempDir()

@@ -1145,6 +1145,31 @@ func TestConfigurationDeploymentRequiresAuthorizationAndValidJSONObject(t *testi
 	}
 }
 
+func TestConfigurationDeploymentFetchReportsExpiredSession(t *testing.T) {
+	t.Parallel()
+
+	fixture := newWebFixture(t)
+	enrollAgent(t, fixture.registry, "edge-online")
+	if err := fixture.access.Logout(fixture.session.Token); err != nil {
+		t.Fatal(err)
+	}
+	form := url.Values{
+		"config_json": {`{"inbounds":[]}`},
+		"csrf_token":  {fixture.session.CSRFToken},
+	}.Encode()
+	request := fixture.authenticatedMutationRequest(
+		http.MethodPost,
+		"/servers/edge-online/configuration",
+		form,
+	)
+	request.Header.Set("Accept", "application/json")
+	response := httptest.NewRecorder()
+	fixture.handler.ServeHTTP(response, request)
+	if response.Code != http.StatusUnauthorized {
+		t.Fatalf("expired deployment fetch status = %d, want 401", response.Code)
+	}
+}
+
 func TestConfigurationDeploymentJSONFlowReportsTerminalStatus(t *testing.T) {
 	t.Parallel()
 
@@ -2209,8 +2234,8 @@ func TestAssetsAreSelfHostedAndSecurityHeadersApplyToErrors(t *testing.T) {
 		}
 		assertSecurityHeaders(t, response.Header())
 		if path == "/assets/config-editor.js" &&
-			!strings.Contains(response.Body.String(), `option.addEventListener("click"`) {
-			t.Fatal("config editor rule-set options do not bind selection directly")
+			!strings.Contains(response.Body.String(), `option.addEventListener("pointerdown"`) {
+			t.Fatal("config editor rule-set options do not commit before popover dismissal")
 		}
 	}
 

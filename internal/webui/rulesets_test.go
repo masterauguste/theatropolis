@@ -19,6 +19,7 @@ func TestGeositeRuleSetCatalogExtractsSortsAndDedupesNames(t *testing.T) {
 		fmt.Fprint(response, `{"tree":[`+
 			`{"path":"geosite-openai.srs","type":"blob"},`+
 			`{"path":"geosite-cn.srs","type":"blob"},`+
+			`{"path":"geosite-geolocation-!cn.srs","type":"blob"},`+
 			`{"path":"geosite-openai.srs","type":"blob"},`+
 			`{"path":"geosite-category-ads-all.srs","type":"blob"},`+
 			`{"path":"README.md","type":"blob"},`+
@@ -33,7 +34,7 @@ func TestGeositeRuleSetCatalogExtractsSortsAndDedupesNames(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := []string{"category-ads-all", "cn", "openai"}
+	want := []string{"category-ads-all", "cn", "geolocation-!cn", "openai"}
 	if len(options) != len(want) {
 		t.Fatalf("options = %v, want %v", options, want)
 	}

@@ -2,6 +2,18 @@
 
 const dialogTriggers = new WeakMap();
 
+const redirectForExpiredSession = (response) => {
+  let loginRedirect = false;
+  try {
+    loginRedirect = response.redirected && new URL(response.url).pathname === "/login";
+  } catch {
+    loginRedirect = false;
+  }
+  if (response.status !== 401 && !loginRedirect) return false;
+  window.location.assign("/login");
+  return true;
+};
+
 document.addEventListener("click", (event) => {
   const button = event.target.closest("[data-dialog-open]");
   if (button) {
@@ -47,10 +59,7 @@ const loadAsyncRegion = async (region) => {
       credentials: "same-origin",
       headers: { Accept: "text/html" },
     });
-    if (response.status === 401) {
-      window.location.assign("/login");
-      return;
-    }
+    if (redirectForExpiredSession(response)) return;
     if (!response.ok) {
       throw new Error(`request returned ${response.status}`);
     }
@@ -186,6 +195,7 @@ if (configurationDeploymentForm) {
         credentials: "same-origin",
         headers: { Accept: "application/json" },
       });
+      if (redirectForExpiredSession(response)) return;
       if (!response.ok) {
         window.setTimeout(() => pollSubmittedDeployment(statusURL), 5000);
         return;
@@ -224,6 +234,7 @@ if (configurationDeploymentForm) {
         credentials: "same-origin",
         headers: { Accept: "application/json" },
       });
+      if (redirectForExpiredSession(response)) return;
       const responseText = await response.text();
       let data = {};
       try {
@@ -296,6 +307,7 @@ if (pendingDeployment) {
           headers: { Accept: "application/json" },
         },
       );
+      if (redirectForExpiredSession(response)) return;
       if (!response.ok) {
         window.setTimeout(pollDeployment, 5000);
         return;
@@ -325,6 +337,9 @@ if (versionCatalogURL) {
         headers: { Accept: "application/json" },
       },
     );
+    if (redirectForExpiredSession(response)) {
+      throw new Error("Your session expired.");
+    }
     const data = await response.json().catch(() => ({}));
     if (!response.ok) {
       throw new Error(data.error || `version catalog returned ${response.status}`);
