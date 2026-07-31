@@ -2208,6 +2208,10 @@ func TestAssetsAreSelfHostedAndSecurityHeadersApplyToErrors(t *testing.T) {
 			)
 		}
 		assertSecurityHeaders(t, response.Header())
+		if path == "/assets/config-editor.js" &&
+			!strings.Contains(response.Body.String(), `option.addEventListener("click"`) {
+			t.Fatal("config editor rule-set options do not bind selection directly")
+		}
 	}
 
 	request := fixture.request(http.MethodGet, "/not-found", "")

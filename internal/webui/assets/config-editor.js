@@ -638,6 +638,23 @@ if (configTextarea && configurationForm && configurationEditor) {
       option.setAttribute("aria-selected", String(selection.includes(value)));
       option.textContent = value;
       if (selection.includes(value)) option.classList.add("is-selected");
+      // Popovers are promoted into the browser's top layer. Bind selection to
+      // the option itself instead of relying on the editor's delegated click
+      // handler, whose event path is not consistent for top-layer children.
+      option.addEventListener("click", (event) => {
+        event.preventDefault();
+        event.stopPropagation();
+        addMatchChip(card, value);
+        const selectedType = field(card, "route", "match_type").value;
+        if (selectedType === "geosite" || selectedType === "geoip") {
+          setMatchOptionsOpen(card, false);
+        } else {
+          const filter = card.querySelector("[data-route-match-filter]");
+          filter.value = "";
+          renderMatchOptions(card);
+          filter.focus();
+        }
+      });
       list.append(option);
     }
     if (matches.length === 0 && filterValue) {
@@ -1183,20 +1200,6 @@ if (configTextarea && configurationForm && configurationEditor) {
     } else if (button.matches("[data-route-match-chip]")) {
       const card = button.closest("[data-route-rule-card]");
       if (card) removeMatchChip(card, button.dataset.routeMatchChip);
-    } else if (button.matches("[data-route-match-option]")) {
-      const card = button.closest("[data-route-rule-card]");
-      if (card) {
-        addMatchChip(card, button.dataset.routeMatchOption);
-        const filter = card.querySelector("[data-route-match-filter]");
-        const type = field(card, "route", "match_type").value;
-        if (type === "geosite" || type === "geoip") {
-          setMatchOptionsOpen(card, false);
-        } else {
-          filter.value = "";
-          renderMatchOptions(card);
-          filter.focus();
-        }
-      }
     } else if (button.matches("[data-move-rule]")) {
       const card = button.closest("[data-route-rule-card]");
       if (!card) return;
