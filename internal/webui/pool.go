@@ -42,6 +42,7 @@ type poolInboundView struct {
 
 type poolManualView struct {
 	Name     string
+	Remark   string
 	Type     string
 	Port     int
 	Outbound string
@@ -55,6 +56,7 @@ type poolView struct {
 
 type poolOption struct {
 	Ref               string `json:"ref"`
+	Remark            string `json:"remark,omitempty"`
 	AgentID           string `json:"agent_id,omitempty"`
 	InboundTag        string `json:"inbound_tag,omitempty"`
 	User              string `json:"user,omitempty"`
@@ -147,6 +149,7 @@ func (h *Handler) poolPageView(ctx context.Context) *poolView {
 	for _, manual := range registry.Manual() {
 		view.Manual = append(view.Manual, poolManualView{
 			Name:     manual.Name,
+			Remark:   manual.Remark,
 			Type:     poolManualType(manual.Outbound),
 			Port:     poolManualPort(manual.Outbound),
 			Outbound: string(manual.Outbound),
@@ -225,6 +228,7 @@ func (h *Handler) poolPageData(_ context.Context, session Session) pageData {
 		for _, manual := range registry.Manual() {
 			view.Manual = append(view.Manual, poolManualView{
 				Name:     manual.Name,
+				Remark:   manual.Remark,
 				Type:     poolManualType(manual.Outbound),
 				Port:     poolManualPort(manual.Outbound),
 				Outbound: string(manual.Outbound),
@@ -272,6 +276,7 @@ func (h *Handler) upsertPoolEntry(response http.ResponseWriter, request *http.Re
 		maxPoolFormBytes,
 		"csrf_token",
 		"name",
+		"remark",
 		"outbound_json",
 	)
 	if err != nil || !h.access.AuthorizeCSRF(sessionToken, form.Get("csrf_token")) {
@@ -290,8 +295,21 @@ func (h *Handler) upsertPoolEntry(response http.ResponseWriter, request *http.Re
 	}
 
 	name := strings.TrimSpace(form.Get("name"))
-	outbound := form.Get("outbound_json")
-	if err := registry.UpsertManual(name, json.RawMessage(outbound)); err != nil {
+	remark := strings.TrimSpace(form.Get("remark"))
+	outboundInput := strings.TrimSpace(form.Get("outbound_json"))
+	outbound := json.RawMessage(outboundInput)
+	if !strings.HasPrefix(outboundInput, "{") {
+		parsed, uriRemark, parseErr := pool.ParseOutboundURI(outboundInput)
+		if parseErr != nil {
+			outbound = nil
+		} else {
+			outbound = parsed
+			if remark == "" {
+				remark = uriRemark
+			}
+		}
+	}
+	if err := registry.UpsertManualWithRemark(name, remark, outbound); err != nil {
 		status := http.StatusInternalServerError
 		message := "The pool entry could not be saved."
 		errorField := ""
@@ -302,8 +320,12 @@ func (h *Handler) upsertPoolEntry(response http.ResponseWriter, request *http.Re
 			errorField = "pool_name"
 		case errors.Is(err, pool.ErrInvalidOutbound):
 			status = http.StatusBadRequest
-			message = "Enter one complete outbound JSON object with a non-empty \"type\"."
+			message = "Enter a supported proxy URI or one complete outbound JSON object with a non-empty \"type\"."
 			errorField = "pool_json"
+		case errors.Is(err, pool.ErrInvalidRemark):
+			status = http.StatusBadRequest
+			message = "Keep the remark to 256 characters or fewer."
+			errorField = "pool_remark"
 		default:
 			h.logger.Error("upsert pool manual entry", "name", name, "error", err)
 		}
@@ -311,7 +333,8 @@ func (h *Handler) upsertPoolEntry(response http.ResponseWriter, request *http.Re
 		data.Error = message
 		data.ErrorField = errorField
 		data.PoolFormName = name
-		data.PoolFormJSON = outbound
+		data.PoolFormRemark = remark
+		data.PoolFormJSON = outboundInput
 		h.render(response, status, "pool.html", data)
 		return
 	}
@@ -387,10 +410,15 @@ func (h *Handler) serverPoolOptions(response http.ResponseWriter, request *http.
 	if h.controller.PoolRegistry() == nil {
 		result.Warning = "Pool lookup failed: the outbound pool is unavailable."
 	} else {
+		manualRemarks := make(map[string]string)
+		for _, manual := range h.controller.PoolRegistry().Manual() {
+			manualRemarks["manual/"+manual.Name] = manual.Remark
+		}
 		entries, diagnostics := h.derivePoolEntries(request.Context(), agentID)
 		for _, entry := range entries {
 			result.Options = append(result.Options, poolOption{
 				Ref:               entry.Ref,
+				Remark:            manualRemarks[entry.Ref],
 				AgentID:           entry.AgentID,
 				InboundTag:        entry.InboundTag,
 				User:              poolUserLabel(entry),

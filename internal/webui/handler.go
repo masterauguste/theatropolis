@@ -182,6 +182,7 @@ type pageData struct {
 	MasterUpdateRequestID string
 	Pool                  *poolView
 	PoolFormName          string
+	PoolFormRemark        string
 	PoolFormJSON          string
 }
 

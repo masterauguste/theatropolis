@@ -123,6 +123,7 @@
           <thead>
             <tr>
               <th scope="col">Name</th>
+              <th scope="col">Remark</th>
               <th scope="col">Protocol</th>
               <th scope="col">Outbound JSON</th>
               <th scope="col"><span class="visually-hidden">Actions</span></th>
@@ -132,6 +133,7 @@
             {{range .Pool.Manual}}
             <tr>
               <td data-label="Name"><code>manual/{{.Name}}</code></td>
+              <td data-label="Remark">{{if .Remark}}{{.Remark}}{{else}}<span class="muted">—</span>{{end}}</td>
               <td data-label="Protocol">{{.Type}}{{if .Port}} · {{.Port}}{{end}}</td>
               <td data-label="Outbound JSON"><code class="pool-outbound-json">{{.Outbound}}</code></td>
               <td data-label="Actions">
@@ -161,9 +163,14 @@
           <small>Adding an existing name replaces its outbound. Reference it as <code>manual/&lt;name&gt;</code>.</small>
         </label>
         <label class="field">
-          <span>Outbound JSON object</span>
-          <textarea name="outbound_json" rows="6" spellcheck="false" placeholder='{"type":"socks","server":"203.0.113.9","server_port":1080}' required{{if eq .ErrorField "pool_json"}} aria-invalid="true"{{end}}>{{.PoolFormJSON}}</textarea>
-          <small>Any sing-box outbound object with a <code>type</code>. The importing server's tag replaces this object's tag.</small>
+          <span>Remark <small>(optional)</small></span>
+          <input type="text" name="remark" value="{{.PoolFormRemark}}" placeholder="Singapore backup" maxlength="256"{{if eq .ErrorField "pool_remark"}} aria-invalid="true"{{end}}>
+          <small>A friendly label shown in the pool and routing editor. It does not change the stable reference.</small>
+        </label>
+        <label class="field">
+          <span>Proxy URI or outbound JSON</span>
+          <textarea name="outbound_json" rows="4" spellcheck="false" placeholder='ss://method:password@example.com:8388#Singapore' required{{if eq .ErrorField "pool_json"}} aria-invalid="true"{{end}}>{{.PoolFormJSON}}</textarea>
+          <small>Paste an <code>ss://</code>, <code>vmess://</code>, <code>vless://</code>, <code>trojan://</code>, <code>hysteria2://</code>, <code>tuic://</code>, <code>anytls://</code>, <code>socks://</code>, or <code>http(s)://</code> URI. Advanced users can still enter a sing-box outbound JSON object.</small>
         </label>
         <button class="button button--secondary" type="submit" data-submit-button data-submit-label="Saving…">Save pool entry</button>
       </form>

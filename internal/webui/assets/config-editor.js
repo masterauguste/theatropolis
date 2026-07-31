@@ -373,7 +373,10 @@ if (configTextarea && configurationForm && configurationEditor) {
   }
 
   function poolOptionLabel(entry) {
-    if (entry.manual) return `External · ${entry.ref.replace(/^manual\//, "")}`;
+    if (entry.manual) {
+      const name = entry.ref.replace(/^manual\//, "");
+      return entry.remark ? `External · ${entry.remark} (${name})` : `External · ${name}`;
+    }
     return `${entry.agent_id} · ${entry.inbound_tag} · ${entry.user || "unnamed user"}`;
   }
 

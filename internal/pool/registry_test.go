@@ -170,6 +170,26 @@ func TestManualCRUDAndReload(t *testing.T) {
 	}
 }
 
+func TestManualRemarkPersists(t *testing.T) {
+	t.Parallel()
+	path := filepath.Join(t.TempDir(), "outbound-pool.json")
+	registry, err := Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := registry.UpsertManualWithRemark("backup", "Singapore backup", json.RawMessage(`{"type":"direct"}`)); err != nil {
+		t.Fatal(err)
+	}
+	reloaded, err := Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	entry, ok := reloaded.ManualByName("backup")
+	if !ok || entry.Remark != "Singapore backup" {
+		t.Fatalf("entry = %+v, exists=%v", entry, ok)
+	}
+}
+
 func TestUpsertManualValidation(t *testing.T) {
 	registry, _ := openTestRegistry(t)
 

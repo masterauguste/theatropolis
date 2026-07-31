@@ -34,6 +34,7 @@ const (
 var (
 	ErrInvalidName       = errors.New("pool: invalid name")
 	ErrInvalidOutbound   = errors.New("pool: invalid manual outbound")
+	ErrInvalidRemark     = errors.New("pool: invalid manual remark")
 	ErrManualNotFound    = errors.New("pool: manual outbound not found")
 	ErrInvalidAddress    = errors.New("pool: invalid address")
 	ErrInvalidTLSAddress = errors.New("pool: invalid default TLS address")
@@ -146,12 +147,14 @@ func validUserComponent(component string) bool {
 // ManualEntry is one operator-provided shared outbound.
 type ManualEntry struct {
 	Name      string
+	Remark    string
 	Outbound  json.RawMessage
 	CreatedAt time.Time
 	UpdatedAt time.Time
 }
 
 type manualRecord struct {
+	remark    string
 	outbound  json.RawMessage
 	createdAt time.Time
 	updatedAt time.Time
@@ -255,7 +258,11 @@ func Open(path string) (*Registry, error) {
 		if err != nil {
 			return nil, fmt.Errorf("pool: registry contains an invalid manual outbound: %w", err)
 		}
+		if len(manual.Remark) > 256 {
+			return nil, errors.New("pool: registry contains an invalid manual remark")
+		}
 		registry.manual[manual.Name] = manualRecord{
+			remark:    manual.Remark,
 			outbound:  outbound,
 			createdAt: manual.CreatedAt.UTC(),
 			updatedAt: manual.UpdatedAt.UTC(),
@@ -300,8 +307,18 @@ func (r *Registry) now() time.Time {
 // UpsertManual creates or replaces a manual outbound. Updating an existing
 // name keeps its original creation time. The pool version is bumped.
 func (r *Registry) UpsertManual(name string, outbound json.RawMessage) error {
+	return r.UpsertManualWithRemark(name, "", outbound)
+}
+
+// UpsertManualWithRemark creates or replaces a manual outbound and its
+// optional display remark. The stable name remains the pool reference.
+func (r *Registry) UpsertManualWithRemark(name, remark string, outbound json.RawMessage) error {
 	if !validComponent(name) {
 		return ErrInvalidName
+	}
+	remark = strings.TrimSpace(remark)
+	if len(remark) > 256 {
+		return ErrInvalidRemark
 	}
 	outbound, err := validateManualOutbound(outbound)
 	if err != nil {
@@ -313,6 +330,7 @@ func (r *Registry) UpsertManual(name string, outbound json.RawMessage) error {
 
 	previous, existed := r.manual[name]
 	record := manualRecord{
+		remark:    remark,
 		outbound:  outbound,
 		createdAt: r.now(),
 		updatedAt: r.now(),
@@ -364,6 +382,7 @@ func (r *Registry) Manual() []ManualEntry {
 	for name, record := range r.manual {
 		entries = append(entries, ManualEntry{
 			Name:      name,
+			Remark:    record.remark,
 			Outbound:  append(json.RawMessage(nil), record.outbound...),
 			CreatedAt: record.createdAt,
 			UpdatedAt: record.updatedAt,
@@ -386,6 +405,7 @@ func (r *Registry) ManualByName(name string) (ManualEntry, bool) {
 	}
 	return ManualEntry{
 		Name:      name,
+		Remark:    record.remark,
 		Outbound:  append(json.RawMessage(nil), record.outbound...),
 		CreatedAt: record.createdAt,
 		UpdatedAt: record.updatedAt,
@@ -1091,6 +1111,7 @@ type diskRegistry struct {
 
 type diskManual struct {
 	Name      string          `json:"name"`
+	Remark    string          `json:"remark,omitempty"`
 	Outbound  json.RawMessage `json:"outbound"`
 	CreatedAt time.Time       `json:"created_at"`
 	UpdatedAt time.Time       `json:"updated_at"`
@@ -1137,6 +1158,7 @@ func (r *Registry) persistLocked() error {
 		record := r.manual[name]
 		stored.Manual = append(stored.Manual, diskManual{
 			Name:      name,
+			Remark:    record.remark,
 			Outbound:  record.outbound,
 			CreatedAt: record.createdAt.UTC(),
 			UpdatedAt: record.updatedAt.UTC(),

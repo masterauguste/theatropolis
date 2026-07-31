@@ -233,6 +233,7 @@ func TestPoolPageCRUD(t *testing.T) {
 		"Loading fleet outbounds…",
 		`action="/pool"`,
 		`name="outbound_json"`,
+		`name="remark"`,
 		"No manual entries yet.",
 	} {
 		if !strings.Contains(response.Body.String(), expected) {
@@ -250,6 +251,7 @@ func TestPoolPageCRUD(t *testing.T) {
 	oldForm := url.Values{
 		"csrf_token":    {fixture.session.CSRFToken},
 		"name":          {"backup"},
+		"remark":        {""},
 		"outbound_json": {`{"type":"direct"}`},
 	}.Encode()
 	request = fixture.authenticatedMutationRequest(http.MethodPost, "/settings/pool", oldForm)
@@ -262,7 +264,8 @@ func TestPoolPageCRUD(t *testing.T) {
 	validForm := url.Values{
 		"csrf_token":    {fixture.session.CSRFToken},
 		"name":          {"backup"},
-		"outbound_json": {`{"type":"direct"}`},
+		"remark":        {"Backup route"},
+		"outbound_json": {`socks://operator:secret@proxy.example:1080#URI%20remark`},
 	}.Encode()
 
 	// Origin enforcement.
@@ -277,6 +280,7 @@ func TestPoolPageCRUD(t *testing.T) {
 	badCSRF := url.Values{
 		"csrf_token":    {"wrong"},
 		"name":          {"backup"},
+		"remark":        {""},
 		"outbound_json": {`{"type":"direct"}`},
 	}.Encode()
 	request = fixture.authenticatedMutationRequest(http.MethodPost, "/pool", badCSRF)
@@ -294,7 +298,9 @@ func TestPoolPageCRUD(t *testing.T) {
 		t.Fatalf("pool upsert response = %d %q", response.Code, response.Header().Get("Location"))
 	}
 	entry, exists := fixture.controller.poolRegistry.ManualByName("backup")
-	if !exists || string(entry.Outbound) != `{"type":"direct"}` {
+	if !exists || entry.Remark != "Backup route" ||
+		!strings.Contains(string(entry.Outbound), `"type":"socks"`) ||
+		!strings.Contains(string(entry.Outbound), `"server":"proxy.example"`) {
 		t.Fatalf("pool upsert stored %+v (exists=%v)", entry, exists)
 	}
 	if fixture.controller.propagateCalls != 1 {
@@ -305,6 +311,7 @@ func TestPoolPageCRUD(t *testing.T) {
 	badName := url.Values{
 		"csrf_token":    {fixture.session.CSRFToken},
 		"name":          {"bad name!"},
+		"remark":        {""},
 		"outbound_json": {`{"type":"direct"}`},
 	}.Encode()
 	request = fixture.authenticatedMutationRequest(http.MethodPost, "/pool", badName)
@@ -322,6 +329,7 @@ func TestPoolPageCRUD(t *testing.T) {
 	badJSON := url.Values{
 		"csrf_token":    {fixture.session.CSRFToken},
 		"name":          {"relay"},
+		"remark":        {""},
 		"outbound_json": {`{"tag":"x"}`},
 	}.Encode()
 	request = fixture.authenticatedMutationRequest(http.MethodPost, "/pool", badJSON)
@@ -331,7 +339,10 @@ func TestPoolPageCRUD(t *testing.T) {
 		t.Fatalf("bad-JSON pool upsert status = %d, want 400", response.Code)
 	}
 	if !strings.Contains(response.Body.String(), "Enter one complete outbound JSON object") {
-		t.Fatalf("bad-JSON pool upsert did not re-render the error: %s", response.Body.String())
+		// The validation copy also calls out the new URI import path.
+		if !strings.Contains(response.Body.String(), "supported proxy URI") {
+			t.Fatalf("bad-JSON pool upsert did not re-render the error: %s", response.Body.String())
+		}
 	}
 	if fixture.controller.propagateCalls != 1 {
 		t.Fatalf("failed upserts triggered propagation: %d calls", fixture.controller.propagateCalls)
