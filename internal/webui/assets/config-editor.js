@@ -172,14 +172,18 @@ if (configTextarea && configurationForm && configurationEditor) {
     const password = field(row, "user", "password").value;
     const tlsMode = field(card, "inbound", "tls_mode").value;
     const tlsDomain = field(card, "inbound", "tls_domain").value;
-    const host = tlsDomain || window.location.hostname;
+    const address = row.querySelector("[data-share-family]")?.value || "";
+    if (!address) return null;
+    const host = address.includes(":") ? `[${address}]` : address;
     const insecure = tlsMode === "acme" ? "0" : "1";
     const label = encodeURIComponent(tag + " - " + userName);
     if (type === "anytls") {
-      return "anytls://" + encodeURIComponent(password) + "@" + host + ":" + port + "?sni=" + encodeURIComponent(host) + "&insecure=" + insecure + "#" + label;
+      const params = (tlsDomain ? "sni=" + encodeURIComponent(tlsDomain) + "&" : "") + "insecure=" + insecure;
+      return "anytls://" + encodeURIComponent(password) + "@" + host + ":" + port + "?" + params + "#" + label;
     }
     if (type === "hysteria2") {
-      var params = "insecure=" + insecure + "&sni=" + encodeURIComponent(host);
+      var params = "insecure=" + insecure;
+      if (tlsDomain) params += "&sni=" + encodeURIComponent(tlsDomain);
       const obfsType = field(card, "inbound", "obfs_type").value;
       const obfsPassword = field(card, "inbound", "obfs_password").value;
       if (obfsType) {

@@ -2237,6 +2237,21 @@ func TestAssetsAreSelfHostedAndSecurityHeadersApplyToErrors(t *testing.T) {
 			!strings.Contains(response.Body.String(), `option.addEventListener("pointerdown"`) {
 			t.Fatal("config editor rule-set options do not commit before popover dismissal")
 		}
+		if path == "/assets/config-editor.js" {
+			asset := response.Body.String()
+			for _, expected := range []string{
+				`row.querySelector("[data-share-family]")`,
+				"address.includes(\":\") ? `[${address}]` : address",
+				`encodeURIComponent(tlsDomain)`,
+			} {
+				if !strings.Contains(asset, expected) {
+					t.Errorf("config editor URI export does not contain %q", expected)
+				}
+			}
+			if strings.Contains(asset, `tlsDomain || window.location.hostname`) {
+				t.Fatal("config editor URI export still falls back to the master address")
+			}
+		}
 	}
 
 	request := fixture.request(http.MethodGet, "/not-found", "")

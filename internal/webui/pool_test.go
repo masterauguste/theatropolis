@@ -691,6 +691,44 @@ func TestServerPageRoutesDirectlyThroughPoolDestinations(t *testing.T) {
 	}
 }
 
+func TestServerPageOffersAgentAddressFamiliesForURIExport(t *testing.T) {
+	t.Parallel()
+
+	fixture := newPoolFixture(t)
+	enrollAgent(t, fixture.registry, "edge-export")
+	if _, err := fixture.controller.poolRegistry.SetReported(
+		"edge-export",
+		[]string{"203.0.113.12"},
+		[]string{"2001:db8::12"},
+	); err != nil {
+		t.Fatal(err)
+	}
+
+	request := fixture.authenticatedRequest(
+		http.MethodGet,
+		"/servers/edge-export/manage",
+		"",
+	)
+	response := httptest.NewRecorder()
+	fixture.handler.ServeHTTP(response, request)
+	if response.Code != http.StatusOK {
+		t.Fatalf("GET server management status = %d, body = %s", response.Code, response.Body.String())
+	}
+	body := response.Body.String()
+	for _, expected := range []string{
+		`data-share-family`,
+		`<option value="203.0.113.12">IPv4 — 203.0.113.12</option>`,
+		`<option value="2001:db8::12">IPv6 — 2001:db8::12</option>`,
+	} {
+		if !strings.Contains(body, expected) {
+			t.Errorf("server export controls do not contain %q", expected)
+		}
+	}
+	if strings.Contains(body, `data-copy-uri title="Copy import URI for this user" aria-label="Copy import URI for this user" disabled`) {
+		t.Fatal("URI export is disabled even though agent addresses are available")
+	}
+}
+
 func TestPoolPageAddressFamilies(t *testing.T) {
 	t.Parallel()
 

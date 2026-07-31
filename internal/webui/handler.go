@@ -233,6 +233,8 @@ type agentDetailView struct {
 	Update                *agentUpdateView
 	RevokeLabel           string
 	DefaultTLSAddress     string
+	IPv4                  string
+	IPv6                  string
 }
 
 type agentUpdateView struct {
@@ -1414,6 +1416,7 @@ func (h *Handler) serverPageData(
 	}
 	if registry := h.controller.PoolRegistry(); registry != nil {
 		detail.DefaultTLSAddress = registry.DefaultTLSAddress(snapshot.ID)
+		detail.IPv4, detail.IPv6 = h.poolAddresses(snapshot.ID)
 	}
 	if info, exists := h.sessions.AgentInfo(snapshot.ID); exists {
 		detail.AgentVersion = info.Version
