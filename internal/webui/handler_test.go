@@ -2251,6 +2251,15 @@ func TestAssetsAreSelfHostedAndSecurityHeadersApplyToErrors(t *testing.T) {
 			if strings.Contains(asset, `tlsDomain || window.location.hostname`) {
 				t.Fatal("config editor URI export still falls back to the master address")
 			}
+			for _, expected := range []string{
+				`matchControl.hidden = type === "none"`,
+				`matchType !== "none" && values.length === 0`,
+				`} else if (matchType !== "none") {`,
+			} {
+				if !strings.Contains(asset, expected) {
+					t.Errorf("config editor scope-only routing does not contain %q", expected)
+				}
+			}
 		}
 	}
 

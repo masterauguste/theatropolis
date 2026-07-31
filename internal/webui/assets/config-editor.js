@@ -829,7 +829,8 @@ if (configTextarea && configurationForm && configurationEditor) {
       : scopeType === "inbound" ? listValue(rule.inbound)[0] : "";
     setValue(field(card, "route", "scope_type"), scopeType);
     const geoKind = inferGeoMatchKind(rule.rule_set);
-    const matchType = geoKind || routeMatchFields.find((name) => rule[name] !== undefined) || "protocol";
+    const configuredMatchType = routeMatchFields.find((name) => rule[name] !== undefined);
+    const matchType = geoKind || configuredMatchType || (Object.keys(rule).length ? "none" : "protocol");
     setValue(field(card, "route", "match_type"), matchType);
     if (geoKind) {
       const tag = rule.rule_set[0];
@@ -862,6 +863,11 @@ if (configTextarea && configurationForm && configurationEditor) {
       card.querySelector("[data-route-match-filter]").value = "";
     }
     card.dataset.routeMatchType = type;
+    const matchControl = card.querySelector(".route-match-combobox");
+    matchControl.hidden = type === "none";
+    if (type === "none") {
+      setMatchOptionsOpen(card, false);
+    }
     const labels = matchLabels[type] || ["Match values", "Type a value and press Enter…"];
     card.querySelector("[data-route-match-label]").textContent = labels[0];
     card.querySelector("[data-route-match-filter]").placeholder = labels[1];
@@ -869,8 +875,10 @@ if (configTextarea && configurationForm && configurationEditor) {
       ensureGeoOptions(type);
     }
     replaceScopeOptions(card);
-    updateMatchHint(card);
-    renderMatchOptions(card);
+    if (type !== "none") {
+      updateMatchHint(card);
+      renderMatchOptions(card);
+    }
     const values = matchSelection(card);
     const scopeType = field(card, "route", "scope_type").value;
     const scopeValue = field(card, "route", "scope_value").value;
@@ -879,8 +887,10 @@ if (configTextarea && configurationForm && configurationEditor) {
       "no outbound";
     updateCardSummary(
       card,
-      values[0] || `${type.replaceAll("_", " ")} rule`,
-      `${scope} · ${type.replaceAll("_", " ")} · ${outbound}`,
+      type === "none" ? "All scoped traffic" : values[0] || `${type.replaceAll("_", " ")} rule`,
+      type === "none"
+        ? `${scope} · ${outbound}`
+        : `${scope} · ${type.replaceAll("_", " ")} · ${outbound}`,
     );
   }
 
@@ -1003,13 +1013,13 @@ if (configTextarea && configurationForm && configurationEditor) {
     if (scopeType === "inbound" && scopeValue) rule.inbound = [scopeValue];
     if (scopeType === "auth_user" && scopeValue) rule.auth_user = [scopeValue];
     const values = matchSelection(card);
-    if (values.length === 0) {
+    if (matchType !== "none" && values.length === 0) {
       throw new Error("Every routing rule needs at least one match value.");
     }
     if (matchType === "geosite" || matchType === "geoip") {
       // geosite/geoip are UI-level match types; the JSON field stays rule_set.
       rule.rule_set = values.map((name) => `${matchType}-${name}`);
-    } else {
+    } else if (matchType !== "none") {
       rule[matchType] = values;
     }
     rule.action = "route";
