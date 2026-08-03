@@ -1,5 +1,6 @@
 # Local deployment credentials
 .deploy/
+.keys/
 
 # Project-local development toolchain
 .tools/
