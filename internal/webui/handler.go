@@ -161,6 +161,7 @@ type pageData struct {
 	CSRFToken             string
 	Error                 string
 	ErrorField            string
+	Notice                string
 	Username              string
 	LegacyLogin           bool
 	AgentID               string
@@ -400,6 +401,7 @@ func (h *Handler) routes() {
 		h.deployServerConfiguration,
 	)
 	h.mux.HandleFunc("POST /servers/{agent_id}/revoke", h.revokeServer)
+	h.mux.HandleFunc("POST /servers/agent-update-all", h.updateAllAgents)
 	h.mux.HandleFunc("POST /servers/{agent_id}/agent-update", h.updateAgent)
 	h.mux.HandleFunc("POST /servers/{agent_id}/sing-box-update", h.updateSingBox)
 	h.mux.HandleFunc("POST /master-update", h.updateMaster)
@@ -1192,6 +1194,95 @@ func (h *Handler) updateAgent(response http.ResponseWriter, request *http.Reques
 	}
 	h.rememberAgentUpdate(sessionToken, snapshot.ID, requestID)
 	http.Redirect(response, request, "/servers/"+url.PathEscape(snapshot.ID)+"/manage", http.StatusSeeOther)
+}
+
+func (h *Handler) updateAllAgents(response http.ResponseWriter, request *http.Request) {
+	sessionToken, ok := h.sessionToken(request)
+	if !ok {
+		h.redirectToLogin(response, request)
+		return
+	}
+	if h.rejectInvalidMutationOrigin(response, request) {
+		return
+	}
+	form, err := readExactForm(
+		response,
+		request,
+		maxEnrollmentBodyBytes,
+		"csrf_token",
+	)
+	if err != nil || !h.access.AuthorizeCSRF(sessionToken, form.Get("csrf_token")) {
+		http.Error(response, "request was not authorized", http.StatusForbidden)
+		return
+	}
+	session, err := h.access.Authenticate(sessionToken)
+	if err != nil {
+		h.redirectToLogin(response, request)
+		return
+	}
+	if h.releases == nil {
+		http.Error(response, "the latest release could not be determined", http.StatusServiceUnavailable)
+		return
+	}
+	releases, err := h.releases.Versions(request.Context())
+	if err != nil || len(releases) == 0 {
+		http.Error(response, "the latest release could not be determined", http.StatusServiceUnavailable)
+		return
+	}
+	targetVersion := releases[0].Tag
+	queued := 0
+	skipped := 0
+	for _, snapshot := range h.registry.Snapshot(h.currentTime()) {
+		if snapshot.State != identity.AgentStateEnrolled {
+			continue
+		}
+		info, online := h.sessions.AgentInfo(snapshot.ID)
+		if !online || info.Version == targetVersion ||
+			!h.controller.CanUpdateAgent(snapshot.ID) {
+			skipped++
+			continue
+		}
+		requestID, idErr := randomOpaqueID("update")
+		if idErr != nil {
+			h.logger.Error("generate agent update ID", "agent_id", snapshot.ID, "error", idErr)
+			skipped++
+			continue
+		}
+		if err := h.controller.QueueAgentUpdate(
+			request.Context(),
+			snapshot.ID,
+			requestID,
+			targetVersion,
+		); err != nil {
+			if !errors.Is(err, agentupdate.ErrUpdatePending) &&
+				!errors.Is(err, control.ErrAgentOffline) {
+				h.logger.Error("queue agent update", "agent_id", snapshot.ID, "error", err)
+			}
+			skipped++
+			continue
+		}
+		h.rememberAgentUpdate(sessionToken, snapshot.ID, requestID)
+		queued++
+	}
+	h.logger.Info(
+		"fleet agent update queued",
+		"target_version", targetVersion,
+		"queued", queued,
+		"skipped", skipped,
+	)
+	notice := fmt.Sprintf("Queued agent update to %s for %d server(s).", targetVersion, queued)
+	if skipped > 0 {
+		notice += fmt.Sprintf(
+			" %d enrolled server(s) skipped (offline, incompatible, already up to date, or already updating).",
+			skipped,
+		)
+	}
+	h.render(response, http.StatusOK, "servers.html", pageData{
+		Title:     "Servers",
+		ActiveNav: "servers",
+		CSRFToken: session.CSRFToken,
+		Notice:    notice,
+	})
 }
 
 func (h *Handler) updateSingBox(

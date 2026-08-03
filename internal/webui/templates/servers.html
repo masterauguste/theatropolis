@@ -92,12 +92,20 @@
             <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M20 11a8 8 0 1 0-2.3 5.7M20 5v6h-6"/></svg>
             Refresh
           </button>
+          <form action="/servers/agent-update-all" method="post">
+            <input type="hidden" name="csrf_token" value="{{.CSRFToken}}">
+            <button class="button button--secondary" type="submit" data-submit-button data-submit-label="Queuing…">Update all agents</button>
+          </form>
           <a class="button button--primary" href="/servers/new">
             <span aria-hidden="true">+</span>
             Add server
           </a>
         </div>
       </header>
+
+      {{if .Notice}}
+      <div class="notice notice--success" role="status">{{.Notice}}</div>
+      {{end}}
 
       <div id="servers-content" class="async-region" data-async-region data-async-url="/servers/content" data-async-loading-label="Loading servers…" aria-live="polite" aria-busy="true">
         <div class="loading-state" role="status">

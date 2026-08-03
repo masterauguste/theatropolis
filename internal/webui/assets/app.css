@@ -328,6 +328,10 @@ svg {
   gap: 0.5rem;
 }
 
+.page-header__actions form {
+  display: contents;
+}
+
 /* ---------- Buttons ---------- */
 
 .button {

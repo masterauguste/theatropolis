@@ -1399,6 +1399,90 @@ func TestAgentUpdateFailureIsVisibleOnlyToRequestingSession(t *testing.T) {
 	}
 }
 
+func TestAgentUpdateAllQueuesLatestForEligibleAgents(t *testing.T) {
+	t.Parallel()
+
+	fixture := newWebFixture(t)
+	enrollAgent(t, fixture.registry, "edge-online")
+	enrollAgent(t, fixture.registry, "edge-second")
+	fixture.controller.sessions["edge-second"] = true
+	form := url.Values{
+		"csrf_token": {fixture.session.CSRFToken},
+	}.Encode()
+	request := fixture.authenticatedMutationRequest(
+		http.MethodPost,
+		"/servers/agent-update-all",
+		form,
+	)
+	response := httptest.NewRecorder()
+	fixture.handler.ServeHTTP(response, request)
+	if response.Code != http.StatusOK {
+		t.Fatalf("update-all response = %d %q", response.Code, response.Body.String())
+	}
+	if !strings.Contains(response.Body.String(), "Queued agent update to v1.14.0-beta.7 for 2 server(s).") {
+		t.Fatalf("update-all notice missing from %q", response.Body.String())
+	}
+	for _, agentID := range []string{"edge-online", "edge-second"} {
+		state, exists := fixture.controller.updates[agentID]
+		if !exists || state.TargetVersion != "v1.14.0-beta.7" {
+			t.Fatalf("queued update for %s = %+v, exists=%v", agentID, state, exists)
+		}
+	}
+}
+
+func TestAgentUpdateAllSkipsOfflineAgents(t *testing.T) {
+	t.Parallel()
+
+	fixture := newWebFixture(t)
+	enrollAgent(t, fixture.registry, "edge-online")
+	enrollAgent(t, fixture.registry, "edge-offline")
+	form := url.Values{
+		"csrf_token": {fixture.session.CSRFToken},
+	}.Encode()
+	request := fixture.authenticatedMutationRequest(
+		http.MethodPost,
+		"/servers/agent-update-all",
+		form,
+	)
+	response := httptest.NewRecorder()
+	fixture.handler.ServeHTTP(response, request)
+	if response.Code != http.StatusOK {
+		t.Fatalf("update-all response = %d %q", response.Code, response.Body.String())
+	}
+	if !strings.Contains(response.Body.String(), "for 1 server(s). 1 enrolled server(s) skipped") {
+		t.Fatalf("update-all notice missing from %q", response.Body.String())
+	}
+	if _, exists := fixture.controller.updates["edge-offline"]; exists {
+		t.Fatal("offline agent update was queued")
+	}
+	if _, exists := fixture.controller.updates["edge-online"]; !exists {
+		t.Fatal("online agent update was not queued")
+	}
+}
+
+func TestAgentUpdateAllRejectsBadCSRF(t *testing.T) {
+	t.Parallel()
+
+	fixture := newWebFixture(t)
+	enrollAgent(t, fixture.registry, "edge-online")
+	form := url.Values{
+		"csrf_token": {"bogus"},
+	}.Encode()
+	request := fixture.authenticatedMutationRequest(
+		http.MethodPost,
+		"/servers/agent-update-all",
+		form,
+	)
+	response := httptest.NewRecorder()
+	fixture.handler.ServeHTTP(response, request)
+	if response.Code != http.StatusForbidden {
+		t.Fatalf("update-all response = %d %q", response.Code, response.Body.String())
+	}
+	if _, exists := fixture.controller.updates["edge-online"]; exists {
+		t.Fatal("update was queued despite bad CSRF token")
+	}
+}
+
 func TestSingBoxUpdateQueuesExactPrerelease(t *testing.T) {
 	t.Parallel()
 	fixture := newWebFixture(t)
