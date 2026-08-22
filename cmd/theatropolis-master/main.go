@@ -26,6 +26,7 @@ import (
 	"github.com/masterauguste/theatropolis/internal/deployment"
 	"github.com/masterauguste/theatropolis/internal/identity"
 	"github.com/masterauguste/theatropolis/internal/pool"
+	"github.com/masterauguste/theatropolis/internal/proxynode"
 	"github.com/masterauguste/theatropolis/internal/webui"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/health"
@@ -145,6 +146,13 @@ func serve(arguments []string) error {
 	}
 	logger := slog.New(slog.NewJSONHandler(os.Stderr, nil))
 	slog.SetDefault(logger)
+	legacyQuarantine, firstProxyNodeStart, err := proxynode.PrepareMasterCutover(*stateDirectory, time.Now())
+	if err != nil {
+		return fmt.Errorf("prepare Proxy Node configuration cutover: %w", err)
+	}
+	if legacyQuarantine != "" {
+		logger.Warn("legacy proxy configuration quarantined", "path", legacyQuarantine)
+	}
 	deployments, err := deployment.NewDiskStore(
 		filepath.Join(*stateDirectory, "deployments"),
 	)
@@ -157,6 +165,11 @@ func serve(arguments []string) error {
 	if err != nil {
 		return fmt.Errorf("open outbound pool registry: %w", err)
 	}
+	if firstProxyNodeStart {
+		if err := poolRegistry.DiscardLegacyConfiguration(); err != nil {
+			return fmt.Errorf("discard legacy outbound-pool configuration: %w", err)
+		}
+	}
 	server := control.NewServer(
 		identities,
 		deployments,
@@ -164,6 +177,21 @@ func serve(arguments []string) error {
 		logNotifier{logger: logger},
 		logger,
 	)
+	proxyNodes, err := proxynode.Open(
+		filepath.Join(*stateDirectory, "proxy-node-state.json"),
+		proxynode.BuildInfo{
+			Component: "master",
+			Version:   version,
+			Commit:    commit,
+		},
+	)
+	if err != nil {
+		return fmt.Errorf("open Proxy Node state: %w", err)
+	}
+	proxyDeployer, err := proxynode.NewDeployer(proxyNodes, poolRegistry, server)
+	if err != nil {
+		return fmt.Errorf("configure Proxy Node deployer: %w", err)
+	}
 	accessPath := strings.TrimSpace(*webAuthFile)
 	if accessPath == "" {
 		accessPath = filepath.Join(*stateDirectory, "web-auth.json")
@@ -203,9 +231,14 @@ func serve(arguments []string) error {
 		PublicURL:       *publicURL,
 		Version:         version,
 		Logger:          logger,
+		ProxyNodes:      proxyNodes,
+		ProxyDeployer:   proxyDeployer,
 	})
 	if err != nil {
 		return fmt.Errorf("configure web interface: %w", err)
+	}
+	if err := proxyNodes.MarkReady(); err != nil {
+		return fmt.Errorf("record Proxy Node state readiness: %w", err)
 	}
 
 	grpcServer := grpc.NewServer(

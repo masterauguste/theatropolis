@@ -45,6 +45,9 @@ fail() {
 
 trap cleanup EXIT HUP INT TERM
 
+command -v script >/dev/null 2>&1 ||
+	fail "the util-linux script command is required"
+
 mkdir -p \
 	"$MOCK_BIN" \
 	"$RELEASE_DIRECTORY" \
@@ -442,7 +445,27 @@ done
 run_installer() {
 	FAIL_CADDY_RELOAD="$1"
 	shift
-	PATH="$MOCK_BIN:$PATH" \
+	TEST_ADMIN_USERNAME=""
+	TEST_ADMIN_PASSWORD_FILE=""
+	while [ "$#" -gt 0 ]; do
+		case "$1" in
+		--admin-username)
+			[ "$#" -ge 2 ] || fail "test --admin-username requires a value"
+			TEST_ADMIN_USERNAME="$2"
+			shift 2
+			;;
+		--admin-password-file)
+			[ "$#" -ge 2 ] || fail "test --admin-password-file requires a value"
+			TEST_ADMIN_PASSWORD_FILE="$2"
+			shift 2
+			;;
+		*) fail "unexpected test installer argument: $1" ;;
+		esac
+	done
+	# The command string is intentionally expanded by script's child shell.
+	# shellcheck disable=SC2016
+	printf '%s\n%s\n' "$DOMAIN" "$HTTPS_PORT" |
+		PATH="$MOCK_BIN:$PATH" \
 		TEST_RELEASE_DIRECTORY="$RELEASE_DIRECTORY" \
 		TEST_MASTER_LOG="$MASTER_LOG" \
 		TEST_INIT_STATE_LOG="$INIT_STATE_LOG" \
@@ -461,12 +484,38 @@ run_installer() {
 		TEST_RESET_PASSWORD_FILE="$RESET_PASSWORD_FILE" \
 		TEST_FAILED_RESET_PASSWORD_FILE="$FAILED_RESET_PASSWORD_FILE" \
 		TEST_BAD_MODE_PASSWORD_FILE="$BAD_MODE_PASSWORD_FILE" \
-		sh "$TEST_DIRECTORY/install.sh" master \
-		--domain "$DOMAIN" \
-		--https-port "$HTTPS_PORT" \
-		--version "$RELEASE_TAG" \
-		"$@"
+		TEST_INSTALLER_UNDER_TEST="$TEST_DIRECTORY/install.sh" \
+		TEST_RELEASE_TAG="$RELEASE_TAG" \
+		TEST_ADMIN_USERNAME="$TEST_ADMIN_USERNAME" \
+		TEST_ADMIN_PASSWORD_FILE="$TEST_ADMIN_PASSWORD_FILE" \
+		script -q -e -c \
+		'set -- master --version "$TEST_RELEASE_TAG"; if [ -n "$TEST_ADMIN_USERNAME" ]; then set -- "$@" --admin-username "$TEST_ADMIN_USERNAME"; fi; if [ -n "$TEST_ADMIN_PASSWORD_FILE" ]; then set -- "$@" --admin-password-file "$TEST_ADMIN_PASSWORD_FILE"; fi; exec sh "$TEST_INSTALLER_UNDER_TEST" "$@"' \
+		/dev/null
 }
+
+set +e
+LEGACY_ENDPOINT_OUTPUT="$(
+	sh "$TEST_DIRECTORY/install.sh" master \
+		--domain "$DOMAIN" 2>&1
+)"
+LEGACY_ENDPOINT_STATUS="$?"
+set -e
+[ "$LEGACY_ENDPOINT_STATUS" -ne 0 ] ||
+	fail "installer still accepted the removed --domain option"
+printf '%s' "$LEGACY_ENDPOINT_OUTPUT" | grep -Fq 'unknown argument: --domain' ||
+	fail "removed endpoint options did not produce an unknown-argument diagnostic"
+
+set +e
+LEGACY_PORT_OUTPUT="$(
+	sh "$TEST_DIRECTORY/install.sh" master \
+		--https-port "$HTTPS_PORT" 2>&1
+)"
+LEGACY_PORT_STATUS="$?"
+set -e
+[ "$LEGACY_PORT_STATUS" -ne 0 ] ||
+	fail "installer still accepted the removed --https-port option"
+printf '%s' "$LEGACY_PORT_OUTPUT" | grep -Fq 'unknown argument: --https-port' ||
+	fail "removed Caddy port option did not produce an unknown-argument diagnostic"
 
 # The process-wide installer lock prevents fresh/reset rollback state from
 # racing another installer.
@@ -533,6 +582,20 @@ if [ -z "${MSYSTEM:-}" ] && command -v script >/dev/null 2>&1; then
 	(
 		exec 3>"$INTERACTIVE_INPUT_FIFO"
 		ATTEMPTS=0
+		until grep -Fq 'Public domain name:' "$INTERACTIVE_OUTPUT_FILE"; do
+			ATTEMPTS=$((ATTEMPTS + 1))
+			[ "$ATTEMPTS" -le 600 ] || exit 1
+			sleep 0.1
+		done
+		printf '%s\n' "$DOMAIN" >&3
+		ATTEMPTS=0
+		until grep -Fq 'Caddy HTTPS port [8443]:' "$INTERACTIVE_OUTPUT_FILE"; do
+			ATTEMPTS=$((ATTEMPTS + 1))
+			[ "$ATTEMPTS" -le 600 ] || exit 1
+			sleep 0.1
+		done
+		printf '%s\n' "$HTTPS_PORT" >&3
+		ATTEMPTS=0
 		until grep -Fq 'Admin username [admin]:' "$INTERACTIVE_OUTPUT_FILE"; do
 			ATTEMPTS=$((ATTEMPTS + 1))
 			[ "$ATTEMPTS" -le 600 ] || exit 1
@@ -574,7 +637,7 @@ if [ -z "${MSYSTEM:-}" ] && command -v script >/dev/null 2>&1; then
 		TEST_HTTPS_PORT="$HTTPS_PORT" \
 		TEST_RELEASE_TAG="$RELEASE_TAG" \
 		script -q -e -c \
-		'sh "$TEST_INSTALLER_UNDER_TEST" master --domain "$TEST_DOMAIN" --https-port "$TEST_HTTPS_PORT" --version "$TEST_RELEASE_TAG"' \
+		'sh "$TEST_INSTALLER_UNDER_TEST" master --version "$TEST_RELEASE_TAG"' \
 		/dev/null \
 		<"$INTERACTIVE_INPUT_FIFO" \
 		>"$INTERACTIVE_OUTPUT_FILE" 2>&1
@@ -587,6 +650,10 @@ if [ -z "${MSYSTEM:-}" ] && command -v script >/dev/null 2>&1; then
 		fail "timed out waiting for the interactive admin prompt"
 	[ "$INTERACTIVE_STATUS" -ne 0 ] ||
 		fail "interactive installation unexpectedly succeeded when Caddy reload failed"
+	printf '%s' "$INTERACTIVE_OUTPUT" | grep -Fq 'Public domain name:' ||
+		fail "interactive installation did not prompt for the public domain"
+	printf '%s' "$INTERACTIVE_OUTPUT" | grep -Fq 'Caddy HTTPS port [8443]:' ||
+		fail "interactive installation did not prompt for the Caddy HTTPS port"
 	printf '%s' "$INTERACTIVE_OUTPUT" | grep -Fq 'Admin username [admin]:' ||
 		fail "interactive installation did not prompt for an admin username"
 	printf '%s' "$INTERACTIVE_OUTPUT" | grep -Fq 'Admin password (15-128 characters):' ||

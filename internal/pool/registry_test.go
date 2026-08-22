@@ -170,6 +170,44 @@ func TestManualCRUDAndReload(t *testing.T) {
 	}
 }
 
+func TestDiscardLegacyConfigurationPreservesAgentMetadata(t *testing.T) {
+	registry, path := openTestRegistry(t)
+	if err := registry.UpsertManual("legacy", json.RawMessage(`{"type":"direct"}`)); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := registry.SetReported("edge-1", []string{"203.0.113.20"}, nil); err != nil {
+		t.Fatal(err)
+	}
+	if err := registry.SetDefaultTLSAddress("edge-1", "proxy.example.com"); err != nil {
+		t.Fatal(err)
+	}
+	if err := registry.MarkRendered("edge-1", 1, [32]byte{1}); err != nil {
+		t.Fatal(err)
+	}
+	if err := registry.DiscardLegacyConfiguration(); err != nil {
+		t.Fatal(err)
+	}
+	if len(registry.Manual()) != 0 {
+		t.Fatal("legacy manual outbounds remain live")
+	}
+	if _, _, exists := registry.RenderedVersion("edge-1"); exists {
+		t.Fatal("legacy render stamp remains live")
+	}
+	if address, ok := registry.AgentAddress("edge-1"); !ok || address != "203.0.113.20" {
+		t.Fatalf("Agent address = %q, %v", address, ok)
+	}
+	if registry.DefaultTLSAddress("edge-1") != "proxy.example.com" {
+		t.Fatal("Agent TLS metadata was discarded")
+	}
+	reloaded, err := Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(reloaded.Manual()) != 0 || reloaded.DefaultTLSAddress("edge-1") != "proxy.example.com" {
+		t.Fatal("cutover result did not persist")
+	}
+}
+
 func TestManualRemarkPersists(t *testing.T) {
 	t.Parallel()
 	path := filepath.Join(t.TempDir(), "outbound-pool.json")

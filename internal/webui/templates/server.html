@@ -16,7 +16,7 @@
         <div>
           <p class="eyebrow">Server management</p>
           <h1>{{.Agent.ID}}</h1>
-          <p class="page-header__description">Inspect access and deploy the complete sing-box configuration for this agent.</p>
+          <p class="page-header__description">Inspect enrollment, connectivity, addresses, and software for this Agent.</p>
         </div>
         <div class="page-header__actions">
           <a class="button button--secondary button--icon" href="{{.Agent.URL}}" aria-label="Refresh server status">
@@ -28,6 +28,10 @@
           </button>
         </div>
       </header>
+
+      {{if .Error}}
+      <div class="notice notice--error" role="alert">{{.Error}}</div>
+      {{end}}
 
       <section class="server-summary" aria-label="Server status">
         <article class="summary-card">
@@ -44,11 +48,12 @@
           <small>{{.Agent.ConnectionDetail}}</small>
         </article>
         <article class="summary-card">
-          <span class="summary-card__label">Configuration control</span>
+          <span class="summary-card__label">Proxy Node readiness</span>
           {{if .Agent.ConfigurationEnabled}}
           <strong class="summary-card__value summary-card__value--positive">Ready</strong>
           {{else}}
-          <strong class="summary-card__value">Unavailable</strong>
+          <strong class="summary-card__value">{{if .Agent.Online}}Upgrade required{{else}}Unavailable{{end}}</strong>
+          <small>{{.Agent.ConfigurationHint}}</small>
           {{end}}
         </article>
         <article class="summary-card">
@@ -64,232 +69,16 @@
       </section>
 
       <div>
-        <section class="panel configuration-panel" aria-labelledby="configuration-heading">
+
+        <section class="panel" aria-labelledby="proxy-role-heading">
           <div class="panel__header">
             <div>
-              <h2 id="configuration-heading">sing-box configuration</h2>
-              <p>Raw JSON for sing-box 1.14 and newer.</p>
+              <h2 id="proxy-role-heading">Proxy Node roles</h2>
+              <p>Entrances, relay Links, users, and routing are managed as logical Proxy Nodes.</p>
             </div>
-            <span
-              class="status{{if .Agent.Deployment}} status--{{.Agent.Deployment.StatusClass}}{{end}}"
-              data-configuration-deployment-status
-              {{if not .Agent.Deployment}}hidden{{end}}
-            >
-              <span aria-hidden="true"></span><span data-configuration-deployment-label>{{if .Agent.Deployment}}{{.Agent.Deployment.StatusLabel}}{{end}}</span>
-            </span>
+            <a class="button button--primary" href="/proxy-nodes">Open Proxy Nodes</a>
           </div>
-
-          <form action="/servers/{{.Agent.ID}}/configuration" method="post" class="configuration-form">
-            <input type="hidden" name="csrf_token" value="{{.CSRFToken}}">
-            {{if .Error}}
-            <div
-              class="notice notice--error"
-              id="configuration-form-error"
-              role="alert"
-              tabindex="-1"
-              data-error-summary
-            >{{.Error}}</div>
-            {{end}}
-            <div
-              class="notice"
-              role="status"
-              tabindex="-1"
-              data-configuration-deployment-result
-              hidden
-            ></div>
-
-            <div class="config-mode-tabs" role="tablist" aria-label="Configuration editor mode">
-              <button class="config-mode-tab is-active" type="button" role="tab" aria-selected="true" data-config-tab="guided">Guided editor</button>
-              <button class="config-mode-tab" type="button" role="tab" aria-selected="false" data-config-tab="advanced">Advanced JSON</button>
-            </div>
-
-            <section class="guided-config" data-config-panel="guided">
-              <div class="notice notice--warning guided-config__notice" data-guided-warning hidden></div>
-              <section class="builder-section" aria-labelledby="inbound-builder-heading">
-                <div class="resource-summary">
-                  <div><h3 id="inbound-builder-heading">Inbounds and users</h3><p>Shadowsocks 2022, AnyTLS, and Hysteria2 listeners.</p></div>
-                  <span class="resource-summary__count" data-resource-count="inbound">0 configured</span>
-                  <button class="button button--secondary button--small" type="button" data-dialog-open="inbound-manager-dialog">Manage</button>
-                </div>
-              </section>
-              <section class="builder-section" aria-labelledby="route-builder-heading">
-                <div class="resource-summary">
-                  <div><h3 id="route-builder-heading">Routing rules</h3><p>Route agent, inbound, or user traffic through built-in or fleet-pool destinations.</p></div>
-                  <span class="resource-summary__count" data-resource-count="route-rule">0 configured</span>
-                  <button class="button button--secondary button--small" type="button" data-dialog-open="route-rule-manager-dialog">Manage</button>
-                </div>
-              </section>
-            </section>
-
-            <section data-config-panel="advanced" hidden>
-              <label class="field field--editor">
-                <span>Configuration JSON</span>
-                <textarea
-                  id="config-json"
-                  name="config_json"
-                  rows="28"
-                  maxlength="4194304"
-                  autocomplete="off"
-                  autocapitalize="off"
-                  spellcheck="false"
-                  wrap="off"
-                  required
-                  {{if not .Agent.ConfigurationEditable}}readonly{{end}}
-                  {{if eq .ErrorField "config_json"}}autofocus aria-invalid="true" aria-describedby="configuration-help configuration-form-error"{{else}}aria-invalid="false" aria-describedby="configuration-help"{{end}}
-                >{{.Agent.Configuration}}</textarea>
-                <small id="configuration-help">{{.Agent.ConfigurationHint}}</small>
-                <small>The guided editor derives outbounds from routing destinations. Advanced JSON remains available for complete sing-box control.</small>
-              </label>
-            </section>
-
-            <div class="configuration-form__actions">
-              <span class="muted" data-config-summary>Maximum size: 4 MiB</span>
-              <button
-                class="button button--primary"
-                type="submit"
-                data-submit-button
-                data-submit-label="Deploying…"
-                {{if not .Agent.ConfigurationEditable}}disabled{{end}}
-              >Validate and deploy</button>
-            </div>
-          </form>
-
-          <dialog class="modal resource-modal" id="inbound-manager-dialog" aria-labelledby="inbound-manager-title">
-            <div class="modal__surface">
-              <header class="modal__header">
-                <div><p class="eyebrow">Configuration resource</p><h2 id="inbound-manager-title">Manage inbounds and users</h2><p>Add, edit, or remove listeners.</p></div>
-                <button class="button button--secondary button--icon-only" type="button" data-dialog-close aria-label="Close inbound manager">×</button>
-              </header>
-              <div class="modal__body"><div class="builder-list" data-inbound-list></div></div>
-              <footer class="modal__footer">
-                <button class="button button--secondary" type="button" data-add-inbound {{if not .Agent.ConfigurationEditable}}disabled{{end}}>Add inbound</button>
-                <button class="button button--primary" type="button" data-dialog-close>Close</button>
-              </footer>
-            </div>
-          </dialog>
-
-          <dialog class="modal resource-modal" id="route-rule-manager-dialog" aria-labelledby="route-rule-manager-title">
-            <div class="modal__surface">
-              <header class="modal__header">
-                <div><p class="eyebrow">Configuration resource</p><h2 id="route-rule-manager-title">Manage routing rules</h2><p>Rules are evaluated from top to bottom. Drag cards to change their priority.</p></div>
-                <button class="button button--secondary button--icon-only" type="button" data-dialog-close aria-label="Close routing-rule manager">×</button>
-              </header>
-              <div class="modal__body">
-                <label class="field builder-final-outbound">
-                  <span>Default outbound</span>
-                  <select data-route-final {{if not .Agent.ConfigurationEditable}}disabled{{end}}>
-                    <option value="builtin/direct">Direct</option>
-                    <option value="builtin/reject">Reject</option>
-                  </select>
-                  <small>Used when no routing rule matches.</small>
-                </label>
-                <div class="notice notice--warning" data-pool-routing-warning hidden></div>
-                <div class="builder-list route-rule-list" data-route-rule-list></div>
-              </div>
-              <footer class="modal__footer">
-                <button class="button button--secondary" type="button" data-add-route-rule {{if not .Agent.ConfigurationEditable}}disabled{{end}}>Add rule</button>
-                <button class="button button--primary" type="button" data-dialog-close>Close</button>
-              </footer>
-            </div>
-          </dialog>
-
-          <template id="inbound-card-template">
-            <article class="builder-card" data-inbound-card>
-              <div class="builder-card__header">
-                <div class="builder-card__identity"><strong data-card-title>New inbound</strong><small data-card-meta>Not configured</small></div>
-                <button class="button button--secondary button--small" type="button" data-edit-card>Edit</button>
-              </div>
-              <div class="builder-card__editor" data-card-editor hidden>
-              <div class="builder-fields">
-                <label class="field"><span>Protocol</span><select data-inbound-field="type"><option value="shadowsocks">Shadowsocks 2022</option><option value="anytls">AnyTLS</option><option value="hysteria2">Hysteria2</option></select></label>
-                <label class="field"><span>Tag</span><input type="text" data-inbound-field="tag" placeholder="proxy-in" maxlength="128" required></label>
-                <label class="field"><span>Listen port</span><input type="number" data-inbound-field="listen_port" min="1" max="65535" placeholder="8443" required></label>
-                <label class="field"><span>Listen address</span><input type="text" data-inbound-field="listen" value="::" placeholder="::"></label>
-              </div>
-              <fieldset class="builder-subsection" data-inbound-section="shadowsocks" hidden>
-                <legend>Shadowsocks 2022</legend>
-                <div class="builder-fields">
-                  <label class="field"><span>2022 method</span><select data-inbound-field="method"><option value="2022-blake3-aes-128-gcm">AES-128-GCM</option><option value="2022-blake3-aes-256-gcm">AES-256-GCM</option><option value="2022-blake3-chacha20-poly1305">ChaCha20-Poly1305</option></select></label>
-                  <label class="field"><span>Server key</span><span class="field-with-action"><input type="password" data-inbound-field="password" autocomplete="new-password" required><button type="button" class="button button--secondary button--icon-only" data-generate-secret="server" title="Generate a random key" aria-label="Generate a random key"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="18" height="18" rx="4"/><circle cx="8.2" cy="8.2" r="1.3" fill="currentColor" stroke="none"/><circle cx="15.8" cy="8.2" r="1.3" fill="currentColor" stroke="none"/><circle cx="12" cy="12" r="1.3" fill="currentColor" stroke="none"/><circle cx="8.2" cy="15.8" r="1.3" fill="currentColor" stroke="none"/><circle cx="15.8" cy="15.8" r="1.3" fill="currentColor" stroke="none"/></svg></button></span></label>
-                </div>
-              </fieldset>
-              <fieldset class="builder-subsection" data-inbound-section="hysteria2" hidden>
-                <legend>Hysteria2</legend>
-                <div class="builder-fields builder-fields--three">
-                  <label class="field"><span>Upload Mbps</span><input type="number" data-inbound-field="up_mbps" min="1" max="1000000" placeholder="100"></label>
-                  <label class="field"><span>Download Mbps</span><input type="number" data-inbound-field="down_mbps" min="1" max="1000000" placeholder="100"></label>
-                  <label class="field"><span>Obfuscation</span><select data-inbound-field="obfs_type"><option value="">Disabled</option><option value="salamander">Salamander</option><option value="gecko">Gecko</option></select></label>
-                  <label class="field" data-obfs-password-field hidden><span>Obfuscation password</span><span class="field-with-action"><input type="password" data-inbound-field="obfs_password" autocomplete="new-password"><button type="button" class="button button--secondary button--icon-only" data-generate-secret="obfs" title="Generate a random password" aria-label="Generate a random password"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="18" height="18" rx="4"/><circle cx="8.2" cy="8.2" r="1.3" fill="currentColor" stroke="none"/><circle cx="15.8" cy="8.2" r="1.3" fill="currentColor" stroke="none"/><circle cx="12" cy="12" r="1.3" fill="currentColor" stroke="none"/><circle cx="8.2" cy="15.8" r="1.3" fill="currentColor" stroke="none"/><circle cx="15.8" cy="15.8" r="1.3" fill="currentColor" stroke="none"/></svg></button></span></label>
-                </div>
-              </fieldset>
-              <fieldset class="builder-subsection" data-tls-fields hidden>
-                <legend>TLS certificate</legend>
-                <div class="builder-fields builder-fields--three">
-                  <label class="field"><span>Certificate mode</span><select data-inbound-field="tls_mode"><option value="acme">ACME (Let's Encrypt)</option><option value="self_signed">Self-signed by agent</option><option value="files">Existing certificate files</option></select></label>
-                  <label class="field" data-tls-domain-field><span>Domain or IP address</span><input type="text" data-inbound-field="tls_domain" placeholder="proxy.example.com"></label>
-                  <label class="field" data-acme-field><span>ACME email</span><input type="email" data-inbound-field="tls_email" placeholder="admin@example.com"></label>
-                  <label class="field" data-certificate-file-field hidden><span>Certificate path</span><input type="text" data-inbound-field="certificate_path" placeholder="/etc/theatropolis/certs/server.pem"></label>
-                  <label class="field" data-certificate-file-field hidden><span>Private key path</span><input type="text" data-inbound-field="key_path" placeholder="/etc/theatropolis/certs/server.key"></label>
-                </div>
-                <small data-acme-field>ACME HTTP-01 requires port 80 to be free.</small>
-                <small data-self-signed-field hidden>The agent signs this domain or IP address and securely retains the certificate and private key in its own state directory.</small>
-              </fieldset>
-              <fieldset class="builder-subsection">
-                <div class="builder-subsection__header"><legend>Users</legend><button class="button-link" type="button" data-add-user>Add user</button></div>
-                <div class="user-list" data-user-list></div>
-                <small data-users-hint></small>
-              </fieldset>
-              <div class="builder-card__actions"><button class="button-link button-link--danger" type="button" data-remove-card>Remove inbound</button></div>
-              </div>
-            </article>
-          </template>
-
-          <template id="user-row-template">
-            <div class="user-row" data-user-row>
-              <label class="field"><span>Name</span><input type="text" data-user-field="name" maxlength="128" placeholder="user"></label>
-              <label class="field"><span>Password / key</span><input type="password" data-user-field="password" autocomplete="new-password" required></label>
-              <label class="field user-row__export-family" data-native-select><span>Export via</span><select data-share-family {{if not (or .Agent.IPv4 .Agent.IPv6)}}disabled{{end}}>{{if .Agent.IPv4}}<option value="{{.Agent.IPv4}}">IPv4 — {{.Agent.IPv4}}</option>{{end}}{{if .Agent.IPv6}}<option value="{{.Agent.IPv6}}">IPv6 — {{.Agent.IPv6}}</option>{{end}}{{if not (or .Agent.IPv4 .Agent.IPv6)}}<option value="">No agent IP available</option>{{end}}</select></label>
-              <div class="user-row__actions">
-                <button class="button button--secondary button--icon-only" type="button" data-generate-user-secret title="Generate a random key" aria-label="Generate a random key"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="18" height="18" rx="4"/><circle cx="8.2" cy="8.2" r="1.3" fill="currentColor" stroke="none"/><circle cx="15.8" cy="8.2" r="1.3" fill="currentColor" stroke="none"/><circle cx="12" cy="12" r="1.3" fill="currentColor" stroke="none"/><circle cx="8.2" cy="15.8" r="1.3" fill="currentColor" stroke="none"/><circle cx="15.8" cy="15.8" r="1.3" fill="currentColor" stroke="none"/></svg></button>
-                <button class="button button--secondary button--icon-only user-row__copy" type="button" data-copy-uri title="Copy import URI for this user" aria-label="Copy import URI for this user" {{if not (or .Agent.IPv4 .Agent.IPv6)}}disabled{{end}}><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="11" height="11" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg></button>
-                <button class="button button--secondary button--icon-only user-row__remove" type="button" data-remove-user title="Remove this user" aria-label="Remove this user"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M3 6h18"/><path d="M8 6V4a1 1 0 0 1 1-1h6a1 1 0 0 1 1 1v2"/><path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6"/></svg></button>
-              </div>
-            </div>
-          </template>
-
-          <template id="route-rule-card-template">
-            <article class="builder-card route-rule-card" data-route-rule-card draggable="true" tabindex="-1">
-              <div class="builder-card__header route-rule-card__header">
-                <button class="route-drag-handle" type="button" data-drag-handle aria-label="Drag to reorder rule" title="Drag to reorder"><svg viewBox="0 0 20 20" aria-hidden="true"><circle cx="7" cy="5" r="1"/><circle cx="13" cy="5" r="1"/><circle cx="7" cy="10" r="1"/><circle cx="13" cy="10" r="1"/><circle cx="7" cy="15" r="1"/><circle cx="13" cy="15" r="1"/></svg></button>
-                <div class="builder-card__identity"><strong data-card-title>Routing rule</strong><small data-card-meta>Not configured</small></div>
-                <div class="route-rule-card__actions">
-                  <button class="button button--secondary button--icon-only" type="button" data-move-rule="up" aria-label="Move rule up" title="Move up"><svg viewBox="0 0 20 20" aria-hidden="true"><path d="m5 12 5-5 5 5"/></svg></button>
-                  <button class="button button--secondary button--icon-only" type="button" data-move-rule="down" aria-label="Move rule down" title="Move down"><svg viewBox="0 0 20 20" aria-hidden="true"><path d="m5 8 5 5 5-5"/></svg></button>
-                </div>
-              </div>
-              <div class="builder-card__editor route-rule-card__editor">
-                <div class="builder-fields builder-fields--three">
-                  <label class="field"><span>Applies to</span><select data-route-field="scope_type"><option value="all">All traffic</option><option value="inbound">Inbound</option><option value="auth_user">User</option></select></label>
-                  <label class="field" data-route-scope-value hidden><span data-route-scope-label>Inbound</span><select data-route-field="scope_value"></select></label>
-                  <label class="field"><span>Rule type</span><select data-route-field="match_type"><option value="none">None</option><option value="protocol">Protocol</option><option value="domain">Domain</option><option value="domain_suffix">Domain Suffix</option><option value="domain_keyword">Domain Keyword</option><option value="domain_regex">Regex</option><option value="ip_cidr">IP/CIDR</option><option value="geosite">Geosite</option><option value="geoip">GeoIP</option><option value="rule_set">Rule Set</option><option value="network">Network</option></select></label>
-                  <div class="field geo-combobox route-match-combobox">
-                    <span data-route-match-label>Match values</span>
-                    <div class="geo-chips" data-route-match-chips></div>
-                    <div class="route-match-control">
-                      <div class="route-match-trigger">
-                        <input type="text" data-route-match-filter role="combobox" aria-autocomplete="list" aria-haspopup="listbox" aria-expanded="false" placeholder="Type a value and press Enter…" autocomplete="off" spellcheck="false">
-                        <span class="route-match-chevron" aria-hidden="true"><svg viewBox="0 0 20 20"><path d="m5.5 7.5 4.5 4.5 4.5-4.5"/></svg></span>
-                      </div>
-                      <div class="geo-options" data-route-match-options role="listbox" popover="manual" hidden></div>
-                    </div>
-                    <small data-route-match-hint></small>
-                  </div>
-                  <label class="field"><span>Outbound</span><select data-route-field="destination" required><option value="builtin/direct">Direct</option><option value="builtin/reject">Reject</option></select></label>
-                </div>
-                <div class="builder-card__actions"><button class="button-link button-link--danger" type="button" data-remove-card>Remove rule</button></div>
-              </div>
-            </article>
-          </template>
+          <div class="panel__empty"><p>This server can participate in any number of independently deployed routing trees. It does not own an editable sing-box configuration.</p></div>
         </section>
 
         <dialog class="modal actions-modal" id="server-actions-dialog" aria-labelledby="server-actions-title">
@@ -470,7 +259,6 @@
         </dialog>
       </div>
   </main>
-  <script src="/assets/config-editor.js?v={{.AssetVersion}}" defer></script>
   <script src="/assets/app.js?v={{.AssetVersion}}" defer></script>
 </body>
 </html>

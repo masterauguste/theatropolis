@@ -30,6 +30,7 @@ import (
 	"github.com/masterauguste/theatropolis/internal/deployment"
 	"github.com/masterauguste/theatropolis/internal/identity"
 	"github.com/masterauguste/theatropolis/internal/pool"
+	"github.com/masterauguste/theatropolis/internal/proxynode"
 	"github.com/masterauguste/theatropolis/internal/singbox"
 	"github.com/masterauguste/theatropolis/internal/singboxupdate"
 )
@@ -67,6 +68,7 @@ type SessionRegistry interface {
 
 type AgentController interface {
 	CanDeployConfiguration(agentID string) bool
+	CanDeployProxyNodeConfiguration(agentID string) bool
 	CanUpdateAgent(agentID string) bool
 	LatestAgentUpdate(agentID string) (control.AgentUpdateState, bool)
 	QueueAgentUpdate(context.Context, string, string, string) error
@@ -111,6 +113,8 @@ type Options struct {
 	Version         string
 	Logger          *slog.Logger
 	Now             func() time.Time
+	ProxyNodes      *proxynode.Store
+	ProxyDeployer   *proxynode.Deployer
 }
 
 type Handler struct {
@@ -132,6 +136,8 @@ type Handler struct {
 	assetVersion    string
 	logger          *slog.Logger
 	now             func() time.Time
+	proxyNodes      *proxynode.Store
+	proxyDeployer   *proxynode.Deployer
 	templates       *template.Template
 	mux             *http.ServeMux
 
@@ -185,6 +191,15 @@ type pageData struct {
 	PoolFormName          string
 	PoolFormRemark        string
 	PoolFormJSON          string
+	ProxyNodes            []proxyNodeListView
+	ProxyNode             *proxyNodeDetailView
+	EndUsers              []endUserListView
+	EndUser               *endUserDetailView
+	AgentOptions          []agentOptionView
+	Endpoint              endpointView
+	Hop                   *hopDetailView
+	Link                  *linkDetailView
+	ProxyDeployment       *proxyDeploymentView
 }
 
 type fleetStats struct {
@@ -209,6 +224,7 @@ type agentView struct {
 type agentDetailView struct {
 	ID                    string
 	URL                   string
+	Online                bool
 	DeploymentStatusURL   string
 	EnrollmentLabel       string
 	EnrollmentClass       string
@@ -330,6 +346,8 @@ func New(options Options) (http.Handler, error) {
 		assetVersion:    base64.RawURLEncoding.EncodeToString(versionDigest[:12]),
 		logger:          logger,
 		now:             now,
+		proxyNodes:      options.ProxyNodes,
+		proxyDeployer:   options.ProxyDeployer,
 		templates:       templates,
 		mux:             http.NewServeMux(),
 		results:         make(map[string]enrollmentResult),
@@ -357,6 +375,37 @@ func (h *Handler) routes() {
 	h.mux.HandleFunc("POST /login", h.login)
 	h.mux.HandleFunc("POST /logout", h.logout)
 	h.mux.HandleFunc("GET /servers", h.serversPage)
+	h.mux.HandleFunc("GET /proxy-nodes", h.proxyNodesPage)
+	h.mux.HandleFunc("GET /proxy-nodes/new", h.newProxyNodePage)
+	h.mux.HandleFunc("POST /proxy-nodes", h.createProxyNode)
+	h.mux.HandleFunc("GET /proxy-nodes/deployment-status", h.proxyDeploymentStatus)
+	h.mux.HandleFunc("GET /proxy-nodes/{proxy_id}/manage", h.proxyNodePage)
+	h.mux.HandleFunc("POST /proxy-nodes/{proxy_id}/rename", h.renameProxyNode)
+	h.mux.HandleFunc("POST /proxy-nodes/{proxy_id}/delete", h.deleteProxyNode)
+	h.mux.HandleFunc("POST /proxy-nodes/{proxy_id}/deploy", h.deployProxyNodes)
+	h.mux.HandleFunc("GET /proxy-nodes/{proxy_id}/entrance", h.proxyEntrancePage)
+	h.mux.HandleFunc("POST /proxy-nodes/{proxy_id}/entrance", h.updateProxyEntrance)
+	h.mux.HandleFunc("GET /proxy-nodes/{proxy_id}/members", h.proxyMembersPage)
+	h.mux.HandleFunc("POST /proxy-nodes/{proxy_id}/members", h.addProxyMembership)
+	h.mux.HandleFunc("POST /proxy-nodes/{proxy_id}/members/remove", h.removeProxyMembership)
+	h.mux.HandleFunc("GET /proxy-nodes/{proxy_id}/rule-sets", h.proxyRuleSetsPage)
+	h.mux.HandleFunc("POST /proxy-nodes/{proxy_id}/rule-sets", h.upsertProxyRuleSet)
+	h.mux.HandleFunc("POST /proxy-nodes/{proxy_id}/rule-sets/delete", h.deleteProxyRuleSet)
+	h.mux.HandleFunc("GET /proxy-nodes/{proxy_id}/hops/{hop_id}", h.proxyHopPage)
+	h.mux.HandleFunc("POST /proxy-nodes/{proxy_id}/hops/{hop_id}", h.updateProxyHop)
+	h.mux.HandleFunc("POST /proxy-nodes/{proxy_id}/hops/{hop_id}/links", h.addProxyLink)
+	h.mux.HandleFunc("POST /proxy-nodes/{proxy_id}/hops/{hop_id}/links/delete", h.deleteProxyLink)
+	h.mux.HandleFunc("GET /proxy-nodes/{proxy_id}/links/{link_id}", h.proxyLinkPage)
+	h.mux.HandleFunc("POST /proxy-nodes/{proxy_id}/links/{link_id}", h.updateProxyLink)
+	h.mux.HandleFunc("POST /proxy-nodes/{proxy_id}/hops/{hop_id}/rules", h.addProxyRule)
+	h.mux.HandleFunc("POST /proxy-nodes/{proxy_id}/hops/{hop_id}/rules/delete", h.deleteProxyRule)
+	h.mux.HandleFunc("POST /proxy-nodes/{proxy_id}/hops/{hop_id}/rules/move", h.moveProxyRule)
+	h.mux.HandleFunc("POST /proxy-nodes/{proxy_id}/hops/{hop_id}/final", h.updateProxyFinal)
+	h.mux.HandleFunc("GET /users", h.endUsersPage)
+	h.mux.HandleFunc("POST /users", h.createEndUser)
+	h.mux.HandleFunc("GET /users/{user_id}", h.endUserPage)
+	h.mux.HandleFunc("POST /users/{user_id}/rename", h.renameEndUser)
+	h.mux.HandleFunc("POST /users/{user_id}/delete", h.deleteEndUser)
 	h.mux.HandleFunc("GET /servers/content", h.serversContent)
 	h.mux.HandleFunc("GET /pool", h.poolPage)
 	h.mux.HandleFunc("GET /pool/content", h.poolContent)
@@ -395,10 +444,6 @@ func (h *Handler) routes() {
 	h.mux.HandleFunc(
 		"POST /servers/{agent_id}/probe-address",
 		h.requestAddressProbe,
-	)
-	h.mux.HandleFunc(
-		"POST /servers/{agent_id}/configuration",
-		h.deployServerConfiguration,
 	)
 	h.mux.HandleFunc("POST /servers/{agent_id}/revoke", h.revokeServer)
 	h.mux.HandleFunc("POST /servers/agent-update-all", h.updateAllAgents)
@@ -1500,6 +1545,7 @@ func (h *Handler) serverPageData(
 	detail := &agentDetailView{
 		ID:                  snapshot.ID,
 		URL:                 "/servers/" + url.PathEscape(snapshot.ID) + "/manage",
+		Online:              online,
 		DeploymentStatusURL: "/servers/" + url.PathEscape(snapshot.ID) + "/deployment-status",
 		EnrollmentLabel:     summary.EnrollmentLabel,
 		EnrollmentClass:     summary.EnrollmentClass,
@@ -1530,8 +1576,8 @@ func (h *Handler) serverPageData(
 		switch {
 		case !online:
 			detail.ConfigurationHint = "The agent must be online before a configuration can be deployed."
-		case !h.controller.CanDeployConfiguration(snapshot.ID):
-			detail.ConfigurationHint = "This agent is connected, but its agent or sing-box installation must be updated before it can activate configurations."
+		case !h.controller.CanDeployProxyNodeConfiguration(snapshot.ID):
+			detail.ConfigurationHint = "This Agent must be upgraded before it can receive Proxy Node configurations. A legacy configuration may still be active until that upgrade completes."
 		default:
 			detail.ConfigurationEnabled = true
 			detail.ConfigurationEditable = true

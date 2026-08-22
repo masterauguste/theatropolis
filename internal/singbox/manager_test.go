@@ -222,6 +222,55 @@ func TestManagerRefusesUnavailableSingBoxBeforeAdvertisingReadiness(t *testing.T
 	}
 }
 
+func TestManagerQuarantinesLegacyConfigAndStampsGeneration(t *testing.T) {
+	factory := &fakeProcessFactory{}
+	manager := newTestManager(t, factory, nil)
+	manager.configGeneration = ProxyNodeConfigGeneration
+	manager.agentVersion = "v2.0.0"
+	manager.agentCommit = "new-format"
+	legacy := []byte(`{"inbounds":[],"outbounds":[]}`)
+	writeActiveConfig(t, manager, legacy)
+	certificateDirectory := filepath.Join(manager.stateDirectory, managedSelfSignedDirectory, "legacy")
+	if err := os.MkdirAll(certificateDirectory, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(certificateDirectory, "private-key.pem"), []byte("legacy-secret"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	runContext, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	startup, err := manager.Start(runContext)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer stopTestManager(t, manager)
+	if startup.Status != StartupNoConfig || startup.LegacyQuarantine == "" {
+		t.Fatalf("cutover startup = %+v", startup)
+	}
+	if _, err := os.Stat(manager.ActiveConfigPath()); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("legacy active config remains live: %v", err)
+	}
+	quarantined, err := os.ReadFile(filepath.Join(startup.LegacyQuarantine, activeConfigFilename))
+	if err != nil || string(quarantined) != string(legacy) {
+		t.Fatalf("quarantined config = %q, %v", quarantined, err)
+	}
+	if _, err := os.Stat(filepath.Join(startup.LegacyQuarantine, "theatropolis-self-signed", "legacy", "private-key.pem")); err != nil {
+		t.Fatalf("legacy generated certificate was not quarantined: %v", err)
+	}
+	state, exists, err := readConfigState(filepath.Join(manager.configDirectory, configStateFilename))
+	if err != nil || !exists {
+		t.Fatalf("read generation state = %+v, %v, %v", state, exists, err)
+	}
+	if state.Generation != ProxyNodeConfigGeneration || state.LastUsedBy.Version != "v2.0.0" || state.LastUsedBy.Commit != "new-format" {
+		t.Fatalf("generation state = %+v", state)
+	}
+	processes, _ := factory.snapshot()
+	if len(processes) != 0 {
+		t.Fatal("legacy configuration started sing-box during cutover")
+	}
+}
+
 func TestManagerBuildsExactRunCommandAndDiscardsOutput(t *testing.T) {
 	manager, err := NewManager(ManagerOptions{Validator: Validator{
 		BinaryPath:     "/usr/local/bin/sing-box",

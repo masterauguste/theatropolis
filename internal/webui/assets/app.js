@@ -1,5 +1,76 @@
 "use strict";
 
+function updateProxyEndpointForm(select) {
+  const form = select.closest("form");
+  if (!form) return;
+  const protocol = select.value;
+  for (const section of form.querySelectorAll("[data-proxy-section]")) {
+    const kind = section.dataset.proxySection;
+    section.hidden = kind === "shadowsocks" ? protocol !== "shadowsocks" :
+      kind === "tls" ? protocol === "shadowsocks" : protocol !== kind;
+  }
+  const tlsMode = form.querySelector("[data-proxy-tls-mode]")?.value;
+  for (const field of form.querySelectorAll("[data-proxy-acme]")) {
+    field.hidden = protocol === "shadowsocks" || tlsMode !== "acme";
+  }
+  for (const field of form.querySelectorAll("[data-proxy-files]")) {
+    field.hidden = protocol === "shadowsocks" || tlsMode !== "files";
+  }
+}
+
+for (const select of document.querySelectorAll("[data-proxy-protocol]")) {
+  updateProxyEndpointForm(select);
+  select.addEventListener("change", () => updateProxyEndpointForm(select));
+  select.closest("form")?.querySelector("[data-proxy-tls-mode]")?.addEventListener(
+    "change",
+    () => updateProxyEndpointForm(select),
+  );
+}
+
+for (const select of document.querySelectorAll("[data-proxy-match]")) {
+  const update = () => {
+    const values = select.closest("form")?.querySelector("[data-proxy-match-values]");
+    if (values) values.hidden = select.value === "none";
+  };
+  update();
+  select.addEventListener("change", update);
+}
+
+for (const button of document.querySelectorAll("[data-copy-value]")) {
+  button.addEventListener("click", async () => {
+    const original = button.textContent;
+    try {
+      await navigator.clipboard.writeText(button.dataset.copyValue || "");
+      button.textContent = "Copied";
+    } catch (_) {
+      button.textContent = "Copy failed";
+    }
+    window.setTimeout(() => { button.textContent = original; }, 1500);
+  });
+}
+
+const proxyDeployment = document.querySelector("[data-proxy-deployment][data-status-url]");
+if (proxyDeployment) {
+  const pollProxyDeployment = async () => {
+    try {
+      const response = await fetch(proxyDeployment.dataset.statusUrl, {
+        credentials: "same-origin",
+        headers: { Accept: "application/json" },
+      });
+      if (!response.ok) throw new Error("status unavailable");
+      const status = await response.json();
+      if (!status.active) {
+        window.location.reload();
+        return;
+      }
+    } catch (_) {
+      // Keep the current status visible and retry transient failures.
+    }
+    window.setTimeout(pollProxyDeployment, 2000);
+  };
+  window.setTimeout(pollProxyDeployment, 1000);
+}
+
 const dialogTriggers = new WeakMap();
 
 const redirectForExpiredSession = (response) => {

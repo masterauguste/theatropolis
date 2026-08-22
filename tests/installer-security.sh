@@ -158,6 +158,29 @@ printf '%s' "$NONINTERACTIVE_OUTPUT" |
 	grep -Eiq '(terminal|tty|enrollment[ -]token)' ||
 	fail "noninteractive failure did not explain how enrollment input is obtained"
 
+# Master endpoint configuration also requires an actual terminal. Domain and
+# port values must not regain a noninteractive command-line bypass.
+rm -f -- "$PROMPT_APT_LOG" "$PROMPT_ARGV_LOG"
+set +e
+NONINTERACTIVE_MASTER_OUTPUT="$(
+	PATH="$PROMPT_PATH" \
+		TEST_APT_LOG="$PROMPT_APT_LOG" \
+		TEST_ARGV_LOG="$PROMPT_ARGV_LOG" \
+		sh "$INSTALLER" master </dev/null 2>&1
+)"
+NONINTERACTIVE_MASTER_STATUS="$?"
+set -e
+
+[ "$NONINTERACTIVE_MASTER_STATUS" -ne 0 ] ||
+	fail "master installation without a terminal unexpectedly succeeded"
+[ "$NONINTERACTIVE_MASTER_STATUS" -ne 42 ] ||
+	fail "master installation without a terminal reached package installation"
+[ ! -s "$PROMPT_APT_LOG" ] ||
+	fail "master installation without a terminal performed package work"
+printf '%s' "$NONINTERACTIVE_MASTER_OUTPUT" |
+	grep -Eiq '(terminal|tty|public domain|Caddy HTTPS port)' ||
+	fail "noninteractive master failure did not explain how endpoint input is obtained"
+
 RELEASE_DIRECTORY="$TEST_DIRECTORY/release"
 RELEASE_STAGE="$TEST_DIRECTORY/release-stage"
 COMPAT_BIN="$TEST_DIRECTORY/compat-bin"
@@ -262,16 +285,25 @@ printf '%s\n' \
 	>"$COMPAT_BIN/install"
 chmod +x "$COMPAT_BIN"/*
 
-set +e
-SIGNATURE_OUTPUT="$(
-	PATH="$COMPAT_BIN:$PATH" \
+run_compat_installer() {
+	TEST_SIGNATURE_FAIL_VALUE="${1:-no}"
+	# The command string is intentionally expanded by script's child shell.
+	# shellcheck disable=SC2016
+	printf '%s\n%s\n' 'master.example.com' '8443' |
+		PATH="$COMPAT_BIN:$PATH" \
 		TEST_RELEASE_DIRECTORY="$RELEASE_DIRECTORY" \
 		TEST_MASTER_INVOCATIONS="$MASTER_INVOCATIONS" \
 		TEST_INSTALL_INVOCATIONS="$INSTALL_INVOCATIONS" \
-		TEST_SIGNATURE_FAIL=yes \
-		sh "$INSTALLER" master \
-		--domain master.example.com \
-		--version v0.0.1 2>&1
+		TEST_SIGNATURE_FAIL="$TEST_SIGNATURE_FAIL_VALUE" \
+		INSTALLER_UNDER_TEST="$INSTALLER" \
+		script -q -e -c \
+		'sh "$INSTALLER_UNDER_TEST" master --version v0.0.1' \
+		/dev/null
+}
+
+set +e
+SIGNATURE_OUTPUT="$(
+	run_compat_installer yes 2>&1
 )"
 SIGNATURE_STATUS="$?"
 set -e
@@ -288,13 +320,7 @@ printf '%s' "$SIGNATURE_OUTPUT" |
 
 set +e
 COMPAT_OUTPUT="$(
-	PATH="$COMPAT_BIN:$PATH" \
-		TEST_RELEASE_DIRECTORY="$RELEASE_DIRECTORY" \
-		TEST_MASTER_INVOCATIONS="$MASTER_INVOCATIONS" \
-		TEST_INSTALL_INVOCATIONS="$INSTALL_INVOCATIONS" \
-		sh "$INSTALLER" master \
-		--domain master.example.com \
-		--version v0.0.1 2>&1
+	run_compat_installer no 2>&1
 )"
 COMPAT_STATUS="$?"
 set -e

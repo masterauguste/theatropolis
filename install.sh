@@ -66,10 +66,11 @@ AGENT_STOPPED="no"
 usage() {
 	printf '%s\n' \
 		"Usage:" \
-		"  install.sh master --domain <name> [--https-port <port>] [--version <tag>] [--admin-username <name> [--admin-password-file <path>]]" \
+		"  install.sh master [--version <tag>] [--admin-username <name> [--admin-password-file <path>]]" \
 		"  install.sh agent --master <host:port> [--token <token>] [--ca-file <path>] [--agent-id <legacy-id>]" \
-		"  install.sh all --domain <name> --agent-id <id> [--https-port <port>] [--admin-username <name> [--admin-password-file <path>]]" \
+		"  install.sh all --agent-id <id> [--version <tag>] [--admin-username <name> [--admin-password-file <path>]]" \
 		"" \
+		"Master and all installations prompt for the public domain and Caddy HTTPS port." \
 		"Installs precompiled Linux amd64/arm64 release binaries. It never compiles locally."
 }
 
@@ -226,6 +227,38 @@ prompt_for_enrollment_token() {
 	validate_enrollment_token
 }
 
+validate_master_endpoint() {
+	printf '%s' "$DOMAIN" |
+		grep -Eq '^([A-Za-z0-9]([A-Za-z0-9-]{0,61}[A-Za-z0-9])?\.)+[A-Za-z]{2,63}$' ||
+		fail "the public domain must be a valid DNS name"
+	case "$HTTPS_PORT" in
+	*[!0-9]* | '') fail "the Caddy HTTPS port must be numeric" ;;
+	??????*) fail "the Caddy HTTPS port must be between 1024 and 65535" ;;
+	esac
+	if [ "$HTTPS_PORT" -lt 1024 ] || [ "$HTTPS_PORT" -gt 65535 ]; then
+		fail "the Caddy HTTPS port must be between 1024 and 65535"
+	fi
+}
+
+prompt_for_master_endpoint() {
+	if [ ! -r /dev/tty ] || [ ! -w /dev/tty ]; then
+		fail "a terminal is required to configure the public domain and Caddy HTTPS port"
+	fi
+	printf 'Public domain name: ' >/dev/tty
+	if ! IFS= read -r DOMAIN </dev/tty; then
+		fail "could not read the public domain from the terminal"
+	fi
+	printf 'Caddy HTTPS port [%s]: ' "$DEFAULT_HTTPS_PORT" >/dev/tty
+	if ! IFS= read -r CADDY_HTTPS_PORT_INPUT </dev/tty; then
+		fail "could not read the Caddy HTTPS port from the terminal"
+	fi
+	if [ -n "$CADDY_HTTPS_PORT_INPUT" ]; then
+		HTTPS_PORT="$CADDY_HTTPS_PORT_INPUT"
+	fi
+	CADDY_HTTPS_PORT_INPUT=""
+	validate_master_endpoint
+}
+
 validate_admin_username() {
 	printf '%s' "$ADMIN_USERNAME" |
 		grep -Eq '^[a-z0-9][a-z0-9._-]{0,63}$' ||
@@ -352,16 +385,6 @@ while [ "$#" -gt 0 ]; do
 		RELEASE_TAG="$2"
 		shift 2
 		;;
-	--domain)
-		[ "$#" -ge 2 ] || fail "--domain requires a value"
-		DOMAIN="$2"
-		shift 2
-		;;
-	--https-port)
-		[ "$#" -ge 2 ] || fail "--https-port requires a value"
-		HTTPS_PORT="$2"
-		shift 2
-		;;
 	--master)
 		[ "$#" -ge 2 ] || fail "--master requires a value"
 		MASTER_ADDRESS="$2"
@@ -437,15 +460,7 @@ fi
 
 case "$ROLE" in
 master | all)
-	printf '%s' "$DOMAIN" |
-		grep -Eq '^([A-Za-z0-9]([A-Za-z0-9-]{0,61}[A-Za-z0-9])?\.)+[A-Za-z]{2,63}$' ||
-		fail "--domain must be a valid public DNS name"
-	case "$HTTPS_PORT" in
-	*[!0-9]* | '') fail "--https-port must be numeric" ;;
-	esac
-	if [ "$HTTPS_PORT" -lt 1024 ] || [ "$HTTPS_PORT" -gt 65535 ]; then
-		fail "--https-port must be between 1024 and 65535"
-	fi
+	prompt_for_master_endpoint
 	if [ -n "$ADMIN_USERNAME" ]; then
 		validate_admin_username
 	fi

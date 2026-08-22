@@ -107,7 +107,7 @@ func registerPoolSession(t *testing.T, server *Server, agentID string) *session 
 	t.Helper()
 	enrollTestIdentity(t, server.Identities, agentID)
 	session := newSession(agentID)
-	session.capabilities[ConfigDeployCapability] = struct{}{}
+	session.capabilities[ProxyNodeDeployCapability] = struct{}{}
 	if err := server.Sessions.Register(session); err != nil {
 		t.Fatal(err)
 	}
@@ -320,7 +320,7 @@ func TestPropagateSkipsOfflineDependentAndCatchesUpOnReconnect(t *testing.T) {
 
 	// On reconnect the stale render stamp drives the catch-up deployment.
 	reconnected := newSession("agent-b")
-	reconnected.capabilities[ConfigDeployCapability] = struct{}{}
+	reconnected.capabilities[ProxyNodeDeployCapability] = struct{}{}
 	if err := server.Sessions.Register(reconnected); err != nil {
 		t.Fatal(err)
 	}

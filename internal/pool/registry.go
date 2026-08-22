@@ -412,6 +412,30 @@ func (r *Registry) ManualByName(name string) (ManualEntry, bool) {
 	}, true
 }
 
+// DiscardLegacyConfiguration removes old manual outbounds and render stamps
+// while preserving Agent address and TLS-hostname metadata used by the Proxy
+// Node compiler. The master calls it only during the one-time format cutover.
+func (r *Registry) DiscardLegacyConfiguration() error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if len(r.manual) == 0 && len(r.rendered) == 0 {
+		return nil
+	}
+	previousManual := r.manual
+	previousRendered := r.rendered
+	previousVersion := r.poolVersion
+	r.manual = make(map[string]manualRecord)
+	r.rendered = make(map[string]renderedRecord)
+	r.poolVersion++
+	if err := r.persistLocked(); err != nil {
+		r.manual = previousManual
+		r.rendered = previousRendered
+		r.poolVersion = previousVersion
+		return err
+	}
+	return nil
+}
+
 // SetReported stores the addresses an agent reported for itself. Entries
 // that are not globally routable are silently dropped (see
 // normalizeAddresses). A non-empty reported family clears that family's

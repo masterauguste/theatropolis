@@ -253,7 +253,7 @@ func TestQueueDeploymentRequiresCapabilityAndAppliesMatchingReport(t *testing.T)
 	const agentID = "edge-deploy"
 	enrollTestIdentity(t, server.Identities, agentID)
 	session := newSession(agentID)
-	session.capabilities[ConfigDeployCapability] = struct{}{}
+	session.capabilities[ProxyNodeDeployCapability] = struct{}{}
 	if err := server.Sessions.Register(session); err != nil {
 		t.Fatal(err)
 	}

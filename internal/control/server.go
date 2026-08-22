@@ -26,21 +26,22 @@ import (
 )
 
 const (
-	ProtocolVersion         = 1
-	ConfigDeployCapability  = "config-deploy-v1"
-	AgentUpdateCapability   = "agent-update-v1"
-	SingBoxUpdateCapability = "sing-box-update-v1"
-	HeartbeatCapability     = "heartbeat-v1"
-	CapabilityAddressReport = "address-report-v1"
-	CapabilityAddressProbe  = "address-probe-v1"
-	DefaultChallengeTTL     = 30 * time.Second
-	DefaultHelloTimeout     = 10 * time.Second
-	DefaultCommandQueue     = 16
-	DefaultMaxConfigBytes   = 4 << 20
-	DefaultValidationLimit  = 60 * time.Second
-	DeploymentReportGrace   = 2 * time.Minute
-	MaxDiagnosticBytes      = 8 << 10
-	DefaultHeartbeatTimeout = 75 * time.Second
+	ProtocolVersion           = 1
+	ConfigDeployCapability    = "config-deploy-v1"
+	ProxyNodeDeployCapability = "proxy-node-config-v1"
+	AgentUpdateCapability     = "agent-update-v1"
+	SingBoxUpdateCapability   = "sing-box-update-v1"
+	HeartbeatCapability       = "heartbeat-v1"
+	CapabilityAddressReport   = "address-report-v1"
+	CapabilityAddressProbe    = "address-probe-v1"
+	DefaultChallengeTTL       = 30 * time.Second
+	DefaultHelloTimeout       = 10 * time.Second
+	DefaultCommandQueue       = 16
+	DefaultMaxConfigBytes     = 4 << 20
+	DefaultValidationLimit    = 60 * time.Second
+	DeploymentReportGrace     = 2 * time.Minute
+	MaxDiagnosticBytes        = 8 << 10
+	DefaultHeartbeatTimeout   = 75 * time.Second
 )
 
 var (
@@ -585,7 +586,7 @@ func (s *Server) QueueDeployment(
 	if _, err := s.Identities.PublicKey(ctx, agentID); err != nil {
 		return deployment.Record{}, err
 	}
-	if !s.CanDeployConfiguration(agentID) {
+	if !s.CanDeployProxyNodeConfiguration(agentID) {
 		return deployment.Record{}, ErrAgentOffline
 	}
 	if current, err := s.Deployments.LatestForAgent(ctx, agentID); err == nil {
@@ -1540,6 +1541,10 @@ func (r *SessionRegistry) Supports(agentID, capability string) bool {
 
 func (s *Server) CanDeployConfiguration(agentID string) bool {
 	return s.Sessions.Supports(agentID, ConfigDeployCapability)
+}
+
+func (s *Server) CanDeployProxyNodeConfiguration(agentID string) bool {
+	return s.Sessions.Supports(agentID, ProxyNodeDeployCapability)
 }
 
 func (s *Server) CanUpdateAgent(agentID string) bool {

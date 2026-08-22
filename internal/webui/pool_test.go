@@ -228,7 +228,6 @@ func TestPoolPageCRUD(t *testing.T) {
 	}
 	for _, expected := range []string{
 		"Fleet outbound pool",
-		`href="/pool" class="is-active"`,
 		`data-async-url="/pool/content"`,
 		"Loading fleet outbounds…",
 		`action="/pool"`,
@@ -239,6 +238,9 @@ func TestPoolPageCRUD(t *testing.T) {
 		if !strings.Contains(response.Body.String(), expected) {
 			t.Errorf("pool page does not contain %q", expected)
 		}
+	}
+	if strings.Contains(response.Body.String(), `href="/pool" class="is-active"`) {
+		t.Fatal("legacy pool page is still present in primary navigation")
 	}
 	if fixture.controller.deploymentListCalls != 0 {
 		t.Fatalf(
@@ -644,7 +646,7 @@ func TestServerAddressOverride(t *testing.T) {
 	}
 }
 
-func TestServerPageRoutesDirectlyThroughPoolDestinations(t *testing.T) {
+func TestServerPageRoutesThroughProxyNodeManager(t *testing.T) {
 	t.Parallel()
 
 	fixture := newPoolFixture(t)
@@ -662,20 +664,9 @@ func TestServerPageRoutesDirectlyThroughPoolDestinations(t *testing.T) {
 	}
 	body := response.Body.String()
 	for _, expected := range []string{
-		`data-route-field="scope_type"`,
-		`data-route-field="scope_value"`,
-		`data-route-field="match_type"`,
-		`data-route-match-filter`,
-		`class="route-match-trigger"`,
-		`class="route-match-chevron"`,
-		`data-route-field="destination"`,
-		`data-route-rule-card draggable="true"`,
-		`data-drag-handle`,
-		`data-route-final`,
-		`<option value="none">None</option>`,
-		`<option value="auth_user">User</option>`,
-		`<option value="builtin/direct">Direct</option>`,
-		`<option value="builtin/reject">Reject</option>`,
+		"Proxy Node roles",
+		`href="/proxy-nodes"`,
+		"does not own an editable sing-box configuration",
 	} {
 		if !strings.Contains(body, expected) {
 			t.Errorf("server management page does not contain %q", expected)
@@ -685,6 +676,8 @@ func TestServerPageRoutesDirectlyThroughPoolDestinations(t *testing.T) {
 		`id="outbound-manager-dialog"`,
 		`data-outbound-card`,
 		`data-add-outbound`,
+		`data-route-field="scope_type"`,
+		`action="/servers/edge-online/configuration"`,
 	} {
 		if strings.Contains(body, removed) {
 			t.Errorf("server management page still contains %q", removed)
@@ -692,7 +685,7 @@ func TestServerPageRoutesDirectlyThroughPoolDestinations(t *testing.T) {
 	}
 }
 
-func TestServerPageOffersAgentAddressFamiliesForURIExport(t *testing.T) {
+func TestServerPageDoesNotExposeLegacyURIExport(t *testing.T) {
 	t.Parallel()
 
 	fixture := newPoolFixture(t)
@@ -716,17 +709,10 @@ func TestServerPageOffersAgentAddressFamiliesForURIExport(t *testing.T) {
 		t.Fatalf("GET server management status = %d, body = %s", response.Code, response.Body.String())
 	}
 	body := response.Body.String()
-	for _, expected := range []string{
-		`data-share-family`,
-		`<option value="203.0.113.12">IPv4 — 203.0.113.12</option>`,
-		`<option value="2001:db8::12">IPv6 — 2001:db8::12</option>`,
-	} {
-		if !strings.Contains(body, expected) {
-			t.Errorf("server export controls do not contain %q", expected)
+	for _, removed := range []string{`data-share-family`, "Copy import URI for this user"} {
+		if strings.Contains(body, removed) {
+			t.Errorf("server page still contains legacy URI export %q", removed)
 		}
-	}
-	if strings.Contains(body, `data-copy-uri title="Copy import URI for this user" aria-label="Copy import URI for this user" disabled`) {
-		t.Fatal("URI export is disabled even though agent addresses are available")
 	}
 }
 

@@ -57,6 +57,7 @@ type StartupResult struct {
 	ValidationStatus ValidationStatus
 	Diagnostic       string
 	ConfigSHA256     [sha256.Size]byte
+	LegacyQuarantine string
 }
 
 // RuntimeStatus describes an asynchronous child-process state change.
@@ -106,6 +107,9 @@ type ApplyResult struct {
 // ManagerOptions configures a non-root sing-box child-process manager.
 type ManagerOptions struct {
 	Validator          Validator
+	ConfigGeneration   string
+	AgentVersion       string
+	AgentCommit        string
 	StartupGracePeriod time.Duration
 	ProcessStopTimeout time.Duration
 	RestartMinBackoff  time.Duration
@@ -127,6 +131,9 @@ type Manager struct {
 	restartMinBackoff  time.Duration
 	restartMaxBackoff  time.Duration
 	stablePeriod       time.Duration
+	configGeneration   string
+	agentVersion       string
+	agentCommit        string
 
 	newProcess      func(string, string) managedProcess
 	replaceFile     func(string, string) error
@@ -247,6 +254,9 @@ func NewManager(options ManagerOptions) (*Manager, error) {
 		restartMinBackoff:  restartMinBackoff,
 		restartMaxBackoff:  restartMaxBackoff,
 		stablePeriod:       stablePeriod,
+		configGeneration:   strings.TrimSpace(options.ConfigGeneration),
+		agentVersion:       strings.TrimSpace(options.AgentVersion),
+		agentCommit:        strings.TrimSpace(options.AgentCommit),
 		replaceFile:        replaceConfigFile,
 		checkExecutable:    CheckSupportedExecutable,
 		now:                time.Now,
@@ -305,6 +315,10 @@ func (m *Manager) Start(ctx context.Context) (StartupResult, error) {
 	if err := m.prepareDirectories(); err != nil {
 		return StartupResult{}, err
 	}
+	quarantine, err := m.prepareConfigGeneration()
+	if err != nil {
+		return StartupResult{}, err
+	}
 
 	activeConfig, hasActive, err := m.loadActiveConfig()
 	if err != nil {
@@ -315,7 +329,7 @@ func (m *Manager) Start(ctx context.Context) (StartupResult, error) {
 		activeConfig: activeConfig,
 		hasActive:    hasActive,
 	}
-	startup := StartupResult{Status: StartupNoConfig}
+	startup := StartupResult{Status: StartupNoConfig, LegacyQuarantine: quarantine}
 	var startErr error
 	if hasActive {
 		digest := sha256.Sum256(activeConfig)

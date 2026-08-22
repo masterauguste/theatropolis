@@ -102,8 +102,12 @@ func (r *Runner) Run(
 		return err
 	}
 	if r.Manager != nil {
-		if _, err := r.Manager.Start(ctx); err != nil {
+		startup, err := r.Manager.Start(ctx)
+		if err != nil {
 			return fmt.Errorf("start sing-box manager: %w", err)
+		}
+		if startup.LegacyQuarantine != "" {
+			slog.Warn("legacy sing-box configuration quarantined during Proxy Node cutover", "path", startup.LegacyQuarantine)
 		}
 		defer func() {
 			stopCtx, cancel := context.WithTimeout(
@@ -171,7 +175,7 @@ func (r *Runner) runControlSession(
 	if r.Manager != nil {
 		hello.Capabilities = append(
 			hello.Capabilities,
-			control.ConfigDeployCapability,
+			control.ProxyNodeDeployCapability,
 		)
 	}
 	if r.Updater != nil {

@@ -4,7 +4,6 @@ import (
 	"context"
 	"crypto/ed25519"
 	"crypto/rand"
-	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -23,6 +22,7 @@ import (
 	"github.com/masterauguste/theatropolis/internal/deployment"
 	"github.com/masterauguste/theatropolis/internal/identity"
 	"github.com/masterauguste/theatropolis/internal/pool"
+	"github.com/masterauguste/theatropolis/internal/proxynode"
 )
 
 const testPublicURL = "https://master.example.com:8443"
@@ -188,6 +188,10 @@ func (c *testAgentController) CanDeployConfiguration(agentID string) bool {
 	return c.sessions[agentID]
 }
 
+func (c *testAgentController) CanDeployProxyNodeConfiguration(agentID string) bool {
+	return c.CanDeployConfiguration(agentID)
+}
+
 func (c *testAgentController) LatestDeployment(
 	ctx context.Context,
 	agentID string,
@@ -250,6 +254,7 @@ type webFixture struct {
 	handler    http.Handler
 	registry   *identity.Registry
 	controller *testAgentController
+	proxyNodes *proxynode.Store
 	access     *AccessManager
 	username   string
 	password   string
@@ -795,7 +800,8 @@ func TestAuthenticatedHeaderLinksServersAndSettings(t *testing.T) {
 	for _, expected := range []string{
 		`class="global-header"`,
 		`href="/servers"`,
-		`href="/pool"`,
+		`href="/proxy-nodes"`,
+		`href="/users"`,
 		`href="/settings"`,
 		`action="/logout"`,
 	} {
@@ -834,7 +840,7 @@ func TestSettingsPageOwnsMasterSoftwareManagement(t *testing.T) {
 	}
 }
 
-func TestServerManagementPageShowsConfigurationAndRevocationControls(t *testing.T) {
+func TestServerManagementPageShowsProxyNodeRoleAndRevocationControls(t *testing.T) {
 	t.Parallel()
 
 	fixture := newWebFixture(t)
@@ -858,15 +864,9 @@ func TestServerManagementPageShowsConfigurationAndRevocationControls(t *testing.
 	for _, expected := range []string{
 		"Server management",
 		"edge-online",
-		"sing-box configuration",
-		"Validate and deploy",
-		"Self-signed by agent",
-		`<option value="all">All traffic</option>`,
-		`<option value="inbound">Inbound</option>`,
-		`<option value="domain">Domain</option>`,
-		`<option value="domain_keyword">Domain Keyword</option>`,
-		`<option value="domain_regex">Regex</option>`,
-		`<option value="geosite">Geosite</option>`,
+		"Proxy Node roles",
+		"Open Proxy Nodes",
+		"does not own an editable sing-box configuration",
 		`action="/servers/edge-online/revoke"`,
 		`name="confirm_revoke"`,
 		"Revoke access",
@@ -883,11 +883,9 @@ func TestServerManagementPageShowsConfigurationAndRevocationControls(t *testing.
 		t.Fatal("server management page still contains global master controls")
 	}
 	for _, removed := range []string{
-		"All traffic on this agent",
-		"A specific inbound",
-		"Exact domain",
-		"Domain regular expression",
-		"Geosite domains",
+		"Validate and deploy",
+		`action="/servers/edge-online/configuration"`,
+		`name="scope_type"`,
 	} {
 		if strings.Contains(body, removed) {
 			t.Errorf("server management page still contains verbose routing label %q", removed)
@@ -903,6 +901,138 @@ func TestServerManagementPageShowsConfigurationAndRevocationControls(t *testing.
 	fixture.handler.ServeHTTP(response, request)
 	if response.Code != http.StatusNotFound {
 		t.Fatalf("unknown server detail status = %d, want 404", response.Code)
+	}
+}
+
+func TestPerServerConfigurationEndpointIsRetired(t *testing.T) {
+	t.Parallel()
+
+	fixture := newWebFixture(t)
+	enrollAgent(t, fixture.registry, "edge-online")
+	request := fixture.authenticatedMutationRequest(
+		http.MethodPost,
+		"/servers/edge-online/configuration",
+		url.Values{
+			"config_json": {`{"inbounds":[]}`},
+			"csrf_token":  {fixture.session.CSRFToken},
+		}.Encode(),
+	)
+	response := httptest.NewRecorder()
+	fixture.handler.ServeHTTP(response, request)
+	if response.Code != http.StatusMethodNotAllowed {
+		t.Fatalf("legacy configuration POST status = %d, want 405", response.Code)
+	}
+	if _, err := fixture.controller.store.LatestForAgent(context.Background(), "edge-online"); !errors.Is(err, deployment.ErrNotFound) {
+		t.Fatalf("retired endpoint created a deployment: %v", err)
+	}
+}
+
+func TestProxyNodePagesUseHopWideRulesAndMembershipCredentials(t *testing.T) {
+	t.Parallel()
+
+	fixture := newWebFixture(t)
+	enrollAgent(t, fixture.registry, "edge-online")
+	enrollAgent(t, fixture.registry, "edge-exit")
+	fixture.controller.sessions["edge-exit"] = true
+	poolRegistry, err := pool.Open(filepath.Join(t.TempDir(), "outbound-pool.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	fixture.controller.poolRegistry = poolRegistry
+	if _, err := poolRegistry.SetReported("edge-online", []string{"203.0.113.42"}, nil); err != nil {
+		t.Fatal(err)
+	}
+
+	user, err := fixture.proxyNodes.CreateUser("Alice")
+	if err != nil {
+		t.Fatal(err)
+	}
+	node, err := fixture.proxyNodes.CreateProxyNode(proxynode.CreateProxyNodeInput{
+		Name: "Cinema", RootName: "Entrance", RootAgent: "edge-online",
+		Entrance: proxynode.Endpoint{Protocol: proxynode.ProtocolAnyTLS, Listen: "::", ListenPort: 443, Family: "auto", TLS: proxynode.TLSConfig{Mode: proxynode.TLSModeSelfSigned, ServerName: "cinema.example"}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := fixture.proxyNodes.AddMembership(node.ID, user.ID); err != nil {
+		t.Fatal(err)
+	}
+	link, _, err := fixture.proxyNodes.AddLink(node.ID, proxynode.AddLinkInput{
+		ParentHopID: node.Entrance.HopID, ChildName: "Exit", ChildAgent: "edge-exit",
+		Endpoint: proxynode.Endpoint{Protocol: proxynode.ProtocolShadowsocks, Listen: "::", ListenPort: 8443, Family: "auto", Method: "2022-blake3-aes-128-gcm"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := fixture.proxyNodes.AddRule(node.ID, proxynode.AddRuleInput{HopID: node.Entrance.HopID, Match: proxynode.MatchDomainSuffix, Values: []string{"example.net"}, Target: proxynode.Target{Type: proxynode.TargetLink, LinkID: link.ID}}); err != nil {
+		t.Fatal(err)
+	}
+
+	request := fixture.authenticatedRequest(http.MethodGet, proxyHopURL(node.ID, node.Entrance.HopID), "")
+	response := httptest.NewRecorder()
+	fixture.handler.ServeHTTP(response, request)
+	if response.Code != http.StatusOK {
+		t.Fatalf("GET Hop page = %d %q", response.Code, response.Body.String())
+	}
+	body := response.Body.String()
+	for _, expected := range []string{
+		"Rules apply to all Cinema traffic reaching this Hop.",
+		`<option value="shadowsocks"`, `<option value="anytls"`, `<option value="hysteria2"`,
+		`<option value="none">All traffic</option>`, `<option value="protocol">Protocol</option>`,
+		`<option value="domain">Domain</option>`, `<option value="domain_suffix">Domain suffix</option>`,
+		`<option value="domain_keyword">Domain keyword</option>`, `<option value="domain_regex">Domain regex</option>`,
+		`<option value="ip_cidr">IP / CIDR</option>`, `<option value="geosite">Geosite</option>`,
+		`<option value="geoip">GeoIP</option>`, `<option value="rule_set">Custom Rule Set</option>`,
+		`<option value="network">Network</option>`, "example.net", "Relay to Exit",
+	} {
+		if !strings.Contains(body, expected) {
+			t.Errorf("Hop page does not contain %q", expected)
+		}
+	}
+	for _, removed := range []string{`name="scope"`, `name="scope_type"`, `name="scope_value"`, `name="auth_user"`} {
+		if strings.Contains(body, removed) {
+			t.Errorf("Hop page contains removed per-rule scope control %q", removed)
+		}
+	}
+
+	request = fixture.authenticatedRequest(http.MethodGet, "/users/"+url.PathEscape(user.ID), "")
+	response = httptest.NewRecorder()
+	fixture.handler.ServeHTTP(response, request)
+	if response.Code != http.StatusOK {
+		t.Fatalf("GET user page = %d %q", response.Code, response.Body.String())
+	}
+	body = response.Body.String()
+	if !strings.Contains(body, "Cinema-Alice") || !strings.Contains(body, "anytls://") || !strings.Contains(body, "203.0.113.42:443") {
+		t.Fatalf("user page omitted membership identity or import URI: %q", body)
+	}
+
+	request = fixture.authenticatedRequest(http.MethodGet, proxyMembersURL(node.ID), "")
+	response = httptest.NewRecorder()
+	fixture.handler.ServeHTTP(response, request)
+	if strings.Contains(response.Body.String(), "anytls://") {
+		t.Fatal("membership list exposed a credential outside the individual user page")
+	}
+}
+
+func TestProxyNodeMutationsRequireExactForms(t *testing.T) {
+	t.Parallel()
+
+	fixture := newWebFixture(t)
+	enrollAgent(t, fixture.registry, "edge-online")
+	form := url.Values{
+		"csrf_token": {fixture.session.CSRFToken}, "name": {"Cinema"}, "root_name": {"Entrance"}, "agent_id": {"edge-online"},
+		"protocol": {"anytls"}, "listen": {"::"}, "listen_port": {"443"}, "family": {"auto"}, "method": {""},
+		"tls_mode": {"self_signed"}, "server_name": {"cinema.example"}, "email": {""}, "certificate_path": {""}, "key_path": {""},
+		"up_mbps": {""}, "down_mbps": {""}, "obfs_type": {""}, "unexpected": {"must be rejected"},
+	}
+	request := fixture.authenticatedMutationRequest(http.MethodPost, "/proxy-nodes", form.Encode())
+	response := httptest.NewRecorder()
+	fixture.handler.ServeHTTP(response, request)
+	if response.Code != http.StatusBadRequest {
+		t.Fatalf("Proxy Node create with extra field = %d, want 400", response.Code)
+	}
+	if len(fixture.proxyNodes.Snapshot().ProxyNodes) != 0 {
+		t.Fatal("invalid exact-form request created a Proxy Node")
 	}
 }
 
@@ -993,286 +1123,6 @@ func TestReadExactFormAcceptsOnlyUTF8ContentTypeParameter(t *testing.T) {
 				t.Fatalf("field = %q, want value", form.Get("field"))
 			}
 		})
-	}
-}
-
-func TestConfigurationDeploymentRequiresAuthorizationAndValidJSONObject(t *testing.T) {
-	t.Parallel()
-
-	fixture := newWebFixture(t)
-	enrollAgent(t, fixture.registry, "edge-online")
-	validConfig := "{\n  \"log\": {\"level\": \"warn\"},\n  \"inbounds\": []\n}\n"
-	form := url.Values{
-		"config_json": {validConfig},
-		"csrf_token":  {fixture.session.CSRFToken},
-	}.Encode()
-
-	request := fixture.authenticatedRequest(
-		http.MethodPost,
-		"/servers/edge-online/configuration",
-		form,
-	)
-	response := httptest.NewRecorder()
-	fixture.handler.ServeHTTP(response, request)
-	if response.Code != http.StatusForbidden {
-		t.Fatalf("configuration without Origin status = %d, want 403", response.Code)
-	}
-	if _, err := fixture.controller.store.LatestForAgent(
-		context.Background(),
-		"edge-online",
-	); !errors.Is(err, deployment.ErrNotFound) {
-		t.Fatalf("unauthorized configuration created deployment: %v", err)
-	}
-
-	duplicateConfig := `{"log":{"level":"info"},"log":{"level":"debug"}}`
-	invalidForm := url.Values{
-		"config_json": {duplicateConfig},
-		"csrf_token":  {fixture.session.CSRFToken},
-	}.Encode()
-	request = fixture.authenticatedMutationRequest(
-		http.MethodPost,
-		"/servers/edge-online/configuration",
-		invalidForm,
-	)
-	response = httptest.NewRecorder()
-	fixture.handler.ServeHTTP(response, request)
-	if response.Code != http.StatusBadRequest ||
-		!strings.Contains(response.Body.String(), "duplicate object key") {
-		t.Fatalf(
-			"duplicate-key configuration response = %d %q",
-			response.Code,
-			response.Body.String(),
-		)
-	}
-
-	reservedPortForm := url.Values{
-		"config_json": {`{"inbounds":[{"type":"anytls","listen_port":80}]}`},
-		"csrf_token":  {fixture.session.CSRFToken},
-	}.Encode()
-	request = fixture.authenticatedMutationRequest(
-		http.MethodPost,
-		"/servers/edge-online/configuration",
-		reservedPortForm,
-	)
-	response = httptest.NewRecorder()
-	fixture.handler.ServeHTTP(response, request)
-	if response.Code != http.StatusBadRequest ||
-		!strings.Contains(response.Body.String(), "reserved for ACME HTTP-01") {
-		t.Fatalf(
-			"reserved-port configuration response = %d %q",
-			response.Code,
-			response.Body.String(),
-		)
-	}
-
-	request = fixture.authenticatedMutationRequest(
-		http.MethodPost,
-		"/servers/edge-online/configuration",
-		form,
-	)
-	request.Header.Set(
-		"Content-Type",
-		"application/x-www-form-urlencoded;charset=UTF-8",
-	)
-	response = httptest.NewRecorder()
-	fixture.handler.ServeHTTP(response, request)
-	if response.Code != http.StatusSeeOther ||
-		response.Header().Get("Location") != "/servers/edge-online/manage" {
-		t.Fatalf(
-			"valid deployment response = %d %q, body = %s",
-			response.Code,
-			response.Header().Get("Location"),
-			response.Body.String(),
-		)
-	}
-	record, err := fixture.controller.store.LatestForAgent(
-		context.Background(),
-		"edge-online",
-	)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if record.Status != deployment.StatusDeploying ||
-		string(record.ConfigJSON) != validConfig {
-		t.Fatalf(
-			"queued deployment = status %q config %q",
-			record.Status,
-			string(record.ConfigJSON),
-		)
-	}
-
-	request = fixture.authenticatedRequest(
-		http.MethodGet,
-		"/servers/edge-online/manage",
-		"",
-	)
-	response = httptest.NewRecorder()
-	fixture.handler.ServeHTTP(response, request)
-	body := response.Body.String()
-	if response.Code != http.StatusOK ||
-		!strings.Contains(
-			body,
-			`data-deployment-refresh-url="/servers/edge-online/manage"`,
-		) ||
-		!strings.Contains(
-			body,
-			`data-deployment-status-url="/servers/edge-online/deployment-status"`,
-		) ||
-		!strings.Contains(body, "Wait for the current deployment result") ||
-		!strings.Contains(body, hex.EncodeToString(record.ConfigSHA256[:])) {
-		t.Fatalf(
-			"pending deployment page = %d %q",
-			response.Code,
-			body,
-		)
-	}
-
-	request = fixture.authenticatedRequest(
-		http.MethodGet,
-		"/servers/edge-online/deployment-status",
-		"",
-	)
-	response = httptest.NewRecorder()
-	fixture.handler.ServeHTTP(response, request)
-	if response.Code != http.StatusOK ||
-		response.Header().Get("Content-Type") != "application/json" ||
-		!strings.Contains(response.Body.String(), `"pending":true`) {
-		t.Fatalf(
-			"deployment polling status = %d %q",
-			response.Code,
-			response.Body.String(),
-		)
-	}
-}
-
-func TestConfigurationDeploymentFetchReportsExpiredSession(t *testing.T) {
-	t.Parallel()
-
-	fixture := newWebFixture(t)
-	enrollAgent(t, fixture.registry, "edge-online")
-	if err := fixture.access.Logout(fixture.session.Token); err != nil {
-		t.Fatal(err)
-	}
-	form := url.Values{
-		"config_json": {`{"inbounds":[]}`},
-		"csrf_token":  {fixture.session.CSRFToken},
-	}.Encode()
-	request := fixture.authenticatedMutationRequest(
-		http.MethodPost,
-		"/servers/edge-online/configuration",
-		form,
-	)
-	request.Header.Set("Accept", "application/json")
-	response := httptest.NewRecorder()
-	fixture.handler.ServeHTTP(response, request)
-	if response.Code != http.StatusUnauthorized {
-		t.Fatalf("expired deployment fetch status = %d, want 401", response.Code)
-	}
-}
-
-func TestConfigurationDeploymentJSONFlowReportsTerminalStatus(t *testing.T) {
-	t.Parallel()
-
-	fixture := newWebFixture(t)
-	enrollAgent(t, fixture.registry, "edge-online")
-	form := url.Values{
-		"config_json": {`{"inbounds":[],"outbounds":[]}`},
-		"csrf_token":  {fixture.session.CSRFToken},
-	}.Encode()
-	request := fixture.authenticatedMutationRequest(
-		http.MethodPost,
-		"/servers/edge-online/configuration",
-		form,
-	)
-	request.Header.Set("Accept", "application/json")
-	response := httptest.NewRecorder()
-	fixture.handler.ServeHTTP(response, request)
-	if response.Code != http.StatusAccepted ||
-		!strings.Contains(
-			response.Body.String(),
-			`"status_url":"/servers/edge-online/deployment-status"`,
-		) {
-		t.Fatalf(
-			"JSON deployment response = %d %q",
-			response.Code,
-			response.Body.String(),
-		)
-	}
-	record, err := fixture.controller.store.LatestForAgent(
-		context.Background(),
-		"edge-online",
-	)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, err := fixture.controller.store.Transition(
-		context.Background(),
-		record.ID,
-		deployment.StatusApplied,
-		"",
-		fixture.now,
-	); err != nil {
-		t.Fatal(err)
-	}
-
-	request = fixture.authenticatedRequest(
-		http.MethodGet,
-		"/servers/edge-online/deployment-status",
-		"",
-	)
-	response = httptest.NewRecorder()
-	fixture.handler.ServeHTTP(response, request)
-	body := response.Body.String()
-	if response.Code != http.StatusOK ||
-		!strings.Contains(body, `"pending":false`) ||
-		!strings.Contains(body, `"status_label":"Applied"`) ||
-		!strings.Contains(body, `"status_class":"online"`) {
-		t.Fatalf("terminal deployment status = %d %q", response.Code, body)
-	}
-}
-
-func TestConfigurationDeploymentRejectsOfflineOrOutdatedAgent(t *testing.T) {
-	t.Parallel()
-
-	fixture := newWebFixture(t)
-	enrollAgent(t, fixture.registry, "edge-offline")
-	form := url.Values{
-		"config_json": {`{}`},
-		"csrf_token":  {fixture.session.CSRFToken},
-	}.Encode()
-
-	request := fixture.authenticatedMutationRequest(
-		http.MethodPost,
-		"/servers/edge-offline/configuration",
-		form,
-	)
-	response := httptest.NewRecorder()
-	fixture.handler.ServeHTTP(response, request)
-	if response.Code != http.StatusConflict ||
-		!strings.Contains(response.Body.String(), "agent is offline") {
-		t.Fatalf(
-			"offline deployment response = %d %q",
-			response.Code,
-			response.Body.String(),
-		)
-	}
-
-	fixture.controller.sessions["edge-offline"] = true
-	fixture.controller.deployable = map[string]bool{"edge-offline": false}
-	request = fixture.authenticatedMutationRequest(
-		http.MethodPost,
-		"/servers/edge-offline/configuration",
-		form,
-	)
-	response = httptest.NewRecorder()
-	fixture.handler.ServeHTTP(response, request)
-	if response.Code != http.StatusConflict ||
-		!strings.Contains(response.Body.String(), "Update the agent") {
-		t.Fatalf(
-			"outdated deployment response = %d %q",
-			response.Code,
-			response.Body.String(),
-		)
 	}
 }
 
@@ -2410,6 +2260,13 @@ func newWebFixtureWithAccess(
 		sessions: sessions,
 		store:    deployment.NewMemoryStore(),
 	}
+	proxyNodes, err := proxynode.Open(
+		filepath.Join(t.TempDir(), "proxy-node-state.json"),
+		proxynode.BuildInfo{Component: "master", Version: "test", Commit: "test"},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
 	handler, err := New(Options{
 		Registry:   registry,
 		Sessions:   sessions,
@@ -2418,9 +2275,10 @@ func newWebFixtureWithAccess(
 		Releases: testReleaseCatalog{releases: []AgentRelease{
 			{Tag: "v1.14.0-beta.7", Prerelease: true},
 		}},
-		PublicURL: testPublicURL,
-		Version:   "test",
-		Now:       func() time.Time { return now },
+		PublicURL:  testPublicURL,
+		Version:    "test",
+		Now:        func() time.Time { return now },
+		ProxyNodes: proxyNodes,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -2429,6 +2287,7 @@ func newWebFixtureWithAccess(
 		handler:    handler,
 		registry:   registry,
 		controller: controller,
+		proxyNodes: proxyNodes,
 		access:     access,
 		username:   username,
 		password:   password,

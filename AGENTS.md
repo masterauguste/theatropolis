@@ -6,7 +6,7 @@ save a full re-exploration of the codebase.
 ## What this is
 
 Theatropolis is a **master–agent manager for sing-box fleets** (proxy servers).
-A single master serves a local web UI (fleet management, config editor, version
+A single master serves a local web UI (fleet, Proxy Node, user, and version
 management) and a gRPC control plane; agents enroll with one-time tokens, keep a
 long-lived bidirectional stream to the master, and run/supervise sing-box.
 
@@ -16,11 +16,18 @@ long-lived bidirectional stream to the master, and run/supervise sing-box.
 
 ## Layout
 
+- `docs/proxy-node-manager-design.md` — implemented product model and
+  old-format cutover/reinstallation policy for the Proxy Node manager.
+- `internal/proxynode/` — strict versioned topology/user store, generated
+  credentials, tree validation, sing-box fleet compiler, legacy master
+  quarantine, and receiver-first fleet deployment orchestration. Rules belong
+  to a Hop and apply to all traffic for that Proxy Node reaching the Hop; there
+  is no per-rule server/inbound/user scope.
 - Release catalog note: Theatropolis versions now come from GitHub release metadata and are offered only when `checksums.txt`, `checksums.txt.sig`, and both supported Linux tarballs exist; only the sing-box catalog continues to use Git `info/refs`. This supersedes the older `releases.go` transport note below.
 - Release freshness note: release-version catalogs are never cached; every automatic load and explicit Settings “Check again” action makes a fresh upstream request. Theatropolis entries require both Linux archives plus the signed checksum manifest, so an in-progress tag publication is not exposed as installable.
 - Async UI note: the Servers page renders a shell and loads `/servers/content`; the Pool page renders manual-entry controls immediately and loads fleet-derived entries from `/pool/content`. Both use the shared `data-async-region` loader in `app.js` with spinner, retry, empty, error, and expired-session handling. Release catalogs on Settings and server management remain asynchronous and use the same loading-spinner visual. Keep data required to safely construct mutation forms synchronous; defer independent read-only collections.
 - Session persistence note: login/logout/invalidation persist synchronously, while routine sliding-idle activity is updated in memory on every authenticated request and coalesced into a background `web-sessions.json` snapshot at most once per minute. Authentication must never wait for routine session filesystem durability.
-- Routing normalization note: the guided editor preserves sniff actions outside its draggable route cards and automatically prepends `{"action":"sniff"}` when domain, geosite/custom rule-set, protocol, or client matching needs it. `ensureRequiredRouteSniff` repeats this normalization at the deployment boundary; destination-IP/geoip-only rules stay unchanged. Selecting the `None` rule type emits a scope-only rule, so all traffic for the selected server, inbound, or authenticated user uses that rule's outbound.
+- Proxy Node compilation prepends a sniff action when domain, geosite/custom rule-set, or protocol matching requires it. `None` is an all-traffic match at the current Hop. Every entrance Membership and every Link has a distinct generated credential; compatible logical listeners sharing one Agent socket are coalesced and distinguished by `auth_user`.
 - Dropdown note: shared select popovers clamp to the viewport and wrap long option labels inside their vertically scrollable menu. The routing geosite/geoip selector is also a manual top-layer popover (so modal footers cannot cover or clip it), and those two catalog-backed match types are single-select; other match types retain multi-value OR behavior.
 - Inbound URI export note: Shadowsocks 2022, AnyTLS, and Hysteria2 share URIs always connect to a resolved agent IP, never the master or TLS hostname. Each user row offers IPv4 and/or IPv6 according to availability; IPv6 authorities are bracketed, while AnyTLS/Hysteria2 keep the configured certificate identity as SNI.
 
@@ -39,15 +46,15 @@ long-lived bidirectional stream to the master, and run/supervise sing-box.
 - `internal/deployment/` — deployment `Record` + 10-status state machine; `MemoryStore`/`DiskStore`; **only latest deployment per agent kept** (one JSON per agent under `<state-dir>/deployments/`). `Record.ConfigJSON`/`ConfigSHA256` are the logical config (may hold pool refs); `RenderedSHA256` is the digest of the rendered config the agent received — zero for pre-pool records, where `Record.RenderedDigest()` falls back to `ConfigSHA256`. `Store.List` feeds the propagation scan.
 - `internal/identity/` — master registry (`identities.json`, 0600): SHA-256 of pending tokens + enrolled Ed25519 public keys only. Agent ID format `[a-zA-Z0-9][a-zA-Z0-9._-]{0,127}`.
 - `api/proto/theatropolis/control/v1/control.proto` — one service, two RPCs (`Enroll`, `Connect` stream). Frames: monotonic `sequence` + `oneof payload`. Protocol version constant = 1. Generated code in `api/gen/` (regenerate with protoc + protoc-gen-go / protoc-gen-go-grpc, binaries in `.tools/bin/`).
-- `install.sh` (~1280 lines, POSIX sh) — installer. Roles `master` / `agent` / `all`. Root + Debian/Ubuntu + systemd only. Verifies an RSA-PSS-signed checksum manifest before executing or installing project release binaries, installs pinned sing-box 1.14.0-beta.2 by hardcoded hash, creates system users, and installs heavily sandboxed systemd units (main + three `.path`/`.service` update pairs). Existing installations must rerun it once to migrate update units to the dedicated helper. Extensive rollback on failure.
+- `install.sh` (~1280 lines, POSIX sh) — installer. Roles `master` / `agent` / `all`. Root + Debian/Ubuntu + systemd only. Master/all installs interactively request the public domain and Caddy HTTPS port from `/dev/tty`; those values are not command-line options. Verifies an RSA-PSS-signed checksum manifest before executing or installing project release binaries, installs pinned sing-box 1.14.0-beta.2 by hardcoded hash, creates system users, and installs heavily sandboxed systemd units (main + three `.path`/`.service` update pairs). Existing installations must rerun it once to migrate update units to the dedicated helper. Extensive rollback on failure.
 - `tests/*.sh` — installer test suite (master, agent-token, release-tag, security).
 
 ## Runtime architecture (installed system)
 
 - Master `serve` opens **three loopback-only listeners**: gRPC `127.0.0.1:8081` (h2c), web UI `127.0.0.1:8080`, Unix socket `/run/theatropolis/master-admin.sock` (0600, local admin API for `create-enrollment`). **TLS is not in the Go process** — Caddy terminates TLS on :8443 (gRPC paths → h2c :8081, rest → :8080), ACME HTTP-01 needs port 80 free.
 - Agent connects out with TLS 1.3 only.
-- Master state dir: `/var/lib/theatropolis/master` (`identities.json`, `deployments/`, `web-auth.json`, `web-sessions.json`, `update-request.json`, `outbound-pool.json`, `rule-set-catalogs/{geosite,geoip}.json`).
-- Agent state dir: `/var/lib/theatropolis/agent` (`identity.pem` Ed25519, `agent-id`, `enrollment.token`, `sing-box/active.json`, update state).
+- Master state dir adds `proxy-node-state.json`, whose strict envelope records `schema`, `schema_version`, and `last_used_by`. On first cutover, legacy deployment records move under `legacy-config-quarantine/` before an empty new store is created.
+- Agent state dir adds `sing-box/config-state.json`. A production Agent without that generation marker quarantines legacy `active.json` and managed certificates before advertising `proxy-node-config-v1`; valid markers are stamped with the running Agent version after startup.
 - Update capability gated on systemd path units (`/etc/systemd/system/theatropolis-*-update.path`).
 - Root helper: `/usr/local/libexec/theatropolis/theatropolis-update-helper`; it is root-owned and never network-facing.
 

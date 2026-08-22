@@ -1,0 +1,37 @@
+{{define "proxy-endpoint-fields"}}
+<div class="builder-fields">
+  <label class="field"><span>Protocol</span><select name="protocol" data-proxy-protocol required><option value="shadowsocks"{{if eq .Protocol "shadowsocks"}} selected{{end}}>Shadowsocks 2022</option><option value="anytls"{{if eq .Protocol "anytls"}} selected{{end}}>AnyTLS</option><option value="hysteria2"{{if eq .Protocol "hysteria2"}} selected{{end}}>Hysteria2</option></select></label>
+  <label class="field"><span>Listen address</span><input name="listen" value="{{.Listen}}" placeholder="::" required></label>
+  <label class="field"><span>Listen port</span><input name="listen_port" type="number" min="1" max="65535" value="{{.ListenPort}}" required><small>Port 80 remains reserved for ACME.</small></label>
+  <label class="field"><span>Relay address family</span><select name="family"><option value="auto"{{if or (eq .Family "") (eq .Family "auto")}} selected{{end}}>Automatic</option><option value="ipv4"{{if eq .Family "ipv4"}} selected{{end}}>IPv4</option><option value="ipv6"{{if eq .Family "ipv6"}} selected{{end}}>IPv6</option></select><small>Used by the parent when this endpoint is a Link.</small></label>
+</div>
+<fieldset class="builder-subsection" data-proxy-section="shadowsocks">
+  <legend>Shadowsocks 2022</legend>
+  <label class="field"><span>Method</span><select name="method"><option value="2022-blake3-aes-128-gcm"{{if eq .Method "2022-blake3-aes-128-gcm"}} selected{{end}}>AES-128-GCM</option><option value="2022-blake3-aes-256-gcm"{{if eq .Method "2022-blake3-aes-256-gcm"}} selected{{end}}>AES-256-GCM</option><option value="2022-blake3-chacha20-poly1305"{{if eq .Method "2022-blake3-chacha20-poly1305"}} selected{{end}}>ChaCha20-Poly1305</option></select></label>
+  <p class="muted">Server and user keys are generated automatically and never reused.</p>
+</fieldset>
+<fieldset class="builder-subsection" data-proxy-section="tls">
+  <legend>TLS</legend>
+  <div class="builder-fields">
+    <label class="field"><span>Certificate mode</span><select name="tls_mode" data-proxy-tls-mode><option value="acme"{{if eq .TLSMode "acme"}} selected{{end}}>ACME (Let's Encrypt)</option><option value="self_signed"{{if eq .TLSMode "self_signed"}} selected{{end}}>Self-signed by Agent</option><option value="files"{{if eq .TLSMode "files"}} selected{{end}}>Existing files</option></select></label>
+    <label class="field" data-proxy-tls-name><span>Domain or certificate identity</span><input name="server_name" value="{{.ServerName}}" placeholder="proxy.example.com"></label>
+    <label class="field" data-proxy-acme><span>ACME email</span><input name="email" type="email" value="{{.Email}}" placeholder="admin@example.com"></label>
+    <label class="field" data-proxy-files><span>Certificate path</span><input name="certificate_path" value="{{.CertificatePath}}" placeholder="/etc/theatropolis/certs/server.pem"></label>
+    <label class="field" data-proxy-files><span>Private-key path</span><input name="key_path" value="{{.KeyPath}}" placeholder="/etc/theatropolis/certs/server.key"></label>
+  </div>
+</fieldset>
+<fieldset class="builder-subsection" data-proxy-section="hysteria2">
+  <legend>Hysteria2 options</legend>
+  <div class="builder-fields">
+    <label class="field"><span>Upload Mbps <span class="field__optional">Optional</span></span><input name="up_mbps" type="number" min="0" max="1000000" value="{{if .UpMbps}}{{.UpMbps}}{{end}}"></label>
+    <label class="field"><span>Download Mbps <span class="field__optional">Optional</span></span><input name="down_mbps" type="number" min="0" max="1000000" value="{{if .DownMbps}}{{.DownMbps}}{{end}}"></label>
+    <label class="field"><span>Obfuscation</span><select name="obfs_type"><option value=""{{if eq .ObfsType ""}} selected{{end}}>Disabled</option><option value="salamander"{{if eq .ObfsType "salamander"}} selected{{end}}>Salamander</option><option value="gecko"{{if eq .ObfsType "gecko"}} selected{{end}}>Gecko</option></select><small>The obfuscation secret is generated automatically.</small></label>
+  </div>
+</fieldset>
+{{end}}
+
+{{define "proxy-breadcrumbs"}}
+<nav class="breadcrumbs" aria-label="Breadcrumb">
+  <a href="/proxy-nodes">Proxy Nodes</a><span aria-hidden="true">/</span><a href="{{.URL}}">{{.Name}}</a>
+</nav>
+{{end}}

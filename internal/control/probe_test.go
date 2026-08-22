@@ -23,7 +23,7 @@ func TestRequestAddressProbeGating(t *testing.T) {
 	}
 
 	plain := newSession("edge-plain")
-	plain.capabilities[ConfigDeployCapability] = struct{}{}
+	plain.capabilities[ProxyNodeDeployCapability] = struct{}{}
 	if err := server.Sessions.Register(plain); err != nil {
 		t.Fatal(err)
 	}

@@ -164,7 +164,10 @@ func run(arguments []string) error {
 		)
 	} else {
 		manager, err = singbox.NewManager(singbox.ManagerOptions{
-			Validator: validator,
+			Validator:        validator,
+			ConfigGeneration: singbox.ProxyNodeConfigGeneration,
+			AgentVersion:     version,
+			AgentCommit:      commit,
 		})
 		if err != nil {
 			return fmt.Errorf("configure sing-box manager: %w", err)

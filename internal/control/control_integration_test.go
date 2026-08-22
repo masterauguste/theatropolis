@@ -575,7 +575,7 @@ func connectRawAgent(
 		identities,
 		agentID,
 		reportedAddresses,
-		[]string{control.ConfigDeployCapability},
+		[]string{control.ProxyNodeDeployCapability},
 	)
 }
 
@@ -953,7 +953,7 @@ func TestObservedAddressAndProbeReportEndToEnd(t *testing.T) {
 		identities,
 		"edge-a",
 		nil,
-		[]string{control.ConfigDeployCapability, control.CapabilityAddressProbe},
+		[]string{control.ProxyNodeDeployCapability, control.CapabilityAddressProbe},
 	)
 	agentB := connectRawAgent(t, ctx, client, identities, "edge-b", nil)
 
