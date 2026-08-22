@@ -237,6 +237,7 @@ printf '%s\n' \
 printf '%s\n' '#!/bin/sh' 'exit 0' >"$COMPAT_BIN/apt-get"
 printf '%s\n' '#!/bin/sh' 'exit 0' >"$COMPAT_BIN/systemctl"
 printf '%s\n' '#!/bin/sh' 'exit 0' >"$COMPAT_BIN/flock"
+# shellcheck disable=SC2016
 printf '%s\n' \
 	'#!/bin/sh' \
 	'[ "${TEST_SIGNATURE_FAIL:-}" != "yes" ] || exit 1' \
