@@ -5,8 +5,14 @@ The release workflow requires an RSA private key in the `RELEASE_SIGNING_PRIVATE
 The corresponding embedded public-key SHA-256 fingerprint is:
 
 ```text
-f6995854161e51d5d66a0e57c613b1913a361b710aafa3ba2fee76b289d36863
+ff2f69ff282be2a5f885e01ccaa458dcabe2ee02a789235989f2b81d50689fb2
 ```
+
+Routine release creation does not require the private key on the developer's
+machine: pushing a release tag starts GitHub Actions, which reads the key from
+the protected `release-signing` environment. Keep a separate recovery copy in
+a password manager or secrets manager so that the environment secret can be
+restored without rotating the signing identity.
 
 Before adding or replacing the secret, derive the candidate public key and confirm its DER fingerprint:
 
