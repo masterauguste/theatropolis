@@ -10,7 +10,7 @@ Debian/Ubuntu on amd64 or arm64:
 curl --proto '=https' --tlsv1.2 -fsSL https://raw.githubusercontent.com/masterauguste/theatropolis/main/install.sh | sudo sh -s -- master
 ```
 
-The installer prompts for the master's public DNS name, the Caddy HTTPS port (default `8443`), and the local administrator credentials. After installation, sign in using the resulting HTTPS endpoint. Existing access-key installations keep working until they are explicitly migrated by rerunning the installer with `--admin-username operator` (or another lowercase username).
+The installer downloads the latest signed release and prompts for the master's public DNS name, the Caddy HTTPS port (`443` for standard HTTPS, default `8443`), and the local administrator credentials. After installation, sign in using the resulting HTTPS endpoint. Existing access-key installations keep working until they are explicitly migrated by rerunning the installer with `--admin-username operator` (or another lowercase username).
 
 Add a server in the web interface, then run its generated command. The equivalent manual flow is `sudo theatropolis-master create-enrollment --agent-id edge-1`, followed by:
 

@@ -31,7 +31,7 @@ INITIAL_PASSWORD="initial-admin-password-123"
 RESET_PASSWORD="replacement-admin-password-456"
 FAILED_RESET_PASSWORD="rollback-admin-password-789"
 DOMAIN="control.example.com"
-HTTPS_PORT="8443"
+HTTPS_PORT="443"
 RELEASE_TAG="v9.9.9"
 
 cleanup() {

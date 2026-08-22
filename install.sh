@@ -233,10 +233,11 @@ validate_master_endpoint() {
 		fail "the public domain must be a valid DNS name"
 	case "$HTTPS_PORT" in
 	*[!0-9]* | '') fail "the Caddy HTTPS port must be numeric" ;;
-	??????*) fail "the Caddy HTTPS port must be between 1024 and 65535" ;;
+	??????*) fail "the Caddy HTTPS port must be 443 or between 1024 and 65535" ;;
 	esac
-	if [ "$HTTPS_PORT" -lt 1024 ] || [ "$HTTPS_PORT" -gt 65535 ]; then
-		fail "the Caddy HTTPS port must be between 1024 and 65535"
+	if [ "$HTTPS_PORT" != "443" ] &&
+		{ [ "$HTTPS_PORT" -lt 1024 ] || [ "$HTTPS_PORT" -gt 65535 ]; }; then
+		fail "the Caddy HTTPS port must be 443 or between 1024 and 65535"
 	fi
 }
 
