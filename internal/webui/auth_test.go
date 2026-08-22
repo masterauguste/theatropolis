@@ -678,7 +678,8 @@ func TestLoginAttemptReservationIsAtomic(t *testing.T) {
 		group.Add(1)
 		go func() {
 			defer group.Done()
-			if err := manager.reserveLoginAttempt(now); err == nil {
+			client := sha256.Sum256([]byte("shared client"))
+			if err := manager.reserveLoginAttempt(client, now); err == nil {
 				accepted.Add(1)
 			} else if errors.Is(err, ErrLoginRateLimited) {
 				limited.Add(1)
@@ -716,6 +717,38 @@ func TestGlobalLoginAttemptLimiterTemporarilyLocksThenResets(t *testing.T) {
 	}
 	if _, err := manager.Login(username, "wrong password phrase indeed"); !errors.Is(err, ErrAuthenticationFailed) {
 		t.Fatalf("successful login did not reset limiter: %v", err)
+	}
+}
+
+func TestLoginFailureLimiterIsIndependentPerClient(t *testing.T) {
+	t.Parallel()
+
+	manager, username, password := newTestAdminAccessManager(t)
+	now := time.Date(2026, 7, 27, 12, 0, 0, 0, time.UTC)
+	manager.now = func() time.Time { return now }
+
+	for attempt := 0; attempt < manager.loginFailureLimit; attempt++ {
+		if _, err := manager.LoginForClient(
+			"198.51.100.10",
+			username,
+			"wrong password phrase indeed",
+		); !errors.Is(err, ErrAuthenticationFailed) {
+			t.Fatalf("failed attacker Login() attempt %d: %v", attempt+1, err)
+		}
+	}
+	if _, err := manager.LoginForClient(
+		"198.51.100.10",
+		username,
+		password,
+	); !errors.Is(err, ErrLoginRateLimited) {
+		t.Fatalf("attacker client was not limited: %v", err)
+	}
+	if _, err := manager.LoginForClient(
+		"203.0.113.20",
+		username,
+		password,
+	); err != nil {
+		t.Fatalf("independent operator client was locked out: %v", err)
 	}
 }
 

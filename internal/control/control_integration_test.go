@@ -204,6 +204,46 @@ func TestInvalidConfigurationReachesMasterNotificationWithoutSecrets(t *testing.
 	}
 }
 
+func TestConnectTimesOutBeforeUnauthenticatedHello(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	listener := bufconn.Listen(1 << 20)
+	controlServer := control.NewServer(
+		identity.NewRegistry(),
+		deployment.NewMemoryStore(),
+		nil,
+		nil,
+		slog.New(slog.NewTextHandler(io.Discard, nil)),
+	)
+	controlServer.HelloTimeout = 25 * time.Millisecond
+	grpcServer := grpc.NewServer()
+	controlv1.RegisterAgentControlServiceServer(grpcServer, controlServer)
+	go func() {
+		_ = grpcServer.Serve(listener)
+	}()
+	defer grpcServer.Stop()
+
+	connection, err := grpc.NewClient(
+		"passthrough:///theatropolis-hello-timeout-test",
+		grpc.WithContextDialer(func(context.Context, string) (net.Conn, error) {
+			return listener.Dial()
+		}),
+		grpc.WithTransportCredentials(insecure.NewCredentials()),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer connection.Close()
+	stream, err := controlv1.NewAgentControlServiceClient(connection).Connect(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := stream.Recv(); status.Code(err) != codes.DeadlineExceeded {
+		t.Fatalf("Connect() without hello error = %v, want DeadlineExceeded", err)
+	}
+}
+
 func TestRevocationDuringChallengeCannotRegisterSession(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()

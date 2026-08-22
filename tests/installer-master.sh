@@ -168,14 +168,21 @@ cat >"$RELEASE_STAGE/theatropolis-agent" <<'EOF'
 exit 0
 EOF
 
+cat >"$RELEASE_STAGE/theatropolis-update-helper" <<'EOF'
+#!/bin/sh
+exit 0
+EOF
+
 chmod +x \
 	"$RELEASE_STAGE/theatropolis-master" \
-	"$RELEASE_STAGE/theatropolis-agent"
+	"$RELEASE_STAGE/theatropolis-agent" \
+	"$RELEASE_STAGE/theatropolis-update-helper"
 
 tar -czf "$RELEASE_DIRECTORY/theatropolis_linux_amd64.tar.gz" \
 	-C "$RELEASE_STAGE" \
 	theatropolis-master \
-	theatropolis-agent
+	theatropolis-agent \
+	theatropolis-update-helper
 (
 	cd "$RELEASE_DIRECTORY"
 	ARCHIVE_CHECKSUM="$(
@@ -186,6 +193,7 @@ tar -czf "$RELEASE_DIRECTORY/theatropolis_linux_amd64.tar.gz" \
 		"$ARCHIVE_CHECKSUM" \
 		theatropolis_linux_amd64.tar.gz \
 		>checksums.txt
+	: >checksums.txt.sig
 )
 
 cat >"$MOCK_BIN/id" <<'EOF'
@@ -243,11 +251,19 @@ case "$SOURCE" in
 */checksums.txt)
 	cp "$TEST_RELEASE_DIRECTORY/checksums.txt" "$OUTPUT"
 	;;
+*/checksums.txt.sig)
+	cp "$TEST_RELEASE_DIRECTORY/checksums.txt.sig" "$OUTPUT"
+	;;
 *)
 	printf 'unexpected mock curl source: %s\n' "$SOURCE" >&2
 	exit 65
 	;;
 esac
+EOF
+
+cat >"$MOCK_BIN/openssl" <<'EOF'
+#!/bin/sh
+exit 0
 EOF
 
 cat >"$MOCK_BIN/install" <<'EOF'
@@ -409,6 +425,7 @@ chmod +x \
 	"$MOCK_BIN/uname" \
 	"$MOCK_BIN/apt-get" \
 	"$MOCK_BIN/curl" \
+	"$MOCK_BIN/openssl" \
 	"$MOCK_BIN/install" \
 	"$MOCK_BIN/chown" \
 	"$MOCK_BIN/flock" \
@@ -783,7 +800,7 @@ UPDATE_PATH="$TEST_ROOT/etc/systemd/system/theatropolis-master-update.path"
 [ -f "$UPDATE_PATH" ] ||
 	fail "master update path unit was not generated"
 grep -Fq -- \
-	"theatropolis-master apply-update --state-dir=$TEST_ROOT/var/lib/theatropolis/master --install-path=$TEST_ROOT/usr/local/bin/theatropolis-master" \
+	"theatropolis-update-helper apply-theatropolis --component=master --state-dir=$TEST_ROOT/var/lib/theatropolis/master --install-path=$TEST_ROOT/usr/local/bin/theatropolis-master" \
 	"$UPDATE_UNIT" ||
 	fail "master update unit does not invoke the verified self-updater"
 grep -Fq -- \
@@ -819,6 +836,8 @@ CADDYFILE="$TEST_ROOT/etc/caddy/Caddyfile"
 	fail "installer invoked a compiler: $(tr '\n' ' ' <"$COMPILER_LOG")"
 [ -x "$TEST_ROOT/usr/local/bin/theatropolis-master" ] ||
 	fail "precompiled master binary was not installed"
+[ -x "$TEST_ROOT/usr/local/libexec/theatropolis/theatropolis-update-helper" ] ||
+	fail "dedicated update helper was not installed"
 [ -s "$APT_LOG" ] ||
 	fail "mocked package installation was not exercised"
 [ -s "$SYSTEMCTL_LOG" ] ||

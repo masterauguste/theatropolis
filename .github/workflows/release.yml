@@ -11,6 +11,7 @@ permissions:
 jobs:
   release:
     runs-on: ubuntu-latest
+    environment: release-signing
     steps:
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
         with:
@@ -35,8 +36,8 @@ jobs:
           build_date="$(git show -s --format=%cI "$GITHUB_SHA")"
           source_date_epoch="$(git show -s --format=%ct "$GITHUB_SHA")"
           for architecture in amd64 arm64; do
-            rm -f dist/staging/theatropolis-master dist/staging/theatropolis-agent
-            for component in master agent; do
+            rm -f dist/staging/theatropolis-master dist/staging/theatropolis-agent dist/staging/theatropolis-update-helper
+            for component in master agent update-helper; do
               CGO_ENABLED=0 GOOS=linux GOARCH="$architecture" go build \
                 -trimpath \
                 -ldflags="-s -w -buildid= -X main.version=$GITHUB_REF_NAME -X main.commit=$GITHUB_SHA -X main.buildDate=$build_date" \
@@ -52,12 +53,33 @@ jobs:
               -C dist/staging \
               -czf "dist/theatropolis_linux_${architecture}.tar.gz" \
               theatropolis-agent \
-              theatropolis-master
+              theatropolis-master \
+              theatropolis-update-helper
           done
           (
             cd dist
             sha256sum theatropolis_linux_*.tar.gz > checksums.txt
           )
+      - name: Sign release checksum manifest
+        env:
+          RELEASE_SIGNING_PRIVATE_KEY: ${{ secrets.RELEASE_SIGNING_PRIVATE_KEY }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ -z "${RELEASE_SIGNING_PRIVATE_KEY:-}" ]]; then
+            echo "RELEASE_SIGNING_PRIVATE_KEY is required" >&2
+            exit 1
+          fi
+          umask 077
+          signing_key="$(mktemp)"
+          trap 'rm -f "$signing_key"' EXIT
+          printf '%s\n' "$RELEASE_SIGNING_PRIVATE_KEY" >"$signing_key"
+          openssl dgst -sha256 \
+            -sign "$signing_key" \
+            -sigopt rsa_padding_mode:pss \
+            -sigopt rsa_pss_saltlen:32 \
+            -out dist/checksums.txt.sig \
+            dist/checksums.txt
       - name: Publish GitHub release
         env:
           GH_TOKEN: ${{ github.token }}
@@ -68,12 +90,13 @@ jobs:
             dist/theatropolis_linux_amd64.tar.gz
             dist/theatropolis_linux_arm64.tar.gz
             dist/checksums.txt
+            dist/checksums.txt.sig
           )
           if gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1; then
-            gh release upload "$GITHUB_REF_NAME" "${assets[@]}" --clobber
-          else
-            gh release create "$GITHUB_REF_NAME" "${assets[@]}" \
-              --verify-tag \
-              --title "$GITHUB_REF_NAME" \
-              --generate-notes
+            echo "release $GITHUB_REF_NAME already exists; release assets are immutable" >&2
+            exit 1
           fi
+          gh release create "$GITHUB_REF_NAME" "${assets[@]}" \
+            --verify-tag \
+            --title "$GITHUB_REF_NAME" \
+            --generate-notes

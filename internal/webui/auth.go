@@ -54,6 +54,7 @@ const (
 	DefaultLoginFailureLimit      = 10
 	DefaultLoginFailureWindow     = time.Minute
 	defaultMaxSessions            = 64
+	defaultMaxLoginClients        = 1024
 
 	SessionCookieName = "__Host-theatropolis_session"
 	CSRFHeaderName    = "X-CSRF-Token"
@@ -150,7 +151,7 @@ type AccessManager struct {
 	mu          sync.Mutex
 	lifecycleMu sync.Mutex
 	sessions    map[[sha256.Size]byte]*memorySession
-	failures    loginFailureLimiter
+	failures    map[[sha256.Size]byte]loginFailureLimiter
 
 	activityPersisting  bool
 	activityPersistedAt time.Time
@@ -161,6 +162,7 @@ type AccessManager struct {
 	sessionAbsoluteTimeout time.Duration
 	loginFailureLimit      int
 	loginFailureWindow     time.Duration
+	maxLoginClients        int
 	maxSessions            int
 	now                    func() time.Time
 	random                 io.Reader
@@ -949,7 +951,9 @@ func newAccessManager() *AccessManager {
 		loginFailureLimit:      DefaultLoginFailureLimit,
 		loginFailureWindow:     DefaultLoginFailureWindow,
 		maxSessions:            defaultMaxSessions,
+		maxLoginClients:        defaultMaxLoginClients,
 		activityInterval:       defaultSessionPersistInterval,
+		failures:               make(map[[sha256.Size]byte]loginFailureLimiter),
 		now:                    time.Now,
 		random:                 rand.Reader,
 	}
@@ -965,8 +969,18 @@ func (m *AccessManager) Mode() CredentialMode {
 // carries the legacy access key. V2 verifies every normal-shaped username with
 // exactly one Argon2id derivation, including unknown usernames.
 func (m *AccessManager) Login(username, password string) (Session, error) {
+	return m.LoginForClient("local", username, password)
+}
+
+// LoginForClient verifies a credential while limiting failures independently
+// for one network client. The password KDF remains globally concurrency-bound,
+// so distributing attempts across addresses cannot multiply its memory use;
+// keeping failure windows per client prevents one remote address from locking
+// every operator out of the interface.
+func (m *AccessManager) LoginForClient(client, username, password string) (Session, error) {
 	now := m.currentTime()
-	if err := m.reserveLoginAttempt(now); err != nil {
+	clientDigest := sha256.Sum256([]byte(client))
+	if err := m.reserveLoginAttempt(clientDigest, now); err != nil {
 		return Session{}, err
 	}
 
@@ -1019,7 +1033,7 @@ func (m *AccessManager) Login(username, password string) (Session, error) {
 	defer m.lifecycleMu.Unlock()
 	m.mu.Lock()
 	previousSessions := cloneSessions(m.sessions)
-	m.failures = loginFailureLimiter{}
+	delete(m.failures, clientDigest)
 	m.purgeExpiredSessionsLocked(now)
 	if len(m.sessions) >= m.maxSessions {
 		m.evictOldestSessionLocked()
@@ -1040,24 +1054,51 @@ func (m *AccessManager) Login(username, password string) (Session, error) {
 	}, nil
 }
 
-func (m *AccessManager) reserveLoginAttempt(now time.Time) error {
+func (m *AccessManager) reserveLoginAttempt(
+	client [sha256.Size]byte,
+	now time.Time,
+) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
 	if m.loginFailureLimit <= 0 || m.loginFailureWindow <= 0 {
 		return ErrLoginRateLimited
 	}
-	windowExpired := m.failures.windowStartedAt.IsZero() ||
-		now.Before(m.failures.windowStartedAt) ||
-		!now.Before(m.failures.windowStartedAt.Add(m.loginFailureWindow))
+	failure := m.failures[client]
+	windowExpired := failure.windowStartedAt.IsZero() ||
+		now.Before(failure.windowStartedAt) ||
+		!now.Before(failure.windowStartedAt.Add(m.loginFailureWindow))
 	if windowExpired {
-		m.failures = loginFailureLimiter{windowStartedAt: now}
+		failure = loginFailureLimiter{windowStartedAt: now}
 	}
-	if m.failures.attempts >= m.loginFailureLimit {
+	if failure.attempts >= m.loginFailureLimit {
 		return ErrLoginRateLimited
 	}
-	m.failures.attempts++
+	failure.attempts++
+	if _, exists := m.failures[client]; !exists &&
+		len(m.failures) >= m.maxLoginClients {
+		m.evictOldestLoginClientLocked()
+	}
+	m.failures[client] = failure
 	return nil
+}
+
+func (m *AccessManager) evictOldestLoginClientLocked() {
+	var (
+		oldestClient [sha256.Size]byte
+		oldest       time.Time
+		found        bool
+	)
+	for client, failure := range m.failures {
+		if !found || failure.windowStartedAt.Before(oldest) {
+			oldestClient = client
+			oldest = failure.windowStartedAt
+			found = true
+		}
+	}
+	if found {
+		delete(m.failures, oldestClient)
+	}
 }
 
 func (m *AccessManager) acquirePasswordKDF() bool {

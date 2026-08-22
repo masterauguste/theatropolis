@@ -19,10 +19,12 @@ func TestGitHubReleaseCatalogDiscoversAndSortsTags(t *testing.T) {
 		fmt.Fprint(response, `[
 			{"tag_name":"v0.0.9","assets":[
 				{"name":"checksums.txt"},
+				{"name":"checksums.txt.sig"},
 				{"name":"theatropolis_linux_amd64.tar.gz"},
 				{"name":"theatropolis_linux_arm64.tar.gz"}]},
 			{"tag_name":"v0.0.16","assets":[
 				{"name":"checksums.txt"},
+				{"name":"checksums.txt.sig"},
 				{"name":"theatropolis_linux_amd64.tar.gz"},
 				{"name":"theatropolis_linux_arm64.tar.gz"}]},
 			{"tag_name":"not-a-version","assets":[]}
@@ -55,6 +57,7 @@ func TestGitHubReleaseCatalogOmitsTagsWithoutCompleteBinaryAssets(t *testing.T) 
 			{"tag_name":"v0.0.18","assets":[{"name":"checksums.txt"}]},
 			{"tag_name":"v0.0.17","assets":[
 				{"name":"checksums.txt"},
+				{"name":"checksums.txt.sig"},
 				{"name":"theatropolis_linux_amd64.tar.gz"},
 				{"name":"theatropolis_linux_arm64.tar.gz"}]}
 		]`)
@@ -125,6 +128,7 @@ func TestGitHubReleaseCatalogRetriesAfterFailure(t *testing.T) {
 		}
 		fmt.Fprint(response, `[{"tag_name":"v0.0.17","assets":[
 			{"name":"checksums.txt"},
+			{"name":"checksums.txt.sig"},
 			{"name":"theatropolis_linux_amd64.tar.gz"},
 			{"name":"theatropolis_linux_arm64.tar.gz"}]}]`)
 	}))
@@ -155,6 +159,7 @@ func TestTheatropolisReleaseCatalogNeverCachesCompletedReleaseList(t *testing.T)
 		}
 		fmt.Fprintf(response, `[{"tag_name":%q,"assets":[
 			{"name":"checksums.txt"},
+			{"name":"checksums.txt.sig"},
 			{"name":"theatropolis_linux_amd64.tar.gz"},
 			{"name":"theatropolis_linux_arm64.tar.gz"}]}]`, tag)
 	}))

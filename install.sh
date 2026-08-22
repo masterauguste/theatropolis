@@ -6,6 +6,8 @@ umask 077
 
 REPOSITORY="masterauguste/theatropolis"
 INSTALL_DIRECTORY="/usr/local/bin"
+UPDATE_HELPER_DIRECTORY="/usr/local/libexec/theatropolis"
+UPDATE_HELPER_PATH="${UPDATE_HELPER_DIRECTORY}/theatropolis-update-helper"
 SING_BOX_VERSION="1.14.0-beta.2"
 SING_BOX_REPOSITORY="SagerNet/sing-box"
 SING_BOX_LIBRARY_DIRECTORY="/usr/local/lib/theatropolis/sing-box"
@@ -513,7 +515,7 @@ esac
 
 export DEBIAN_FRONTEND=noninteractive
 apt-get update
-apt-get install -y ca-certificates curl tar
+apt-get install -y ca-certificates curl openssl tar
 
 TEMP_DIRECTORY="$(mktemp -d)"
 ARCHIVE_NAME="theatropolis_linux_${ARCHITECTURE}.tar.gz"
@@ -528,6 +530,30 @@ CURL_OPTIONS="--fail --silent --show-error --location --proto =https --tlsv1.2 -
 curl $CURL_OPTIONS -o "$TEMP_DIRECTORY/$ARCHIVE_NAME" "$RELEASE_BASE/$ARCHIVE_NAME"
 # shellcheck disable=SC2086
 curl $CURL_OPTIONS -o "$TEMP_DIRECTORY/checksums.txt" "$RELEASE_BASE/checksums.txt"
+# shellcheck disable=SC2086
+curl $CURL_OPTIONS -o "$TEMP_DIRECTORY/checksums.txt.sig" "$RELEASE_BASE/checksums.txt.sig"
+
+cat >"$TEMP_DIRECTORY/release-signing-public.pem" <<'EOF'
+-----BEGIN PUBLIC KEY-----
+MIIBojANBgkqhkiG9w0BAQEFAAOCAY8AMIIBigKCAYEAypEYSqaWhmiWjqxNhKTA
+Pc7bwg+O4+jSXw6No7H6CoJJ6dmEYaCH2JnOqYOaXM8exFXFAbZD8yyrNaTrsOBt
+D+rKb4cgwGDdhLRWrspTVWmWuFBZmhJk9dO/RRQ2qmrCF/XNyPyD6I6bJD1S+2so
+65hwIhauxKiUgfarmnjH3Xjx9f+Yx+/D9ZkyDVKxpcr4CREJL+OSiC+EkFGtl0WT
+9+2zlwnDPXL00KhTJIXittXxgCoXzv4qQhTsAj2kcGg494t3z7nBn0bA8XNaVlCC
+4kAJob0VgsVLef4eH8piBP7UGoqwGkye2uTxcXC4cpf5zvKPuaGImshcWXlMBwAK
+5/sTF/+/aDqK3gp6YMVrujtLsc+4LNJXaTmMYYhjWFuWJYzRMCNxgA6byALjZ3on
+fpzP2qOMIDsG62Qq71udaqNyj5FDElRwb2UaNw4HsW7ZilJSdPPtjnr63YCicODV
+lNPGkOfz5U75YVtg9HkNfRrFOuw1T7nATykMLXoo37clAgMBAAE=
+-----END PUBLIC KEY-----
+EOF
+if ! openssl dgst -sha256 \
+	-verify "$TEMP_DIRECTORY/release-signing-public.pem" \
+	-signature "$TEMP_DIRECTORY/checksums.txt.sig" \
+	-sigopt rsa_padding_mode:pss \
+	-sigopt rsa_pss_saltlen:32 \
+	"$TEMP_DIRECTORY/checksums.txt" >/dev/null; then
+	fail "release checksum manifest signature verification failed"
+fi
 
 EXPECTED_CHECKSUM="$(
 	awk -v archive="$ARCHIVE_NAME" '$2 == archive { print $1 }' \
@@ -543,16 +569,16 @@ mkdir "$TEMP_DIRECTORY/extracted"
 ENTRY_COUNT=0
 while IFS= read -r ENTRY; do
 	case "$ENTRY" in
-	theatropolis-master | theatropolis-agent) ;;
+	theatropolis-master | theatropolis-agent | theatropolis-update-helper) ;;
 	*) fail "release archive contains an unexpected path: $ENTRY" ;;
 	esac
 	ENTRY_COUNT=$((ENTRY_COUNT + 1))
 done <<EOF
 $(tar -tzf "$TEMP_DIRECTORY/$ARCHIVE_NAME")
 EOF
-[ "$ENTRY_COUNT" -eq 2 ] || fail "release archive does not contain exactly two binaries"
+[ "$ENTRY_COUNT" -eq 3 ] || fail "release archive does not contain exactly three binaries"
 tar --no-same-owner -xzf "$TEMP_DIRECTORY/$ARCHIVE_NAME" -C "$TEMP_DIRECTORY/extracted"
-for COMPONENT in master agent; do
+for COMPONENT in master agent update-helper; do
 	BINARY="$TEMP_DIRECTORY/extracted/theatropolis-$COMPONENT"
 	if [ ! -f "$BINARY" ] || [ -L "$BINARY" ]; then
 		fail "release archive is missing the $COMPONENT binary"
@@ -673,6 +699,13 @@ install_binary() {
 	install -o root -g root -m 0755 \
 		"$TEMP_DIRECTORY/extracted/theatropolis-$COMPONENT" \
 		"$INSTALL_DIRECTORY/theatropolis-$COMPONENT"
+}
+
+install_update_helper() {
+	install -d -o root -g root -m 0755 "$UPDATE_HELPER_DIRECTORY"
+	install -o root -g root -m 0755 \
+		"$TEMP_DIRECTORY/extracted/theatropolis-update-helper" \
+		"$UPDATE_HELPER_PATH"
 }
 
 install_sing_box() {
@@ -934,6 +967,7 @@ install_master() {
 	fi
 
 	install_binary master
+	install_update_helper
 	if [ "$WEB_AUTH_CREATED" = "yes" ] ||
 		[ "$WEB_AUTH_RESET_APPLIED" = "yes" ]; then
 		chown "root:$MASTER_USER" "$WEB_AUTH_FILE"
@@ -995,7 +1029,7 @@ User=root
 Group=root
 UMask=0077
 ExecStartPre=/bin/sleep 2
-ExecStart=${INSTALL_DIRECTORY}/theatropolis-master apply-update --state-dir=${MASTER_STATE_DIRECTORY} --install-path=${INSTALL_DIRECTORY}/theatropolis-master
+ExecStart=${UPDATE_HELPER_PATH} apply-theatropolis --component=master --state-dir=${MASTER_STATE_DIRECTORY} --install-path=${INSTALL_DIRECTORY}/theatropolis-master --helper-install-path=${UPDATE_HELPER_PATH}
 NoNewPrivileges=true
 PrivateTmp=true
 ProtectSystem=strict
@@ -1010,7 +1044,7 @@ MemoryDenyWriteExecute=true
 RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
 RestrictRealtime=true
 CapabilityBoundingSet=CAP_DAC_OVERRIDE CAP_FOWNER
-ReadWritePaths=${INSTALL_DIRECTORY} ${MASTER_STATE_DIRECTORY}
+ReadWritePaths=${INSTALL_DIRECTORY} ${UPDATE_HELPER_DIRECTORY} ${MASTER_STATE_DIRECTORY}
 EOF
 	cat >"$MASTER_UPDATE_PATH_FILE" <<EOF
 [Unit]
@@ -1102,6 +1136,7 @@ install_agent() {
 	fi
 	install_sing_box
 	install_binary agent
+	install_update_helper
 	install -d -o root -g root -m 0755 "$STATE_DIRECTORY"
 	ensure_service_user "$AGENT_USER" "$AGENT_STATE_DIRECTORY"
 	write_agent_identity_hint
@@ -1168,7 +1203,7 @@ Type=oneshot
 User=root
 Group=root
 UMask=0077
-ExecStart=${INSTALL_DIRECTORY}/theatropolis-agent apply-update --state-dir=${AGENT_STATE_DIRECTORY} --install-path=${INSTALL_DIRECTORY}/theatropolis-agent
+ExecStart=${UPDATE_HELPER_PATH} apply-theatropolis --component=agent --state-dir=${AGENT_STATE_DIRECTORY} --install-path=${INSTALL_DIRECTORY}/theatropolis-agent --helper-install-path=${UPDATE_HELPER_PATH}
 NoNewPrivileges=true
 PrivateTmp=true
 ProtectSystem=strict
@@ -1183,7 +1218,7 @@ MemoryDenyWriteExecute=true
 RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
 RestrictRealtime=true
 CapabilityBoundingSet=CAP_DAC_OVERRIDE CAP_FOWNER
-ReadWritePaths=${INSTALL_DIRECTORY} ${AGENT_STATE_DIRECTORY}
+ReadWritePaths=${INSTALL_DIRECTORY} ${UPDATE_HELPER_DIRECTORY} ${AGENT_STATE_DIRECTORY}
 EOF
 	cat >"$AGENT_UPDATE_PATH_FILE" <<EOF
 [Unit]
@@ -1207,7 +1242,7 @@ Type=oneshot
 User=root
 Group=root
 UMask=0077
-ExecStart=${INSTALL_DIRECTORY}/theatropolis-agent apply-sing-box-update --state-dir=${AGENT_STATE_DIRECTORY} --install-path=${INSTALL_DIRECTORY}/sing-box --library-path=${SING_BOX_LIBRARY_DIRECTORY}/libcronet.so
+ExecStart=${UPDATE_HELPER_PATH} apply-sing-box --state-dir=${AGENT_STATE_DIRECTORY} --install-path=${INSTALL_DIRECTORY}/sing-box --library-path=${SING_BOX_LIBRARY_DIRECTORY}/libcronet.so --validation-user=${AGENT_USER}
 NoNewPrivileges=true
 PrivateTmp=true
 ProtectSystem=strict
@@ -1221,7 +1256,7 @@ LockPersonality=true
 MemoryDenyWriteExecute=true
 RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
 RestrictRealtime=true
-CapabilityBoundingSet=CAP_DAC_OVERRIDE CAP_FOWNER
+CapabilityBoundingSet=CAP_DAC_OVERRIDE CAP_FOWNER CAP_SETGID CAP_SETUID
 ReadWritePaths=${INSTALL_DIRECTORY} ${SING_BOX_LIBRARY_DIRECTORY} ${AGENT_STATE_DIRECTORY}
 EOF
 	cat >"$SING_BOX_UPDATE_PATH_FILE" <<EOF

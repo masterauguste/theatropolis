@@ -5,9 +5,13 @@ import (
 	"bytes"
 	"compress/gzip"
 	"context"
+	"crypto"
+	"crypto/rsa"
 	"crypto/sha256"
+	"crypto/x509"
 	"encoding/hex"
 	"encoding/json"
+	"encoding/pem"
 	"errors"
 	"fmt"
 	"io"
@@ -28,14 +32,27 @@ const (
 	resultFileName     = "update-result.json"
 	maxMetadataBytes   = 16 << 10
 	maxChecksumBytes   = 1 << 20
+	maxSignatureBytes  = 8 << 10
 	maxArchiveBytes    = 64 << 20
 	maxBinaryBytes     = 64 << 20
 )
 
+const releaseSigningPublicKeyPEM = `-----BEGIN PUBLIC KEY-----
+MIIBojANBgkqhkiG9w0BAQEFAAOCAY8AMIIBigKCAYEAypEYSqaWhmiWjqxNhKTA
+Pc7bwg+O4+jSXw6No7H6CoJJ6dmEYaCH2JnOqYOaXM8exFXFAbZD8yyrNaTrsOBt
+D+rKb4cgwGDdhLRWrspTVWmWuFBZmhJk9dO/RRQ2qmrCF/XNyPyD6I6bJD1S+2so
+65hwIhauxKiUgfarmnjH3Xjx9f+Yx+/D9ZkyDVKxpcr4CREJL+OSiC+EkFGtl0WT
+9+2zlwnDPXL00KhTJIXittXxgCoXzv4qQhTsAj2kcGg494t3z7nBn0bA8XNaVlCC
+4kAJob0VgsVLef4eH8piBP7UGoqwGkye2uTxcXC4cpf5zvKPuaGImshcWXlMBwAK
+5/sTF/+/aDqK3gp6YMVrujtLsc+4LNJXaTmMYYhjWFuWJYzRMCNxgA6byALjZ3on
+fpzP2qOMIDsG62Qq71udaqNyj5FDElRwb2UaNw4HsW7ZilJSdPPtjnr63YCicODV
+lNPGkOfz5U75YVtg9HkNfRrFOuw1T7nATykMLXoo37clAgMBAAE=
+-----END PUBLIC KEY-----`
+
 var (
 	ErrUpdatePending = errors.New("an agent update is already pending")
 	versionPattern   = regexp.MustCompile(
-		`\Av[0-9]+\.[0-9]+\.[0-9]+(?:[.-][A-Za-z0-9][A-Za-z0-9.-]*)?\z`,
+		`\Av([0-9]+)\.([0-9]+)\.([0-9]+)(?:[.-]([A-Za-z0-9][A-Za-z0-9.-]*))?\z`,
 	)
 	requestIDPattern = regexp.MustCompile(`\A[A-Za-z0-9_-]{16,128}\z`)
 )
@@ -152,13 +169,15 @@ func (s *Scheduler) resultPath() string {
 }
 
 type ApplyOptions struct {
-	StateDirectory string
-	InstallPath    string
-	Component      string
-	Architecture   string
-	RunningVersion string
-	HTTPClient     *http.Client
-	Restart        func(context.Context) error
+	StateDirectory    string
+	InstallPath       string
+	HelperInstallPath string
+	Component         string
+	Architecture      string
+	RunningVersion    string
+	HTTPClient        *http.Client
+	ReleasePublicKey  []byte
+	Restart           func(context.Context) error
 }
 
 func Apply(ctx context.Context, options ApplyOptions) error {
@@ -168,6 +187,9 @@ func Apply(ctx context.Context, options ApplyOptions) error {
 	}
 	if strings.TrimSpace(options.InstallPath) == "" {
 		return errors.New("install path is required")
+	}
+	if strings.TrimSpace(options.HelperInstallPath) == "" {
+		return errors.New("update helper install path is required")
 	}
 	component := options.Component
 	if component == "" {
@@ -281,6 +303,10 @@ func applyRelease(
 	if request.TargetVersion == options.RunningVersion {
 		return nil
 	}
+	if ValidVersion(options.RunningVersion) &&
+		compareReleaseVersions(request.TargetVersion, options.RunningVersion) < 0 {
+		return errors.New("Theatropolis update downgrades are not permitted")
+	}
 	client := options.HTTPClient
 	if client == nil {
 		client = &http.Client{
@@ -302,6 +328,22 @@ func applyRelease(
 	if err != nil {
 		return fmt.Errorf("download release checksums: %w", err)
 	}
+	signature, err := download(
+		ctx,
+		client,
+		baseURL+"/checksums.txt.sig",
+		maxSignatureBytes,
+	)
+	if err != nil {
+		return fmt.Errorf("download release signature: %w", err)
+	}
+	publicKey := options.ReleasePublicKey
+	if len(publicKey) == 0 {
+		publicKey = []byte(releaseSigningPublicKeyPEM)
+	}
+	if err := verifyManifestSignature(publicKey, checksums, signature); err != nil {
+		return err
+	}
 	archiveName := "theatropolis_linux_" + architecture + ".tar.gz"
 	expectedDigest, err := checksumFor(checksums, archiveName)
 	if err != nil {
@@ -315,11 +357,130 @@ func applyRelease(
 	if !strings.EqualFold(hex.EncodeToString(actualDigest[:]), expectedDigest) {
 		return errors.New("agent release checksum verification failed")
 	}
-	binary, err := extractReleaseBinary(archive, component)
+	binary, helper, err := extractReleaseComponents(archive, component)
 	if err != nil {
 		return err
 	}
-	return installBinary(options.InstallPath, binary)
+	return installReleaseComponents(
+		options.InstallPath,
+		options.HelperInstallPath,
+		binary,
+		helper,
+	)
+}
+
+func compareReleaseVersions(left, right string) int {
+	leftParts := versionPattern.FindStringSubmatch(left)
+	rightParts := versionPattern.FindStringSubmatch(right)
+	for index := 1; index <= 3; index++ {
+		if compared := compareNumericIdentifier(leftParts[index], rightParts[index]); compared != 0 {
+			return compared
+		}
+	}
+	leftPre, rightPre := leftParts[4], rightParts[4]
+	if leftPre == "" && rightPre != "" {
+		return 1
+	}
+	if leftPre != "" && rightPre == "" {
+		return -1
+	}
+	leftIDs := strings.FieldsFunc(leftPre, func(value rune) bool {
+		return value == '.' || value == '-'
+	})
+	rightIDs := strings.FieldsFunc(rightPre, func(value rune) bool {
+		return value == '.' || value == '-'
+	})
+	for index := 0; index < len(leftIDs) && index < len(rightIDs); index++ {
+		leftNumeric := numericIdentifier(leftIDs[index])
+		rightNumeric := numericIdentifier(rightIDs[index])
+		switch {
+		case leftNumeric && rightNumeric:
+			if compared := compareNumericIdentifier(leftIDs[index], rightIDs[index]); compared != 0 {
+				return compared
+			}
+		case leftNumeric:
+			return -1
+		case rightNumeric:
+			return 1
+		default:
+			if leftIDs[index] < rightIDs[index] {
+				return -1
+			}
+			if leftIDs[index] > rightIDs[index] {
+				return 1
+			}
+		}
+	}
+	switch {
+	case len(leftIDs) < len(rightIDs):
+		return -1
+	case len(leftIDs) > len(rightIDs):
+		return 1
+	default:
+		return 0
+	}
+}
+
+func compareNumericIdentifier(left, right string) int {
+	left = strings.TrimLeft(left, "0")
+	right = strings.TrimLeft(right, "0")
+	if left == "" {
+		left = "0"
+	}
+	if right == "" {
+		right = "0"
+	}
+	if len(left) < len(right) {
+		return -1
+	}
+	if len(left) > len(right) {
+		return 1
+	}
+	if left < right {
+		return -1
+	}
+	if left > right {
+		return 1
+	}
+	return 0
+}
+
+func numericIdentifier(value string) bool {
+	if value == "" {
+		return false
+	}
+	for _, character := range value {
+		if character < '0' || character > '9' {
+			return false
+		}
+	}
+	return true
+}
+
+func verifyManifestSignature(publicPEM, manifest, signature []byte) error {
+	block, rest := pem.Decode(publicPEM)
+	if block == nil || block.Type != "PUBLIC KEY" || len(bytes.TrimSpace(rest)) != 0 {
+		return errors.New("release signing public key is invalid")
+	}
+	parsed, err := x509.ParsePKIXPublicKey(block.Bytes)
+	if err != nil {
+		return errors.New("release signing public key is invalid")
+	}
+	publicKey, ok := parsed.(*rsa.PublicKey)
+	if !ok || publicKey.N.BitLen() < 3072 {
+		return errors.New("release signing public key is invalid")
+	}
+	digest := sha256.Sum256(manifest)
+	if err := rsa.VerifyPSS(
+		publicKey,
+		crypto.SHA256,
+		digest[:],
+		signature,
+		&rsa.PSSOptions{SaltLength: rsa.PSSSaltLengthEqualsHash},
+	); err != nil {
+		return errors.New("release manifest signature verification failed")
+	}
+	return nil
 }
 
 func download(
@@ -378,49 +539,97 @@ func checksumFor(contents []byte, archiveName string) (string, error) {
 }
 
 func extractAgentBinary(archive []byte) ([]byte, error) {
-	return extractReleaseBinary(archive, "agent")
+	binary, _, err := extractReleaseComponents(archive, "agent")
+	return binary, err
 }
 
 func extractReleaseBinary(archive []byte, component string) ([]byte, error) {
+	binary, _, err := extractReleaseComponents(archive, component)
+	return binary, err
+}
+
+func extractReleaseComponents(
+	archive []byte,
+	component string,
+) ([]byte, []byte, error) {
 	gzipReader, err := gzip.NewReader(bytes.NewReader(archive))
 	if err != nil {
-		return nil, fmt.Errorf("open agent release archive: %w", err)
+		return nil, nil, fmt.Errorf("open agent release archive: %w", err)
 	}
 	defer gzipReader.Close()
 	tarReader := tar.NewReader(gzipReader)
 	targetName := "theatropolis-" + component
-	var binary []byte
+	var binary, helper []byte
 	for {
 		header, err := tarReader.Next()
 		if errors.Is(err, io.EOF) {
 			break
 		}
 		if err != nil {
-			return nil, fmt.Errorf("read agent release archive: %w", err)
+			return nil, nil, fmt.Errorf("read agent release archive: %w", err)
 		}
 		if header.Name != "theatropolis-agent" &&
-			header.Name != "theatropolis-master" {
-			return nil, errors.New("agent release archive contains an unexpected path")
+			header.Name != "theatropolis-master" &&
+			header.Name != "theatropolis-update-helper" {
+			return nil, nil, errors.New("agent release archive contains an unexpected path")
 		}
 		if header.Typeflag != tar.TypeReg || header.Size < 1 ||
 			header.Size > maxBinaryBytes {
-			return nil, errors.New("agent release archive contains an unsafe entry")
+			return nil, nil, errors.New("agent release archive contains an unsafe entry")
 		}
-		if header.Name != targetName {
+		if header.Name != targetName && header.Name != "theatropolis-update-helper" {
 			continue
 		}
-		if binary != nil {
-			return nil, errors.New("release archive contains duplicate target binaries")
+		if header.Name == targetName && binary != nil ||
+			header.Name == "theatropolis-update-helper" && helper != nil {
+			return nil, nil, errors.New("release archive contains duplicate target binaries")
 		}
-		binary, err = io.ReadAll(io.LimitReader(tarReader, maxBinaryBytes+1))
-		if err != nil || int64(len(binary)) != header.Size {
-			return nil, errors.New("agent release archive contains a truncated binary")
+		contents, readErr := io.ReadAll(io.LimitReader(tarReader, maxBinaryBytes+1))
+		if readErr != nil || int64(len(contents)) != header.Size {
+			return nil, nil, errors.New("agent release archive contains a truncated binary")
+		}
+		if header.Name == targetName {
+			binary = contents
+		} else {
+			helper = contents
 		}
 	}
-	if len(binary) == 0 {
-		return nil, errors.New("release archive is missing the target binary")
+	if len(binary) == 0 || len(helper) == 0 {
+		return nil, nil, errors.New("release archive is missing a required binary")
 	}
-	return binary, nil
+	return binary, helper, nil
+}
+
+func installReleaseComponents(
+	binaryPath, helperPath string,
+	binary, helper []byte,
+) error {
+	oldHelper, err := readInstalledBinary(helperPath)
+	if err != nil {
+		return fmt.Errorf("read installed update helper: %w", err)
+	}
+	if err := installBinary(helperPath, helper); err != nil {
+		return fmt.Errorf("install update helper: %w", err)
+	}
+	if err := installBinary(binaryPath, binary); err != nil {
+		rollbackErr := installBinary(helperPath, oldHelper)
+		if rollbackErr != nil {
+			return errors.Join(err, fmt.Errorf("roll back update helper: %w", rollbackErr))
+		}
+		return err
+	}
+	return nil
+}
+
+func readInstalledBinary(path string) ([]byte, error) {
+	info, err := os.Lstat(path)
+	if err != nil {
+		return nil, err
+	}
+	if !info.Mode().IsRegular() || info.Size() < 1 || info.Size() > maxBinaryBytes {
+		return nil, errors.New("installed binary is not a safe regular file")
+	}
+	return os.ReadFile(path)
 }
 
 func installBinary(path string, binary []byte) error {

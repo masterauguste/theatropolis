@@ -71,9 +71,15 @@ cat >"$RELEASE_STAGE/theatropolis-agent" <<'EOF'
 exit 0
 EOF
 
+cat >"$RELEASE_STAGE/theatropolis-update-helper" <<'EOF'
+#!/bin/sh
+exit 0
+EOF
+
 chmod +x \
 	"$RELEASE_STAGE/theatropolis-master" \
-	"$RELEASE_STAGE/theatropolis-agent"
+	"$RELEASE_STAGE/theatropolis-agent" \
+	"$RELEASE_STAGE/theatropolis-update-helper"
 
 cat >"$SING_BOX_STAGE/$SING_BOX_PACKAGE/sing-box" <<'EOF'
 #!/bin/sh
@@ -88,7 +94,8 @@ chmod +x "$SING_BOX_STAGE/$SING_BOX_PACKAGE/sing-box"
 tar -czf "$RELEASE_DIRECTORY/theatropolis_linux_amd64.tar.gz" \
 	-C "$RELEASE_STAGE" \
 	theatropolis-master \
-	theatropolis-agent
+	theatropolis-agent \
+	theatropolis-update-helper
 tar -czf "$RELEASE_DIRECTORY/$SING_BOX_ARCHIVE" \
 	-C "$SING_BOX_STAGE" \
 	"$SING_BOX_PACKAGE"
@@ -102,6 +109,7 @@ tar -czf "$RELEASE_DIRECTORY/$SING_BOX_ARCHIVE" \
 		"$ARCHIVE_CHECKSUM" \
 		theatropolis_linux_amd64.tar.gz \
 		>checksums.txt
+	: >checksums.txt.sig
 )
 
 cat >"$MOCK_BIN/id" <<'EOF'
@@ -157,6 +165,9 @@ case "$SOURCE" in
 */checksums.txt)
 	cp "$TEST_RELEASE_DIRECTORY/checksums.txt" "$OUTPUT"
 	;;
+*/checksums.txt.sig)
+	cp "$TEST_RELEASE_DIRECTORY/checksums.txt.sig" "$OUTPUT"
+	;;
 */sing-box-1.14.0-beta.2-linux-amd64.tar.gz)
 	cp "$TEST_RELEASE_DIRECTORY/sing-box-1.14.0-beta.2-linux-amd64.tar.gz" "$OUTPUT"
 	;;
@@ -165,6 +176,11 @@ case "$SOURCE" in
 	exit 65
 	;;
 esac
+EOF
+
+cat >"$MOCK_BIN/openssl" <<'EOF'
+#!/bin/sh
+exit 0
 EOF
 
 cat >"$MOCK_BIN/sha256sum" <<'EOF'
@@ -315,12 +331,14 @@ if [ ! -f "$SING_BOX_UPDATE_SERVICE" ] ||
 	[ ! -f "$SING_BOX_UPDATE_PATH" ]; then
 	fail "root sing-box update helper units were not generated"
 fi
-grep -Fq ' apply-update ' "$UPDATE_SERVICE" ||
-	fail "update helper does not invoke the isolated apply-update command"
+grep -Fq 'theatropolis-update-helper apply-theatropolis --component=agent' "$UPDATE_SERVICE" ||
+	fail "update unit does not invoke the dedicated root helper"
 grep -Fqx "PathExists=$AGENT_STATE_DIRECTORY/update-request.json" "$UPDATE_PATH" ||
 	fail "update watcher does not monitor the agent request file"
-grep -Fq ' apply-sing-box-update ' "$SING_BOX_UPDATE_SERVICE" ||
-	fail "sing-box update helper does not invoke its isolated command"
+grep -Fq 'theatropolis-update-helper apply-sing-box ' "$SING_BOX_UPDATE_SERVICE" ||
+	fail "sing-box update unit does not invoke the dedicated root helper"
+[ -x "$TEST_ROOT/usr/local/libexec/theatropolis/theatropolis-update-helper" ] ||
+	fail "dedicated update helper was not installed"
 grep -Fqx "PathExists=$AGENT_STATE_DIRECTORY/sing-box-update-request.json" "$SING_BOX_UPDATE_PATH" ||
 	fail "sing-box update watcher does not monitor its request file"
 if grep -Fq -- '--agent-id' "$AGENT_UNIT"; then

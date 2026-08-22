@@ -39,6 +39,7 @@ const (
 	controlKeepaliveTime    = 30 * time.Second
 	controlKeepaliveTimeout = 10 * time.Second
 	controlKeepaliveMinTime = 20 * time.Second
+	controlMaxStreams       = 128
 )
 
 var (
@@ -64,7 +65,9 @@ func run(arguments []string) error {
 	case "serve":
 		return serve(arguments[1:])
 	case "apply-update":
-		return applyUpdate(arguments[1:])
+		return errors.New(
+			"privileged updates moved to the dedicated theatropolis-update-helper; rerun the installer",
+		)
 	case "create-enrollment":
 		return createEnrollment(arguments[1:])
 	case "set-web-admin":
@@ -75,36 +78,6 @@ func run(arguments []string) error {
 	default:
 		return fmt.Errorf("unknown command %q", arguments[0])
 	}
-}
-
-func applyUpdate(arguments []string) error {
-	flags := flag.NewFlagSet("theatropolis-master apply-update", flag.ContinueOnError)
-	flags.SetOutput(io.Discard)
-	stateDirectory := flags.String(
-		"state-dir",
-		"/var/lib/theatropolis/master",
-		"master state directory",
-	)
-	installPath := flags.String(
-		"install-path",
-		"/usr/local/bin/theatropolis-master",
-		"installed master binary",
-	)
-	if err := flags.Parse(arguments); err != nil {
-		return err
-	}
-	if flags.NArg() != 0 {
-		return errors.New("apply-update does not accept positional arguments")
-	}
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
-	defer cancel()
-	return agentupdate.Apply(ctx, agentupdate.ApplyOptions{
-		StateDirectory: *stateDirectory,
-		InstallPath:    *installPath,
-		Component:      "master",
-		Architecture:   runtime.GOARCH,
-		RunningVersion: version,
-	})
 }
 
 func serve(arguments []string) error {
@@ -238,6 +211,7 @@ func serve(arguments []string) error {
 	grpcServer := grpc.NewServer(
 		grpc.MaxRecvMsgSize(maxWireMessageBytes),
 		grpc.MaxSendMsgSize(maxWireMessageBytes),
+		grpc.MaxConcurrentStreams(controlMaxStreams),
 		grpc.KeepaliveEnforcementPolicy(keepalive.EnforcementPolicy{
 			MinTime:             controlKeepaliveMinTime,
 			PermitWithoutStream: false,

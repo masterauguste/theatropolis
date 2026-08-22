@@ -2502,6 +2502,29 @@ func assertSecurityHeaders(t *testing.T, header http.Header) {
 	}
 }
 
+func TestLoginClientIdentityUsesProxyAppendedAddress(t *testing.T) {
+	t.Parallel()
+	request := httptest.NewRequest(http.MethodPost, testPublicURL+"/login", nil)
+	request.RemoteAddr = "127.0.0.1:12345"
+	request.Header.Set(
+		"X-Forwarded-For",
+		"192.0.2.99, 198.51.100.24",
+	)
+	if got := loginClientIdentity(request); got != "198.51.100.24" {
+		t.Fatalf("loginClientIdentity() = %q", got)
+	}
+}
+
+func TestLoginClientIdentityFallsBackToRemoteAddress(t *testing.T) {
+	t.Parallel()
+	request := httptest.NewRequest(http.MethodPost, testPublicURL+"/login", nil)
+	request.RemoteAddr = "[2001:db8::24]:12345"
+	request.Header.Set("X-Forwarded-For", "invalid")
+	if got := loginClientIdentity(request); got != "2001:db8::24" {
+		t.Fatalf("loginClientIdentity() = %q", got)
+	}
+}
+
 func netJoinHostPort(host, port string) string {
 	if strings.Contains(host, ":") {
 		return "[" + host + "]:" + port

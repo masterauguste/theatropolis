@@ -509,7 +509,11 @@ func (h *Handler) login(response http.ResponseWriter, request *http.Request) {
 		http.Error(response, "invalid request", http.StatusBadRequest)
 		return
 	}
-	session, err := h.access.Login(username, password)
+	session, err := h.access.LoginForClient(
+		loginClientIdentity(request),
+		username,
+		password,
+	)
 	if err != nil {
 		status := http.StatusUnauthorized
 		message := "The username or password was not accepted."
@@ -2409,6 +2413,27 @@ func (h *Handler) sessionToken(request *http.Request) (string, bool) {
 		return "", false
 	}
 	return cookie.Value, true
+}
+
+// loginClientIdentity returns the peer address Caddy appended to
+// X-Forwarded-For. The web listener is loopback-only, so the last element is
+// controlled by the local reverse proxy; direct development requests fall
+// back to RemoteAddr. The value is used only as an in-memory rate-limit key.
+func loginClientIdentity(request *http.Request) string {
+	if values := request.Header.Values("X-Forwarded-For"); len(values) > 0 {
+		parts := strings.Split(values[len(values)-1], ",")
+		candidate := strings.TrimSpace(parts[len(parts)-1])
+		if address := net.ParseIP(candidate); address != nil {
+			return address.String()
+		}
+	}
+	host, _, err := net.SplitHostPort(request.RemoteAddr)
+	if err == nil {
+		if address := net.ParseIP(host); address != nil {
+			return address.String()
+		}
+	}
+	return "unknown"
 }
 
 func (h *Handler) redirectToLogin(response http.ResponseWriter, request *http.Request) {

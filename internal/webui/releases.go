@@ -63,6 +63,7 @@ func NewGitHubReleaseCatalog(client *http.Client) *GitHubReleaseCatalog {
 		releasesURL: "https://api.github.com/repos/masterauguste/theatropolis/releases?per_page=100",
 		requiredAssets: []string{
 			"checksums.txt",
+			"checksums.txt.sig",
 			"theatropolis_linux_amd64.tar.gz",
 			"theatropolis_linux_arm64.tar.gz",
 		},

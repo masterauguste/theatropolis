@@ -148,6 +148,7 @@ type ApplyOptions struct {
 	LibraryPath    string
 	Architecture   string
 	RunningVersion string
+	ValidationUser string
 	HTTPClient     *http.Client
 	Restart        func(context.Context) error
 }
@@ -157,6 +158,9 @@ func Apply(ctx context.Context, options ApplyOptions) error {
 		strings.TrimSpace(options.InstallPath) == "" ||
 		strings.TrimSpace(options.LibraryPath) == "" {
 		return errors.New("sing-box update paths are required")
+	}
+	if strings.TrimSpace(options.ValidationUser) == "" {
+		return errors.New("sing-box validation user is required")
 	}
 	architecture := options.Architecture
 	if architecture == "" {
@@ -412,16 +416,32 @@ func installComponents(
 		return fmt.Errorf("create sing-box update directory: %w", err)
 	}
 	defer os.RemoveAll(tempDirectory)
+	if err := os.Chmod(tempDirectory, 0o755); err != nil {
+		return fmt.Errorf("make sing-box update directory traversable: %w", err)
+	}
 	tempBinary := filepath.Join(tempDirectory, "sing-box")
 	tempLibrary := filepath.Join(tempDirectory, "libcronet.so")
 	if err := os.WriteFile(tempBinary, binary, 0o755); err != nil {
 		return fmt.Errorf("write candidate sing-box binary: %w", err)
 	}
+	if err := os.Chmod(tempBinary, 0o755); err != nil {
+		return fmt.Errorf("make candidate sing-box executable: %w", err)
+	}
 	if err := os.WriteFile(tempLibrary, library, 0o644); err != nil {
 		return fmt.Errorf("write candidate sing-box library: %w", err)
 	}
+	if err := os.Chmod(tempLibrary, 0o644); err != nil {
+		return fmt.Errorf("make candidate sing-box library readable: %w", err)
+	}
 	command := exec.CommandContext(ctx, tempBinary, "version")
-	command.Env = append(os.Environ(), "LD_LIBRARY_PATH="+tempDirectory)
+	if err := configureUnprivilegedCommand(
+		command,
+		options.ValidationUser,
+		filepath.Clean(options.StateDirectory),
+		tempDirectory,
+	); err != nil {
+		return err
+	}
 	output, err := command.CombinedOutput()
 	if err != nil || !strings.Contains(
 		string(output),
@@ -445,7 +465,14 @@ func installComponents(
 			"-c",
 			activeConfigPath,
 		)
-		checkCommand.Env = append(os.Environ(), "LD_LIBRARY_PATH="+tempDirectory)
+		if err := configureUnprivilegedCommand(
+			checkCommand,
+			options.ValidationUser,
+			filepath.Clean(options.StateDirectory),
+			tempDirectory,
+		); err != nil {
+			return err
+		}
 		checkCommand.Stdout = io.Discard
 		checkCommand.Stderr = io.Discard
 		if err := checkCommand.Run(); err != nil {

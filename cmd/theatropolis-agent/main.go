@@ -55,10 +55,14 @@ func main() {
 
 func run(arguments []string) error {
 	if len(arguments) > 0 && arguments[0] == "apply-update" {
-		return runApplyUpdate(arguments[1:])
+		return errors.New(
+			"privileged updates moved to the dedicated theatropolis-update-helper; rerun the installer",
+		)
 	}
 	if len(arguments) > 0 && arguments[0] == "apply-sing-box-update" {
-		return runApplySingBoxUpdate(arguments[1:])
+		return errors.New(
+			"privileged updates moved to the dedicated theatropolis-update-helper; rerun the installer",
+		)
 	}
 	flags := flag.NewFlagSet("theatropolis-agent", flag.ContinueOnError)
 	flags.SetOutput(io.Discard)
@@ -238,73 +242,6 @@ func singBoxUpdateHelperAvailable() bool {
 		"/etc/systemd/system/theatropolis-sing-box-update.path",
 	)
 	return err == nil && info.Mode().IsRegular()
-}
-
-func runApplySingBoxUpdate(arguments []string) error {
-	flags := flag.NewFlagSet(
-		"theatropolis-agent apply-sing-box-update",
-		flag.ContinueOnError,
-	)
-	flags.SetOutput(io.Discard)
-	stateDirectory := flags.String(
-		"state-dir", "/var/lib/theatropolis/agent", "agent state directory",
-	)
-	installPath := flags.String(
-		"install-path", "/usr/local/bin/sing-box", "installed sing-box binary",
-	)
-	libraryPath := flags.String(
-		"library-path",
-		"/usr/local/lib/theatropolis/sing-box/libcronet.so",
-		"installed sing-box library",
-	)
-	if err := flags.Parse(arguments); err != nil {
-		return err
-	}
-	if flags.NArg() != 0 {
-		return errors.New("apply-sing-box-update does not accept positional arguments")
-	}
-	runningVersion, _ := singbox.ExecutableVersion(
-		context.Background(),
-		*installPath,
-	)
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
-	defer cancel()
-	return singboxupdate.Apply(ctx, singboxupdate.ApplyOptions{
-		StateDirectory: *stateDirectory,
-		InstallPath:    *installPath,
-		LibraryPath:    *libraryPath,
-		Architecture:   runtime.GOARCH,
-		RunningVersion: runningVersion,
-	})
-}
-
-func runApplyUpdate(arguments []string) error {
-	flags := flag.NewFlagSet("theatropolis-agent apply-update", flag.ContinueOnError)
-	flags.SetOutput(io.Discard)
-	stateDirectory := flags.String(
-		"state-dir",
-		"/var/lib/theatropolis/agent",
-		"agent state directory",
-	)
-	installPath := flags.String(
-		"install-path",
-		"/usr/local/bin/theatropolis-agent",
-		"installed agent binary",
-	)
-	if err := flags.Parse(arguments); err != nil {
-		return err
-	}
-	if flags.NArg() != 0 {
-		return errors.New("apply-update does not accept positional arguments")
-	}
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
-	defer cancel()
-	return agentupdate.Apply(ctx, agentupdate.ApplyOptions{
-		StateDirectory: *stateDirectory,
-		InstallPath:    *installPath,
-		Architecture:   runtime.GOARCH,
-		RunningVersion: version,
-	})
 }
 
 func secureTLSConfig(serverName, caFile string) (*tls.Config, error) {

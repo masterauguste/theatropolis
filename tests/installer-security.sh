@@ -186,16 +186,20 @@ printf '%s\n' \
 	'esac' \
 	>"$RELEASE_STAGE/theatropolis-master"
 printf '%s\n' '#!/bin/sh' 'exit 0' >"$RELEASE_STAGE/theatropolis-agent"
+printf '%s\n' '#!/bin/sh' 'exit 0' >"$RELEASE_STAGE/theatropolis-update-helper"
 chmod +x \
 	"$RELEASE_STAGE/theatropolis-master" \
-	"$RELEASE_STAGE/theatropolis-agent"
+	"$RELEASE_STAGE/theatropolis-agent" \
+	"$RELEASE_STAGE/theatropolis-update-helper"
 tar -czf "$RELEASE_DIRECTORY/theatropolis_linux_amd64.tar.gz" \
 	-C "$RELEASE_STAGE" \
 	theatropolis-master \
-	theatropolis-agent
+	theatropolis-agent \
+	theatropolis-update-helper
 (
 	cd "$RELEASE_DIRECTORY"
 	sha256sum theatropolis_linux_amd64.tar.gz >checksums.txt
+	: >checksums.txt.sig
 )
 
 # shellcheck disable=SC2016
@@ -210,6 +214,11 @@ printf '%s\n' \
 printf '%s\n' '#!/bin/sh' 'exit 0' >"$COMPAT_BIN/apt-get"
 printf '%s\n' '#!/bin/sh' 'exit 0' >"$COMPAT_BIN/systemctl"
 printf '%s\n' '#!/bin/sh' 'exit 0' >"$COMPAT_BIN/flock"
+printf '%s\n' \
+	'#!/bin/sh' \
+	'[ "${TEST_SIGNATURE_FAIL:-}" != "yes" ] || exit 1' \
+	'exit 0' \
+	>"$COMPAT_BIN/openssl"
 printf '%s\n' '#!/bin/sh' 'printf "x86_64\n"' >"$COMPAT_BIN/uname"
 # shellcheck disable=SC2016
 printf '%s\n' \
@@ -235,6 +244,9 @@ printf '%s\n' \
 	'*/checksums.txt)' \
 	'	cp "$TEST_RELEASE_DIRECTORY/checksums.txt" "$OUTPUT"' \
 	'	;;' \
+	'*/checksums.txt.sig)' \
+	'	cp "$TEST_RELEASE_DIRECTORY/checksums.txt.sig" "$OUTPUT"' \
+	'	;;' \
 	'*)' \
 	'	printf "unexpected mock curl source: %s\n" "$SOURCE" >&2' \
 	'	exit 65' \
@@ -249,6 +261,30 @@ printf '%s\n' \
 	'exit 91' \
 	>"$COMPAT_BIN/install"
 chmod +x "$COMPAT_BIN"/*
+
+set +e
+SIGNATURE_OUTPUT="$(
+	PATH="$COMPAT_BIN:$PATH" \
+		TEST_RELEASE_DIRECTORY="$RELEASE_DIRECTORY" \
+		TEST_MASTER_INVOCATIONS="$MASTER_INVOCATIONS" \
+		TEST_INSTALL_INVOCATIONS="$INSTALL_INVOCATIONS" \
+		TEST_SIGNATURE_FAIL=yes \
+		sh "$INSTALLER" master \
+		--domain master.example.com \
+		--version v0.0.1 2>&1
+)"
+SIGNATURE_STATUS="$?"
+set -e
+
+[ "$SIGNATURE_STATUS" -ne 0 ] ||
+	fail "installer accepted an invalid release-manifest signature"
+[ ! -s "$MASTER_INVOCATIONS" ] ||
+	fail "installer executed a release binary before signature verification"
+[ ! -s "$INSTALL_INVOCATIONS" ] ||
+	fail "installer installed a release with an invalid manifest signature"
+printf '%s' "$SIGNATURE_OUTPUT" |
+	grep -Eiq 'signature verification failed' ||
+	fail "signature failure did not provide a useful diagnostic"
 
 set +e
 COMPAT_OUTPUT="$(

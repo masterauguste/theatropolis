@@ -34,6 +34,7 @@ const (
 	CapabilityAddressReport = "address-report-v1"
 	CapabilityAddressProbe  = "address-probe-v1"
 	DefaultChallengeTTL     = 30 * time.Second
+	DefaultHelloTimeout     = 10 * time.Second
 	DefaultCommandQueue     = 16
 	DefaultMaxConfigBytes   = 4 << 20
 	DefaultValidationLimit  = 60 * time.Second
@@ -57,6 +58,7 @@ type Server struct {
 	Logger           *slog.Logger
 	Now              func() time.Time
 	HeartbeatTimeout time.Duration
+	HelloTimeout     time.Duration
 
 	// poolRegistry is the fleet-wide outbound pool. It may be nil (unit
 	// tests); every pool code path degrades to a no-op in that case, which
@@ -100,6 +102,7 @@ func NewServer(
 		Logger:           logger,
 		Now:              time.Now,
 		HeartbeatTimeout: DefaultHeartbeatTimeout,
+		HelloTimeout:     DefaultHelloTimeout,
 		probedShadow:     make(map[string]*probedAddressState),
 		updates:          make(map[string]AgentUpdateState),
 		singBoxUpdates:   make(map[string]SingBoxUpdateState),
@@ -220,7 +223,7 @@ func (s *Server) RevokeAgent(ctx context.Context, agentID string) error {
 
 func (s *Server) Connect(stream controlv1.AgentControlService_ConnectServer) error {
 	ctx := stream.Context()
-	firstFrame, err := stream.Recv()
+	firstFrame, err := receiveWithTimeout(stream, s.helloTimeout())
 	if err != nil {
 		return err
 	}
@@ -401,6 +404,13 @@ func (s *Server) heartbeatTimeout() time.Duration {
 		return DefaultHeartbeatTimeout
 	}
 	return s.HeartbeatTimeout
+}
+
+func (s *Server) helloTimeout() time.Duration {
+	if s.HelloTimeout <= 0 {
+		return DefaultHelloTimeout
+	}
+	return s.HelloTimeout
 }
 
 type masterFrameSender interface {
