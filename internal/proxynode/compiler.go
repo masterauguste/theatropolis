@@ -210,17 +210,18 @@ func groupListeners(byAgent map[string]*agentRender, candidates []*ingressCandid
 
 func listenerKeys(agentID string, endpoint Endpoint) (string, string, error) {
 	compatible := struct {
-		Protocol   Protocol  `json:"protocol"`
-		Listen     string    `json:"listen"`
-		ListenPort int       `json:"listen_port"`
-		Method     string    `json:"method,omitempty"`
-		ServerKey  string    `json:"server_key,omitempty"`
-		TLS        TLSConfig `json:"tls,omitempty"`
-		UpMbps     int       `json:"up_mbps,omitempty"`
-		DownMbps   int       `json:"down_mbps,omitempty"`
-		ObfsType   string    `json:"obfs_type,omitempty"`
-		ObfsSecret string    `json:"obfs_secret,omitempty"`
-	}{endpoint.Protocol, endpoint.Listen, endpoint.ListenPort, endpoint.Method, endpoint.ServerKey, endpoint.TLS, endpoint.UpMbps, endpoint.DownMbps, endpoint.ObfsType, endpoint.ObfsSecret}
+		Protocol   Protocol         `json:"protocol"`
+		Listen     string           `json:"listen"`
+		ListenPort int              `json:"listen_port"`
+		Method     string           `json:"method,omitempty"`
+		ServerKey  string           `json:"server_key,omitempty"`
+		Multiplex  *MultiplexConfig `json:"multiplex,omitempty"`
+		TLS        TLSConfig        `json:"tls,omitempty"`
+		UpMbps     int              `json:"up_mbps,omitempty"`
+		DownMbps   int              `json:"down_mbps,omitempty"`
+		ObfsType   string           `json:"obfs_type,omitempty"`
+		ObfsSecret string           `json:"obfs_secret,omitempty"`
+	}{endpoint.Protocol, endpoint.Listen, endpoint.ListenPort, endpoint.Method, endpoint.ServerKey, endpoint.Multiplex, endpoint.TLS, endpoint.UpMbps, endpoint.DownMbps, endpoint.ObfsType, endpoint.ObfsSecret}
 	encoded, err := json.Marshal(compatible)
 	if err != nil {
 		return "", "", err
@@ -300,6 +301,9 @@ func renderListener(group *listenerGroup) (map[string]any, map[string]any, error
 	case ProtocolShadowsocks:
 		inbound["method"] = endpoint.Method
 		inbound["password"] = endpoint.ServerKey
+		if multiplex := renderMultiplex(endpoint.Multiplex); multiplex != nil {
+			inbound["multiplex"] = multiplex
+		}
 	case ProtocolAnyTLS, ProtocolHysteria2:
 		tls, certificateProvider := renderInboundTLS(group)
 		inbound["tls"] = tls
@@ -443,6 +447,9 @@ func renderLinkOutbound(node ProxyNode, link Link, child Hop, resolver AddressRe
 	case ProtocolShadowsocks:
 		outbound["method"] = endpoint.Method
 		outbound["password"] = endpoint.ServerKey + ":" + link.Credential.Secret
+		if multiplex := renderMultiplex(endpoint.Multiplex); multiplex != nil {
+			outbound["multiplex"] = multiplex
+		}
 	case ProtocolAnyTLS, ProtocolHysteria2:
 		outbound["password"] = link.Credential.Secret
 		insecure := endpoint.TLS.Mode != TLSModeACME
@@ -464,6 +471,22 @@ func renderLinkOutbound(node ProxyNode, link Link, child Hop, resolver AddressRe
 		return nil, errors.New("unsupported Link protocol")
 	}
 	return outbound, nil
+}
+
+func renderMultiplex(config *MultiplexConfig) map[string]any {
+	if config == nil {
+		return nil
+	}
+	multiplex := map[string]any{"enabled": true}
+	if config.Padding {
+		multiplex["padding"] = true
+	}
+	if config.Brutal != nil {
+		multiplex["brutal"] = map[string]any{
+			"enabled": true, "up_mbps": config.Brutal.UpMbps, "down_mbps": config.Brutal.DownMbps,
+		}
+	}
+	return multiplex
 }
 
 func topologyDepths(node ProxyNode) map[string]int {

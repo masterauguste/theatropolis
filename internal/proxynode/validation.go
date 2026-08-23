@@ -313,10 +313,16 @@ func validateEndpoint(endpoint Endpoint) error {
 		if !validBase64Length(endpoint.ServerKey, length) {
 			return errors.New("Shadowsocks server key has the wrong size")
 		}
-		if endpoint.TLS.Mode != "" || endpoint.ObfsType != "" {
+		if endpoint.TLS.Mode != "" || endpoint.UpMbps != 0 || endpoint.DownMbps != 0 || endpoint.ObfsType != "" || endpoint.ObfsSecret != "" {
 			return errors.New("Shadowsocks endpoint has incompatible options")
 		}
+		if err := validateMultiplex(endpoint.Multiplex); err != nil {
+			return err
+		}
 	case ProtocolAnyTLS, ProtocolHysteria2:
+		if endpoint.Multiplex != nil {
+			return errors.New("multiplex is supported only by Shadowsocks endpoints")
+		}
 		if err := validateTLS(endpoint.TLS); err != nil {
 			return err
 		}
@@ -336,6 +342,22 @@ func validateEndpoint(endpoint Endpoint) error {
 		}
 	default:
 		return errors.New("unsupported proxy protocol")
+	}
+	return nil
+}
+
+func validateMultiplex(config *MultiplexConfig) error {
+	if config == nil {
+		return nil
+	}
+	if !config.Enabled {
+		return errors.New("multiplex configuration must be enabled or omitted")
+	}
+	if config.Brutal == nil {
+		return nil
+	}
+	if !config.Brutal.Enabled || config.Brutal.UpMbps < 1 || config.Brutal.UpMbps > 1_000_000 || config.Brutal.DownMbps < 1 || config.Brutal.DownMbps > 1_000_000 {
+		return errors.New("TCP Brutal requires valid upload and download bandwidth")
 	}
 	return nil
 }

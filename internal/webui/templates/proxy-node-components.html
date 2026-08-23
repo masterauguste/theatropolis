@@ -9,6 +9,16 @@
   <legend>Shadowsocks 2022</legend>
   <label class="field"><span>Method</span><select name="method"><option value="2022-blake3-aes-128-gcm"{{if eq .Method "2022-blake3-aes-128-gcm"}} selected{{end}}>AES-128-GCM</option><option value="2022-blake3-aes-256-gcm"{{if eq .Method "2022-blake3-aes-256-gcm"}} selected{{end}}>AES-256-GCM</option><option value="2022-blake3-chacha20-poly1305"{{if eq .Method "2022-blake3-chacha20-poly1305"}} selected{{end}}>ChaCha20-Poly1305</option></select></label>
   <p class="muted">Server and user keys are generated automatically and never reused.</p>
+  <fieldset class="builder-subsection">
+    <legend>Inbound multiplex</legend>
+    <div class="builder-fields">
+      <label class="field"><span>Multiplex</span><select name="mux_enabled" data-proxy-mux-enabled><option value="0"{{if not .MuxEnabled}} selected{{end}}>Disabled</option><option value="1"{{if .MuxEnabled}} selected{{end}}>Enabled</option></select><small>Allows clients to carry multiple streams over fewer connections.</small></label>
+      <label class="field" data-proxy-mux-options><span>Padding</span><select name="mux_padding"><option value="0"{{if not .MuxPadding}} selected{{end}}>Disabled</option><option value="1"{{if .MuxPadding}} selected{{end}}>Enabled</option></select></label>
+      <label class="field" data-proxy-mux-options><span>TCP Brutal</span><select name="mux_brutal" data-proxy-mux-brutal><option value="0"{{if not .MuxBrutal}} selected{{end}}>Disabled</option><option value="1"{{if .MuxBrutal}} selected{{end}}>Enabled</option></select><small>Requires Brutal support on both ends and the kernel module on this Agent.</small></label>
+      <label class="field" data-proxy-mux-brutal-bandwidth><span>Brutal upload Mbps</span><input name="mux_brutal_up_mbps" type="number" min="1" max="1000000" value="{{if .MuxBrutalUpMbps}}{{.MuxBrutalUpMbps}}{{end}}"></label>
+      <label class="field" data-proxy-mux-brutal-bandwidth><span>Brutal download Mbps</span><input name="mux_brutal_down_mbps" type="number" min="1" max="1000000" value="{{if .MuxBrutalDownMbps}}{{.MuxBrutalDownMbps}}{{end}}"></label>
+    </div>
+  </fieldset>
 </fieldset>
 <fieldset class="builder-subsection" data-proxy-section="tls">
   <legend>TLS</legend>

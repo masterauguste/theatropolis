@@ -4,6 +4,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/url"
 	"sort"
@@ -123,19 +124,24 @@ type agentOptionView struct {
 }
 
 type endpointView struct {
-	Protocol        string
-	Listen          string
-	ListenPort      int
-	Family          string
-	Method          string
-	TLSMode         string
-	ServerName      string
-	Email           string
-	CertificatePath string
-	KeyPath         string
-	UpMbps          int
-	DownMbps        int
-	ObfsType        string
+	Protocol          string
+	Listen            string
+	ListenPort        int
+	Family            string
+	Method            string
+	MuxEnabled        bool
+	MuxPadding        bool
+	MuxBrutal         bool
+	MuxBrutalUpMbps   int
+	MuxBrutalDownMbps int
+	TLSMode           string
+	ServerName        string
+	Email             string
+	CertificatePath   string
+	KeyPath           string
+	UpMbps            int
+	DownMbps          int
+	ObfsType          string
 }
 
 type hopDetailView struct {
@@ -1048,34 +1054,100 @@ func (h *Handler) proxyDeploymentView() *proxyDeploymentView {
 	return view
 }
 
-var endpointFormFields = []string{"protocol", "listen", "listen_port", "family", "method", "tls_mode", "server_name", "email", "certificate_path", "key_path", "up_mbps", "down_mbps", "obfs_type"}
+var endpointFormFields = []string{"protocol", "listen", "listen_port", "family", "method", "mux_enabled", "mux_padding", "mux_brutal", "mux_brutal_up_mbps", "mux_brutal_down_mbps", "tls_mode", "server_name", "email", "certificate_path", "key_path", "up_mbps", "down_mbps", "obfs_type"}
 
 func parseEndpointForm(form url.Values) (proxynode.Endpoint, error) {
 	port, err := strconv.Atoi(form.Get("listen_port"))
 	if err != nil {
 		return proxynode.Endpoint{}, errors.New("listen port must be a number")
 	}
-	up, err := optionalPositiveInt(form.Get("up_mbps"))
-	if err != nil {
-		return proxynode.Endpoint{}, errors.New("upload Mbps must be a positive number")
-	}
-	down, err := optionalPositiveInt(form.Get("down_mbps"))
-	if err != nil {
-		return proxynode.Endpoint{}, errors.New("download Mbps must be a positive number")
-	}
-	return proxynode.Endpoint{
+	endpoint := proxynode.Endpoint{
 		Protocol: proxynode.Protocol(form.Get("protocol")), Listen: form.Get("listen"), ListenPort: port,
-		Family: form.Get("family"), Method: form.Get("method"), UpMbps: up, DownMbps: down, ObfsType: form.Get("obfs_type"),
-		TLS: proxynode.TLSConfig{Mode: proxynode.TLSMode(form.Get("tls_mode")), ServerName: form.Get("server_name"), Email: form.Get("email"), CertificatePath: form.Get("certificate_path"), KeyPath: form.Get("key_path")},
-	}, nil
+		Family: form.Get("family"),
+	}
+	switch endpoint.Protocol {
+	case proxynode.ProtocolShadowsocks:
+		endpoint.Method = form.Get("method")
+		multiplex, err := parseMultiplexForm(form)
+		if err != nil {
+			return proxynode.Endpoint{}, err
+		}
+		endpoint.Multiplex = multiplex
+	case proxynode.ProtocolAnyTLS, proxynode.ProtocolHysteria2:
+		endpoint.TLS = proxynode.TLSConfig{Mode: proxynode.TLSMode(form.Get("tls_mode")), ServerName: form.Get("server_name"), Email: form.Get("email"), CertificatePath: form.Get("certificate_path"), KeyPath: form.Get("key_path")}
+		if endpoint.Protocol == proxynode.ProtocolHysteria2 {
+			up, err := optionalPositiveInt(form.Get("up_mbps"))
+			if err != nil {
+				return proxynode.Endpoint{}, errors.New("upload Mbps must be a positive number")
+			}
+			down, err := optionalPositiveInt(form.Get("down_mbps"))
+			if err != nil {
+				return proxynode.Endpoint{}, errors.New("download Mbps must be a positive number")
+			}
+			endpoint.UpMbps = up
+			endpoint.DownMbps = down
+			endpoint.ObfsType = form.Get("obfs_type")
+		}
+	}
+	return endpoint, nil
 }
 
 func endpointViewFor(endpoint proxynode.Endpoint) endpointView {
-	return endpointView{Protocol: string(endpoint.Protocol), Listen: endpoint.Listen, ListenPort: endpoint.ListenPort, Family: endpoint.Family, Method: endpoint.Method, TLSMode: string(endpoint.TLS.Mode), ServerName: endpoint.TLS.ServerName, Email: endpoint.TLS.Email, CertificatePath: endpoint.TLS.CertificatePath, KeyPath: endpoint.TLS.KeyPath, UpMbps: endpoint.UpMbps, DownMbps: endpoint.DownMbps, ObfsType: endpoint.ObfsType}
+	view := endpointView{Protocol: string(endpoint.Protocol), Listen: endpoint.Listen, ListenPort: endpoint.ListenPort, Family: endpoint.Family, Method: endpoint.Method, TLSMode: string(endpoint.TLS.Mode), ServerName: endpoint.TLS.ServerName, Email: endpoint.TLS.Email, CertificatePath: endpoint.TLS.CertificatePath, KeyPath: endpoint.TLS.KeyPath, UpMbps: endpoint.UpMbps, DownMbps: endpoint.DownMbps, ObfsType: endpoint.ObfsType}
+	if endpoint.Multiplex != nil {
+		view.MuxEnabled = endpoint.Multiplex.Enabled
+		view.MuxPadding = endpoint.Multiplex.Padding
+		if endpoint.Multiplex.Brutal != nil {
+			view.MuxBrutal = endpoint.Multiplex.Brutal.Enabled
+			view.MuxBrutalUpMbps = endpoint.Multiplex.Brutal.UpMbps
+			view.MuxBrutalDownMbps = endpoint.Multiplex.Brutal.DownMbps
+		}
+	}
+	return view
 }
 
 func defaultEndpointView() endpointView {
 	return endpointView{Protocol: string(proxynode.ProtocolAnyTLS), Listen: "::", ListenPort: 443, Family: "auto", Method: "2022-blake3-aes-128-gcm", TLSMode: string(proxynode.TLSModeSelfSigned)}
+}
+
+func parseMultiplexForm(form url.Values) (*proxynode.MultiplexConfig, error) {
+	enabled, err := parseBinaryChoice(form.Get("mux_enabled"), "multiplex")
+	if err != nil || !enabled {
+		return nil, err
+	}
+	config := &proxynode.MultiplexConfig{Enabled: true}
+	config.Padding, err = parseBinaryChoice(form.Get("mux_padding"), "multiplex padding")
+	if err != nil {
+		return nil, err
+	}
+	brutal, err := parseBinaryChoice(form.Get("mux_brutal"), "TCP Brutal")
+	if err != nil {
+		return nil, err
+	}
+	if !brutal {
+		return config, nil
+	}
+	up, err := optionalPositiveInt(form.Get("mux_brutal_up_mbps"))
+	if err != nil || up == 0 {
+		return nil, errors.New("TCP Brutal upload Mbps must be a positive number")
+	}
+	down, err := optionalPositiveInt(form.Get("mux_brutal_down_mbps"))
+	if err != nil || down == 0 {
+		return nil, errors.New("TCP Brutal download Mbps must be a positive number")
+	}
+	config.Brutal = &proxynode.TCPBrutalConfig{Enabled: true, UpMbps: up, DownMbps: down}
+	return config, nil
+}
+
+func parseBinaryChoice(value, label string) (bool, error) {
+	switch value {
+	case "", "0":
+		return false, nil
+	case "1":
+		return true, nil
+	default:
+		return false, fmt.Errorf("%s setting is invalid", label)
+	}
 }
 
 func optionalPositiveInt(value string) (int, error) {

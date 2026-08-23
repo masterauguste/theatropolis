@@ -1099,6 +1099,7 @@ func TestProxyNodeMutationsRequireExactForms(t *testing.T) {
 	form := url.Values{
 		"csrf_token": {fixture.session.CSRFToken}, "name": {"Cinema"}, "agent_id": {"edge-online"}, "terminal": {"direct"},
 		"protocol": {"anytls"}, "listen": {"::"}, "listen_port": {"443"}, "family": {"auto"}, "method": {""},
+		"mux_enabled": {"0"}, "mux_padding": {"0"}, "mux_brutal": {"0"}, "mux_brutal_up_mbps": {""}, "mux_brutal_down_mbps": {""},
 		"tls_mode": {"self_signed"}, "server_name": {"cinema.example"}, "email": {""}, "certificate_path": {""}, "key_path": {""},
 		"up_mbps": {""}, "down_mbps": {""}, "obfs_type": {""}, "unexpected": {"must be rejected"},
 	}
@@ -1110,6 +1111,87 @@ func TestProxyNodeMutationsRequireExactForms(t *testing.T) {
 	}
 	if len(fixture.proxyNodes.Snapshot().ProxyNodes) != 0 {
 		t.Fatal("invalid exact-form request created a Proxy Node")
+	}
+}
+
+func TestParseEndpointFormIgnoresProtocolForeignFields(t *testing.T) {
+	t.Parallel()
+
+	shadowsocks, err := parseEndpointForm(url.Values{
+		"protocol": {"shadowsocks"}, "listen": {"::"}, "listen_port": {"443"}, "family": {"auto"},
+		"method": {"2022-blake3-aes-256-gcm"}, "tls_mode": {"self_signed"}, "server_name": {"stale.example"},
+		"mux_enabled": {"1"}, "mux_padding": {"1"}, "mux_brutal": {"1"}, "mux_brutal_up_mbps": {"100"}, "mux_brutal_down_mbps": {"200"},
+		"up_mbps": {"not-a-number"}, "down_mbps": {"not-a-number"}, "obfs_type": {"salamander"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if shadowsocks.Method != "2022-blake3-aes-256-gcm" || shadowsocks.TLS != (proxynode.TLSConfig{}) || shadowsocks.UpMbps != 0 || shadowsocks.DownMbps != 0 || shadowsocks.ObfsType != "" || shadowsocks.Multiplex == nil || !shadowsocks.Multiplex.Enabled || !shadowsocks.Multiplex.Padding || shadowsocks.Multiplex.Brutal == nil || shadowsocks.Multiplex.Brutal.UpMbps != 100 || shadowsocks.Multiplex.Brutal.DownMbps != 200 {
+		t.Fatalf("Shadowsocks endpoint retained protocol-foreign fields: %#v", shadowsocks)
+	}
+
+	anyTLS, err := parseEndpointForm(url.Values{
+		"protocol": {"anytls"}, "listen": {"::"}, "listen_port": {"443"}, "family": {"auto"},
+		"method": {"2022-blake3-aes-128-gcm"}, "tls_mode": {"self_signed"}, "server_name": {"relay.example"},
+		"mux_enabled": {"1"}, "mux_padding": {"1"}, "mux_brutal": {"1"}, "mux_brutal_up_mbps": {"bad"}, "mux_brutal_down_mbps": {"bad"},
+		"up_mbps": {"not-a-number"}, "down_mbps": {"not-a-number"}, "obfs_type": {"gecko"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if anyTLS.Method != "" || anyTLS.Multiplex != nil || anyTLS.TLS.Mode != proxynode.TLSModeSelfSigned || anyTLS.TLS.ServerName != "relay.example" || anyTLS.UpMbps != 0 || anyTLS.DownMbps != 0 || anyTLS.ObfsType != "" {
+		t.Fatalf("AnyTLS endpoint retained protocol-foreign fields: %#v", anyTLS)
+	}
+
+	hysteria, err := parseEndpointForm(url.Values{
+		"protocol": {"hysteria2"}, "listen": {"::"}, "listen_port": {"8443"}, "family": {"ipv6"},
+		"method": {"2022-blake3-aes-128-gcm"}, "tls_mode": {"self_signed"}, "server_name": {"hy2.example"},
+		"up_mbps": {"100"}, "down_mbps": {"200"}, "obfs_type": {"salamander"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if hysteria.Method != "" || hysteria.TLS.Mode != proxynode.TLSModeSelfSigned || hysteria.UpMbps != 100 || hysteria.DownMbps != 200 || hysteria.ObfsType != "salamander" {
+		t.Fatalf("Hysteria2 endpoint parsed incorrectly: %#v", hysteria)
+	}
+}
+
+func TestAddProxyLinkIgnoresHiddenForeignProtocolFields(t *testing.T) {
+	t.Parallel()
+
+	fixture := newWebFixture(t)
+	enrollAgent(t, fixture.registry, "edge-entrance")
+	enrollAgent(t, fixture.registry, "edge-exit")
+	node, err := fixture.proxyNodes.CreateProxyNode(proxynode.CreateProxyNodeInput{
+		Name: "Gen2-JP-Out", RootAgent: "edge-entrance", Final: proxynode.Target{Type: proxynode.TargetDirect},
+		Entrance: proxynode.Endpoint{
+			Protocol: proxynode.ProtocolAnyTLS, Listen: "::", ListenPort: 443, Family: "auto",
+			TLS: proxynode.TLSConfig{Mode: proxynode.TLSModeSelfSigned, ServerName: "entrance.example"},
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	form := url.Values{
+		"csrf_token": {fixture.session.CSRFToken}, "child_name": {"Exit"}, "child_agent": {"edge-exit"}, "child_terminal": {"direct"},
+		"protocol": {"shadowsocks"}, "listen": {"::"}, "listen_port": {"20048"}, "family": {"auto"},
+		"method": {"2022-blake3-aes-256-gcm"}, "tls_mode": {"self_signed"}, "server_name": {"stale.example"},
+		"mux_enabled": {"0"}, "mux_padding": {"0"}, "mux_brutal": {"0"}, "mux_brutal_up_mbps": {""}, "mux_brutal_down_mbps": {""},
+		"email": {""}, "certificate_path": {""}, "key_path": {""}, "up_mbps": {""}, "down_mbps": {""}, "obfs_type": {""},
+	}
+	request := fixture.authenticatedMutationRequest(http.MethodPost, "/proxy-nodes/"+node.ID+"/hops/"+node.Entrance.HopID+"/links", form.Encode())
+	response := httptest.NewRecorder()
+	fixture.handler.ServeHTTP(response, request)
+	if response.Code != http.StatusSeeOther {
+		t.Fatalf("POST Shadowsocks Link = %d %q", response.Code, response.Body.String())
+	}
+	updated, exists := fixture.proxyNodes.ProxyNode(node.ID)
+	if !exists || len(updated.Links) != 1 {
+		t.Fatalf("updated Proxy Node = %#v, exists %v", updated, exists)
+	}
+	endpoint := updated.Links[0].Endpoint
+	if endpoint.Protocol != proxynode.ProtocolShadowsocks || endpoint.TLS != (proxynode.TLSConfig{}) || endpoint.ObfsType != "" {
+		t.Fatalf("saved Shadowsocks Link retained foreign fields: %#v", endpoint)
 	}
 }
 
@@ -1139,6 +1221,7 @@ func TestCreateProxyNodeMakesTerminalExitExplicitAndOpensRouting(t *testing.T) {
 	form := url.Values{
 		"csrf_token": {fixture.session.CSRFToken}, "name": {"Cinema"}, "agent_id": {"edge-online"}, "terminal": {"reject"},
 		"protocol": {"anytls"}, "listen": {"::"}, "listen_port": {"443"}, "family": {"auto"}, "method": {""},
+		"mux_enabled": {"0"}, "mux_padding": {"0"}, "mux_brutal": {"0"}, "mux_brutal_up_mbps": {""}, "mux_brutal_down_mbps": {""},
 		"tls_mode": {"self_signed"}, "server_name": {"cinema.example"}, "email": {""}, "certificate_path": {""}, "key_path": {""},
 		"up_mbps": {""}, "down_mbps": {""}, "obfs_type": {""},
 	}

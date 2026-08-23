@@ -88,17 +88,33 @@ type Entrance struct {
 }
 
 type Endpoint struct {
-	Protocol   Protocol  `json:"protocol"`
-	Listen     string    `json:"listen"`
-	ListenPort int       `json:"listen_port"`
-	Family     string    `json:"family,omitempty"`
-	Method     string    `json:"method,omitempty"`
-	ServerKey  string    `json:"server_key,omitempty"`
-	TLS        TLSConfig `json:"tls,omitempty"`
-	UpMbps     int       `json:"up_mbps,omitempty"`
-	DownMbps   int       `json:"down_mbps,omitempty"`
-	ObfsType   string    `json:"obfs_type,omitempty"`
-	ObfsSecret string    `json:"obfs_secret,omitempty"`
+	Protocol   Protocol         `json:"protocol"`
+	Listen     string           `json:"listen"`
+	ListenPort int              `json:"listen_port"`
+	Family     string           `json:"family,omitempty"`
+	Method     string           `json:"method,omitempty"`
+	ServerKey  string           `json:"server_key,omitempty"`
+	Multiplex  *MultiplexConfig `json:"multiplex,omitempty"`
+	TLS        TLSConfig        `json:"tls,omitempty"`
+	UpMbps     int              `json:"up_mbps,omitempty"`
+	DownMbps   int              `json:"down_mbps,omitempty"`
+	ObfsType   string           `json:"obfs_type,omitempty"`
+	ObfsSecret string           `json:"obfs_secret,omitempty"`
+}
+
+// MultiplexConfig is the server-side multiplex policy on a Shadowsocks
+// inbound. A managed Link mirrors it onto the parent outbound so the relay
+// actually uses the capability; entrance clients may opt into it themselves.
+type MultiplexConfig struct {
+	Enabled bool             `json:"enabled"`
+	Padding bool             `json:"padding,omitempty"`
+	Brutal  *TCPBrutalConfig `json:"brutal,omitempty"`
+}
+
+type TCPBrutalConfig struct {
+	Enabled  bool `json:"enabled"`
+	UpMbps   int  `json:"up_mbps"`
+	DownMbps int  `json:"down_mbps"`
 }
 
 type TLSConfig struct {

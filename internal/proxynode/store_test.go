@@ -292,6 +292,40 @@ func TestCompileSupportsEveryManagedProtocolOnLinksAndEveryRuleMatch(t *testing.
 	}
 }
 
+func TestCompileMirrorsShadowsocksInboundMultiplexOntoManagedLinkOutbound(t *testing.T) {
+	store, err := Open(filepath.Join(t.TempDir(), "state.json"), testBuild())
+	if err != nil {
+		t.Fatal(err)
+	}
+	node, err := store.CreateProxyNode(CreateProxyNodeInput{Name: "cinema", RootName: "Root", RootAgent: "edge-a", Entrance: testTLSEndpoint(ProtocolAnyTLS, 443)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	endpoint := Endpoint{
+		Protocol: ProtocolShadowsocks, Listen: "::", ListenPort: 9001, Family: "ipv4", Method: "2022-blake3-aes-128-gcm",
+		Multiplex: &MultiplexConfig{Enabled: true, Padding: true, Brutal: &TCPBrutalConfig{Enabled: true, UpMbps: 100, DownMbps: 200}},
+	}
+	link, _, err := store.AddLink(node.ID, AddLinkInput{ParentHopID: node.Entrance.HopID, ChildName: "Exit", ChildAgent: "edge-b", Endpoint: endpoint})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.SetFinal(node.ID, node.Entrance.HopID, Target{Type: TargetLink, LinkID: link.ID}); err != nil {
+		t.Fatal(err)
+	}
+	compiled, err := Compile(store.Snapshot(), testResolver{"edge-a": "192.0.2.10", "edge-b": "192.0.2.11"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, agentID := range []string{"edge-a", "edge-b"} {
+		config := string(compiled.Configs[agentID])
+		for _, expected := range []string{`"multiplex"`, `"padding": true`, `"up_mbps": 100`, `"down_mbps": 200`} {
+			if !strings.Contains(config, expected) {
+				t.Errorf("%s config lacks %s: %s", agentID, expected, config)
+			}
+		}
+	}
+}
+
 func TestCompileRejectsIncompatibleLogicalInboundsOnOneSocket(t *testing.T) {
 	store, err := Open(filepath.Join(t.TempDir(), "state.json"), testBuild())
 	if err != nil {
