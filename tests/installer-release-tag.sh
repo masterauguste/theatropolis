@@ -45,7 +45,6 @@ run_case() {
 	output="$(
 		PATH="$TEST_DIRECTORY/bin:$PATH" sh "$INSTALLER" agent \
 			--master master.example.com:8443 \
-			--agent-id edge-1 \
 			--token AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA \
 			"$@" 2>&1
 	)"

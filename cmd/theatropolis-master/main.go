@@ -414,21 +414,23 @@ func createEnrollment(arguments []string) error {
 		"/run/theatropolis/master-admin.sock",
 		"local administrative Unix socket",
 	)
-	agentID := flags.String("agent-id", "", "agent identity")
+	serverName := flags.String("server", "", "master-side server name")
 	expiresIn := flags.Duration("expires-in", 15*time.Minute, "token lifetime")
+	replaceAgent := flags.Bool("replace-agent", false, "replace an enrolled Agent while retaining its profile")
 	if err := flags.Parse(arguments); err != nil {
 		return err
 	}
-	if flags.NArg() != 0 || strings.TrimSpace(*agentID) == "" {
-		return errors.New("--agent-id is required and positional arguments are not accepted")
+	if flags.NArg() != 0 || strings.TrimSpace(*serverName) == "" {
+		return errors.New("--server is required and positional arguments are not accepted")
 	}
 	if *expiresIn <= 0 || *expiresIn > 24*time.Hour {
 		return errors.New("--expires-in must be between 1ns and 24h")
 	}
 
 	payload, err := json.Marshal(enrollmentRequest{
-		AgentID:    *agentID,
+		AgentID:    *serverName,
 		TTLSeconds: int64(expiresIn.Seconds()),
+		Replace:    *replaceAgent,
 	})
 	if err != nil {
 		return err
@@ -516,6 +518,7 @@ func listenUnixSocket(path string) (net.Listener, error) {
 type enrollmentRequest struct {
 	AgentID    string `json:"agent_id"`
 	TTLSeconds int64  `json:"ttl_seconds"`
+	Replace    bool   `json:"replace,omitempty"`
 }
 
 type enrollmentResponse struct {
@@ -551,16 +554,28 @@ func adminHandler(registry *identity.Registry) http.Handler {
 		}
 		ttl := time.Duration(enrollment.TTLSeconds) * time.Second
 		expiresAt := time.Now().UTC().Add(ttl)
-		token, err := registry.CreateEnrollment(
-			request.Context(),
-			enrollment.AgentID,
-			expiresAt,
-		)
+		var token []byte
+		var err error
+		if enrollment.Replace {
+			token, err = registry.CreateReplacementEnrollment(
+				request.Context(),
+				enrollment.AgentID,
+				expiresAt,
+			)
+		} else {
+			token, err = registry.CreateEnrollment(
+				request.Context(),
+				enrollment.AgentID,
+				expiresAt,
+			)
+		}
 		if err != nil {
 			status := http.StatusInternalServerError
 			switch {
 			case errors.Is(err, identity.ErrInvalidAgentID):
 				status = http.StatusBadRequest
+			case errors.Is(err, identity.ErrAgentNotFound):
+				status = http.StatusNotFound
 			case errors.Is(err, identity.ErrAgentAlreadyEnrolled),
 				errors.Is(err, identity.ErrEnrollmentPending):
 				status = http.StatusConflict

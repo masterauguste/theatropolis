@@ -222,6 +222,42 @@ func TestManagerRefusesUnavailableSingBoxBeforeAdvertisingReadiness(t *testing.T
 	}
 }
 
+func TestManagerResetForEnrollmentRemovesPreviousActiveConfig(t *testing.T) {
+	t.Parallel()
+
+	manager := newTestManager(t, &fakeProcessFactory{}, nil)
+	if err := os.MkdirAll(filepath.Dir(manager.ActiveConfigPath()), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(
+		manager.ActiveConfigPath(),
+		[]byte(`{"inbounds":[{"type":"anytls","listen_port":443}]}`),
+		0o600,
+	); err != nil {
+		t.Fatal(err)
+	}
+	certificateDirectory := filepath.Join(manager.stateDirectory, managedSelfSignedDirectory, "old-profile")
+	if err := os.MkdirAll(certificateDirectory, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(
+		filepath.Join(certificateDirectory, "private-key.pem"),
+		[]byte("old private key"),
+		0o600,
+	); err != nil {
+		t.Fatal(err)
+	}
+	if err := manager.ResetForEnrollment(); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Lstat(manager.ActiveConfigPath()); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("active config after enrollment reset: %v", err)
+	}
+	if _, err := os.Lstat(filepath.Join(manager.stateDirectory, managedSelfSignedDirectory)); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("managed certificates after enrollment reset: %v", err)
+	}
+}
+
 func TestManagerQuarantinesLegacyConfigAndStampsGeneration(t *testing.T) {
 	factory := &fakeProcessFactory{}
 	manager := newTestManager(t, factory, nil)

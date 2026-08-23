@@ -292,7 +292,7 @@ func TestPropagateNoOpWhenRenderedUnchanged(t *testing.T) {
 	}
 }
 
-func TestPropagateSkipsOfflineDependentAndCatchesUpOnReconnect(t *testing.T) {
+func TestPropagateSkipsOfflineDependentAndProfileSyncCatchesUpOnReconnect(t *testing.T) {
 	t.Parallel()
 
 	ctx := context.Background()
@@ -318,14 +318,17 @@ func TestPropagateSkipsOfflineDependentAndCatchesUpOnReconnect(t *testing.T) {
 		t.Fatal("offline dependent was redeployed")
 	}
 
-	// On reconnect the stale render stamp drives the catch-up deployment.
+	// On reconnect authoritative profile synchronization re-renders the
+	// logical configuration against the latest pool state.
 	reconnected := newSession("agent-b")
 	reconnected.capabilities[ProxyNodeDeployCapability] = struct{}{}
 	if err := server.Sessions.Register(reconnected); err != nil {
 		t.Fatal(err)
 	}
 	defer server.Sessions.Unregister(reconnected)
-	server.catchUpPoolDeployment(ctx, "agent-b")
+	if err := server.syncProfileOnConnect(ctx, "agent-b"); err != nil {
+		t.Fatal(err)
+	}
 
 	frame := <-reconnected.commands
 	followup := frame.GetDeployConfig()

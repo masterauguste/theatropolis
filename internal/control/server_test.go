@@ -1,6 +1,7 @@
 package control
 
 import (
+	"bytes"
 	"context"
 	"crypto/ed25519"
 	"crypto/rand"
@@ -103,6 +104,97 @@ func newTestServer(store deployment.Store, notifier deployment.Notifier) *Server
 		notifier,
 		slog.New(slog.NewTextHandler(io.Discard, nil)),
 	)
+}
+
+func TestEnrollResolvesMasterRecordWithoutReturningItsID(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	registry := identity.NewRegistry()
+	server := NewServer(
+		registry,
+		deployment.NewMemoryStore(),
+		nil,
+		nil,
+		slog.New(slog.NewTextHandler(io.Discard, nil)),
+	)
+	token, err := registry.CreateEnrollment(
+		ctx,
+		"master-assigned-agent",
+		time.Now().Add(time.Minute),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	publicKey, _, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	request := &controlv1.EnrollRequest{
+		EnrollmentToken: token,
+		PublicKey:       publicKey,
+	}
+	response, err := server.Enroll(ctx, request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if response.GetEnrolledAtUnix() == 0 {
+		t.Fatal("enrollment response omitted its timestamp")
+	}
+	resolved, err := registry.AgentIDForPublicKey(ctx, publicKey)
+	if err != nil || resolved != "master-assigned-agent" {
+		t.Fatalf("master-side record = %q, %v", resolved, err)
+	}
+}
+
+func TestReplacementEnrollmentDisconnectsPreviousSession(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	registry := identity.NewRegistry()
+	server := NewServer(
+		registry,
+		deployment.NewMemoryStore(),
+		nil,
+		nil,
+		slog.New(slog.NewTextHandler(io.Discard, nil)),
+	)
+	enrollTestIdentity(t, registry, "edge-replacement")
+	previousSession := newSession("edge-replacement")
+	if err := server.Sessions.Register(previousSession); err != nil {
+		t.Fatal(err)
+	}
+	token, err := registry.CreateReplacementEnrollment(
+		ctx,
+		"edge-replacement",
+		time.Now().Add(time.Minute),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	publicKey, _, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	response, err := server.Enroll(ctx, &controlv1.EnrollRequest{
+		EnrollmentToken: token,
+		PublicKey:       publicKey,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if response.GetEnrolledAtUnix() == 0 {
+		t.Fatal("replacement response omitted its timestamp")
+	}
+	select {
+	case <-previousSession.done:
+	default:
+		t.Fatal("replacement enrollment did not disconnect the previous session")
+	}
+	stored, err := registry.PublicKey(ctx, "edge-replacement")
+	if err != nil || !bytes.Equal(stored, publicKey) {
+		t.Fatalf("replacement public key = %x, %v", stored, err)
+	}
 }
 
 func TestQueueValidationRecordsOfflineDeliveryFailure(t *testing.T) {
@@ -589,9 +681,8 @@ func TestRevokeAgentDurablyInvalidatesActiveSession(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := identities.Enroll(
+	if _, err := identities.EnrollByToken(
 		ctx,
-		"edge-revoke-active",
 		token,
 		publicKey,
 		now,
@@ -660,13 +751,14 @@ func enrollTestIdentity(
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := registry.Enroll(
+	if enrolledAgentID, err := registry.EnrollByToken(
 		ctx,
-		agentID,
 		token,
 		publicKey,
 		now,
 	); err != nil {
 		t.Fatal(err)
+	} else if enrolledAgentID != agentID {
+		t.Fatalf("enrolled Agent ID = %q, want %q", enrolledAgentID, agentID)
 	}
 }

@@ -1,9 +1,11 @@
 package webui
 
 import (
+	"bytes"
 	"context"
 	"crypto/ed25519"
 	"crypto/rand"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -868,6 +870,8 @@ func TestServerManagementPageShowsProxyNodeRoleAndRevocationControls(t *testing.
 		"Open Proxy Nodes",
 		"does not own an editable sing-box configuration",
 		`action="/servers/edge-online/revoke"`,
+		`action="/servers/edge-online/replace"`,
+		"Create replacement command",
 		`name="confirm_revoke"`,
 		"Revoke access",
 		"does not uninstall the remote agent",
@@ -901,6 +905,63 @@ func TestServerManagementPageShowsProxyNodeRoleAndRevocationControls(t *testing.
 	fixture.handler.ServeHTTP(response, request)
 	if response.Code != http.StatusNotFound {
 		t.Fatalf("unknown server detail status = %d, want 404", response.Code)
+	}
+}
+
+func TestReplaceServerCreatesTokenWithoutRevokingCurrentKey(t *testing.T) {
+	t.Parallel()
+
+	fixture := newWebFixture(t)
+	enrollAgent(t, fixture.registry, "edge-replacement")
+	currentKey, err := fixture.registry.PublicKey(context.Background(), "edge-replacement")
+	if err != nil {
+		t.Fatal(err)
+	}
+	form := url.Values{
+		"agent_id":    {"edge-replacement"},
+		"csrf_token":  {fixture.session.CSRFToken},
+		"ttl_seconds": {"900"},
+	}.Encode()
+	request := fixture.authenticatedMutationRequest(
+		http.MethodPost,
+		"/servers/edge-replacement/replace",
+		form,
+	)
+	response := httptest.NewRecorder()
+	fixture.handler.ServeHTTP(response, request)
+	if response.Code != http.StatusSeeOther {
+		t.Fatalf("replacement status = %d, body = %s", response.Code, response.Body.String())
+	}
+	resultLocation := response.Header().Get("Location")
+	request = fixture.authenticatedRequest(http.MethodGet, resultLocation, "")
+	response = httptest.NewRecorder()
+	fixture.handler.ServeHTTP(response, request)
+	if response.Code != http.StatusOK {
+		t.Fatalf("replacement result status = %d", response.Code)
+	}
+	match := regexp.MustCompile(`--token &#39;([A-Za-z0-9_-]{43})&#39;`).FindStringSubmatch(response.Body.String())
+	if len(match) != 2 {
+		t.Fatal("replacement result did not contain a token")
+	}
+	stillCurrent, err := fixture.registry.PublicKey(context.Background(), "edge-replacement")
+	if err != nil || !bytes.Equal(stillCurrent, currentKey) {
+		t.Fatalf("current key changed before replacement redemption: %x, %v", stillCurrent, err)
+	}
+	token, err := base64.RawURLEncoding.DecodeString(match[1])
+	if err != nil {
+		t.Fatal(err)
+	}
+	replacementKey, _, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := fixture.registry.EnrollByToken(
+		context.Background(),
+		token,
+		replacementKey,
+		fixture.now,
+	); err != nil {
+		t.Fatal(err)
 	}
 }
 
@@ -2335,8 +2396,15 @@ func enrollAgent(t *testing.T, registry *identity.Registry, agentID string) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := registry.Enroll(context.Background(), agentID, token, publicKey, time.Now()); err != nil {
+	if enrolledAgentID, err := registry.EnrollByToken(
+		context.Background(),
+		token,
+		publicKey,
+		time.Now(),
+	); err != nil {
 		t.Fatal(err)
+	} else if enrolledAgentID != agentID {
+		t.Fatalf("enrolled Agent ID = %q, want %q", enrolledAgentID, agentID)
 	}
 }
 

@@ -12,13 +12,17 @@ curl --proto '=https' --tlsv1.2 -fsSL https://raw.githubusercontent.com/masterau
 
 The installer downloads the latest signed release and prompts for the master's public DNS name, the Caddy HTTPS port (`443` for standard HTTPS, default `8443`), and the local administrator credentials. After installation, sign in using the resulting HTTPS endpoint. Existing access-key installations keep working until they are explicitly migrated by rerunning the installer with `--admin-username operator` (or another lowercase username).
 
-Add a server in the web interface, then run its generated command. The equivalent manual flow is `sudo theatropolis-master create-enrollment --agent-id edge-1`, followed by:
+Add a server in the web interface, then run its generated command. The equivalent manual flow is `sudo theatropolis-master create-enrollment --server edge-1`, followed by:
 
 ```sh
 curl --proto '=https' --tlsv1.2 -fsSL https://raw.githubusercontent.com/masterauguste/theatropolis/main/install.sh | sudo sh -s -- agent --master master.example.com:8443 --token TOKEN
 ```
 
-The enrollment token identifies the server entry; no agent ID is needed on the server. The installer verifies release archives against an RSA-PSS-signed SHA-256 manifest—no compiler or Go toolchain is installed. Agent installations include the pinned official sing-box 1.14.0-beta.2 binary for the detected architecture. After installation, the master can remotely select and install newer stable or prerelease Theatropolis versions published on GitHub.
+The enrollment token identifies the server entry. The agent stores no server name or master-side ID: it sends its generated public key during enrollment, then proves possession of the corresponding private key whenever it reconnects. The master resolves that public key to its own private server record. After any successful enrollment, the agent removes its previous persisted sing-box profile and managed self-signed keys before starting. On the authenticated connection, the new master immediately deploys the profile retained for that server, or an explicit no-listener/reject profile when it has none. This prevents another master's profile from surviving a takeover.
+
+To move an existing server record to replacement hardware, open that server's management dialog and create a replacement command. The existing agent remains authorized until the one-time token is redeemed; redemption swaps its public key, disconnects its old control session, and retains the master's last deployment for immediate replay. The equivalent local command is `sudo theatropolis-master create-enrollment --server edge-1 --replace-agent`.
+
+The installer verifies release archives against an RSA-PSS-signed SHA-256 manifest—no compiler or Go toolchain is installed. Agent installations include the pinned official sing-box 1.14.0-beta.2 binary for the detected architecture. After installation, the master can remotely select and install newer stable or prerelease Theatropolis versions published on GitHub.
 
 The master, agent, and sing-box all run as dedicated unprivileged users. A small root-only update helper has no listener and accepts updates only through fixed systemd units. Theatropolis releases must pass signature verification and cannot be downgraded; downloaded sing-box candidates are executed for validation only after dropping to the agent account. See [SECURITY.md](SECURITY.md) for the boundary and its limits.
 

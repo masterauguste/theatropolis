@@ -117,7 +117,6 @@ func TestInvalidConfigurationReachesMasterNotificationWithoutSecrets(t *testing.
 		t.Fatal(err)
 	}
 	runner := &agent.Runner{
-		AgentID:      "edge-test-1",
 		AgentVersion: "test",
 		PrivateKey:   privateKey,
 		Validator: singbox.Validator{
@@ -146,7 +145,7 @@ func TestInvalidConfigurationReachesMasterNotificationWithoutSecrets(t *testing.
 	defer deadline.Stop()
 	ticker := time.NewTicker(5 * time.Millisecond)
 	defer ticker.Stop()
-	for !controlServer.Sessions.IsOnline(runner.AgentID) {
+	for !controlServer.Sessions.IsOnline("edge-test-1") {
 		select {
 		case <-ticker.C:
 		case <-deadline.C:
@@ -158,7 +157,7 @@ func TestInvalidConfigurationReachesMasterNotificationWithoutSecrets(t *testing.
 	config := []byte(`{"password":"` + secret + `"}`)
 	queued, err := controlServer.QueueValidation(
 		ctx,
-		runner.AgentID,
+		"edge-test-1",
 		"deployment-1",
 		"revision-1",
 		config,
@@ -287,7 +286,6 @@ func TestRevocationDuringChallengeCannotRegisterSession(t *testing.T) {
 		t.Fatal(err)
 	}
 	if _, err := client.Enroll(ctx, &controlv1.EnrollRequest{
-		AgentId:         agentID,
 		EnrollmentToken: token,
 		PublicKey:       publicKey,
 	}); err != nil {
@@ -303,8 +301,8 @@ func TestRevocationDuringChallengeCannotRegisterSession(t *testing.T) {
 		Sequence: 1,
 		Payload: &controlv1.AgentFrame_Hello{
 			Hello: &controlv1.AgentHello{
-				AgentId:         agentID,
 				ProtocolVersion: control.ProtocolVersion,
+				PublicKey:       publicKey,
 			},
 		},
 	}); err != nil {
@@ -326,7 +324,7 @@ func TestRevocationDuringChallengeCannotRegisterSession(t *testing.T) {
 	}
 	signature := ed25519.Sign(
 		privateKey,
-		identity.ChallengePayload(agentID, challenge.GetNonce()),
+		identity.ChallengePayload(publicKey, challenge.GetNonce()),
 	)
 	if err := stream.Send(&controlv1.AgentFrame{
 		Sequence: 2,
@@ -401,7 +399,6 @@ func TestRevocationDisconnectsAuthenticatedControlStream(t *testing.T) {
 		t.Fatal(err)
 	}
 	runner := &agent.Runner{
-		AgentID:         agentID,
 		AgentVersion:    "test",
 		PrivateKey:      privateKey,
 		HeartbeatPeriod: 20 * time.Millisecond,
@@ -497,7 +494,6 @@ func TestAgentReconnectsAfterControlStreamDisconnect(t *testing.T) {
 		t.Fatal(err)
 	}
 	runner := &agent.Runner{
-		AgentID:         agentID,
 		AgentVersion:    "test",
 		PrivateKey:      privateKey,
 		HeartbeatPeriod: 20 * time.Millisecond,
@@ -598,7 +594,6 @@ func connectRawAgentWithCapabilities(
 		t.Fatal(err)
 	}
 	if _, err := client.Enroll(ctx, &controlv1.EnrollRequest{
-		AgentId:         agentID,
 		EnrollmentToken: token,
 		PublicKey:       publicKey,
 	}); err != nil {
@@ -613,10 +608,10 @@ func connectRawAgentWithCapabilities(
 	agent.send(t, &controlv1.AgentFrame{
 		Payload: &controlv1.AgentFrame_Hello{
 			Hello: &controlv1.AgentHello{
-				AgentId:           agentID,
 				ProtocolVersion:   control.ProtocolVersion,
 				Capabilities:      capabilities,
 				ReportedAddresses: reportedAddresses,
+				PublicKey:         publicKey,
 			},
 		},
 	})
@@ -633,7 +628,7 @@ func connectRawAgentWithCapabilities(
 			Proof: &controlv1.AgentProof{
 				Signature: ed25519.Sign(
 					privateKey,
-					identity.ChallengePayload(agentID, challenge.GetNonce()),
+					identity.ChallengePayload(publicKey, challenge.GetNonce()),
 				),
 			},
 		},
@@ -813,6 +808,10 @@ func TestPoolRefRenderedAndPropagatedEndToEnd(t *testing.T) {
 
 	agentA := connectRawAgent(t, ctx, client, identities, "edge-a", []string{"203.0.113.10"})
 	agentB := connectRawAgent(t, ctx, client, identities, "edge-b", nil)
+	agentA.reportApplied(t, agentA.receiveDeployCommand(t))
+	waitForDeploymentStatus(t, ctx, deployments, "edge-a", deployment.StatusApplied)
+	agentB.reportApplied(t, agentB.receiveDeployCommand(t))
+	waitForDeploymentStatus(t, ctx, deployments, "edge-b", deployment.StatusApplied)
 
 	// A applies the hysteria2 config its hello addresses feed into the pool.
 	if _, err := controlServer.QueueDeployment(
@@ -956,6 +955,10 @@ func TestObservedAddressAndProbeReportEndToEnd(t *testing.T) {
 		[]string{control.ProxyNodeDeployCapability, control.CapabilityAddressProbe},
 	)
 	agentB := connectRawAgent(t, ctx, client, identities, "edge-b", nil)
+	agentA.reportApplied(t, agentA.receiveDeployCommand(t))
+	waitForDeploymentStatus(t, ctx, deployments, "edge-a", deployment.StatusApplied)
+	agentB.reportApplied(t, agentB.receiveDeployCommand(t))
+	waitForDeploymentStatus(t, ctx, deployments, "edge-b", deployment.StatusApplied)
 
 	// The observed address is on the session and wins pool resolution.
 	info, exists := controlServer.Sessions.AgentInfo("edge-a")

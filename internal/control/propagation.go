@@ -19,16 +19,16 @@ import (
 // with different inbounds, reported addresses change, an agent is revoked,
 // or a manual entry is mutated — every other agent whose latest logical
 // config carries refs is re-rendered and, if the rendered bytes changed,
-// redeployed. Offline dependents are skipped and catch up on reconnect via
-// the stale pool-version check in catchUpPoolDeployment.
+// redeployed. Offline dependents are skipped and catch up when the
+// authoritative profile is replayed on their next control connection.
 //
 // Concurrency: triggers fire synchronously from Connect stream handlers and
 // master-local callers, but never while holding authorizationMu — the
 // propagation path reaches QueueDeployment, which acquires it. The registry,
 // session registry, and deployment store each have their own locking, and
 // Sessions.Send only writes to a buffered channel, so the whole pass stays
-// quick. All failures are logged and skipped (best-effort): the reconnect
-// staleness check re-drives anything missed.
+// quick. All failures are logged and skipped (best-effort): connection-time
+// profile synchronization re-drives anything missed.
 //
 // Loop safety: derivation and rendering read only the latest stored logical
 // configs, and a propagation deploy never changes the dependent's own
@@ -184,28 +184,6 @@ func (s *Server) propagateToAgent(ctx context.Context, reason, agentID string) {
 			"agent_id", agentID, "reason", reason, "error", err,
 		)
 	}
-}
-
-// catchUpPoolDeployment redeploys an agent that just connected when its
-// latest logical config references pool entries and its render stamp is
-// older than the current pool version (or missing entirely). It covers
-// everything the agent missed while offline.
-func (s *Server) catchUpPoolDeployment(ctx context.Context, agentID string) {
-	if s.poolRegistry == nil {
-		return
-	}
-	record, err := s.Deployments.LatestForAgent(ctx, agentID)
-	if err != nil {
-		return
-	}
-	if len(pool.Refs(record.ConfigJSON)) == 0 {
-		return
-	}
-	stampedVersion, _, stamped := s.poolRegistry.RenderedVersion(agentID)
-	if stamped && stampedVersion == s.poolRegistry.PoolVersion() {
-		return
-	}
-	s.propagateToAgent(ctx, "stale pool version on connect", agentID)
 }
 
 // syncPoolAddresses persists an agent's reported addresses into the pool

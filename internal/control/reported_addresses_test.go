@@ -122,8 +122,7 @@ func TestSetReportedAddresses(t *testing.T) {
 }
 
 func TestNewSessionFromHelloSanitizesAddresses(t *testing.T) {
-	session := newSessionFromHello(&controlv1.AgentHello{
-		AgentId: "agent-one",
+	session := newSessionFromHello("agent-one", &controlv1.AgentHello{
 		ReportedAddresses: []string{
 			"garbage",
 			"2001:db8::1",

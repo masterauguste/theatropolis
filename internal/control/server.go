@@ -3,6 +3,7 @@ package control
 import (
 	"bytes"
 	"context"
+	"crypto/ed25519"
 	"crypto/sha256"
 	"errors"
 	"fmt"
@@ -26,7 +27,7 @@ import (
 )
 
 const (
-	ProtocolVersion           = 1
+	ProtocolVersion           = 2
 	ConfigDeployCapability    = "config-deploy-v1"
 	ProxyNodeDeployCapability = "proxy-node-config-v1"
 	AgentUpdateCapability     = "agent-update-v1"
@@ -150,36 +151,32 @@ func (s *Server) Enroll(
 
 	now := s.now()
 	s.authorizationMu.Lock()
-	agentID := request.GetAgentId()
-	var err error
-	if agentID == "" {
-		agentID, err = s.Identities.EnrollByToken(
-			ctx,
-			request.GetEnrollmentToken(),
-			request.GetPublicKey(),
-			now,
-		)
-	} else {
-		err = s.Identities.Enroll(
-			ctx,
-			agentID,
-			request.GetEnrollmentToken(),
-			request.GetPublicKey(),
-			now,
-		)
+	agentID, err := s.Identities.EnrollByToken(
+		ctx,
+		request.GetEnrollmentToken(),
+		request.GetPublicKey(),
+		now,
+	)
+	disconnectedPrevious := false
+	if err == nil {
+		// A replacement token atomically changes the authorized key. Disconnect
+		// any session using the previous key before releasing authorizationMu.
+		disconnectedPrevious = s.Sessions.Disconnect(agentID)
 	}
 	s.authorizationMu.Unlock()
 	if err != nil {
-		if errors.Is(err, identity.ErrInvalidAgentID) ||
-			errors.Is(err, identity.ErrInvalidPublicKey) {
+		if errors.Is(err, identity.ErrInvalidPublicKey) {
 			return nil, status.Error(codes.InvalidArgument, "invalid enrollment request")
 		}
 		return nil, status.Error(codes.PermissionDenied, "enrollment was not accepted")
 	}
 
-	s.Logger.Info("agent enrolled", "agent_id", agentID)
+	s.Logger.Info(
+		"agent enrolled",
+		"agent_id", agentID,
+		"replaced_active_session", disconnectedPrevious,
+	)
 	return &controlv1.EnrollResponse{
-		AgentId:        agentID,
 		EnrolledAtUnix: now.Unix(),
 	}, nil
 }
@@ -231,14 +228,15 @@ func (s *Server) Connect(stream controlv1.AgentControlService_ConnectServer) err
 	hello := firstFrame.GetHello()
 	if hello == nil ||
 		firstFrame.GetSequence() == 0 ||
-		hello.GetAgentId() == "" ||
+		len(hello.GetPublicKey()) != ed25519.PublicKeySize ||
 		hello.GetProtocolVersion() != ProtocolVersion ||
 		!validCapabilities(hello.GetCapabilities()) ||
 		!validAgentMetadata(hello) {
 		return status.Error(codes.InvalidArgument, "expected a compatible agent hello")
 	}
 
-	publicKey, err := s.Identities.PublicKey(ctx, hello.GetAgentId())
+	publicKey := append([]byte(nil), hello.GetPublicKey()...)
+	agentID, err := s.Identities.AgentIDForPublicKey(ctx, publicKey)
 	if err != nil {
 		return status.Error(codes.Unauthenticated, "agent authentication failed")
 	}
@@ -268,7 +266,7 @@ func (s *Server) Connect(stream controlv1.AgentControlService_ConnectServer) err
 	authenticated := proof != nil &&
 		proofFrame.GetSequence() > firstFrame.GetSequence() &&
 		!s.now().After(expiresAt) &&
-		identity.VerifyProof(publicKey, hello.GetAgentId(), nonce, proof.GetSignature())
+		identity.VerifyProof(publicKey, nonce, proof.GetSignature())
 
 	masterSequence++
 	authResult := &controlv1.MasterFrame{
@@ -285,13 +283,13 @@ func (s *Server) Connect(stream controlv1.AgentControlService_ConnectServer) err
 		return status.Error(codes.Unauthenticated, "agent authentication failed")
 	}
 
-	session := newSessionFromHello(hello)
+	session := newSessionFromHello(agentID, hello)
 	for _, capability := range hello.GetCapabilities() {
 		session.capabilities[capability] = struct{}{}
 	}
 	s.authorizationMu.Lock()
-	currentPublicKey, currentKeyErr := s.Identities.PublicKey(ctx, hello.GetAgentId())
-	stillAuthorized := currentKeyErr == nil && bytes.Equal(currentPublicKey, publicKey)
+	currentAgentID, currentKeyErr := s.Identities.AgentIDForPublicKey(ctx, publicKey)
+	stillAuthorized := currentKeyErr == nil && currentAgentID == agentID
 	var registerErr error
 	if stillAuthorized {
 		registerErr = s.Sessions.Register(session)
@@ -312,9 +310,16 @@ func (s *Server) Connect(stream controlv1.AgentControlService_ConnectServer) err
 	defer s.Sessions.Unregister(session)
 	// authorizationMu is released at this point; the calls below may reach
 	// QueueDeployment, which acquires it.
-	s.syncPoolAddresses(ctx, hello.GetAgentId(), session.info.ReportedIPv4, session.info.ReportedIPv6)
-	s.syncObservedAddress(ctx, hello.GetAgentId(), observedAddress(ctx))
-	s.catchUpPoolDeployment(ctx, hello.GetAgentId())
+	s.syncPoolAddresses(ctx, agentID, session.info.ReportedIPv4, session.info.ReportedIPv6)
+	s.syncObservedAddress(ctx, agentID, observedAddress(ctx))
+	if err := s.syncProfileOnConnect(ctx, agentID); err != nil {
+		s.Logger.Error(
+			"authoritative Agent profile could not be queued",
+			"agent_id", agentID,
+			"error", err,
+		)
+		return status.Error(codes.Internal, "could not synchronize Agent profile")
+	}
 	outgoing := make(chan *controlv1.MasterFrame)
 	sendResults := make(chan error, 1)
 	go sendMasterFrames(stream, outgoing, sendResults)
@@ -327,8 +332,8 @@ func (s *Server) Connect(stream controlv1.AgentControlService_ConnectServer) err
 	); err != nil {
 		return err
 	}
-	s.Logger.Info("agent connected", "agent_id", hello.GetAgentId())
-	defer s.Logger.Info("agent disconnected", "agent_id", hello.GetAgentId())
+	s.Logger.Info("agent connected", "agent_id", agentID)
+	defer s.Logger.Info("agent disconnected", "agent_id", agentID)
 
 	incoming := make(chan receivedFrame, 1)
 	go receiveFrames(stream, incoming)
@@ -380,7 +385,7 @@ func (s *Server) Connect(stream controlv1.AgentControlService_ConnectServer) err
 			}
 			lastAgentSequence = received.frame.GetSequence()
 			resetTimer(heartbeatTimer, s.heartbeatTimeout())
-			if err := s.handleAgentFrame(ctx, hello.GetAgentId(), received.frame); err != nil {
+			if err := s.handleAgentFrame(ctx, agentID, received.frame); err != nil {
 				return err
 			}
 		}
@@ -1310,8 +1315,8 @@ func newSession(agentID string) *session {
 	}
 }
 
-func newSessionFromHello(hello *controlv1.AgentHello) *session {
-	session := newSession(hello.GetAgentId())
+func newSessionFromHello(agentID string, hello *controlv1.AgentHello) *session {
+	session := newSession(agentID)
 	session.info = AgentInfo{
 		Version:         hello.GetAgentVersion(),
 		SingBoxVersion:  hello.GetSingBoxVersion(),

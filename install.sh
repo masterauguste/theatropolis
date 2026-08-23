@@ -34,7 +34,7 @@ RELEASE_TAG="latest"
 DOMAIN=""
 HTTPS_PORT="$DEFAULT_HTTPS_PORT"
 MASTER_ADDRESS=""
-AGENT_ID=""
+SERVER_NAME=""
 ENROLLMENT_TOKEN=""
 CA_FILE=""
 TEMP_DIRECTORY=""
@@ -59,7 +59,6 @@ INSTALL_SUCCEEDED="no"
 CLEANUP_STARTED="no"
 TTY_SETTINGS=""
 ENROLLMENT_TOKEN_TEMP=""
-AGENT_ID_TEMP=""
 AGENT_WAS_ACTIVE="no"
 AGENT_STOPPED="no"
 
@@ -67,8 +66,8 @@ usage() {
 	printf '%s\n' \
 		"Usage:" \
 		"  install.sh master [--version <tag>] [--admin-username <name> [--admin-password-file <path>]]" \
-		"  install.sh agent --master <host:port> [--token <token>] [--ca-file <path>] [--agent-id <legacy-id>]" \
-		"  install.sh all --agent-id <id> [--version <tag>] [--admin-username <name> [--admin-password-file <path>]]" \
+		"  install.sh agent --master <host:port> [--token <token>] [--ca-file <path>]" \
+		"  install.sh all --server <name> [--version <tag>] [--admin-username <name> [--admin-password-file <path>]]" \
 		"" \
 		"Master and all installations prompt for the public domain and Caddy HTTPS port." \
 		"Installs precompiled Linux amd64/arm64 release binaries. It never compiles locally."
@@ -172,11 +171,6 @@ cleanup() {
 		[ -f "$ENROLLMENT_TOKEN_TEMP" ] &&
 		[ ! -L "$ENROLLMENT_TOKEN_TEMP" ]; then
 		rm -f -- "$ENROLLMENT_TOKEN_TEMP"
-	fi
-	if [ -n "$AGENT_ID_TEMP" ] &&
-		[ -f "$AGENT_ID_TEMP" ] &&
-		[ ! -L "$AGENT_ID_TEMP" ]; then
-		rm -f -- "$AGENT_ID_TEMP"
 	fi
 	if [ "$INSTALL_SUCCEEDED" != "yes" ] &&
 		[ "$AGENT_WAS_ACTIVE" = "yes" ] &&
@@ -391,9 +385,9 @@ while [ "$#" -gt 0 ]; do
 		MASTER_ADDRESS="$2"
 		shift 2
 		;;
-	--agent-id)
-		[ "$#" -ge 2 ] || fail "--agent-id requires a value"
-		AGENT_ID="$2"
+	--server)
+		[ "$#" -ge 2 ] || fail "--server requires a value"
+		SERVER_NAME="$2"
 		shift 2
 		;;
 	--token)
@@ -477,32 +471,16 @@ if [ "$ROLE" = "agent" ] &&
 	{ [ -n "$ADMIN_USERNAME" ] || [ -n "$ADMIN_PASSWORD_FILE" ]; }; then
 	fail "--admin-username and --admin-password-file are only valid for master or all"
 fi
+if [ "$ROLE" != "all" ] && [ -n "$SERVER_NAME" ]; then
+	fail "--server is only valid for an all-in-one installation"
+fi
 
 case "$ROLE" in
 agent | all)
-	if [ "$ROLE" = "agent" ] && [ -z "$AGENT_ID" ] &&
-		{ [ -e "$CONFIG_DIRECTORY/agent.env" ] ||
-			[ -L "$CONFIG_DIRECTORY/agent.env" ]; }; then
-		if [ -L "$CONFIG_DIRECTORY/agent.env" ] ||
-			[ ! -f "$CONFIG_DIRECTORY/agent.env" ]; then
-			fail "the existing agent configuration is not a regular file"
-		fi
-		AGENT_ID="$(
-			awk -F= '
-				$1 == "THEATROPOLIS_AGENT_ID" {
-					count++
-					value = substr($0, index($0, "=") + 1)
-				}
-				END {
-					if (count == 1) print value
-				}
-			' "$CONFIG_DIRECTORY/agent.env"
-		)"
-	fi
-	if [ "$ROLE" = "all" ] || [ -n "$AGENT_ID" ]; then
-		printf '%s' "$AGENT_ID" |
+	if [ "$ROLE" = "all" ]; then
+		printf '%s' "$SERVER_NAME" |
 			grep -Eq '^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$' ||
-			fail "--agent-id is invalid"
+			fail "--server is invalid"
 	fi
 	if [ "$ROLE" = "all" ] && [ -z "$MASTER_ADDRESS" ]; then
 		MASTER_ADDRESS="${DOMAIN}:${HTTPS_PORT}"
@@ -1101,21 +1079,6 @@ write_enrollment_token() {
 	ENROLLMENT_TOKEN_TEMP=""
 }
 
-write_agent_identity_hint() {
-	[ -n "$AGENT_ID" ] || return 0
-	AGENT_ID_TARGET="$AGENT_STATE_DIRECTORY/agent-id"
-	if [ -L "$AGENT_ID_TARGET" ] ||
-		{ [ -e "$AGENT_ID_TARGET" ] && [ ! -f "$AGENT_ID_TARGET" ]; }; then
-		fail "the existing agent ID path is not a regular file"
-	fi
-	AGENT_ID_TEMP="$(mktemp "$AGENT_STATE_DIRECTORY/.agent-id.XXXXXX")"
-	printf '%s\n' "$AGENT_ID" >"$AGENT_ID_TEMP"
-	chown "root:$AGENT_USER" "$AGENT_ID_TEMP"
-	chmod 0640 "$AGENT_ID_TEMP"
-	mv -fT -- "$AGENT_ID_TEMP" "$AGENT_ID_TARGET"
-	AGENT_ID_TEMP=""
-}
-
 write_agent_configuration() {
 	install -d -o root -g root -m 0755 "$CONFIG_DIRECTORY"
 	CONFIGURED_CA_FILE=""
@@ -1155,12 +1118,11 @@ install_agent() {
 	install_update_helper
 	install -d -o root -g root -m 0755 "$STATE_DIRECTORY"
 	ensure_service_user "$AGENT_USER" "$AGENT_STATE_DIRECTORY"
-	write_agent_identity_hint
 	if [ -z "$ENROLLMENT_TOKEN" ] && [ "$ROLE" = "all" ]; then
 		wait_for_master_socket
 		ENROLLMENT_TOKEN="$(
 			"$INSTALL_DIRECTORY/theatropolis-master" create-enrollment \
-				--agent-id "$AGENT_ID"
+				--server "$SERVER_NAME"
 		)"
 	fi
 	if [ -n "$ENROLLMENT_TOKEN" ]; then

@@ -244,7 +244,7 @@ func deploymentOrder(compiled CompileResult) []string {
 }
 
 func emptyManagedConfig() []byte {
-	return []byte("{\n  \"inbounds\": [],\n  \"outbounds\": [{\"type\": \"direct\", \"tag\": \"tp-direct\"}, {\"type\": \"block\", \"tag\": \"tp-reject\"}],\n  \"route\": {\"rules\": [], \"final\": \"tp-reject\"}\n}\n")
+	return singbox.DisabledManagedConfig()
 }
 
 func (d *Deployer) setJobStatus(jobID string, status FleetDeploymentStatus, message string) {

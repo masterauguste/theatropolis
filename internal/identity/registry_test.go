@@ -16,6 +16,17 @@ import (
 	"time"
 )
 
+func enrollByTokenForTest(
+	registry *Registry,
+	ctx context.Context,
+	token []byte,
+	publicKey []byte,
+	now time.Time,
+) error {
+	_, err := registry.EnrollByToken(ctx, token, publicKey, now)
+	return err
+}
+
 func TestEnrollmentIsSingleUseAndProofRequiresPrivateKey(t *testing.T) {
 	t.Parallel()
 
@@ -29,10 +40,10 @@ func TestEnrollmentIsSingleUseAndProofRequiresPrivateKey(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := registry.Enroll(ctx, "edge-paris-1", token, publicKey, time.Now()); err != nil {
+	if err := enrollByTokenForTest(registry, ctx, token, publicKey, time.Now()); err != nil {
 		t.Fatal(err)
 	}
-	if err := registry.Enroll(ctx, "edge-paris-1", token, publicKey, time.Now()); !errors.Is(err, ErrAgentAlreadyEnrolled) {
+	if err := enrollByTokenForTest(registry, ctx, token, publicKey, time.Now()); !errors.Is(err, ErrEnrollmentUnavailable) {
 		t.Fatalf("expected enrollment to be single use, got %v", err)
 	}
 
@@ -40,12 +51,16 @@ func TestEnrollmentIsSingleUseAndProofRequiresPrivateKey(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	signature := ed25519.Sign(privateKey, ChallengePayload("edge-paris-1", nonce))
-	if !VerifyProof(publicKey, "edge-paris-1", nonce, signature) {
+	signature := ed25519.Sign(privateKey, ChallengePayload(publicKey, nonce))
+	if !VerifyProof(publicKey, nonce, signature) {
 		t.Fatal("valid proof was rejected")
 	}
-	if VerifyProof(publicKey, "another-agent", nonce, signature) {
-		t.Fatal("proof was accepted for another agent")
+	otherPublicKey, _, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if VerifyProof(otherPublicKey, nonce, signature) {
+		t.Fatal("proof was accepted for another public key")
 	}
 }
 
@@ -77,6 +92,10 @@ func TestEnrollmentTokenResolvesAgentIdentity(t *testing.T) {
 	if agentID != "edge-token-only" {
 		t.Fatalf("resolved agent ID = %q", agentID)
 	}
+	resolvedAgentID, err := registry.AgentIDForPublicKey(ctx, publicKey)
+	if err != nil || resolvedAgentID != "edge-token-only" {
+		t.Fatalf("public-key-resolved Agent ID = %q, %v", resolvedAgentID, err)
+	}
 	reopened, err := OpenRegistry(path)
 	if err != nil {
 		t.Fatal(err)
@@ -87,6 +106,124 @@ func TestEnrollmentTokenResolvesAgentIdentity(t *testing.T) {
 	}
 	if _, err := registry.EnrollByToken(ctx, token, publicKey, time.Now()); !errors.Is(err, ErrEnrollmentUnavailable) {
 		t.Fatalf("reused token error = %v", err)
+	}
+}
+
+func TestEnrollmentRejectsDuplicatePublicKeyWithoutConsumingToken(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	registry := NewRegistry()
+	now := time.Now().UTC()
+	firstToken, err := registry.CreateEnrollment(ctx, "edge-one", now.Add(time.Hour))
+	if err != nil {
+		t.Fatal(err)
+	}
+	sharedPublicKey, _, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := registry.EnrollByToken(ctx, firstToken, sharedPublicKey, now); err != nil {
+		t.Fatal(err)
+	}
+	secondToken, err := registry.CreateEnrollment(ctx, "edge-two", now.Add(time.Hour))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := registry.EnrollByToken(
+		ctx,
+		secondToken,
+		sharedPublicKey,
+		now,
+	); !errors.Is(err, ErrPublicKeyEnrolled) {
+		t.Fatalf("duplicate public key error = %v", err)
+	}
+	uniquePublicKey, _, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if agentID, err := registry.EnrollByToken(
+		ctx,
+		secondToken,
+		uniquePublicKey,
+		now,
+	); err != nil || agentID != "edge-two" {
+		t.Fatalf("retry with unique key = %q, %v", agentID, err)
+	}
+}
+
+func TestReplacementEnrollmentSwapsKeyOnlyWhenRedeemed(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	path := filepath.Join(t.TempDir(), "master", "identities.json")
+	registry, err := OpenRegistry(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now().UTC()
+	firstToken, err := registry.CreateEnrollment(ctx, "edge-replaced", now.Add(time.Hour))
+	if err != nil {
+		t.Fatal(err)
+	}
+	firstPublicKey, _, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := registry.EnrollByToken(ctx, firstToken, firstPublicKey, now); err != nil {
+		t.Fatal(err)
+	}
+
+	replacementToken, err := registry.CreateReplacementEnrollment(
+		ctx,
+		"edge-replaced",
+		now.Add(time.Hour),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	reopened, err := OpenRegistry(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	beforeRedemption, err := reopened.PublicKey(ctx, "edge-replaced")
+	if err != nil || !bytes.Equal(beforeRedemption, firstPublicKey) {
+		t.Fatalf("key before replacement redemption = %x, %v", beforeRedemption, err)
+	}
+	replacementPublicKey, _, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	agentID, err := reopened.EnrollByToken(
+		ctx,
+		replacementToken,
+		replacementPublicKey,
+		now,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if agentID != "edge-replaced" {
+		t.Fatalf("replacement Agent ID = %q", agentID)
+	}
+	afterRedemption, err := reopened.PublicKey(ctx, "edge-replaced")
+	if err != nil || !bytes.Equal(afterRedemption, replacementPublicKey) {
+		t.Fatalf("key after replacement redemption = %x, %v", afterRedemption, err)
+	}
+	if _, err := reopened.EnrollByToken(
+		ctx,
+		replacementToken,
+		replacementPublicKey,
+		now,
+	); !errors.Is(err, ErrEnrollmentUnavailable) {
+		t.Fatalf("replacement token reuse error = %v", err)
+	}
+	if _, err := reopened.CreateReplacementEnrollment(
+		ctx,
+		"missing-agent",
+		now.Add(time.Hour),
+	); !errors.Is(err, ErrAgentNotFound) {
+		t.Fatalf("missing replacement Agent error = %v", err)
 	}
 }
 
@@ -143,7 +280,7 @@ func TestPersistentRegistryStoresOnlyTokenDigestAndPublicKey(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := reopened.Enroll(ctx, "edge-persistent-1", token, publicKey, time.Now()); err != nil {
+	if err := enrollByTokenForTest(reopened, ctx, token, publicKey, time.Now()); err != nil {
 		t.Fatal(err)
 	}
 	reopened, err = OpenRegistry(path)
@@ -206,9 +343,9 @@ func TestRegistrySnapshotIsSortedAndClassifiesIdentities(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := registry.Enroll(
+	if err := enrollByTokenForTest(
+		registry,
 		ctx,
-		"alpha-enrolled",
 		enrollmentToken,
 		publicKey,
 		now,
@@ -263,9 +400,9 @@ func TestCreateEnrollmentRejectsActivePendingCredential(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := registry.Enroll(
+	if err := enrollByTokenForTest(
+		registry,
 		ctx,
-		"edge-pending-once",
 		firstToken,
 		publicKey,
 		time.Now(),
@@ -308,18 +445,18 @@ func TestCreateEnrollmentReplacesExpiredPendingCredential(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := registry.Enroll(
+	if err := enrollByTokenForTest(
+		registry,
 		ctx,
-		"edge-expired-replacement",
 		oldToken,
 		publicKey,
 		time.Now(),
 	); !errors.Is(err, ErrEnrollmentUnavailable) {
 		t.Fatalf("old token error = %v, want ErrEnrollmentUnavailable", err)
 	}
-	if err := registry.Enroll(
+	if err := enrollByTokenForTest(
+		registry,
 		ctx,
-		"edge-expired-replacement",
 		newToken,
 		publicKey,
 		time.Now(),
@@ -350,9 +487,9 @@ func TestRevokeInvalidatesPendingAndEnrolledCredentials(t *testing.T) {
 		if snapshot := registry.Snapshot(now); len(snapshot) != 0 {
 			t.Fatalf("revoked pending identity remained in snapshot: %+v", snapshot)
 		}
-		if err := registry.Enroll(
+		if err := enrollByTokenForTest(
+			registry,
 			ctx,
-			"edge-pending-revoke",
 			token,
 			publicKey,
 			now,
@@ -370,9 +507,9 @@ func TestRevokeInvalidatesPendingAndEnrolledCredentials(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if err := registry.Enroll(
+		if err := enrollByTokenForTest(
+			registry,
 			ctx,
-			"edge-enrolled-revoke",
 			token,
 			publicKey,
 			now,
@@ -420,9 +557,9 @@ func TestPersistentRevocationSurvivesReload(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := registry.Enroll(
+	if err := enrollByTokenForTest(
+		registry,
 		ctx,
-		"edge-revoked-persistent",
 		token,
 		publicKey,
 		now,
@@ -462,9 +599,9 @@ func TestRevokeRollsBackWhenPersistenceFails(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := registry.Enroll(
+	if err := enrollByTokenForTest(
+		registry,
 		ctx,
-		"edge-revoke-rollback",
 		token,
 		publicKey,
 		now,
@@ -489,7 +626,7 @@ func TestRevokeRollsBackWhenPersistenceFails(t *testing.T) {
 	}
 }
 
-func TestRegistryRejectsConflictingAgentStates(t *testing.T) {
+func TestRegistryLoadsEnrolledIdentityWithPendingReplacement(t *testing.T) {
 	t.Parallel()
 
 	publicKey, _, err := ed25519.GenerateKey(rand.Reader)
@@ -517,8 +654,13 @@ func TestRegistryRejectsConflictingAgentStates(t *testing.T) {
 	if err := os.WriteFile(path, encoded, 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := OpenRegistry(path); err == nil {
-		t.Fatal("OpenRegistry() accepted conflicting pending and enrolled states")
+	registry, err := OpenRegistry(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	actual, err := registry.PublicKey(context.Background(), "edge-conflict")
+	if err != nil || !bytes.Equal(actual, publicKey) {
+		t.Fatalf("active replacement key = %x, %v", actual, err)
 	}
 }
 

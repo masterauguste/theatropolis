@@ -376,7 +376,7 @@ configuration and should be preserved when valid:
 
 - master web administrator credentials;
 - enrolled Agent identities and pending enrollment records;
-- each Agent's private identity, Agent ID, and master connection settings;
+- each Agent's private Ed25519 identity and master connection settings;
 - installer and release/update state needed for safe operation; and
 - administrator-entered Agent metadata such as names, addresses, and TLS
   hostname preferences, if its new owner/schema is explicitly defined.
@@ -384,6 +384,27 @@ configuration and should be preserved when valid:
 Web sessions may be invalidated at the major-version boundary without deleting
 the administrator credential. Cached release and rule-set catalogs may be
 discarded and rebuilt.
+
+### Agent replacement and master transfer
+
+Server-record IDs are private to one master and never cross the Agent protocol.
+A normal token enrollment therefore transfers control based only on the
+selected master address and token. The token selects the master's server
+record and binds the Agent's public key to it. On later connections, the Agent
+proves possession of its private key and the master reverse-resolves the public
+key to that record. After token acceptance, the Agent removes
+its inactive persisted `sing-box/active.json` and managed self-signed keys
+before sing-box starts. Its first authenticated control session receives either
+that master's retained logical deployment or a generated profile with no
+inbounds and a rejecting final route.
+
+Replacing hardware inside one master is explicit. A replacement token may be
+created for an enrolled server record without deleting its latest deployment. The
+current public key remains authorized until redemption. Redemption atomically
+swaps the enrolled key and disconnects the old control session; the replacement
+Agent then receives the retained deployment through the same connection-time
+profile synchronization. Ordinary revocation remains deletion, not
+replacement.
 
 ### Quarantine rather than immediate destruction
 

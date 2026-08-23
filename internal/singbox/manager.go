@@ -293,6 +293,38 @@ func (m *Manager) Events() <-chan RuntimeEvent {
 	return m.events
 }
 
+// ResetForEnrollment removes the inactive persisted configuration before a
+// newly enrolled Agent starts. This makes a master transfer fail closed: an
+// old master's profile cannot start while the new master is reconnecting or
+// preparing its authoritative deployment.
+func (m *Manager) ResetForEnrollment() error {
+	m.lifecycleMu.Lock()
+	defer m.lifecycleMu.Unlock()
+	if m.started {
+		return errors.New("cannot reset a running sing-box manager")
+	}
+	if err := m.prepareDirectories(); err != nil {
+		return err
+	}
+	if err := m.restoreConfig(nil, false); err != nil {
+		return fmt.Errorf("remove previous active configuration: %w", err)
+	}
+	certificates := filepath.Join(m.stateDirectory, managedSelfSignedDirectory)
+	certificatesExist, err := safeDirectoryExists(certificates)
+	if err != nil {
+		return fmt.Errorf("inspect previous managed certificates: %w", err)
+	}
+	if certificatesExist {
+		if err := os.RemoveAll(certificates); err != nil {
+			return fmt.Errorf("remove previous managed certificates: %w", err)
+		}
+		if err := syncDirectory(filepath.Dir(certificates)); err != nil {
+			return fmt.Errorf("flush managed certificate reset: %w", err)
+		}
+	}
+	return nil
+}
+
 // Start prepares secure state, validates a persisted active configuration, and
 // starts its child. The supervisor remains available after a boot validation
 // or activation failure so that Apply can repair the server.

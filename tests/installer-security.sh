@@ -77,7 +77,7 @@ PROMPT_OUTPUT="$(
 			TEST_ARGV_LOG="$PROMPT_ARGV_LOG" \
 			INSTALLER_UNDER_TEST="$INSTALLER" \
 			script -q -e -c \
-			'sh "$INSTALLER_UNDER_TEST" agent --master master.example.com:8443 --agent-id edge-1' \
+			'sh "$INSTALLER_UNDER_TEST" agent --master master.example.com:8443' \
 			/dev/null 2>&1
 )"
 PROMPT_STATUS="$?"
@@ -115,7 +115,7 @@ INVALID_OUTPUT="$(
 			TEST_ARGV_LOG="$PROMPT_ARGV_LOG" \
 			INSTALLER_UNDER_TEST="$INSTALLER" \
 			script -q -e -c \
-			'sh "$INSTALLER_UNDER_TEST" agent --master master.example.com:8443 --agent-id edge-1' \
+			'sh "$INSTALLER_UNDER_TEST" agent --master master.example.com:8443' \
 			/dev/null 2>&1
 )"
 INVALID_STATUS="$?"
@@ -142,8 +142,7 @@ NONINTERACTIVE_OUTPUT="$(
 		TEST_APT_LOG="$PROMPT_APT_LOG" \
 		TEST_ARGV_LOG="$PROMPT_ARGV_LOG" \
 		sh "$INSTALLER" agent \
-		--master master.example.com:8443 \
-		--agent-id edge-1 </dev/null 2>&1
+		--master master.example.com:8443 </dev/null 2>&1
 )"
 NONINTERACTIVE_STATUS="$?"
 set -e
@@ -157,6 +156,32 @@ set -e
 printf '%s' "$NONINTERACTIVE_OUTPUT" |
 	grep -Eiq '(terminal|tty|enrollment[ -]token)' ||
 	fail "noninteractive failure did not explain how enrollment input is obtained"
+
+# Server record names exist only on the master. The agent installer must reject
+# the obsolete client-side identity option.
+rm -f -- "$PROMPT_APT_LOG" "$PROMPT_ARGV_LOG"
+set +e
+LEGACY_AGENT_ID_OUTPUT="$(
+	PATH="$PROMPT_PATH" \
+		TEST_APT_LOG="$PROMPT_APT_LOG" \
+		TEST_ARGV_LOG="$PROMPT_ARGV_LOG" \
+		sh "$INSTALLER" agent \
+		--master master.example.com:8443 \
+		--token "$VALID_TOKEN" \
+		--agent-id edge-legacy </dev/null 2>&1
+)"
+LEGACY_AGENT_ID_STATUS="$?"
+set -e
+
+[ "$LEGACY_AGENT_ID_STATUS" -ne 0 ] ||
+	fail "agent installer accepted the removed --agent-id option"
+[ "$LEGACY_AGENT_ID_STATUS" -ne 42 ] ||
+	fail "removed agent identity option reached package installation"
+[ ! -s "$PROMPT_APT_LOG" ] ||
+	fail "removed agent identity option performed package work"
+printf '%s' "$LEGACY_AGENT_ID_OUTPUT" |
+	grep -Fq -- 'unknown argument: --agent-id' ||
+	fail "removed agent identity option did not produce a useful diagnostic"
 
 # Master endpoint configuration also requires an actual terminal. Domain and
 # port values must not regain a noninteractive command-line bypass.

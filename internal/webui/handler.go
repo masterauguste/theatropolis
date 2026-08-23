@@ -249,6 +249,7 @@ type agentDetailView struct {
 	UpdateTarget          string
 	Update                *agentUpdateView
 	RevokeLabel           string
+	CanReplace            bool
 	DefaultTLSAddress     string
 	IPv4                  string
 	IPv6                  string
@@ -446,6 +447,7 @@ func (h *Handler) routes() {
 		h.requestAddressProbe,
 	)
 	h.mux.HandleFunc("POST /servers/{agent_id}/revoke", h.revokeServer)
+	h.mux.HandleFunc("POST /servers/{agent_id}/replace", h.replaceServer)
 	h.mux.HandleFunc("POST /servers/agent-update-all", h.updateAllAgents)
 	h.mux.HandleFunc("POST /servers/{agent_id}/agent-update", h.updateAgent)
 	h.mux.HandleFunc("POST /servers/{agent_id}/sing-box-update", h.updateSingBox)
@@ -1121,6 +1123,95 @@ func (h *Handler) revokeServer(response http.ResponseWriter, request *http.Reque
 	http.Redirect(response, request, "/servers", http.StatusSeeOther)
 }
 
+func (h *Handler) replaceServer(response http.ResponseWriter, request *http.Request) {
+	sessionToken, ok := h.sessionToken(request)
+	if !ok {
+		h.redirectToLogin(response, request)
+		return
+	}
+	if h.rejectInvalidMutationOrigin(response, request) {
+		return
+	}
+	form, err := readExactForm(
+		response,
+		request,
+		maxEnrollmentBodyBytes,
+		"agent_id",
+		"csrf_token",
+		"ttl_seconds",
+	)
+	if err != nil || !h.access.AuthorizeCSRF(sessionToken, form.Get("csrf_token")) {
+		http.Error(response, "request was not authorized", http.StatusForbidden)
+		return
+	}
+	if _, err := h.access.Authenticate(sessionToken); err != nil {
+		h.redirectToLogin(response, request)
+		return
+	}
+	agentID := request.PathValue("agent_id")
+	if form.Get("agent_id") != agentID {
+		http.Error(response, "request was not authorized", http.StatusForbidden)
+		return
+	}
+	snapshot, exists := h.agentSnapshot(agentID)
+	if !exists || snapshot.State != identity.AgentStateEnrolled {
+		http.NotFound(response, request)
+		return
+	}
+	ttlSeconds, parseErr := strconv.ParseInt(form.Get("ttl_seconds"), 10, 64)
+	ttl, ttlAllowed := allowedTTLs[ttlSeconds]
+	if parseErr != nil || !ttlAllowed {
+		http.Error(response, "choose a supported enrollment lifetime", http.StatusBadRequest)
+		return
+	}
+	if !h.allowEnrollment(h.currentTime()) {
+		response.Header().Set("Retry-After", "60")
+		http.Error(response, "too many enrollment credentials were created", http.StatusTooManyRequests)
+		return
+	}
+
+	expiresAt := h.currentTime().Add(ttl)
+	h.agentMutationMu.Lock()
+	defer h.agentMutationMu.Unlock()
+	token, err := h.registry.CreateReplacementEnrollment(
+		request.Context(),
+		agentID,
+		expiresAt,
+	)
+	if err != nil {
+		statusCode := http.StatusInternalServerError
+		if errors.Is(err, identity.ErrEnrollmentPending) {
+			statusCode = http.StatusConflict
+		} else if errors.Is(err, identity.ErrAgentNotFound) {
+			statusCode = http.StatusNotFound
+		} else {
+			h.logger.Error("create replacement enrollment", "agent_id", agentID, "error", err)
+		}
+		http.Error(response, "replacement enrollment was not created", statusCode)
+		return
+	}
+	encodedToken := base64.RawURLEncoding.EncodeToString(token)
+	defer clear(token)
+	created := createdServerView{
+		AgentID:        agentID,
+		InstallCommand: h.installCommand(encodedToken),
+		ExpiresAt:      expiresAt.UTC().Format("2 Jan 2006, 15:04 UTC"),
+		ExpiresAtISO:   expiresAt.UTC().Format(time.RFC3339),
+	}
+	resultID, err := h.storeEnrollmentResult(sessionToken, created, h.currentTime())
+	if err != nil {
+		h.logger.Error("store replacement result", "agent_id", agentID, "error", err)
+		http.Error(response, "replacement result could not be prepared", http.StatusInternalServerError)
+		return
+	}
+	http.Redirect(
+		response,
+		request,
+		"/servers/enrollment-result?id="+url.QueryEscape(resultID),
+		http.StatusSeeOther,
+	)
+}
+
 func (h *Handler) updateAgent(response http.ResponseWriter, request *http.Request) {
 	sessionToken, ok := h.sessionToken(request)
 	if !ok {
@@ -1573,6 +1664,7 @@ func (h *Handler) serverPageData(
 		detail.ConfigurationHint = "Remove this expired entry, then add the server again."
 		detail.RevokeLabel = "Remove expired entry"
 	case identity.AgentStateEnrolled:
+		detail.CanReplace = true
 		switch {
 		case !online:
 			detail.ConfigurationHint = "The agent must be online before a configuration can be deployed."

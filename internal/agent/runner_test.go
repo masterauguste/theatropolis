@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"net"
 	"slices"
+	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -25,6 +26,13 @@ import (
 type testConfigurationManager struct {
 	result singbox.ApplyResult
 	err    error
+	reset  error
+	resets int
+}
+
+func (m *testConfigurationManager) ResetForEnrollment() error {
+	m.resets++
+	return m.reset
 }
 
 func (*testConfigurationManager) Start(
@@ -47,6 +55,78 @@ func (*testConfigurationManager) Stop(context.Context) error {
 
 func (*testConfigurationManager) Events() <-chan singbox.RuntimeEvent {
 	return nil
+}
+
+type enrollmentClient struct {
+	request  *controlv1.EnrollRequest
+	response *controlv1.EnrollResponse
+}
+
+func (c *enrollmentClient) Enroll(
+	_ context.Context,
+	request *controlv1.EnrollRequest,
+	_ ...grpc.CallOption,
+) (*controlv1.EnrollResponse, error) {
+	c.request = request
+	return c.response, nil
+}
+
+func (*enrollmentClient) Connect(
+	context.Context,
+	...grpc.CallOption,
+) (grpc.BidiStreamingClient[controlv1.AgentFrame, controlv1.MasterFrame], error) {
+	return nil, errors.New("not implemented")
+}
+
+func TestEnrollDisablesPreviousProfileWithoutSendingServerIdentity(t *testing.T) {
+	t.Parallel()
+
+	_, privateKey, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	manager := &testConfigurationManager{}
+	runner := &Runner{
+		PrivateKey: privateKey,
+		Manager:    manager,
+	}
+	client := &enrollmentClient{response: &controlv1.EnrollResponse{EnrolledAtUnix: time.Now().Unix()}}
+	if err := runner.Enroll(
+		context.Background(),
+		client,
+		make([]byte, identity.EnrollmentTokenBytes),
+	); err != nil {
+		t.Fatal(err)
+	}
+	if manager.resets != 1 {
+		t.Fatalf("profile reset count = %d", manager.resets)
+	}
+	if len(client.request.GetPublicKey()) != ed25519.PublicKeySize {
+		t.Fatalf("enrollment public key length = %d", len(client.request.GetPublicKey()))
+	}
+}
+
+func TestEnrollFailsClosedWhenPreviousProfileCannotBeDisabled(t *testing.T) {
+	t.Parallel()
+
+	_, privateKey, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	manager := &testConfigurationManager{reset: errors.New("reset failed")}
+	runner := &Runner{
+		PrivateKey: privateKey,
+		Manager:    manager,
+	}
+	client := &enrollmentClient{response: &controlv1.EnrollResponse{EnrolledAtUnix: time.Now().Unix()}}
+	err = runner.Enroll(
+		context.Background(),
+		client,
+		make([]byte, identity.EnrollmentTokenBytes),
+	)
+	if err == nil || !strings.Contains(err.Error(), "disable previous sing-box configuration") {
+		t.Fatalf("Enroll() error = %v", err)
+	}
 }
 
 func TestDeployConfigurationMapsManagerResult(t *testing.T) {
@@ -311,7 +391,6 @@ func TestRunnerAnswersAddressProbeCommand(t *testing.T) {
 		t.Fatal(err)
 	}
 	runner := &Runner{
-		AgentID:         "edge-probe-1",
 		AgentVersion:    "test",
 		PrivateKey:      privateKey,
 		HeartbeatPeriod: 10 * time.Millisecond, // interleave with probe reports
@@ -439,7 +518,6 @@ func TestRunnerProbesPeriodicallyWithoutRoutableAddress(t *testing.T) {
 		t.Fatal(err)
 	}
 	runner := &Runner{
-		AgentID:         "edge-probe-periodic",
 		AgentVersion:    "test",
 		PrivateKey:      privateKey,
 		HeartbeatPeriod: 10 * time.Millisecond,

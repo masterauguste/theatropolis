@@ -11,9 +11,18 @@ import (
 
 const HTTP01ListenPort = 80
 
+const disabledManagedConfig = "{\n  \"inbounds\": [],\n  \"outbounds\": [{\"type\": \"direct\", \"tag\": \"tp-direct\"}, {\"type\": \"block\", \"tag\": \"tp-reject\"}],\n  \"route\": {\"rules\": [], \"final\": \"tp-reject\"}\n}\n"
+
 var ErrReservedListenPort = errors.New(
 	"an inbound uses port 80, which is reserved for ACME HTTP-01",
 )
+
+// DisabledManagedConfig is the authoritative no-service profile used when a
+// master has no desired configuration for an Agent. It has no listeners and
+// rejects any traffic that could otherwise reach its route table.
+func DisabledManagedConfig() []byte {
+	return []byte(disabledManagedConfig)
+}
 
 // ValidateManagedConfig enforces Theatropolis-owned safety constraints which
 // apply in addition to sing-box's own schema validation.

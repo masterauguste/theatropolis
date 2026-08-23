@@ -23,7 +23,7 @@ import (
 )
 
 const (
-	ProtocolVersion        = 1
+	ProtocolVersion        = 2
 	MaxValidationPeriod    = 60 * time.Second
 	managerStopPeriod      = 10 * time.Second
 	reconnectMinBackoff    = time.Second
@@ -32,6 +32,7 @@ const (
 )
 
 type ConfigurationManager interface {
+	ResetForEnrollment() error
 	Start(context.Context) (singbox.StartupResult, error)
 	Apply(context.Context, []byte, []byte) (singbox.ApplyResult, error)
 	Stop(context.Context) error
@@ -39,7 +40,6 @@ type ConfigurationManager interface {
 }
 
 type Runner struct {
-	AgentID         string
 	AgentVersion    string
 	SingBoxVersion  string
 	PrivateKey      ed25519.PrivateKey
@@ -65,9 +65,6 @@ func (r *Runner) Enroll(
 	if len(r.PrivateKey) != ed25519.PrivateKeySize {
 		return errors.New("agent private key is invalid")
 	}
-	if r.AgentID != "" && !identity.ValidAgentID(r.AgentID) {
-		return errors.New("agent ID is invalid")
-	}
 	if len(token) != identity.EnrollmentTokenBytes {
 		return errors.New("enrollment token has an invalid length")
 	}
@@ -76,21 +73,20 @@ func (r *Runner) Enroll(
 		return errors.New("could not derive the agent public key")
 	}
 	response, err := client.Enroll(ctx, &controlv1.EnrollRequest{
-		AgentId:         r.AgentID,
 		EnrollmentToken: append([]byte(nil), token...),
 		PublicKey:       append([]byte(nil), publicKey...),
 	})
 	if err != nil {
 		return fmt.Errorf("enroll agent: %w", err)
 	}
-	assignedAgentID := response.GetAgentId()
-	if !identity.ValidAgentID(assignedAgentID) {
-		return errors.New("master returned an invalid agent identity")
+	if response == nil || response.GetEnrolledAtUnix() == 0 {
+		return errors.New("master returned an invalid enrollment result")
 	}
-	if r.AgentID != "" && assignedAgentID != r.AgentID {
-		return errors.New("master returned an unexpected agent identity")
+	if r.Manager != nil {
+		if err := r.Manager.ResetForEnrollment(); err != nil {
+			return fmt.Errorf("disable previous sing-box configuration: %w", err)
+		}
 	}
-	r.AgentID = assignedAgentID
 	return nil
 }
 
@@ -164,13 +160,17 @@ func (r *Runner) runControlSession(
 	defer stream.CloseSend()
 
 	var agentSequence uint64 = 1
+	publicKey, ok := r.PrivateKey.Public().(ed25519.PublicKey)
+	if !ok {
+		return errors.New("could not derive the agent public key")
+	}
 	hello := &controlv1.AgentHello{
-		AgentId:         r.AgentID,
 		ProtocolVersion: ProtocolVersion,
 		AgentVersion:    r.AgentVersion,
 		OperatingSystem: runtime.GOOS,
 		Architecture:    runtime.GOARCH,
 		SingBoxVersion:  r.SingBoxVersion,
+		PublicKey:       append([]byte(nil), publicKey...),
 	}
 	if r.Manager != nil {
 		hello.Capabilities = append(
@@ -221,7 +221,7 @@ func (r *Runner) runControlSession(
 	agentSequence++
 	signature := ed25519.Sign(
 		r.PrivateKey,
-		identity.ChallengePayload(r.AgentID, challenge.GetNonce()),
+		identity.ChallengePayload(publicKey, challenge.GetNonce()),
 	)
 	if err := stream.Send(&controlv1.AgentFrame{
 		Sequence: agentSequence,
@@ -796,9 +796,6 @@ func validationStatus(status singbox.ValidationStatus) controlv1.ConfigValidatio
 }
 
 func (r *Runner) validateIdentity() error {
-	if strings.TrimSpace(r.AgentID) == "" {
-		return errors.New("agent ID is required")
-	}
 	if len(r.PrivateKey) != ed25519.PrivateKeySize {
 		return errors.New("agent Ed25519 private key is required")
 	}

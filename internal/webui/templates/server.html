@@ -235,6 +235,28 @@
                 </div>
               </details>
 
+              {{if .Agent.CanReplace}}
+              <details class="action-section">
+                <summary><span><strong>Replace Agent</strong><small>Move this identity and its profile to another server</small></span></summary>
+                <div class="action-section__body">
+                  <p>The current Agent remains authorized until the replacement uses its one-time token. At that moment the old connection is closed and this master immediately deploys the retained profile to the replacement.</p>
+                  <form action="/servers/{{.Agent.ID}}/replace" method="post" class="stack">
+                    <input type="hidden" name="csrf_token" value="{{.CSRFToken}}">
+                    <input type="hidden" name="agent_id" value="{{.Agent.ID}}">
+                    <label class="field">
+                      <span>Command lifetime</span>
+                      <select name="ttl_seconds" required>
+                        <option value="900" selected>15 minutes · Recommended</option>
+                        <option value="3600">1 hour</option>
+                        <option value="86400">24 hours</option>
+                      </select>
+                    </label>
+                    <button class="button button--secondary button--full" type="submit">Create replacement command</button>
+                  </form>
+                </div>
+              </details>
+              {{end}}
+
               <details class="action-section action-section--danger">
                 <summary><span><strong>Revoke access</strong><small>Disconnect and invalidate this identity</small></span></summary>
                 <div class="action-section__body">

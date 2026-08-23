@@ -67,7 +67,6 @@ func run(arguments []string) error {
 	flags := flag.NewFlagSet("theatropolis-agent", flag.ContinueOnError)
 	flags.SetOutput(io.Discard)
 	masterAddress := flags.String("master", "", "master host and port")
-	agentID := flags.String("agent-id", "", "agent identity")
 	stateDirectory := flags.String(
 		"state-dir",
 		"/var/lib/theatropolis/agent",
@@ -125,26 +124,11 @@ func run(arguments []string) error {
 	defer connection.Close()
 
 	identityPath := filepath.Join(*stateDirectory, "identity.pem")
-	agentIDPath := filepath.Join(*stateDirectory, "agent-id")
-	storedAgentID, err := identity.LoadAgentID(agentIDPath)
+	privateKey, err := identity.LoadOrCreatePrivateKey(identityPath)
 	if err != nil {
 		return err
 	}
-	configuredAgentID := strings.TrimSpace(*agentID)
-	if configuredAgentID != "" && !identity.ValidAgentID(configuredAgentID) {
-		return errors.New("--agent-id is invalid")
-	}
-	if storedAgentID != "" &&
-		configuredAgentID != "" &&
-		storedAgentID != configuredAgentID {
-		return errors.New("--agent-id does not match the stored agent identity")
-	}
-	if storedAgentID == "" {
-		storedAgentID = configuredAgentID
-	}
-
-	privateKey, err := identity.LoadOrCreatePrivateKey(identityPath)
-	if err != nil {
+	if err := removeLegacyAgentID(filepath.Join(*stateDirectory, "agent-id")); err != nil {
 		return err
 	}
 	validator := singbox.Validator{
@@ -174,7 +158,6 @@ func run(arguments []string) error {
 		}
 	}
 	runner := &agent.Runner{
-		AgentID:        storedAgentID,
 		AgentVersion:   version,
 		SingBoxVersion: singBoxVersion,
 		PrivateKey:     privateKey,
@@ -206,22 +189,10 @@ func run(arguments []string) error {
 			runner,
 			client,
 			*tokenFile,
-			agentIDPath,
 		); err != nil {
 			return err
 		}
 	}
-	if runner.AgentID == "" {
-		return errors.New(
-			"agent identity is unavailable; enroll with a token or upgrade using the existing installer configuration",
-		)
-	}
-	if storedAgentID == "" || configuredAgentID != "" {
-		if err := identity.StoreAgentID(agentIDPath, runner.AgentID); err != nil {
-			return fmt.Errorf("persist agent identity: %w", err)
-		}
-	}
-
 	ctx, stop := signal.NotifyContext(
 		context.Background(),
 		os.Interrupt,
@@ -231,7 +202,6 @@ func run(arguments []string) error {
 	slog.Info(
 		"theatropolis agent starting",
 		"version", version,
-		"agent_id", runner.AgentID,
 		"master", *masterAddress,
 	)
 	return runner.Run(ctx, client)
@@ -245,6 +215,23 @@ func singBoxUpdateHelperAvailable() bool {
 		"/etc/systemd/system/theatropolis-sing-box-update.path",
 	)
 	return err == nil && info.Mode().IsRegular()
+}
+
+func removeLegacyAgentID(path string) error {
+	info, err := os.Lstat(path)
+	if errors.Is(err, os.ErrNotExist) {
+		return nil
+	}
+	if err != nil {
+		return fmt.Errorf("inspect obsolete agent ID: %w", err)
+	}
+	if !info.Mode().IsRegular() {
+		return errors.New("obsolete agent ID path is not a regular file")
+	}
+	if err := os.Remove(path); err != nil {
+		return fmt.Errorf("remove obsolete agent ID: %w", err)
+	}
+	return nil
 }
 
 func secureTLSConfig(serverName, caFile string) (*tls.Config, error) {
@@ -282,7 +269,6 @@ func enrollFromFile(
 	runner *agent.Runner,
 	client controlv1.AgentControlServiceClient,
 	path string,
-	agentIDPath string,
 ) error {
 	info, err := os.Lstat(path)
 	if errors.Is(err, os.ErrNotExist) {
@@ -306,9 +292,6 @@ func enrollFromFile(
 	defer cancel()
 	if err := runner.Enroll(enrollCtx, client, token); err != nil {
 		return err
-	}
-	if err := identity.StoreAgentID(agentIDPath, runner.AgentID); err != nil {
-		return fmt.Errorf("persist enrolled agent identity: %w", err)
 	}
 	for index := range token {
 		token[index] = 0
