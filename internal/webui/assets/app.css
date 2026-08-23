@@ -1876,8 +1876,19 @@ body:has(dialog[open]) {
   box-shadow: var(--shadow-md);
 }
 
+/* Forms wrapping a modal body must participate in the surface's flex layout.
+   Without this constraint, a long form expands to its content height and the
+   surface clips its footer instead of giving `.modal__body` a scrollport. */
+.modal__surface > form {
+  display: flex;
+  min-height: 0;
+  flex: 1 1 auto;
+  flex-direction: column;
+}
+
 .modal__header {
   display: flex;
+  flex: 0 0 auto;
   padding: 1.25rem 1.25rem 1rem;
   align-items: flex-start;
   justify-content: space-between;
@@ -1900,10 +1911,12 @@ body:has(dialog[open]) {
   min-height: 0;
   padding: 1.25rem;
   overflow-y: auto;
+  overscroll-behavior: contain;
 }
 
 .modal__footer {
   display: flex;
+  flex: 0 0 auto;
   padding: 1rem 1.25rem;
   justify-content: flex-end;
   gap: 0.5rem;
