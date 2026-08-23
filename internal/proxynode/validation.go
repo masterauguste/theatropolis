@@ -8,6 +8,7 @@ import (
 	"net/url"
 	"regexp"
 	"slices"
+	"sort"
 	"strings"
 	"time"
 )
@@ -78,18 +79,18 @@ func validateState(state State) error {
 				return fmt.Errorf("%w: entity ID is reused", ErrInvalidState)
 			}
 			globalIDs[hop.ID] = struct{}{}
-			for _, rule := range hop.Rules {
-				if _, exists := globalIDs[rule.ID]; exists {
-					return fmt.Errorf("%w: entity ID is reused", ErrInvalidState)
-				}
-				globalIDs[rule.ID] = struct{}{}
-			}
 		}
 		for _, link := range node.Links {
 			if _, exists := globalIDs[link.ID]; exists {
 				return fmt.Errorf("%w: entity ID is reused", ErrInvalidState)
 			}
 			globalIDs[link.ID] = struct{}{}
+			for _, rule := range link.Rules {
+				if _, exists := globalIDs[rule.ID]; exists {
+					return fmt.Errorf("%w: entity ID is reused", ErrInvalidState)
+				}
+				globalIDs[rule.ID] = struct{}{}
+			}
 			if _, exists := globalCredentials[link.Credential.Secret]; exists {
 				return fmt.Errorf("%w: generated credential is reused", ErrInvalidState)
 			}
@@ -142,9 +143,9 @@ func validateProxyNode(node ProxyNode, users map[string]User) error {
 
 	links := make(map[string]Link, len(node.Links))
 	parentByChild := make(map[string]string, len(node.Links))
-	outgoing := make(map[string]map[string]struct{}, len(node.Hops))
+	outgoing := make(map[string][]Link, len(node.Hops))
 	for _, link := range node.Links {
-		if !validID(link.ID, "lnk_") || link.CreatedAt.IsZero() || link.UpdatedAt.IsZero() {
+		if !validID(link.ID, "lnk_") || link.Order < 0 || link.CreatedAt.IsZero() || link.UpdatedAt.IsZero() {
 			return errors.New("invalid Link")
 		}
 		if _, exists := links[link.ID]; exists {
@@ -171,12 +172,41 @@ func validateProxyNode(node ProxyNode, users map[string]User) error {
 		if err := validateCredential(link.Endpoint, link.Credential); err != nil {
 			return fmt.Errorf("invalid Link credential: %w", err)
 		}
+		if link.Fallback && len(link.Rules) != 0 {
+			return errors.New("fallback Link cannot contain match rules")
+		}
+		for _, rule := range link.Rules {
+			if !validID(rule.ID, "rul_") || rule.LegacyTarget != nil {
+				return errors.New("invalid Link Rule")
+			}
+			if err := validateRule(rule); err != nil {
+				return err
+			}
+			if rule.Match == MatchNone {
+				return errors.New("unconditional routing must use a fallback Link")
+			}
+		}
 		links[link.ID] = link
 		parentByChild[link.ChildHopID] = link.ParentHopID
-		if outgoing[link.ParentHopID] == nil {
-			outgoing[link.ParentHopID] = make(map[string]struct{})
+		outgoing[link.ParentHopID] = append(outgoing[link.ParentHopID], link)
+	}
+	for parentID, siblings := range outgoing {
+		sort.Slice(siblings, func(left, right int) bool { return siblings[left].Order < siblings[right].Order })
+		fallbacks := 0
+		for order, link := range siblings {
+			if link.Order != order {
+				return fmt.Errorf("child Link order for Hop %q is not contiguous", parentID)
+			}
+			if link.Fallback {
+				fallbacks++
+				if order != len(siblings)-1 {
+					return errors.New("fallback Link must be last")
+				}
+			}
 		}
-		outgoing[link.ParentHopID][link.ID] = struct{}{}
+		if fallbacks > 1 {
+			return errors.New("Hop has more than one fallback Link")
+		}
 	}
 	for hopID := range hops {
 		if hopID == node.Entrance.HopID {
@@ -224,18 +254,10 @@ func validateProxyNode(node ProxyNode, users map[string]User) error {
 	}
 
 	for _, hop := range node.Hops {
-		for _, rule := range hop.Rules {
-			if !validID(rule.ID, "rul_") {
-				return errors.New("invalid Rule ID")
-			}
-			if err := validateRule(rule); err != nil {
-				return err
-			}
-			if err := validateTarget(rule.Target, outgoing[hop.ID]); err != nil {
-				return fmt.Errorf("invalid Rule target: %w", err)
-			}
+		if len(hop.LegacyRules) != 0 {
+			return errors.New("Hop contains legacy routing Rules")
 		}
-		if err := validateTarget(hop.Final, outgoing[hop.ID]); err != nil {
+		if err := validateTerminalTarget(hop.Final); err != nil {
 			return fmt.Errorf("invalid final target: %w", err)
 		}
 	}
@@ -421,18 +443,14 @@ func validateRule(rule Rule) error {
 	return nil
 }
 
-func validateTarget(target Target, outgoing map[string]struct{}) error {
+func validateTerminalTarget(target Target) error {
 	switch target.Type {
 	case TargetDirect, TargetReject:
 		if target.LinkID != "" {
 			return errors.New("terminal target cannot reference a Link")
 		}
-	case TargetLink:
-		if _, exists := outgoing[target.LinkID]; !exists {
-			return errors.New("target Link is not a child of this Hop")
-		}
 	default:
-		return errors.New("routing target is required")
+		return errors.New("terminal target must be Direct or Reject")
 	}
 	return nil
 }

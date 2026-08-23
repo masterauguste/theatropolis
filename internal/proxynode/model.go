@@ -6,7 +6,7 @@ import "time"
 
 const (
 	SchemaID      = "theatropolis/proxy-node-state"
-	SchemaVersion = 1
+	SchemaVersion = 2
 )
 
 type Protocol string
@@ -126,19 +126,22 @@ type TLSConfig struct {
 }
 
 type Hop struct {
-	ID        string    `json:"id"`
-	Name      string    `json:"name"`
-	AgentID   string    `json:"agent_id"`
-	Rules     []Rule    `json:"rules"`
-	Final     Target    `json:"final"`
-	CreatedAt time.Time `json:"created_at"`
-	UpdatedAt time.Time `json:"updated_at"`
+	ID          string    `json:"id"`
+	Name        string    `json:"name"`
+	AgentID     string    `json:"agent_id"`
+	LegacyRules []Rule    `json:"rules,omitempty"`
+	Final       Target    `json:"final"`
+	CreatedAt   time.Time `json:"created_at"`
+	UpdatedAt   time.Time `json:"updated_at"`
 }
 
 type Link struct {
 	ID          string     `json:"id"`
 	ParentHopID string     `json:"parent_hop_id"`
 	ChildHopID  string     `json:"child_hop_id"`
+	Order       int        `json:"order"`
+	Rules       []Rule     `json:"rules,omitempty"`
+	Fallback    bool       `json:"fallback,omitempty"`
 	Endpoint    Endpoint   `json:"endpoint"`
 	Credential  Credential `json:"credential"`
 	CreatedAt   time.Time  `json:"created_at"`
@@ -146,10 +149,10 @@ type Link struct {
 }
 
 type Rule struct {
-	ID     string    `json:"id"`
-	Match  MatchType `json:"match"`
-	Values []string  `json:"values,omitempty"`
-	Target Target    `json:"target"`
+	ID           string    `json:"id"`
+	Match        MatchType `json:"match"`
+	Values       []string  `json:"values,omitempty"`
+	LegacyTarget *Target   `json:"target,omitempty"`
 }
 
 type Target struct {
@@ -192,8 +195,7 @@ type AddLinkInput struct {
 }
 
 type AddRuleInput struct {
-	HopID  string
+	LinkID string
 	Match  MatchType
 	Values []string
-	Target Target
 }

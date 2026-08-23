@@ -56,8 +56,8 @@ func TestStorePersistsUsersTopologyAndGeneratedCredentials(t *testing.T) {
 		t.Fatal("membership and Link did not receive distinct generated credentials")
 	}
 	if _, err := store.AddRule(node.ID, AddRuleInput{
-		HopID: node.Entrance.HopID, Match: MatchDomainSuffix,
-		Values: []string{"example.com"}, Target: Target{Type: TargetLink, LinkID: link.ID},
+		LinkID: link.ID, Match: MatchDomainSuffix,
+		Values: []string{"example.com"},
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -73,7 +73,7 @@ func TestStorePersistsUsersTopologyAndGeneratedCredentials(t *testing.T) {
 		t.Fatal(err)
 	}
 	got, ok := reloaded.ProxyNode(node.ID)
-	if !ok || got.Name != "archive" || len(got.Links) != 1 || len(got.Hops[0].Rules) != 1 {
+	if !ok || got.Name != "archive" || len(got.Links) != 1 || len(got.Links[0].Rules) != 1 {
 		t.Fatalf("reloaded Proxy Node = %#v, exists %v", got, ok)
 	}
 	if got.Memberships[0].Credential.Secret != membership.Credential.Secret || got.Links[0].Credential.Secret != link.Credential.Secret {
@@ -194,7 +194,7 @@ func TestCompilePlacesTerminalOnFinalHopAgent(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := store.SetFinal(node.ID, node.Entrance.HopID, Target{Type: TargetLink, LinkID: link.ID}); err != nil {
+	if err := store.SetLinkFallback(node.ID, link.ID, true); err != nil {
 		t.Fatal(err)
 	}
 	if err := store.SetFinal(node.ID, child.ID, Target{Type: TargetLink, LinkID: link.ID}); err == nil {
@@ -253,15 +253,13 @@ func TestCompileSupportsEveryManagedProtocolOnLinksAndEveryRuleMatch(t *testing.
 		}
 		links = append(links, link)
 	}
-	matchTypes := []MatchType{MatchNone, MatchProtocol, MatchDomain, MatchDomainSuffix, MatchDomainKeyword, MatchDomainRegex, MatchIPCIDR, MatchGeosite, MatchGeoIP, MatchRuleSet, MatchNetwork}
+	matchTypes := []MatchType{MatchProtocol, MatchDomain, MatchDomainSuffix, MatchDomainKeyword, MatchDomainRegex, MatchIPCIDR, MatchGeosite, MatchGeoIP, MatchRuleSet, MatchNetwork}
 	if err := store.UpsertRuleSet(node.ID, CustomRuleSet{Tag: "private-set", URL: "https://example.com/private.srs"}); err != nil {
 		t.Fatal(err)
 	}
 	for index, match := range matchTypes {
 		values := []string{"value"}
 		switch match {
-		case MatchNone:
-			values = nil
 		case MatchGeosite:
 			values = []string{"category-ads-all"}
 		case MatchGeoIP:
@@ -269,7 +267,7 @@ func TestCompileSupportsEveryManagedProtocolOnLinksAndEveryRuleMatch(t *testing.
 		case MatchRuleSet:
 			values = []string{"private-set"}
 		}
-		if _, err := store.AddRule(node.ID, AddRuleInput{HopID: node.Entrance.HopID, Match: match, Values: values, Target: Target{Type: TargetLink, LinkID: links[index%len(links)].ID}}); err != nil {
+		if _, err := store.AddRule(node.ID, AddRuleInput{LinkID: links[index%len(links)].ID, Match: match, Values: values}); err != nil {
 			t.Fatalf("add %s Rule: %v", match, err)
 		}
 	}
@@ -309,7 +307,7 @@ func TestCompileMirrorsShadowsocksInboundMultiplexOntoManagedLinkOutbound(t *tes
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := store.SetFinal(node.ID, node.Entrance.HopID, Target{Type: TargetLink, LinkID: link.ID}); err != nil {
+	if err := store.SetLinkFallback(node.ID, link.ID, true); err != nil {
 		t.Fatal(err)
 	}
 	compiled, err := Compile(store.Snapshot(), testResolver{"edge-a": "192.0.2.10", "edge-b": "192.0.2.11"})
@@ -323,6 +321,169 @@ func TestCompileMirrorsShadowsocksInboundMultiplexOntoManagedLinkOutbound(t *tes
 				t.Errorf("%s config lacks %s: %s", agentID, expected, config)
 			}
 		}
+	}
+}
+
+func TestLinksOwnMatchClausesOrderAndFallback(t *testing.T) {
+	store, err := Open(filepath.Join(t.TempDir(), "state.json"), testBuild())
+	if err != nil {
+		t.Fatal(err)
+	}
+	user, _ := store.CreateUser("alice")
+	node, err := store.CreateProxyNode(CreateProxyNodeInput{Name: "cinema", RootAgent: "edge-a", Entrance: testTLSEndpoint(ProtocolAnyTLS, 443)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, _ = store.AddMembership(node.ID, user.ID)
+	first, _, _ := store.AddLink(node.ID, AddLinkInput{ParentHopID: node.Entrance.HopID, ChildName: "First", ChildAgent: "edge-b", Endpoint: testTLSEndpoint(ProtocolAnyTLS, 8443)})
+	second, _, _ := store.AddLink(node.ID, AddLinkInput{ParentHopID: node.Entrance.HopID, ChildName: "Second", ChildAgent: "edge-c", Endpoint: testTLSEndpoint(ProtocolAnyTLS, 9443)})
+	fallback, _, _ := store.AddLink(node.ID, AddLinkInput{ParentHopID: node.Entrance.HopID, ChildName: "Fallback", ChildAgent: "edge-d", Endpoint: testTLSEndpoint(ProtocolAnyTLS, 10443)})
+	if _, err := store.AddRule(node.ID, AddRuleInput{LinkID: first.ID, Match: MatchDomainSuffix, Values: []string{"example.com"}}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.AddRule(node.ID, AddRuleInput{LinkID: first.ID, Match: MatchProtocol, Values: []string{"bittorrent"}}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.AddRule(node.ID, AddRuleInput{LinkID: second.ID, Match: MatchNetwork, Values: []string{"udp"}}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.AddRule(node.ID, AddRuleInput{LinkID: fallback.ID, Match: MatchDomain, Values: []string{"discarded.example"}}); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.SetLinkFallback(node.ID, fallback.ID, true); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.AddRule(node.ID, AddRuleInput{LinkID: fallback.ID, Match: MatchDomain, Values: []string{"blocked.example"}}); !errors.Is(err, ErrConflict) {
+		t.Fatalf("adding a clause to fallback Link error = %v, want conflict", err)
+	}
+	if err := store.MoveLink(node.ID, second.ID, -1); err != nil {
+		t.Fatal(err)
+	}
+
+	state := store.Snapshot()
+	updated := state.ProxyNodes[0]
+	orders := map[string]int{}
+	for _, link := range updated.Links {
+		orders[link.ID] = link.Order
+		if link.ID == fallback.ID && len(link.Rules) != 0 {
+			t.Fatalf("fallback Link retained clauses: %#v", link.Rules)
+		}
+	}
+	if orders[second.ID] != 0 || orders[first.ID] != 1 || orders[fallback.ID] != 2 {
+		t.Fatalf("Link order = %#v", orders)
+	}
+	if err := store.MoveLink(node.ID, fallback.ID, -1); !errors.Is(err, ErrConflict) {
+		t.Fatalf("moving fallback Link error = %v, want conflict", err)
+	}
+
+	compiled, err := Compile(store.Snapshot(), testResolver{"edge-a": "192.0.2.10", "edge-b": "192.0.2.11", "edge-c": "192.0.2.12", "edge-d": "192.0.2.13"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var config struct {
+		Route struct {
+			Rules []map[string]any `json:"rules"`
+		} `json:"route"`
+	}
+	if err := json.Unmarshal(compiled.Configs["edge-a"], &config); err != nil {
+		t.Fatal(err)
+	}
+	if len(config.Route.Rules) < 6 || config.Route.Rules[1]["outbound"] != linkOutboundTag(second.ID) || config.Route.Rules[2]["outbound"] != linkOutboundTag(first.ID) || config.Route.Rules[3]["outbound"] != linkOutboundTag(first.ID) || config.Route.Rules[4]["outbound"] != linkOutboundTag(fallback.ID) {
+		t.Fatalf("compiled Link-owned rule order is wrong: %#v", config.Route.Rules)
+	}
+}
+
+func TestOpenMigratesSchemaV1HopRulesOntoLinks(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "state.json")
+	store, err := Open(path, testBuild())
+	if err != nil {
+		t.Fatal(err)
+	}
+	node, _ := store.CreateProxyNode(CreateProxyNodeInput{Name: "cinema", RootAgent: "edge-a", Entrance: testTLSEndpoint(ProtocolAnyTLS, 443)})
+	conditional, _, _ := store.AddLink(node.ID, AddLinkInput{ParentHopID: node.Entrance.HopID, ChildName: "Conditional", ChildAgent: "edge-b", Endpoint: testTLSEndpoint(ProtocolAnyTLS, 8443)})
+	fallback, _, _ := store.AddLink(node.ID, AddLinkInput{ParentHopID: node.Entrance.HopID, ChildName: "Fallback", ChildAgent: "edge-c", Endpoint: testTLSEndpoint(ProtocolAnyTLS, 9443)})
+	state := store.Snapshot()
+	legacyTarget := Target{Type: TargetLink, LinkID: conditional.ID}
+	state.ProxyNodes[0].Hops[0].LegacyRules = []Rule{{ID: "rul_abcdefghijklmnopqrst", Match: MatchDomainSuffix, Values: []string{"example.com"}, LegacyTarget: &legacyTarget}}
+	state.ProxyNodes[0].Hops[0].Final = Target{Type: TargetLink, LinkID: fallback.ID}
+	for index := range state.ProxyNodes[0].Links {
+		state.ProxyNodes[0].Links[index].Order = 0
+		state.ProxyNodes[0].Links[index].Rules = nil
+		state.ProxyNodes[0].Links[index].Fallback = false
+	}
+	legacy := envelope{Schema: SchemaID, SchemaVersion: 1, LastUsedBy: normalizeBuild(testBuild(), time.Now()), Data: state}
+	encoded, err := json.MarshalIndent(legacy, "", "  ")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, append(encoded, '\n'), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	migrated, err := Open(path, BuildInfo{Component: "master", Version: "v2.0.0", Commit: "schema-v2"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, _ := migrated.ProxyNode(node.ID)
+	if len(got.Hops[0].LegacyRules) != 0 || got.Hops[0].Final.Type != TargetReject {
+		t.Fatalf("migrated Hop = %#v", got.Hops[0])
+	}
+	if len(got.Links[0].Rules) != 1 || got.Links[0].Rules[0].LegacyTarget != nil || !got.Links[1].Fallback || got.Links[1].Order != 1 {
+		t.Fatalf("migrated Links = %#v", got.Links)
+	}
+	if err := migrated.MarkReady(); err != nil {
+		t.Fatal(err)
+	}
+	contents, _ := os.ReadFile(path)
+	if !strings.Contains(string(contents), `"schema_version": 2`) || strings.Contains(string(contents), `"target"`) || strings.Contains(string(contents), `"rules": null`) {
+		t.Fatalf("migrated state was not persisted as schema v2: %s", contents)
+	}
+}
+
+func TestSchemaV1MigrationPreservesUnconditionalTerminalRule(t *testing.T) {
+	store, err := Open(filepath.Join(t.TempDir(), "state.json"), testBuild())
+	if err != nil {
+		t.Fatal(err)
+	}
+	node, _ := store.CreateProxyNode(CreateProxyNodeInput{Name: "cinema", RootAgent: "edge-a", Entrance: testTLSEndpoint(ProtocolAnyTLS, 443)})
+	link, _, _ := store.AddLink(node.ID, AddLinkInput{ParentHopID: node.Entrance.HopID, ChildName: "Conditional", ChildAgent: "edge-b", Endpoint: testTLSEndpoint(ProtocolAnyTLS, 8443)})
+	state := store.Snapshot()
+	linkTarget := Target{Type: TargetLink, LinkID: link.ID}
+	rejectTarget := Target{Type: TargetReject}
+	state.ProxyNodes[0].Hops[0].LegacyRules = []Rule{
+		{ID: "rul_abcdefghijklmnopqrst", Match: MatchDomainSuffix, Values: []string{"example.com"}, LegacyTarget: &linkTarget},
+		{ID: "rul_bcdefghijklmnopqrstu", Match: MatchNone, LegacyTarget: &rejectTarget},
+	}
+	state.ProxyNodes[0].Hops[0].Final = Target{Type: TargetLink, LinkID: link.ID}
+
+	if err := migrateSchemaV1(&state); err != nil {
+		t.Fatal(err)
+	}
+	got := state.ProxyNodes[0]
+	if got.Hops[0].Final.Type != TargetReject || len(got.Links[0].Rules) != 1 || got.Links[0].Fallback {
+		t.Fatalf("migrated terminal fallback = Hop %#v, Link %#v", got.Hops[0], got.Links[0])
+	}
+}
+
+func TestSchemaV1MigrationRejectsInterleavedLinkRules(t *testing.T) {
+	store, err := Open(filepath.Join(t.TempDir(), "state.json"), testBuild())
+	if err != nil {
+		t.Fatal(err)
+	}
+	node, _ := store.CreateProxyNode(CreateProxyNodeInput{Name: "cinema", RootAgent: "edge-a", Entrance: testTLSEndpoint(ProtocolAnyTLS, 443)})
+	first, _, _ := store.AddLink(node.ID, AddLinkInput{ParentHopID: node.Entrance.HopID, ChildName: "First", ChildAgent: "edge-b", Endpoint: testTLSEndpoint(ProtocolAnyTLS, 8443)})
+	second, _, _ := store.AddLink(node.ID, AddLinkInput{ParentHopID: node.Entrance.HopID, ChildName: "Second", ChildAgent: "edge-c", Endpoint: testTLSEndpoint(ProtocolAnyTLS, 9443)})
+	state := store.Snapshot()
+	firstTarget := Target{Type: TargetLink, LinkID: first.ID}
+	secondTarget := Target{Type: TargetLink, LinkID: second.ID}
+	state.ProxyNodes[0].Hops[0].LegacyRules = []Rule{
+		{ID: "rul_abcdefghijklmnopqrst", Match: MatchDomain, Values: []string{"first.example"}, LegacyTarget: &firstTarget},
+		{ID: "rul_bcdefghijklmnopqrstu", Match: MatchDomain, Values: []string{"second.example"}, LegacyTarget: &secondTarget},
+		{ID: "rul_cdefghijklmnopqrstuv", Match: MatchDomain, Values: []string{"third.example"}, LegacyTarget: &firstTarget},
+	}
+
+	if err := migrateSchemaV1(&state); err == nil || !strings.Contains(err.Error(), "interleaves Rules") {
+		t.Fatalf("migrateSchemaV1() error = %v, want an interleaving error", err)
 	}
 }
 

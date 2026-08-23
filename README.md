@@ -29,16 +29,16 @@ The master, agent, and sing-box all run as dedicated unprivileged users. A small
 ## Proxy Nodes
 
 Configuration is modeled as logical Proxy Nodes instead of editable per-server
-sing-box files. Create global users, create a Proxy Node with one entrance, then
-add relay Links and ordered rules to its Hops. Each Link can independently use
-Shadowsocks 2022, AnyTLS, or Hysteria2; unmatched traffic at a Hop can be sent
-directly, rejected, or relayed through one of its child Links. Rules always
-apply to all traffic for that Proxy Node which reaches the Hop—there is no
-separate routing scope.
+sing-box files. Create a Proxy Node with one entrance, then add ordered relay
+Links to its Hops. Each Link owns its match clauses and can independently use
+Shadowsocks 2022, AnyTLS, or Hysteria2. Sibling Links are evaluated in order;
+the first Link with any matching clause wins, an optional fallback Link remains
+last, and otherwise traffic terminates as Direct or Reject on the current Hop.
 
-Assigning a global user to a Proxy Node generates a unique membership
-credential. Import URIs are revealed only on that user's detail page. Deploying
-compiles the complete desired fleet and applies receiver Hops before senders.
+Granting Proxy Node access from a global user's settings generates a unique
+membership credential. Import URIs are revealed only on that user's detail
+page. Deploying compiles the complete desired fleet and applies receiver Hops
+before senders.
 
 The full architecture and old-format cutover policy are recorded in
 [docs/proxy-node-manager-design.md](docs/proxy-node-manager-design.md).

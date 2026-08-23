@@ -988,7 +988,7 @@ func TestPerServerConfigurationEndpointIsRetired(t *testing.T) {
 	}
 }
 
-func TestProxyNodePagesUseHopWideRulesAndMembershipCredentials(t *testing.T) {
+func TestProxyNodePagesUseLinkOwnedRulesAndMembershipCredentials(t *testing.T) {
 	t.Parallel()
 
 	fixture := newWebFixture(t)
@@ -1025,7 +1025,7 @@ func TestProxyNodePagesUseHopWideRulesAndMembershipCredentials(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := fixture.proxyNodes.AddRule(node.ID, proxynode.AddRuleInput{HopID: node.Entrance.HopID, Match: proxynode.MatchDomainSuffix, Values: []string{"example.net"}, Target: proxynode.Target{Type: proxynode.TargetLink, LinkID: link.ID}}); err != nil {
+	if _, err := fixture.proxyNodes.AddRule(node.ID, proxynode.AddRuleInput{LinkID: link.ID, Match: proxynode.MatchDomainSuffix, Values: []string{"example.net"}}); err != nil {
 		t.Fatal(err)
 	}
 
@@ -1048,16 +1048,12 @@ func TestProxyNodePagesUseHopWideRulesAndMembershipCredentials(t *testing.T) {
 	body := response.Body.String()
 	for _, expected := range []string{
 		"Every configured path reaches an exit", "Direct and Reject run on the Agent attached to their final Hop.",
-		"Left-to-right relay tree", `data-proxy-inspector-open="link-`, "Rule 1", "Link to Exit",
+		"Left-to-right relay tree", `data-proxy-inspector-open="link-`, "Match 1", "Link to Exit",
 		"Terminal on edge-online", "Terminal on edge-exit", `id="proxy-hop-manager"`,
-		`data-proxy-hop-manager-view="` + node.Entrance.HopID + `"`, "Configure identity, ordered routing, fallback, and child Links",
+		`data-proxy-hop-manager-view="` + node.Entrance.HopID + `"`, "Configure this Hop's identity, terminal exit, and ordered child Links",
+		"Ordered child Links", "Domain suffix · example.net", "Routing &amp; endpoint",
 		`<option value="shadowsocks"`, `<option value="anytls"`, `<option value="hysteria2"`,
-		`<option value="none">All traffic</option>`, `<option value="protocol">Protocol</option>`,
-		`<option value="domain">Domain</option>`, `<option value="domain_suffix">Domain suffix</option>`,
-		`<option value="domain_keyword">Domain keyword</option>`, `<option value="domain_regex">Domain regex</option>`,
-		`<option value="ip_cidr">IP / CIDR</option>`, `<option value="geosite">Geosite</option>`,
-		`<option value="geoip">GeoIP</option>`, `<option value="rule_set">Custom Rule Set</option>`,
-		`<option value="network">Network</option>`, "example.net", "Relay to Exit", "Address family", "Multiplex", "[::]:8443",
+		"example.net", "Address family", "Multiplex", "[::]:8443",
 	} {
 		if !strings.Contains(body, expected) {
 			t.Errorf("Proxy Node tree does not contain %q", expected)
@@ -1074,6 +1070,31 @@ func TestProxyNodePagesUseHopWideRulesAndMembershipCredentials(t *testing.T) {
 		t.Errorf("fallback branch is not rendered after the Link branch: link=%d fallback=%d", linkBranch, fallbackBranch)
 	}
 
+	request = fixture.authenticatedRequest(http.MethodGet, proxyLinkURL(node.ID, link.ID), "")
+	response = httptest.NewRecorder()
+	fixture.handler.ServeHTTP(response, request)
+	if response.Code != http.StatusOK {
+		t.Fatalf("GET Link settings = %d %q", response.Code, response.Body.String())
+	}
+	body = response.Body.String()
+	for _, expected := range []string{
+		"This Link owns the conditions that select it", "Match clauses", "Clauses on this Link are ORed together",
+		`<option value="protocol">Protocol</option>`, `<option value="domain">Domain</option>`,
+		`<option value="domain_suffix">Domain suffix</option>`, `<option value="domain_keyword">Domain keyword</option>`,
+		`<option value="domain_regex">Domain regex</option>`, `<option value="ip_cidr">IP / CIDR</option>`,
+		`<option value="geosite">Geosite</option>`, `<option value="geoip">GeoIP</option>`,
+		`<option value="rule_set">Custom Rule Set</option>`, `<option value="network">Network</option>`,
+	} {
+		if !strings.Contains(body, expected) {
+			t.Errorf("Link settings do not contain %q", expected)
+		}
+	}
+	for _, removed := range []string{`<option value="none">All traffic</option>`, `name="target"`} {
+		if strings.Contains(body, removed) {
+			t.Errorf("Link settings contain obsolete Hop-owned routing control %q", removed)
+		}
+	}
+
 	request = fixture.authenticatedRequest(http.MethodGet, "/users/"+url.PathEscape(user.ID), "")
 	response = httptest.NewRecorder()
 	fixture.handler.ServeHTTP(response, request)
@@ -1081,15 +1102,8 @@ func TestProxyNodePagesUseHopWideRulesAndMembershipCredentials(t *testing.T) {
 		t.Fatalf("GET user page = %d %q", response.Code, response.Body.String())
 	}
 	body = response.Body.String()
-	if !strings.Contains(body, "Cinema-Alice") || !strings.Contains(body, "anytls://") || !strings.Contains(body, "203.0.113.42:443") {
+	if !strings.Contains(body, "Cinema-Alice") || !strings.Contains(body, "anytls://") || !strings.Contains(body, "203.0.113.42:443") || !strings.Contains(body, "Revoke access") {
 		t.Fatalf("user page omitted membership identity or import URI: %q", body)
-	}
-
-	request = fixture.authenticatedRequest(http.MethodGet, proxyMembersURL(node.ID), "")
-	response = httptest.NewRecorder()
-	fixture.handler.ServeHTTP(response, request)
-	if strings.Contains(response.Body.String(), "anytls://") {
-		t.Fatal("membership list exposed a credential outside the individual user page")
 	}
 }
 
@@ -1113,6 +1127,92 @@ func TestProxyNodeMutationsRequireExactForms(t *testing.T) {
 	}
 	if len(fixture.proxyNodes.Snapshot().ProxyNodes) != 0 {
 		t.Fatal("invalid exact-form request created a Proxy Node")
+	}
+}
+
+func TestHopTerminalRejectsLinkTargets(t *testing.T) {
+	t.Parallel()
+
+	fixture := newWebFixture(t)
+	enrollAgent(t, fixture.registry, "edge-online")
+	node, err := fixture.proxyNodes.CreateProxyNode(proxynode.CreateProxyNodeInput{
+		Name: "Cinema", RootAgent: "edge-online",
+		Entrance: proxynode.Endpoint{
+			Protocol: proxynode.ProtocolAnyTLS, Listen: "::", ListenPort: 443, Family: "auto",
+			TLS: proxynode.TLSConfig{Mode: proxynode.TLSModeSelfSigned, ServerName: "cinema.example"},
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	request := fixture.authenticatedMutationRequest(http.MethodPost, proxyHopURL(node.ID, node.Entrance.HopID)+"/final", url.Values{
+		"csrf_token": {fixture.session.CSRFToken}, "target": {"link:lnk_abcdefghijklmnopqrst"},
+	}.Encode())
+	response := httptest.NewRecorder()
+	fixture.handler.ServeHTTP(response, request)
+	if response.Code != http.StatusBadRequest || !strings.Contains(response.Body.String(), "Direct or Reject") {
+		t.Fatalf("Link terminal target = %d %q, want 400", response.Code, response.Body.String())
+	}
+}
+
+func TestUserSettingsOwnProxyNodeAccessAssignments(t *testing.T) {
+	t.Parallel()
+
+	fixture := newWebFixture(t)
+	enrollAgent(t, fixture.registry, "edge-online")
+	user, err := fixture.proxyNodes.CreateUser("Alice")
+	if err != nil {
+		t.Fatal(err)
+	}
+	node, err := fixture.proxyNodes.CreateProxyNode(proxynode.CreateProxyNodeInput{
+		Name: "Cinema", RootAgent: "edge-online",
+		Entrance: proxynode.Endpoint{
+			Protocol: proxynode.ProtocolAnyTLS, Listen: "::", ListenPort: 443, Family: "auto",
+			TLS: proxynode.TLSConfig{Mode: proxynode.TLSModeSelfSigned, ServerName: "cinema.example"},
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	request := fixture.authenticatedRequest(http.MethodGet, "/users/"+url.PathEscape(user.ID), "")
+	response := httptest.NewRecorder()
+	fixture.handler.ServeHTTP(response, request)
+	if response.Code != http.StatusOK || !strings.Contains(response.Body.String(), "Grant access") || !strings.Contains(response.Body.String(), "Cinema") {
+		t.Fatalf("user settings omitted Proxy Node grant control: %d %q", response.Code, response.Body.String())
+	}
+
+	request = fixture.authenticatedMutationRequest(http.MethodPost, "/users/"+url.PathEscape(user.ID)+"/access", url.Values{
+		"csrf_token": {fixture.session.CSRFToken}, "proxy_id": {node.ID},
+	}.Encode())
+	response = httptest.NewRecorder()
+	fixture.handler.ServeHTTP(response, request)
+	if response.Code != http.StatusSeeOther {
+		t.Fatalf("grant user access = %d %q", response.Code, response.Body.String())
+	}
+	updated, _ := fixture.proxyNodes.ProxyNode(node.ID)
+	if len(updated.Memberships) != 1 || updated.Memberships[0].UserID != user.ID || updated.Memberships[0].Credential.Secret == "" {
+		t.Fatalf("granted membership = %#v", updated.Memberships)
+	}
+
+	request = fixture.authenticatedRequest(http.MethodGet, proxyNodeURL(node.ID), "")
+	response = httptest.NewRecorder()
+	fixture.handler.ServeHTTP(response, request)
+	if response.Code != http.StatusOK || !strings.Contains(response.Body.String(), "Managed per user · 1 assigned") || strings.Contains(response.Body.String(), "/members") {
+		t.Fatalf("Proxy Node page still owns membership assignment: %d %q", response.Code, response.Body.String())
+	}
+
+	request = fixture.authenticatedMutationRequest(http.MethodPost, "/users/"+url.PathEscape(user.ID)+"/access/remove", url.Values{
+		"csrf_token": {fixture.session.CSRFToken}, "proxy_id": {node.ID},
+	}.Encode())
+	response = httptest.NewRecorder()
+	fixture.handler.ServeHTTP(response, request)
+	if response.Code != http.StatusSeeOther {
+		t.Fatalf("revoke user access = %d %q", response.Code, response.Body.String())
+	}
+	updated, _ = fixture.proxyNodes.ProxyNode(node.ID)
+	if len(updated.Memberships) != 0 {
+		t.Fatalf("revoked membership remains: %#v", updated.Memberships)
 	}
 }
 

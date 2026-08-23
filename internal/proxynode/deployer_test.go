@@ -68,10 +68,14 @@ func TestDeployerAppliesReceiversBeforeSendersAndRecordsManagedAgents(t *testing
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, _, err := store.AddLink(node.ID, AddLinkInput{ParentHopID: middle.ID, ChildName: "Exit", ChildAgent: "edge-c", Endpoint: testTLSEndpoint(ProtocolHysteria2, 9443)}); err != nil {
+	second, _, err := store.AddLink(node.ID, AddLinkInput{ParentHopID: middle.ID, ChildName: "Exit", ChildAgent: "edge-c", Endpoint: testTLSEndpoint(ProtocolHysteria2, 9443)})
+	if err != nil {
 		t.Fatal(err)
 	}
-	if err := store.SetFinal(node.ID, node.Entrance.HopID, Target{Type: TargetLink, LinkID: first.ID}); err != nil {
+	if err := store.SetLinkFallback(node.ID, first.ID, true); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.SetLinkFallback(node.ID, second.ID, true); err != nil {
 		t.Fatal(err)
 	}
 	controller := &applyingController{store: deployment.NewMemoryStore(), deployable: map[string]bool{"edge-a": true, "edge-b": true, "edge-c": true}}

@@ -382,10 +382,10 @@ dialog.proxy-hop-manager { width: min(74rem, calc(100vw - 2rem)); height: min(92
 .proxy-hop-manager__card > form { padding: 1rem; }
 .proxy-hop-manager__section { margin-top: 1rem; }
 .proxy-hop-manager__links { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); padding: 1rem; gap: 0.75rem; }
-.proxy-hop-manager__links article { display: grid; padding: 0.75rem; gap: 0.55rem; border: 1px solid var(--ink-200); border-radius: var(--radius-sm); }
-.proxy-hop-manager__links article > span:nth-child(2) { display: grid; gap: 0.1rem; }
+.proxy-hop-manager__links article { display: grid; grid-template-columns: auto auto minmax(0, 1fr); align-items: start; padding: 0.75rem; gap: 0.55rem; border: 1px solid var(--ink-200); border-radius: var(--radius-sm); }
+.proxy-hop-manager__links article > span:nth-child(3) { display: grid; gap: 0.1rem; }
 .proxy-hop-manager__links article small { color: var(--ink-500); }
-.proxy-hop-manager__links article > div { display: flex; align-items: center; flex-wrap: wrap; gap: 0.55rem; }
+.proxy-hop-manager__links article > div { display: flex; grid-column: 1 / -1; align-items: center; flex-wrap: wrap; gap: 0.55rem; }
 .proxy-hop-manager__links form { display: inline-flex; }
 
 .proxy-node-settings { overflow: hidden; }
@@ -460,7 +460,7 @@ dialog.proxy-hop-manager { width: min(74rem, calc(100vw - 2rem)); height: min(92
 .rule-stack { display: grid; }
 .rule-row {
   display: grid;
-  grid-template-columns: 2rem minmax(12rem, 1fr) minmax(8rem, auto) auto;
+  grid-template-columns: 2rem minmax(12rem, 1fr) auto;
   align-items: center;
   gap: 1rem;
   padding: .85rem 1.25rem;
@@ -475,8 +475,9 @@ dialog.proxy-hop-manager { width: min(74rem, calc(100vw - 2rem)); height: min(92
 
 .credential-list { display: grid; gap: 1rem; padding: 1.25rem; }
 .credential-list article { border: 1px solid var(--ink-200); border-radius: var(--radius-md); overflow: hidden; }
-.credential-list article > header { display: flex; justify-content: space-between; padding: .85rem 1rem; background: var(--surface-sunken); }
-.credential-list article > header span { display: grid; gap: .2rem; }
+.credential-list article > header { display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 1rem; padding: .85rem 1rem; background: var(--surface-sunken); }
+.credential-list article > header span { display: grid; min-width: 0; gap: .2rem; }
+.credential-list article > header code { overflow-wrap: anywhere; }
 .credential-row { display: grid; grid-template-columns: auto minmax(0, 1fr) auto; align-items: center; gap: .75rem; padding: .7rem 1rem; border-top: 1px solid var(--ink-200); }
 .credential-row code { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .deployment-agent-list { display: flex; flex-wrap: wrap; gap: .5rem 1rem; margin-top: .5rem; }
@@ -484,7 +485,7 @@ dialog.proxy-hop-manager { width: min(74rem, calc(100vw - 2rem)); height: min(92
 @media (max-width: 760px) {
   .split-panels { grid-template-columns: 1fr; }
   .rule-row { grid-template-columns: 2rem 1fr; }
-  .rule-row__target, .rule-row__actions { grid-column: 2; }
+  .rule-row__actions { grid-column: 2; }
   .credential-row { grid-template-columns: auto 1fr; }
   .credential-row .button { grid-column: 2; }
 }

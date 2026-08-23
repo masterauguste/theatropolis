@@ -88,7 +88,11 @@ func Open(path string, build BuildInfo) (*Store, error) {
 	if stored.SchemaVersion > SchemaVersion {
 		return nil, ErrNewerSchema
 	}
-	if stored.SchemaVersion != SchemaVersion {
+	if stored.SchemaVersion == 1 {
+		if err := migrateSchemaV1(&stored.Data); err != nil {
+			return nil, fmt.Errorf("%w: migrate schema version 1: %v", ErrInvalidState, err)
+		}
+	} else if stored.SchemaVersion != SchemaVersion {
 		return nil, fmt.Errorf("%w: unsupported schema version %d", ErrInvalidState, stored.SchemaVersion)
 	}
 	if err := validateBuildInfo(stored.LastUsedBy); err != nil {
@@ -239,7 +243,7 @@ func (s *Store) CreateProxyNode(input CreateProxyNodeInput) (ProxyNode, error) {
 		Entrance: Entrance{HopID: hopID, Endpoint: input.Entrance},
 		Hops: []Hop{{
 			ID: hopID, Name: input.RootName, AgentID: input.RootAgent,
-			Rules: []Rule{}, Final: input.Final, CreatedAt: now, UpdatedAt: now,
+			Final: input.Final, CreatedAt: now, UpdatedAt: now,
 		}},
 		Links: []Link{}, Memberships: []Membership{}, RuleSets: []CustomRuleSet{},
 		CreatedAt: now, UpdatedAt: now,
@@ -374,11 +378,16 @@ func (s *Store) AddLink(nodeID string, input AddLinkInput) (Link, Hop, error) {
 		return Link{}, Hop{}, err
 	}
 	now := s.now().UTC()
-	child := Hop{ID: hopID, Name: input.ChildName, AgentID: input.ChildAgent, Rules: []Rule{}, Final: input.Final, CreatedAt: now, UpdatedAt: now}
+	child := Hop{ID: hopID, Name: input.ChildName, AgentID: input.ChildAgent, Final: input.Final, CreatedAt: now, UpdatedAt: now}
 	link := Link{ID: linkID, ParentHopID: input.ParentHopID, ChildHopID: hopID, Endpoint: input.Endpoint, Credential: credential, CreatedAt: now, UpdatedAt: now}
 	err = s.mutateProxyNode(nodeID, func(_ *State, node *ProxyNode) error {
 		if !slices.ContainsFunc(node.Hops, func(hop Hop) bool { return hop.ID == input.ParentHopID }) {
 			return ErrNotFound
+		}
+		for _, sibling := range node.Links {
+			if sibling.ParentHopID == input.ParentHopID && sibling.Order >= link.Order {
+				link.Order = sibling.Order + 1
+			}
 		}
 		node.Hops = append(node.Hops, child)
 		node.Links = append(node.Links, link)
@@ -458,15 +467,7 @@ func (s *Store) DeleteLink(nodeID, linkID string) error {
 		}
 		node.Hops = slices.DeleteFunc(node.Hops, func(hop Hop) bool { return removeHops[hop.ID] })
 		node.Links = slices.DeleteFunc(node.Links, func(link Link) bool { return removeLinks[link.ID] })
-		for hopIndex := range node.Hops {
-			hop := &node.Hops[hopIndex]
-			hop.Rules = slices.DeleteFunc(hop.Rules, func(rule Rule) bool {
-				return rule.Target.Type == TargetLink && removeLinks[rule.Target.LinkID]
-			})
-			if hop.Final.Type == TargetLink && removeLinks[hop.Final.LinkID] {
-				hop.Final = Target{Type: TargetReject}
-			}
-		}
+		normalizeLinkOrders(node)
 		return nil
 	})
 }
@@ -476,12 +477,15 @@ func (s *Store) AddRule(nodeID string, input AddRuleInput) (Rule, error) {
 	if err != nil {
 		return Rule{}, err
 	}
-	created := Rule{ID: ruleID, Match: input.Match, Values: normalizeValues(input.Values), Target: input.Target}
+	created := Rule{ID: ruleID, Match: input.Match, Values: normalizeValues(input.Values)}
 	err = s.mutateProxyNode(nodeID, func(_ *State, node *ProxyNode) error {
-		for index := range node.Hops {
-			if node.Hops[index].ID == input.HopID {
-				node.Hops[index].Rules = append(node.Hops[index].Rules, created)
-				node.Hops[index].UpdatedAt = s.now().UTC()
+		for index := range node.Links {
+			if node.Links[index].ID == input.LinkID {
+				if node.Links[index].Fallback {
+					return fmt.Errorf("%w: fallback Link cannot contain match rules", ErrConflict)
+				}
+				node.Links[index].Rules = append(node.Links[index].Rules, created)
+				node.Links[index].UpdatedAt = s.now().UTC()
 				return nil
 			}
 		}
@@ -490,15 +494,15 @@ func (s *Store) AddRule(nodeID string, input AddRuleInput) (Rule, error) {
 	return created, err
 }
 
-func (s *Store) DeleteRule(nodeID, hopID, ruleID string) error {
+func (s *Store) DeleteRule(nodeID, linkID, ruleID string) error {
 	return s.mutateProxyNode(nodeID, func(_ *State, node *ProxyNode) error {
-		for index := range node.Hops {
-			if node.Hops[index].ID != hopID {
+		for index := range node.Links {
+			if node.Links[index].ID != linkID {
 				continue
 			}
-			before := len(node.Hops[index].Rules)
-			node.Hops[index].Rules = slices.DeleteFunc(node.Hops[index].Rules, func(rule Rule) bool { return rule.ID == ruleID })
-			if len(node.Hops[index].Rules) == before {
+			before := len(node.Links[index].Rules)
+			node.Links[index].Rules = slices.DeleteFunc(node.Links[index].Rules, func(rule Rule) bool { return rule.ID == ruleID })
+			if len(node.Links[index].Rules) == before {
 				return ErrNotFound
 			}
 			return nil
@@ -507,16 +511,16 @@ func (s *Store) DeleteRule(nodeID, hopID, ruleID string) error {
 	})
 }
 
-func (s *Store) MoveRule(nodeID, hopID, ruleID string, delta int) error {
+func (s *Store) MoveRule(nodeID, linkID, ruleID string, delta int) error {
 	if delta != -1 && delta != 1 {
 		return fmt.Errorf("%w: invalid Rule movement", ErrInvalidState)
 	}
 	return s.mutateProxyNode(nodeID, func(_ *State, node *ProxyNode) error {
-		for hopIndex := range node.Hops {
-			if node.Hops[hopIndex].ID != hopID {
+		for linkIndex := range node.Links {
+			if node.Links[linkIndex].ID != linkID {
 				continue
 			}
-			rules := node.Hops[hopIndex].Rules
+			rules := node.Links[linkIndex].Rules
 			index := slices.IndexFunc(rules, func(rule Rule) bool { return rule.ID == ruleID })
 			if index < 0 {
 				return ErrNotFound
@@ -526,10 +530,58 @@ func (s *Store) MoveRule(nodeID, hopID, ruleID string, delta int) error {
 				return nil
 			}
 			rules[index], rules[target] = rules[target], rules[index]
-			node.Hops[hopIndex].Rules = rules
+			node.Links[linkIndex].Rules = rules
 			return nil
 		}
 		return ErrNotFound
+	})
+}
+
+func (s *Store) MoveLink(nodeID, linkID string, delta int) error {
+	if delta != -1 && delta != 1 {
+		return fmt.Errorf("%w: invalid Link movement", ErrInvalidState)
+	}
+	return s.mutateProxyNode(nodeID, func(_ *State, node *ProxyNode) error {
+		index := slices.IndexFunc(node.Links, func(link Link) bool { return link.ID == linkID })
+		if index < 0 {
+			return ErrNotFound
+		}
+		link := &node.Links[index]
+		siblings := orderedSiblingLinkIndexes(*node, link.ParentHopID)
+		position := slices.Index(siblings, index)
+		target := position + delta
+		if target < 0 || target >= len(siblings) {
+			return nil
+		}
+		if (link.Fallback && delta < 0) || (node.Links[siblings[target]].Fallback && delta > 0) {
+			return fmt.Errorf("%w: fallback Link must remain last", ErrConflict)
+		}
+		other := &node.Links[siblings[target]]
+		link.Order, other.Order = other.Order, link.Order
+		return nil
+	})
+}
+
+func (s *Store) SetLinkFallback(nodeID, linkID string, fallback bool) error {
+	return s.mutateProxyNode(nodeID, func(_ *State, node *ProxyNode) error {
+		index := slices.IndexFunc(node.Links, func(link Link) bool { return link.ID == linkID })
+		if index < 0 {
+			return ErrNotFound
+		}
+		parentID := node.Links[index].ParentHopID
+		if fallback {
+			for siblingIndex := range node.Links {
+				if node.Links[siblingIndex].ParentHopID == parentID {
+					node.Links[siblingIndex].Fallback = false
+				}
+			}
+			node.Links[index].Rules = nil
+			node.Links[index].Fallback = true
+			normalizeLinkOrders(node)
+			return nil
+		}
+		node.Links[index].Fallback = false
+		return nil
 	})
 }
 
@@ -572,8 +624,8 @@ func (s *Store) DeleteRuleSet(nodeID, tag string) error {
 		if len(node.RuleSets) == before {
 			return ErrNotFound
 		}
-		for _, hop := range node.Hops {
-			for _, rule := range hop.Rules {
+		for _, link := range node.Links {
+			for _, rule := range link.Rules {
 				if rule.Match == MatchRuleSet && slices.Contains(rule.Values, tag) {
 					return fmt.Errorf("%w: Rule Set is still referenced", ErrConflict)
 				}
@@ -729,4 +781,142 @@ func normalizeValues(values []string) []string {
 		result = append(result, value)
 	}
 	return result
+}
+
+func migrateSchemaV1(state *State) error {
+	for nodeIndex := range state.ProxyNodes {
+		node := &state.ProxyNodes[nodeIndex]
+		linkIndexes := make(map[string]int, len(node.Links))
+		ordered := make(map[string][]string, len(node.Hops))
+		for index := range node.Links {
+			linkIndexes[node.Links[index].ID] = index
+			node.Links[index].Rules = nil
+			node.Links[index].Fallback = false
+		}
+		for hopIndex := range node.Hops {
+			hop := &node.Hops[hopIndex]
+			unconditional := false
+			currentLinkID := ""
+			closedLinks := make(map[string]bool)
+			for _, legacy := range hop.LegacyRules {
+				if unconditional {
+					continue
+				}
+				if legacy.LegacyTarget == nil {
+					return fmt.Errorf("Hop %q has a Rule without a target", hop.Name)
+				}
+				if legacy.Match == MatchNone {
+					switch legacy.LegacyTarget.Type {
+					case TargetLink:
+						index, exists := linkIndexes[legacy.LegacyTarget.LinkID]
+						if !exists || node.Links[index].ParentHopID != hop.ID {
+							return fmt.Errorf("Hop %q fallback Rule references a missing child Link", hop.Name)
+						}
+						link := &node.Links[index]
+						link.Rules = nil
+						link.Fallback = true
+						if !slices.Contains(ordered[hop.ID], link.ID) {
+							ordered[hop.ID] = append(ordered[hop.ID], link.ID)
+						}
+					case TargetDirect, TargetReject:
+						hop.Final = *legacy.LegacyTarget
+					default:
+						return fmt.Errorf("Hop %q has an invalid fallback Rule target", hop.Name)
+					}
+					unconditional = true
+					continue
+				}
+				if legacy.LegacyTarget.Type != TargetLink {
+					return fmt.Errorf("Hop %q has a conditional terminal Rule that cannot be represented by Link-owned routing", hop.Name)
+				}
+				index, exists := linkIndexes[legacy.LegacyTarget.LinkID]
+				if !exists || node.Links[index].ParentHopID != hop.ID {
+					return fmt.Errorf("Hop %q Rule references a missing child Link", hop.Name)
+				}
+				link := &node.Links[index]
+				if link.ID != currentLinkID {
+					if currentLinkID != "" {
+						closedLinks[currentLinkID] = true
+					}
+					if closedLinks[link.ID] {
+						return fmt.Errorf("Hop %q interleaves Rules for Link %q; Link-owned routing cannot preserve their priority", hop.Name, link.ID)
+					}
+					currentLinkID = link.ID
+				}
+				if !slices.Contains(ordered[hop.ID], link.ID) {
+					ordered[hop.ID] = append(ordered[hop.ID], link.ID)
+				}
+				legacy.LegacyTarget = nil
+				link.Rules = append(link.Rules, legacy)
+			}
+			hop.LegacyRules = nil
+			if unconditional {
+				if hop.Final.Type == TargetLink {
+					hop.Final = Target{Type: TargetReject}
+				}
+			} else if hop.Final.Type == TargetLink {
+				index, exists := linkIndexes[hop.Final.LinkID]
+				if !exists || node.Links[index].ParentHopID != hop.ID {
+					return fmt.Errorf("Hop %q fallback references a missing child Link", hop.Name)
+				}
+				for siblingIndex := range node.Links {
+					if node.Links[siblingIndex].ParentHopID == hop.ID {
+						node.Links[siblingIndex].Fallback = false
+					}
+				}
+				node.Links[index].Rules = nil
+				node.Links[index].Fallback = true
+				hop.Final = Target{Type: TargetReject}
+			} else if hop.Final.Type != TargetDirect && hop.Final.Type != TargetReject {
+				return fmt.Errorf("Hop %q has an invalid terminal fallback", hop.Name)
+			}
+		}
+		for _, hop := range node.Hops {
+			sequence := append([]string(nil), ordered[hop.ID]...)
+			for _, link := range node.Links {
+				if link.ParentHopID == hop.ID && !link.Fallback && !slices.Contains(sequence, link.ID) {
+					sequence = append(sequence, link.ID)
+				}
+			}
+			for _, link := range node.Links {
+				if link.ParentHopID == hop.ID && link.Fallback && !slices.Contains(sequence, link.ID) {
+					sequence = append(sequence, link.ID)
+				}
+			}
+			for order, linkID := range sequence {
+				node.Links[linkIndexes[linkID]].Order = order
+			}
+		}
+		normalizeLinkOrders(node)
+	}
+	return nil
+}
+
+func orderedSiblingLinkIndexes(node ProxyNode, parentHopID string) []int {
+	indexes := make([]int, 0)
+	for index, link := range node.Links {
+		if link.ParentHopID == parentHopID {
+			indexes = append(indexes, index)
+		}
+	}
+	sort.SliceStable(indexes, func(left, right int) bool {
+		return node.Links[indexes[left]].Order < node.Links[indexes[right]].Order
+	})
+	return indexes
+}
+
+func normalizeLinkOrders(node *ProxyNode) {
+	for _, hop := range node.Hops {
+		indexes := orderedSiblingLinkIndexes(*node, hop.ID)
+		sort.SliceStable(indexes, func(left, right int) bool {
+			leftLink, rightLink := node.Links[indexes[left]], node.Links[indexes[right]]
+			if leftLink.Fallback != rightLink.Fallback {
+				return !leftLink.Fallback
+			}
+			return leftLink.Order < rightLink.Order
+		})
+		for order, index := range indexes {
+			node.Links[index].Order = order
+		}
+	}
 }

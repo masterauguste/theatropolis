@@ -1,6 +1,6 @@
 # Proxy Node Manager Design
 
-Status: accepted product model; implementation has not started.
+Status: implemented product model.
 
 This document defines the intended replacement for Theatropolis's current
 per-agent sing-box configuration manager. It also records the proposed
@@ -61,7 +61,7 @@ A Proxy Node is an independently managed logical proxy service. It contains:
 - a mutable, unique name;
 - exactly one entrance;
 - one or more logical hops;
-- ordered routing rules at each hop;
+- ordered links from each hop, with Link-owned match clauses;
 - links from a hop to child hops; and
 - terminal `direct` or `reject` outcomes.
 
@@ -117,6 +117,12 @@ The initial topology is a strict rooted tree:
 A Link connects one parent hop to one child hop. Its relay protocol and
 protocol-specific options are configured independently.
 
+Each Link also owns zero or more routing match clauses. Clauses on one Link are
+ORed together, sibling Links are evaluated in administrator-defined order, and
+the first matching Link wins. A Link with no clauses is inactive unless it is
+explicitly the Hop's fallback Link. At most one fallback Link exists per Hop and
+it is always ordered last.
+
 Every Link receives its own automatically generated credentials. Those
 credentials are shared by all end-user traffic traversing that Link, but are
 never reused by another Link, including another Link in the same Proxy Node.
@@ -143,11 +149,12 @@ server is represented by a Link to another Hop.
 A Membership assigns one global End User to one Proxy Node. The pair
 `(end_user_id, proxy_node_id)` is unique.
 
-Creating a Membership automatically generates fresh credentials compatible
-with the Proxy Node's entrance protocol. Administrators cannot choose or reuse
-the secret. Credentials are unique per Membership even when the same End User
-belongs to several Proxy Nodes or the Proxy Nodes currently have distinct
-entrances.
+Proxy Node access is granted and revoked from the End User's settings rather
+than by adding users from a Proxy Node page. Creating a Membership
+automatically generates fresh credentials compatible with the Proxy Node's
+entrance protocol. Administrators cannot choose or reuse the secret.
+Credentials are unique per Membership even when the same End User belongs to
+several Proxy Nodes or the Proxy Nodes currently have distinct entrances.
 
 The generated authenticated-user label follows:
 
@@ -188,24 +195,26 @@ At an entrance, authentication maps a connection to a Membership-specific
 Node's root routing tree. At a relay inbound, authentication maps the
 connection to that Link's identity and selects the child Hop's routing tree.
 
-Rules at each Hop are ordered and apply to all Proxy Node traffic which reaches
-that Hop. There is no separately configurable routing scope. Every path must
-have an explicit final outcome:
-a child Link, `direct`, or `reject`. The compiler rejects missing targets,
-cycles, merges, listener conflicts, duplicate wire credentials on a combined
-listener, and references outside the owning Proxy Node.
+Child Links at each Hop are ordered and their Link-owned match clauses apply to
+all Proxy Node traffic which reaches that Hop. There is no separately
+configurable routing scope. Multiple clauses on one Link are ORed. The first
+matching Link wins; an optional unconditional fallback Link is evaluated last;
+otherwise the Hop's required `direct` or `reject` terminal is used. The compiler
+rejects missing targets, cycles, merges, listener conflicts, duplicate wire
+credentials on a combined listener, and references outside the owning Proxy
+Node.
 
-A `direct` or `reject` target is compiled into the sing-box configuration of
-the Agent hosting that Hop. A Link target is compiled on the parent Agent and
-hands traffic to the child Hop, whose own ordered rules and fallback then take
+A `direct` or `reject` terminal is compiled into the sing-box configuration of
+the Agent hosting that Hop. A selected Link is compiled on the parent Agent and
+hands traffic to the child Hop, whose own ordered Links and terminal then take
 over. Consequently, the terminal action for a relayed path executes on that
 path's final Hop, not on its entrance or an earlier relay.
 
 The Proxy Node overview renders this model as a recursive routing tree. Hop
-cards show every ordered rule and fallback, Link edges show which rules select
-them, and Direct/Reject targets identify the Agent on which they terminate.
-Configured but unreferenced Links are visibly warned so an administrator can
-distinguish a complete traffic path from unused topology.
+cards show their terminal behavior, Link edges show their owned match clauses
+or fallback status, and Direct/Reject targets identify the Agent on which they
+terminate. Configured but unreferenced Links are visibly warned so an
+administrator can distinguish a complete traffic path from unused topology.
 
 Generated sing-box tags must include opaque IDs or an equivalent collision-free
 component. Human-readable names are included for clarity but are never relied
@@ -243,7 +252,7 @@ The implementation must preserve all of the following:
 3. A Membership credential is never reused by another Membership.
 4. A Link credential is never reused by another Link.
 5. A non-root Hop has exactly one incoming Link.
-6. A routing target belongs to the same Proxy Node as its rule.
+6. A routing match clause belongs to exactly one Link in the same Proxy Node.
 7. A Proxy Node rename changes names, not immutable identity.
 8. Removing a Proxy Node removes only its generated portion of every affected
    Agent configuration.
@@ -260,7 +269,7 @@ fields with separate purposes. Conceptually:
 ```json
 {
   "schema": "theatropolis/proxy-node-state",
-  "schema_version": 1,
+  "schema_version": 2,
   "last_used_by": {
     "component": "master",
     "version": "v1.0.0",
@@ -478,9 +487,10 @@ leave application state untouched.
 - `proxy-node-state.json` is the authoritative strict versioned master store;
   its mutations are atomic and revisioned.
 - Shadowsocks 2022, AnyTLS, and Hysteria2 are supported on entrances and Links.
-- Hop rules support all-traffic, protocol, domain, domain suffix, domain
-  keyword, domain regex, IP/CIDR, geosite, geoip, custom Rule Set, and network
-  matches. The final target is Direct, Reject, or a child Link.
+- Link-owned clauses support protocol, domain, domain suffix, domain keyword,
+  domain regex, IP/CIDR, geosite, geoip, custom Rule Set, and network matches.
+  Each Hop has a Direct or Reject terminal, while an optional fallback Link is
+  the final relay branch.
 - Credentials are generated automatically. Membership import URIs are revealed
   only on the global user's detail page; Link secrets are never displayed.
 - Agents advertise `proxy-node-config-v1`; an old Agent cannot receive a new
