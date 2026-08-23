@@ -1064,8 +1064,9 @@ func TestProxyNodePagesUseHopWideRulesAndMembershipCredentials(t *testing.T) {
 	}
 	body = response.Body.String()
 	for _, expected := range []string{
-		"All configured paths terminate", "Every route reaches Direct or Reject on the Agent hosting its final Hop.",
-		"Used by Rule 1", "Link to Exit", "Terminal on edge-online", "Terminal on edge-exit", "Incoming Link · port 8443",
+		"Every configured path reaches an exit", "Direct and Reject run on the Agent attached to their final Hop.",
+		"Left-to-right relay tree", `data-proxy-inspector-open="link-`, "Rule 1", "Link to Exit",
+		"Terminal on edge-online", "Terminal on edge-exit", "Incoming Link · port 8443",
 	} {
 		if !strings.Contains(body, expected) {
 			t.Errorf("Proxy Node tree does not contain %q", expected)

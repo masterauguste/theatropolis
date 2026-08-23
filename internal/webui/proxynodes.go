@@ -65,6 +65,7 @@ type proxyTreeHopView struct {
 }
 
 type proxyTreeRouteView struct {
+	InspectorID  string
 	Label        string
 	Match        string
 	Values       string
@@ -79,7 +80,7 @@ type proxyTreeLinkView struct {
 	EditURL    string
 	Protocol   string
 	ListenPort int
-	Usage      string
+	Conditions []proxyTreeRouteView
 	Used       bool
 	Child      *proxyTreeHopView
 }
@@ -836,15 +837,19 @@ func buildProxyTree(node proxynode.ProxyNode) (*proxyTreeHopView, int, int) {
 			return strings.ToLower(leftHop.Name) < strings.ToLower(rightHop.Name)
 		})
 	}
-	uses := make(map[string][]string, len(node.Links))
+	uses := make(map[string][]proxyTreeRouteView, len(node.Links))
 	for _, hop := range node.Hops {
 		for index, rule := range hop.Rules {
 			if rule.Target.Type == proxynode.TargetLink {
-				uses[rule.Target.LinkID] = append(uses[rule.Target.LinkID], "Rule "+strconv.Itoa(index+1))
+				uses[rule.Target.LinkID] = append(uses[rule.Target.LinkID], proxyTreeRoute(
+					node, hop, "Rule "+strconv.Itoa(index+1), matchLabel(rule.Match), strings.Join(rule.Values, ", "), rule.Target,
+				))
 			}
 		}
 		if hop.Final.Type == proxynode.TargetLink {
-			uses[hop.Final.LinkID] = append(uses[hop.Final.LinkID], "Fallback")
+			uses[hop.Final.LinkID] = append(uses[hop.Final.LinkID], proxyTreeRoute(
+				node, hop, "Fallback", "When no ordered rule matches", "", hop.Final,
+			))
 		}
 	}
 	unusedLinks := 0
@@ -865,30 +870,30 @@ func buildProxyTree(node proxynode.ProxyNode) (*proxyTreeHopView, int, int) {
 			IsEntrance: hop.ID == node.Entrance.HopID, IngressProtocol: ingressProtocol, IngressLabel: ingressLabel,
 			Fallback: proxyTreeRoute(node, hop, "Fallback", "When no ordered rule matches", "", hop.Final),
 		}
+		view.Fallback.InspectorID = "terminal-" + hop.ID + "-fallback"
 		if hop.Final.Type != proxynode.TargetLink {
 			view.TerminalCount++
 		}
 		for index, rule := range hop.Rules {
 			values := strings.Join(rule.Values, ", ")
-			view.Routes = append(view.Routes, proxyTreeRoute(node, hop, "Rule "+strconv.Itoa(index+1), matchLabel(rule.Match), values, rule.Target))
+			route := proxyTreeRoute(node, hop, "Rule "+strconv.Itoa(index+1), matchLabel(rule.Match), values, rule.Target)
+			route.InspectorID = "terminal-" + hop.ID + "-rule-" + strconv.Itoa(index+1)
+			view.Routes = append(view.Routes, route)
 			if rule.Target.Type != proxynode.TargetLink {
 				view.TerminalCount++
 			}
 		}
 		for index := range children[hopID] {
 			link := children[hopID][index]
-			usage := uses[link.ID]
-			used := len(usage) > 0
-			usageLabel := "Not selected by any rule or fallback"
-			if used {
-				usageLabel = "Used by " + strings.Join(usage, ", ")
-			} else {
+			conditions := uses[link.ID]
+			used := len(conditions) > 0
+			if !used {
 				unusedLinks++
 			}
 			child := visit(link.ChildHopID, &link)
 			view.Children = append(view.Children, proxyTreeLinkView{
 				ID: link.ID, EditURL: proxyLinkURL(node.ID, link.ID), Protocol: protocolLabel(link.Endpoint.Protocol),
-				ListenPort: link.Endpoint.ListenPort, Usage: usageLabel, Used: used, Child: child,
+				ListenPort: link.Endpoint.ListenPort, Conditions: conditions, Used: used, Child: child,
 			})
 			if child != nil {
 				view.TerminalCount += child.TerminalCount

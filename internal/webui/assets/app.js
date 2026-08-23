@@ -101,6 +101,22 @@ const redirectForExpiredSession = (response) => {
 };
 
 document.addEventListener("click", (event) => {
+  const inspectorButton = event.target.closest("[data-proxy-inspector-open]");
+  if (inspectorButton) {
+    const dialog = document.getElementById("proxy-tree-inspector");
+    const viewID = inspectorButton.dataset.proxyInspectorOpen;
+    if (!(dialog instanceof HTMLDialogElement)) return;
+    const views = [...dialog.querySelectorAll("[data-proxy-inspector-view]")];
+    const selected = views.find((view) => view.dataset.proxyInspectorView === viewID);
+    if (!selected) return;
+    for (const view of views) {
+      view.hidden = view !== selected;
+    }
+    dialogTriggers.set(dialog, inspectorButton);
+    dialog.showModal();
+    return;
+  }
+
   const button = event.target.closest("[data-dialog-open]");
   if (button) {
     const dialog = document.getElementById(button.dataset.dialogOpen);
