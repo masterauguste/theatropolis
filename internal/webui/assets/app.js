@@ -101,6 +101,28 @@ const redirectForExpiredSession = (response) => {
 };
 
 document.addEventListener("click", (event) => {
+  const manageHopButton = event.target.closest("[data-proxy-hop-manage]");
+  if (manageHopButton) {
+    const dialog = document.getElementById("proxy-hop-manager");
+    const hopID = manageHopButton.dataset.proxyHopManage;
+    if (!(dialog instanceof HTMLDialogElement)) return;
+    const views = [...dialog.querySelectorAll("[data-proxy-hop-manager-view]")];
+    const selected = views.find((view) => view.dataset.proxyHopManagerView === hopID);
+    if (!selected) return;
+    for (const view of views) {
+      view.hidden = view !== selected;
+    }
+    const sourceDialog = manageHopButton.closest("dialog");
+    if (sourceDialog instanceof HTMLDialogElement && sourceDialog !== dialog && sourceDialog.open) {
+      sourceDialog.close();
+    }
+    const treeButton = [...document.querySelectorAll("[data-proxy-inspector-open]")]
+      .find((button) => button.dataset.proxyInspectorOpen === `hop-${hopID}`);
+    dialogTriggers.set(dialog, treeButton || manageHopButton);
+    if (!dialog.open) dialog.showModal();
+    return;
+  }
+
   const inspectorButton = event.target.closest("[data-proxy-inspector-open]");
   if (inspectorButton) {
     const dialog = document.getElementById("proxy-tree-inspector");
@@ -133,6 +155,16 @@ document.addEventListener("click", (event) => {
     closeButton.closest("dialog")?.close();
   }
 });
+
+const initialManagedHop = new URLSearchParams(window.location.search).get("manage_hop");
+if (initialManagedHop) {
+  const manageHopButton = [...document.querySelectorAll("[data-proxy-hop-manage]")]
+    .find((button) => button.dataset.proxyHopManage === initialManagedHop);
+  manageHopButton?.click();
+  const cleanURL = new URL(window.location.href);
+  cleanURL.searchParams.delete("manage_hop");
+  window.history.replaceState(null, "", cleanURL);
+}
 
 document.addEventListener("cancel", (event) => {
   if (event.target.matches("dialog.modal")) {

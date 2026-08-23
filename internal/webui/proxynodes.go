@@ -62,6 +62,10 @@ type proxyTreeHopView struct {
 	Children        []proxyTreeLinkView
 	TerminalCount   int
 	BranchCount     int
+	Manager         *hopDetailView
+	AgentOptions    []agentOptionView
+	NewLinkEndpoint endpointView
+	CSRFToken       string
 }
 
 type proxyTreeRouteView struct {
@@ -80,8 +84,12 @@ type proxyTreeLinkView struct {
 	EditURL    string
 	Protocol   string
 	ListenPort int
+	Listener   string
+	Family     string
+	Endpoint   endpointView
 	Conditions []proxyTreeRouteView
 	Used       bool
+	Fallback   bool
 	Child      *proxyTreeHopView
 }
 
@@ -270,7 +278,7 @@ func (h *Handler) createProxyNode(response http.ResponseWriter, request *http.Re
 		handleProxyMutationError(response, err)
 		return
 	}
-	http.Redirect(response, request, proxyHopURL(node.ID, node.Entrance.HopID), http.StatusSeeOther)
+	http.Redirect(response, request, proxyHopManagerURL(node.ID, node.Entrance.HopID), http.StatusSeeOther)
 }
 
 func (h *Handler) proxyNodePage(response http.ResponseWriter, request *http.Request) {
@@ -282,10 +290,22 @@ func (h *Handler) proxyNodePage(response http.ResponseWriter, request *http.Requ
 	if !ok {
 		return
 	}
+	detail := h.proxyNodeDetail(node)
+	setProxyTreeCSRF(detail.Tree, session.CSRFToken)
 	h.render(response, http.StatusOK, "proxy-node.html", pageData{
 		Title: node.Name, ActiveNav: "proxy-nodes", CSRFToken: session.CSRFToken,
-		ProxyNode: h.proxyNodeDetail(node), ProxyDeployment: h.proxyDeploymentView(),
+		ProxyNode: detail, ProxyDeployment: h.proxyDeploymentView(),
 	})
+}
+
+func setProxyTreeCSRF(tree *proxyTreeHopView, token string) {
+	if tree == nil {
+		return
+	}
+	tree.CSRFToken = token
+	for _, link := range tree.Children {
+		setProxyTreeCSRF(link.Child, token)
+	}
 }
 
 func (h *Handler) renameProxyNode(response http.ResponseWriter, request *http.Request) {
@@ -486,7 +506,7 @@ func (h *Handler) deleteProxyRuleSet(response http.ResponseWriter, request *http
 }
 
 func (h *Handler) proxyHopPage(response http.ResponseWriter, request *http.Request) {
-	session, ok := h.requireAuthentication(response, request)
+	_, ok := h.requireAuthentication(response, request)
 	if !ok {
 		return
 	}
@@ -499,11 +519,7 @@ func (h *Handler) proxyHopPage(response http.ResponseWriter, request *http.Reque
 		http.NotFound(response, request)
 		return
 	}
-	h.render(response, http.StatusOK, "proxy-node-hop.html", pageData{
-		Title: hop.Name, ActiveNav: "proxy-nodes", CSRFToken: session.CSRFToken,
-		ProxyNode: h.proxyNodeDetail(node), Hop: h.hopDetail(node, hop),
-		AgentOptions: h.proxyAgentOptions(hop.AgentID), Endpoint: defaultEndpointView(),
-	})
+	http.Redirect(response, request, proxyHopManagerURL(node.ID, hop.ID), http.StatusSeeOther)
 }
 
 func (h *Handler) updateProxyHop(response http.ResponseWriter, request *http.Request) {
@@ -516,7 +532,7 @@ func (h *Handler) updateProxyHop(response http.ResponseWriter, request *http.Req
 		handleProxyMutationError(response, err)
 		return
 	}
-	http.Redirect(response, request, proxyHopURL(nodeID, hopID), http.StatusSeeOther)
+	http.Redirect(response, request, proxyHopManagerURL(nodeID, hopID), http.StatusSeeOther)
 }
 
 func (h *Handler) addProxyLink(response http.ResponseWriter, request *http.Request) {
@@ -540,7 +556,7 @@ func (h *Handler) addProxyLink(response http.ResponseWriter, request *http.Reque
 		handleProxyMutationError(response, err)
 		return
 	}
-	http.Redirect(response, request, proxyHopURL(nodeID, hopID), http.StatusSeeOther)
+	http.Redirect(response, request, proxyHopManagerURL(nodeID, hopID), http.StatusSeeOther)
 }
 
 func (h *Handler) deleteProxyLink(response http.ResponseWriter, request *http.Request) {
@@ -557,7 +573,7 @@ func (h *Handler) deleteProxyLink(response http.ResponseWriter, request *http.Re
 		handleProxyMutationError(response, err)
 		return
 	}
-	http.Redirect(response, request, proxyHopURL(nodeID, hopID), http.StatusSeeOther)
+	http.Redirect(response, request, proxyHopManagerURL(nodeID, hopID), http.StatusSeeOther)
 }
 
 func (h *Handler) proxyLinkPage(response http.ResponseWriter, request *http.Request) {
@@ -607,7 +623,7 @@ func (h *Handler) updateProxyLink(response http.ResponseWriter, request *http.Re
 		handleProxyMutationError(response, err)
 		return
 	}
-	http.Redirect(response, request, proxyHopURL(nodeID, link.ParentHopID), http.StatusSeeOther)
+	http.Redirect(response, request, proxyHopManagerURL(nodeID, link.ParentHopID), http.StatusSeeOther)
 }
 
 func (h *Handler) addProxyRule(response http.ResponseWriter, request *http.Request) {
@@ -625,7 +641,7 @@ func (h *Handler) addProxyRule(response http.ResponseWriter, request *http.Reque
 		handleProxyMutationError(response, err)
 		return
 	}
-	http.Redirect(response, request, proxyHopURL(nodeID, hopID), http.StatusSeeOther)
+	http.Redirect(response, request, proxyHopManagerURL(nodeID, hopID), http.StatusSeeOther)
 }
 
 func (h *Handler) deleteProxyRule(response http.ResponseWriter, request *http.Request) {
@@ -638,7 +654,7 @@ func (h *Handler) deleteProxyRule(response http.ResponseWriter, request *http.Re
 		handleProxyMutationError(response, err)
 		return
 	}
-	http.Redirect(response, request, proxyHopURL(nodeID, hopID), http.StatusSeeOther)
+	http.Redirect(response, request, proxyHopManagerURL(nodeID, hopID), http.StatusSeeOther)
 }
 
 func (h *Handler) moveProxyRule(response http.ResponseWriter, request *http.Request) {
@@ -658,7 +674,7 @@ func (h *Handler) moveProxyRule(response http.ResponseWriter, request *http.Requ
 		handleProxyMutationError(response, err)
 		return
 	}
-	http.Redirect(response, request, proxyHopURL(nodeID, hopID), http.StatusSeeOther)
+	http.Redirect(response, request, proxyHopManagerURL(nodeID, hopID), http.StatusSeeOther)
 }
 
 func (h *Handler) updateProxyFinal(response http.ResponseWriter, request *http.Request) {
@@ -676,7 +692,7 @@ func (h *Handler) updateProxyFinal(response http.ResponseWriter, request *http.R
 		handleProxyMutationError(response, err)
 		return
 	}
-	http.Redirect(response, request, proxyHopURL(nodeID, hopID), http.StatusSeeOther)
+	http.Redirect(response, request, proxyHopManagerURL(nodeID, hopID), http.StatusSeeOther)
 }
 
 func (h *Handler) endUsersPage(response http.ResponseWriter, request *http.Request) {
@@ -800,7 +816,24 @@ func (h *Handler) proxyNodeDetail(node proxynode.ProxyNode) *proxyNodeDetailView
 		return strings.ToLower(detail.Members[left].UserName) < strings.ToLower(detail.Members[right].UserName)
 	})
 	detail.Tree, detail.TerminalCount, detail.UnusedLinkCount = buildProxyTree(node)
+	h.attachProxyTreeManagers(node, detail.Tree)
 	return detail
+}
+
+func (h *Handler) attachProxyTreeManagers(node proxynode.ProxyNode, tree *proxyTreeHopView) {
+	if tree == nil {
+		return
+	}
+	hop, exists := proxyHop(node, tree.ID)
+	if !exists {
+		return
+	}
+	tree.Manager = h.hopDetail(node, hop)
+	tree.AgentOptions = h.proxyAgentOptions(hop.AgentID)
+	tree.NewLinkEndpoint = defaultEndpointView()
+	for _, link := range tree.Children {
+		h.attachProxyTreeManagers(node, link.Child)
+	}
 }
 
 func (h *Handler) hopDetail(node proxynode.ProxyNode, hop proxynode.Hop) *hopDetailView {
@@ -832,6 +865,12 @@ func buildProxyTree(node proxynode.ProxyNode) (*proxyTreeHopView, int, int) {
 	}
 	for parent := range children {
 		sort.Slice(children[parent], func(left, right int) bool {
+			parentHop := hops[parent]
+			leftFallback := parentHop.Final.Type == proxynode.TargetLink && parentHop.Final.LinkID == children[parent][left].ID
+			rightFallback := parentHop.Final.Type == proxynode.TargetLink && parentHop.Final.LinkID == children[parent][right].ID
+			if leftFallback != rightFallback {
+				return !leftFallback
+			}
 			leftHop, _ := proxyHop(node, children[parent][left].ChildHopID)
 			rightHop, _ := proxyHop(node, children[parent][right].ChildHopID)
 			return strings.ToLower(leftHop.Name) < strings.ToLower(rightHop.Name)
@@ -893,7 +932,9 @@ func buildProxyTree(node proxynode.ProxyNode) (*proxyTreeHopView, int, int) {
 			child := visit(link.ChildHopID, &link)
 			view.Children = append(view.Children, proxyTreeLinkView{
 				ID: link.ID, EditURL: proxyLinkURL(node.ID, link.ID), Protocol: protocolLabel(link.Endpoint.Protocol),
-				ListenPort: link.Endpoint.ListenPort, Conditions: conditions, Used: used, Child: child,
+				ListenPort: link.Endpoint.ListenPort, Listener: listenEndpointLabel(link.Endpoint.Listen, link.Endpoint.ListenPort),
+				Family: relayFamilyLabel(link.Endpoint.Family), Endpoint: endpointViewFor(link.Endpoint), Conditions: conditions, Used: used,
+				Fallback: hop.Final.Type == proxynode.TargetLink && hop.Final.LinkID == link.ID, Child: child,
 			})
 			if child != nil {
 				view.TerminalCount += child.TerminalCount
@@ -1240,8 +1281,29 @@ func proxyRuleSetsURL(id string) string { return "/proxy-nodes/" + url.PathEscap
 func proxyHopURL(nodeID, hopID string) string {
 	return "/proxy-nodes/" + url.PathEscape(nodeID) + "/hops/" + url.PathEscape(hopID)
 }
+func proxyHopManagerURL(nodeID, hopID string) string {
+	return proxyNodeURL(nodeID) + "?manage_hop=" + url.QueryEscape(hopID)
+}
 func proxyLinkURL(nodeID, linkID string) string {
 	return "/proxy-nodes/" + url.PathEscape(nodeID) + "/links/" + url.PathEscape(linkID)
+}
+
+func listenEndpointLabel(address string, port int) string {
+	if strings.Contains(address, ":") && !strings.HasPrefix(address, "[") {
+		address = "[" + address + "]"
+	}
+	return address + ":" + strconv.Itoa(port)
+}
+
+func relayFamilyLabel(family string) string {
+	switch family {
+	case "ipv4":
+		return "IPv4"
+	case "ipv6":
+		return "IPv6"
+	default:
+		return "Automatic"
+	}
 }
 
 func protocolLabel(protocol proxynode.Protocol) string {

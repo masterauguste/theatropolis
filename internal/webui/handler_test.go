@@ -1032,28 +1032,11 @@ func TestProxyNodePagesUseHopWideRulesAndMembershipCredentials(t *testing.T) {
 	request := fixture.authenticatedRequest(http.MethodGet, proxyHopURL(node.ID, node.Entrance.HopID), "")
 	response := httptest.NewRecorder()
 	fixture.handler.ServeHTTP(response, request)
-	if response.Code != http.StatusOK {
-		t.Fatalf("GET Hop page = %d %q", response.Code, response.Body.String())
+	if response.Code != http.StatusSeeOther {
+		t.Fatalf("GET legacy Hop page = %d %q", response.Code, response.Body.String())
 	}
-	body := response.Body.String()
-	for _, expected := range []string{
-		"Rules apply to all Cinema traffic reaching this Hop.",
-		`<option value="shadowsocks"`, `<option value="anytls"`, `<option value="hysteria2"`,
-		`<option value="none">All traffic</option>`, `<option value="protocol">Protocol</option>`,
-		`<option value="domain">Domain</option>`, `<option value="domain_suffix">Domain suffix</option>`,
-		`<option value="domain_keyword">Domain keyword</option>`, `<option value="domain_regex">Domain regex</option>`,
-		`<option value="ip_cidr">IP / CIDR</option>`, `<option value="geosite">Geosite</option>`,
-		`<option value="geoip">GeoIP</option>`, `<option value="rule_set">Custom Rule Set</option>`,
-		`<option value="network">Network</option>`, "example.net", "Relay to Exit",
-	} {
-		if !strings.Contains(body, expected) {
-			t.Errorf("Hop page does not contain %q", expected)
-		}
-	}
-	for _, removed := range []string{`name="scope"`, `name="scope_type"`, `name="scope_value"`, `name="auth_user"`} {
-		if strings.Contains(body, removed) {
-			t.Errorf("Hop page contains removed per-rule scope control %q", removed)
-		}
+	if got, want := response.Header().Get("Location"), proxyHopManagerURL(node.ID, node.Entrance.HopID); got != want {
+		t.Fatalf("legacy Hop redirect = %q, want %q", got, want)
 	}
 
 	request = fixture.authenticatedRequest(http.MethodGet, proxyNodeURL(node.ID), "")
@@ -1062,15 +1045,33 @@ func TestProxyNodePagesUseHopWideRulesAndMembershipCredentials(t *testing.T) {
 	if response.Code != http.StatusOK {
 		t.Fatalf("GET Proxy Node tree = %d %q", response.Code, response.Body.String())
 	}
-	body = response.Body.String()
+	body := response.Body.String()
 	for _, expected := range []string{
 		"Every configured path reaches an exit", "Direct and Reject run on the Agent attached to their final Hop.",
 		"Left-to-right relay tree", `data-proxy-inspector-open="link-`, "Rule 1", "Link to Exit",
-		"Terminal on edge-online", "Terminal on edge-exit", "Incoming Link · port 8443",
+		"Terminal on edge-online", "Terminal on edge-exit", `id="proxy-hop-manager"`,
+		`data-proxy-hop-manager-view="` + node.Entrance.HopID + `"`, "Configure identity, ordered routing, fallback, and child Links",
+		`<option value="shadowsocks"`, `<option value="anytls"`, `<option value="hysteria2"`,
+		`<option value="none">All traffic</option>`, `<option value="protocol">Protocol</option>`,
+		`<option value="domain">Domain</option>`, `<option value="domain_suffix">Domain suffix</option>`,
+		`<option value="domain_keyword">Domain keyword</option>`, `<option value="domain_regex">Domain regex</option>`,
+		`<option value="ip_cidr">IP / CIDR</option>`, `<option value="geosite">Geosite</option>`,
+		`<option value="geoip">GeoIP</option>`, `<option value="rule_set">Custom Rule Set</option>`,
+		`<option value="network">Network</option>`, "example.net", "Relay to Exit", "Address family", "Multiplex", "[::]:8443",
 	} {
 		if !strings.Contains(body, expected) {
 			t.Errorf("Proxy Node tree does not contain %q", expected)
 		}
+	}
+	for _, removed := range []string{`name="scope"`, `name="scope_type"`, `name="scope_value"`, `name="auth_user"`} {
+		if strings.Contains(body, removed) {
+			t.Errorf("Hop manager contains removed per-rule scope control %q", removed)
+		}
+	}
+	linkBranch := strings.Index(body, `data-proxy-inspector-open="link-`+link.ID+`"`)
+	fallbackBranch := strings.Index(body, `data-proxy-inspector-open="terminal-`+node.Entrance.HopID+`-fallback"`)
+	if linkBranch < 0 || fallbackBranch < 0 || fallbackBranch < linkBranch {
+		t.Errorf("fallback branch is not rendered after the Link branch: link=%d fallback=%d", linkBranch, fallbackBranch)
 	}
 
 	request = fixture.authenticatedRequest(http.MethodGet, "/users/"+url.PathEscape(user.ID), "")
@@ -1241,7 +1242,7 @@ func TestCreateProxyNodeMakesTerminalExitExplicitAndOpensRouting(t *testing.T) {
 	if !ok || entrance.Name != "Entrance" || entrance.Final.Type != proxynode.TargetReject {
 		t.Fatalf("created entrance = %#v, exists %v", entrance, ok)
 	}
-	wantLocation := proxyHopURL(node.ID, entrance.ID)
+	wantLocation := proxyHopManagerURL(node.ID, entrance.ID)
 	if got := response.Header().Get("Location"); got != wantLocation {
 		t.Fatalf("create redirect = %q, want %q", got, wantLocation)
 	}
@@ -1250,12 +1251,12 @@ func TestCreateProxyNodeMakesTerminalExitExplicitAndOpensRouting(t *testing.T) {
 	response = httptest.NewRecorder()
 	fixture.handler.ServeHTTP(response, request)
 	if response.Code != http.StatusOK {
-		t.Fatalf("GET entrance Hop = %d %q", response.Code, response.Body.String())
+		t.Fatalf("GET entrance Hop manager = %d %q", response.Code, response.Body.String())
 	}
 	body = response.Body.String()
 	for _, expected := range []string{"Terminal exit", "Add child Link", `name="child_terminal"`, "Reject traffic"} {
 		if !strings.Contains(body, expected) {
-			t.Errorf("entrance routing page does not contain %q", expected)
+			t.Errorf("entrance Hop manager does not contain %q", expected)
 		}
 	}
 }
