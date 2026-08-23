@@ -22,3 +22,16 @@ openssl pkey -in release-signing-private.pem -pubout -outform DER |
 ```
 
 The workflow produces `checksums.txt.sig` with RSA-PSS/SHA-256 and refuses to replace an existing GitHub release. Rotating the key requires changing the public key in both `internal/agentupdate/update.go` and `install.sh` in a release signed by the old key. Retain the old private key until that transition release is deployed everywhere.
+
+## Release workflow behavior
+
+Ordinary CI runs on branch pushes and pull requests. Tag pushes do not start a
+duplicate CI run; `v*` tags start the release workflow as the one authoritative
+test, build, signing, and publication path.
+
+`TestObservedAddressAndProbeReportEndToEnd` explicitly closes its raw gRPC
+client streams and waits for the corresponding server handlers to unregister
+before its temporary state directory is cleaned up. Preserve that teardown
+barrier: deployment-report handling writes the outbound-pool render stamp after
+transitioning the deployment record, so waiting for status alone is not enough
+to prove persistence has finished.

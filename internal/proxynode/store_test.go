@@ -5,6 +5,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -164,6 +165,66 @@ func TestCompileCombinesCompatibleEntrancesAndRoutesByMembership(t *testing.T) {
 	}
 	if len(config.Route.Rules) != 2 {
 		t.Fatalf("route Rule count = %d, want one final Rule per Proxy Node", len(config.Route.Rules))
+	}
+}
+
+func TestCompilePlacesTerminalOnFinalHopAgent(t *testing.T) {
+	store, err := Open(filepath.Join(t.TempDir(), "state.json"), testBuild())
+	if err != nil {
+		t.Fatal(err)
+	}
+	user, err := store.CreateUser("alice")
+	if err != nil {
+		t.Fatal(err)
+	}
+	node, err := store.CreateProxyNode(CreateProxyNodeInput{
+		Name: "cinema", RootName: "Entrance", RootAgent: "edge-a",
+		Entrance: testTLSEndpoint(ProtocolAnyTLS, 443),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.AddMembership(node.ID, user.ID); err != nil {
+		t.Fatal(err)
+	}
+	link, child, err := store.AddLink(node.ID, AddLinkInput{
+		ParentHopID: node.Entrance.HopID, ChildName: "Exit", ChildAgent: "edge-b",
+		Endpoint: testTLSEndpoint(ProtocolAnyTLS, 8443), Final: Target{Type: TargetReject},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.SetFinal(node.ID, node.Entrance.HopID, Target{Type: TargetLink, LinkID: link.ID}); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.SetFinal(node.ID, child.ID, Target{Type: TargetLink, LinkID: link.ID}); err == nil {
+		t.Fatal("leaf Hop accepted its parent's Link instead of requiring a terminal")
+	}
+
+	compiled, err := Compile(store.Snapshot(), testResolver{"edge-a": "192.0.2.10", "edge-b": "192.0.2.11"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	type routeConfig struct {
+		Route struct {
+			Rules []map[string]any `json:"rules"`
+		} `json:"route"`
+	}
+	var entranceConfig, exitConfig routeConfig
+	if err := json.Unmarshal(compiled.Configs["edge-a"], &entranceConfig); err != nil {
+		t.Fatal(err)
+	}
+	if err := json.Unmarshal(compiled.Configs["edge-b"], &exitConfig); err != nil {
+		t.Fatal(err)
+	}
+	entranceRelays := slices.ContainsFunc(entranceConfig.Route.Rules, func(rule map[string]any) bool {
+		return rule["outbound"] == linkOutboundTag(link.ID)
+	})
+	exitRejects := slices.ContainsFunc(exitConfig.Route.Rules, func(rule map[string]any) bool {
+		return rule["action"] == "reject"
+	})
+	if !entranceRelays || !exitRejects {
+		t.Fatalf("compiled path did not relay then terminate: entrance=%s exit=%s", compiled.Configs["edge-a"], compiled.Configs["edge-b"])
 	}
 }
 

@@ -164,6 +164,7 @@ type CreateProxyNodeInput struct {
 	RootName  string
 	RootAgent string
 	Entrance  Endpoint
+	Final     Target
 }
 
 type AddLinkInput struct {
@@ -171,6 +172,7 @@ type AddLinkInput struct {
 	ChildName   string
 	ChildAgent  string
 	Endpoint    Endpoint
+	Final       Target
 }
 
 type AddRuleInput struct {

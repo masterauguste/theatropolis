@@ -28,6 +28,7 @@ long-lived bidirectional stream to the master, and run/supervise sing-box.
 - Async UI note: the Servers page renders a shell and loads `/servers/content`; the Pool page renders manual-entry controls immediately and loads fleet-derived entries from `/pool/content`. Both use the shared `data-async-region` loader in `app.js` with spinner, retry, empty, error, and expired-session handling. Release catalogs on Settings and server management remain asynchronous and use the same loading-spinner visual. Keep data required to safely construct mutation forms synchronous; defer independent read-only collections.
 - Session persistence note: login/logout/invalidation persist synchronously, while routine sliding-idle activity is updated in memory on every authenticated request and coalesced into a background `web-sessions.json` snapshot at most once per minute. Authentication must never wait for routine session filesystem durability.
 - Proxy Node compilation prepends a sniff action when domain, geosite/custom rule-set, or protocol matching requires it. `None` is an all-traffic match at the current Hop. Every entrance Membership and every Link has a distinct generated credential; compatible logical listeners sharing one Agent socket are coalesced and distinguished by `auth_user`.
+- Proxy Node overview note: the routing tree is recursive rather than a flat indented list. Every Hop card shows ordered-rule and fallback targets, every Link edge shows its selecting rules (or an unreferenced warning), and Direct/Reject targets name the Agent hosting that terminal. Preserve this terminal-placement visibility when changing topology UI.
 - Dropdown note: shared select popovers clamp to the viewport and wrap long option labels inside their vertically scrollable menu. The routing geosite/geoip selector is also a manual top-layer popover (so modal footers cannot cover or clip it), and those two catalog-backed match types are single-select; other match types retain multi-value OR behavior.
 - Inbound URI export note: Shadowsocks 2022, AnyTLS, and Hysteria2 share URIs always connect to a resolved agent IP, never the master or TLS hostname. Each user row offers IPv4 and/or IPv6 according to availability; IPv6 authorities are bracketed, while AnyTLS/Hysteria2 keep the configured certificate identity as SNI.
 
@@ -93,8 +94,9 @@ MSYS_NO_PATHCONV=1 wsl -- sh "/mnt/c/Users/Liukun Zhao/Documents/Theatropolis/.t
 
 ## CI & release
 
-- `.github/workflows/ci.yml` (push/PR): `go mod verify`, `go test -count=1 ./...`, `go vet`, `sh -n install.sh`, all four `tests/*.sh`, shellcheck; plus linux amd64/arm64 cross-build job.
+- `.github/workflows/ci.yml` (branch pushes/PRs; tag pushes are excluded): `go mod verify`, `go test -count=1 ./...`, `go vet`, `sh -n install.sh`, all four `tests/*.sh`, shellcheck; plus linux amd64/arm64 cross-build job.
 - `.github/workflows/release.yml` (tags `v*`): same checks, then reproducible three-binary tarballs (`-trimpath`, `-ldflags "-s -w -buildid= -X main.version=… -X main.commit=… -X main.buildDate=…"`, sorted tar with fixed mtime) for amd64/arm64, RSA-PSS-signs `checksums.txt` using the protected `release-signing` environment, and refuses to overwrite an existing release. See `RELEASING.md`.
+- Release teardown note: `TestObservedAddressAndProbeReportEndToEnd` closes both raw client streams and waits for the server handlers to unregister before `TempDir` cleanup. This barrier must remain because deployment-report status can become applied before pool render-stamp persistence finishes.
 - Pinned action SHAs in workflows; sing-box versions use lightweight tags upstream.
 - Latest tags: v0.0.9 era. Check `git tag` for current state.
 

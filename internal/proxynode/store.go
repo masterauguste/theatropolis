@@ -212,8 +212,14 @@ func (s *Store) CreateProxyNode(input CreateProxyNodeInput) (ProxyNode, error) {
 	if input.RootName == "" {
 		input.RootName = "Entrance"
 	}
+	if input.Final.Type == "" {
+		input.Final = Target{Type: TargetDirect}
+	}
 	if !validName(input.Name) || !validName(input.RootName) || !validAgentID(input.RootAgent) {
 		return ProxyNode{}, fmt.Errorf("%w: invalid Proxy Node fields", ErrInvalidState)
+	}
+	if (input.Final.Type != TargetDirect && input.Final.Type != TargetReject) || input.Final.LinkID != "" {
+		return ProxyNode{}, fmt.Errorf("%w: initial terminal exit must be Direct or Reject", ErrInvalidState)
 	}
 	if err := generateEndpointSecrets(&input.Entrance); err != nil {
 		return ProxyNode{}, err
@@ -233,7 +239,7 @@ func (s *Store) CreateProxyNode(input CreateProxyNodeInput) (ProxyNode, error) {
 		Entrance: Entrance{HopID: hopID, Endpoint: input.Entrance},
 		Hops: []Hop{{
 			ID: hopID, Name: input.RootName, AgentID: input.RootAgent,
-			Rules: []Rule{}, Final: Target{Type: TargetDirect}, CreatedAt: now, UpdatedAt: now,
+			Rules: []Rule{}, Final: input.Final, CreatedAt: now, UpdatedAt: now,
 		}},
 		Links: []Link{}, Memberships: []Membership{}, RuleSets: []CustomRuleSet{},
 		CreatedAt: now, UpdatedAt: now,
@@ -343,8 +349,14 @@ func (s *Store) AddLink(nodeID string, input AddLinkInput) (Link, Hop, error) {
 	input.ChildName = strings.TrimSpace(input.ChildName)
 	input.ChildAgent = strings.TrimSpace(input.ChildAgent)
 	input.Endpoint = normalizeEndpoint(input.Endpoint)
+	if input.Final.Type == "" {
+		input.Final = Target{Type: TargetDirect}
+	}
 	if !validName(input.ChildName) || !validAgentID(input.ChildAgent) {
 		return Link{}, Hop{}, fmt.Errorf("%w: invalid child Hop", ErrInvalidState)
+	}
+	if (input.Final.Type != TargetDirect && input.Final.Type != TargetReject) || input.Final.LinkID != "" {
+		return Link{}, Hop{}, fmt.Errorf("%w: initial terminal exit must be Direct or Reject", ErrInvalidState)
 	}
 	if err := generateEndpointSecrets(&input.Endpoint); err != nil {
 		return Link{}, Hop{}, err
@@ -362,7 +374,7 @@ func (s *Store) AddLink(nodeID string, input AddLinkInput) (Link, Hop, error) {
 		return Link{}, Hop{}, err
 	}
 	now := s.now().UTC()
-	child := Hop{ID: hopID, Name: input.ChildName, AgentID: input.ChildAgent, Rules: []Rule{}, Final: Target{Type: TargetDirect}, CreatedAt: now, UpdatedAt: now}
+	child := Hop{ID: hopID, Name: input.ChildName, AgentID: input.ChildAgent, Rules: []Rule{}, Final: input.Final, CreatedAt: now, UpdatedAt: now}
 	link := Link{ID: linkID, ParentHopID: input.ParentHopID, ChildHopID: hopID, Endpoint: input.Endpoint, Credential: credential, CreatedAt: now, UpdatedAt: now}
 	err = s.mutateProxyNode(nodeID, func(_ *State, node *ProxyNode) error {
 		if !slices.ContainsFunc(node.Hops, func(hop Hop) bool { return hop.ID == input.ParentHopID }) {

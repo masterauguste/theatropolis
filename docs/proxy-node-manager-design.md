@@ -195,6 +195,18 @@ a child Link, `direct`, or `reject`. The compiler rejects missing targets,
 cycles, merges, listener conflicts, duplicate wire credentials on a combined
 listener, and references outside the owning Proxy Node.
 
+A `direct` or `reject` target is compiled into the sing-box configuration of
+the Agent hosting that Hop. A Link target is compiled on the parent Agent and
+hands traffic to the child Hop, whose own ordered rules and fallback then take
+over. Consequently, the terminal action for a relayed path executes on that
+path's final Hop, not on its entrance or an earlier relay.
+
+The Proxy Node overview renders this model as a recursive routing tree. Hop
+cards show every ordered rule and fallback, Link edges show which rules select
+them, and Direct/Reject targets identify the Agent on which they terminate.
+Configured but unreferenced Links are visibly warned so an administrator can
+distinguish a complete traffic path from unused topology.
+
 Generated sing-box tags must include opaque IDs or an equivalent collision-free
 component. Human-readable names are included for clarity but are never relied
 on for uniqueness.

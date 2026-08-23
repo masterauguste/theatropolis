@@ -1056,6 +1056,22 @@ func TestProxyNodePagesUseHopWideRulesAndMembershipCredentials(t *testing.T) {
 		}
 	}
 
+	request = fixture.authenticatedRequest(http.MethodGet, proxyNodeURL(node.ID), "")
+	response = httptest.NewRecorder()
+	fixture.handler.ServeHTTP(response, request)
+	if response.Code != http.StatusOK {
+		t.Fatalf("GET Proxy Node tree = %d %q", response.Code, response.Body.String())
+	}
+	body = response.Body.String()
+	for _, expected := range []string{
+		"All configured paths terminate", "Every route reaches Direct or Reject on the Agent hosting its final Hop.",
+		"Used by Rule 1", "Link to Exit", "Terminal on edge-online", "Terminal on edge-exit", "Incoming Link · port 8443",
+	} {
+		if !strings.Contains(body, expected) {
+			t.Errorf("Proxy Node tree does not contain %q", expected)
+		}
+	}
+
 	request = fixture.authenticatedRequest(http.MethodGet, "/users/"+url.PathEscape(user.ID), "")
 	response = httptest.NewRecorder()
 	fixture.handler.ServeHTTP(response, request)
@@ -1081,7 +1097,7 @@ func TestProxyNodeMutationsRequireExactForms(t *testing.T) {
 	fixture := newWebFixture(t)
 	enrollAgent(t, fixture.registry, "edge-online")
 	form := url.Values{
-		"csrf_token": {fixture.session.CSRFToken}, "name": {"Cinema"}, "root_name": {"Entrance"}, "agent_id": {"edge-online"},
+		"csrf_token": {fixture.session.CSRFToken}, "name": {"Cinema"}, "agent_id": {"edge-online"}, "terminal": {"direct"},
 		"protocol": {"anytls"}, "listen": {"::"}, "listen_port": {"443"}, "family": {"auto"}, "method": {""},
 		"tls_mode": {"self_signed"}, "server_name": {"cinema.example"}, "email": {""}, "certificate_path": {""}, "key_path": {""},
 		"up_mbps": {""}, "down_mbps": {""}, "obfs_type": {""}, "unexpected": {"must be rejected"},
@@ -1094,6 +1110,69 @@ func TestProxyNodeMutationsRequireExactForms(t *testing.T) {
 	}
 	if len(fixture.proxyNodes.Snapshot().ProxyNodes) != 0 {
 		t.Fatal("invalid exact-form request created a Proxy Node")
+	}
+}
+
+func TestCreateProxyNodeMakesTerminalExitExplicitAndOpensRouting(t *testing.T) {
+	t.Parallel()
+
+	fixture := newWebFixture(t)
+	enrollAgent(t, fixture.registry, "edge-online")
+	request := fixture.authenticatedRequest(http.MethodGet, "/proxy-nodes/new", "")
+	response := httptest.NewRecorder()
+	fixture.handler.ServeHTTP(response, request)
+	if response.Code != http.StatusOK {
+		t.Fatalf("GET new Proxy Node = %d %q", response.Code, response.Body.String())
+	}
+	body := response.Body.String()
+	for _, expected := range []string{`name="terminal"`, "Initial terminal exit", "Create and configure routing"} {
+		if !strings.Contains(body, expected) {
+			t.Errorf("new Proxy Node page does not contain %q", expected)
+		}
+	}
+	for _, removed := range []string{`name="root_name"`, "Entrance Hop name"} {
+		if strings.Contains(body, removed) {
+			t.Errorf("new Proxy Node page still contains %q", removed)
+		}
+	}
+
+	form := url.Values{
+		"csrf_token": {fixture.session.CSRFToken}, "name": {"Cinema"}, "agent_id": {"edge-online"}, "terminal": {"reject"},
+		"protocol": {"anytls"}, "listen": {"::"}, "listen_port": {"443"}, "family": {"auto"}, "method": {""},
+		"tls_mode": {"self_signed"}, "server_name": {"cinema.example"}, "email": {""}, "certificate_path": {""}, "key_path": {""},
+		"up_mbps": {""}, "down_mbps": {""}, "obfs_type": {""},
+	}
+	request = fixture.authenticatedMutationRequest(http.MethodPost, "/proxy-nodes", form.Encode())
+	response = httptest.NewRecorder()
+	fixture.handler.ServeHTTP(response, request)
+	if response.Code != http.StatusSeeOther {
+		t.Fatalf("POST Proxy Node = %d %q", response.Code, response.Body.String())
+	}
+	state := fixture.proxyNodes.Snapshot()
+	if len(state.ProxyNodes) != 1 {
+		t.Fatalf("created Proxy Nodes = %d, want 1", len(state.ProxyNodes))
+	}
+	node := state.ProxyNodes[0]
+	entrance, ok := proxyHop(node, node.Entrance.HopID)
+	if !ok || entrance.Name != "Entrance" || entrance.Final.Type != proxynode.TargetReject {
+		t.Fatalf("created entrance = %#v, exists %v", entrance, ok)
+	}
+	wantLocation := proxyHopURL(node.ID, entrance.ID)
+	if got := response.Header().Get("Location"); got != wantLocation {
+		t.Fatalf("create redirect = %q, want %q", got, wantLocation)
+	}
+
+	request = fixture.authenticatedRequest(http.MethodGet, wantLocation, "")
+	response = httptest.NewRecorder()
+	fixture.handler.ServeHTTP(response, request)
+	if response.Code != http.StatusOK {
+		t.Fatalf("GET entrance Hop = %d %q", response.Code, response.Body.String())
+	}
+	body = response.Body.String()
+	for _, expected := range []string{"Terminal exit", "Add child Link", `name="child_terminal"`, "Reject traffic"} {
+		if !strings.Contains(body, expected) {
+			t.Errorf("entrance routing page does not contain %q", expected)
+		}
 	}
 }
 

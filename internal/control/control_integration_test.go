@@ -1042,4 +1042,16 @@ func TestObservedAddressAndProbeReportEndToEnd(t *testing.T) {
 		t.Fatalf("post-probe outbound = %v, want the probed v6 address", outbound)
 	}
 	agentB.reportApplied(t, redeployB)
+	// Close both client streams and wait for the Connect handlers to finish.
+	// A report is processed before the following EOF on the same stream, so
+	// observing the session unregister also proves that the report's pool
+	// render-stamp persistence is no longer using the TempDir.
+	if err := agentA.stream.CloseSend(); err != nil {
+		t.Fatal(err)
+	}
+	waitForAgentState(t, controlServer, "edge-a", false, 2*time.Second)
+	if err := agentB.stream.CloseSend(); err != nil {
+		t.Fatal(err)
+	}
+	waitForAgentState(t, controlServer, "edge-b", false, 2*time.Second)
 }
