@@ -35,3 +35,9 @@ before its temporary state directory is cleaned up. Preserve that teardown
 barrier: deployment-report handling writes the outbound-pool render stamp after
 transitioning the deployment record, so waiting for status alone is not enough
 to prove persistence has finished.
+
+Release binaries and archives are staged under `RUNNER_TEMP` until every Go
+build is complete. Do not write an earlier component or architecture into the
+checkout while later binaries are still building: Go treats those untracked
+artifacts as a dirty worktree and embeds `vcs.modified=true` in the later
+binaries even when the tagged source is clean.

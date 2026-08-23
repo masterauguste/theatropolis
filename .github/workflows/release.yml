@@ -32,16 +32,18 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          mkdir -p dist/staging
+          release_dir="$RUNNER_TEMP/theatropolis-release"
+          staging="$RUNNER_TEMP/theatropolis-staging"
+          mkdir -p "$release_dir" "$staging"
           build_date="$(git show -s --format=%cI "$GITHUB_SHA")"
           source_date_epoch="$(git show -s --format=%ct "$GITHUB_SHA")"
           for architecture in amd64 arm64; do
-            rm -f dist/staging/theatropolis-master dist/staging/theatropolis-agent dist/staging/theatropolis-update-helper
+            rm -f "$staging/theatropolis-master" "$staging/theatropolis-agent" "$staging/theatropolis-update-helper"
             for component in master agent update-helper; do
               CGO_ENABLED=0 GOOS=linux GOARCH="$architecture" go build \
                 -trimpath \
                 -ldflags="-s -w -buildid= -X main.version=$GITHUB_REF_NAME -X main.commit=$GITHUB_SHA -X main.buildDate=$build_date" \
-                -o "dist/staging/theatropolis-$component" \
+                -o "$staging/theatropolis-$component" \
                 "./cmd/theatropolis-$component"
             done
             tar \
@@ -50,16 +52,21 @@ jobs:
               --group=0 \
               --numeric-owner \
               --mtime="@$source_date_epoch" \
-              -C dist/staging \
-              -czf "dist/theatropolis_linux_${architecture}.tar.gz" \
+              -C "$staging" \
+              -czf "$release_dir/theatropolis_linux_${architecture}.tar.gz" \
               theatropolis-agent \
               theatropolis-master \
               theatropolis-update-helper
           done
           (
-            cd dist
+            cd "$release_dir"
             sha256sum theatropolis_linux_*.tar.gz > checksums.txt
           )
+          # Keep all build outputs outside the checkout until every Go binary
+          # is complete. Otherwise the second and later builds record
+          # vcs.modified=true merely because an earlier artifact is untracked.
+          mkdir -p dist
+          cp "$release_dir"/theatropolis_linux_*.tar.gz "$release_dir/checksums.txt" dist/
       - name: Sign release checksum manifest
         env:
           RELEASE_SIGNING_PRIVATE_KEY: ${{ secrets.RELEASE_SIGNING_PRIVATE_KEY }}

@@ -95,7 +95,7 @@ MSYS_NO_PATHCONV=1 wsl -- sh "/mnt/c/Users/Liukun Zhao/Documents/Theatropolis/.t
 ## CI & release
 
 - `.github/workflows/ci.yml` (branch pushes/PRs; tag pushes are excluded): `go mod verify`, `go test -count=1 ./...`, `go vet`, `sh -n install.sh`, all four `tests/*.sh`, shellcheck; plus linux amd64/arm64 cross-build job.
-- `.github/workflows/release.yml` (tags `v*`): same checks, then reproducible three-binary tarballs (`-trimpath`, `-ldflags "-s -w -buildid= -X main.version=… -X main.commit=… -X main.buildDate=…"`, sorted tar with fixed mtime) for amd64/arm64, RSA-PSS-signs `checksums.txt` using the protected `release-signing` environment, and refuses to overwrite an existing release. See `RELEASING.md`.
+- `.github/workflows/release.yml` (tags `v*`): same checks, then reproducible three-binary tarballs (`-trimpath`, `-ldflags "-s -w -buildid= -X main.version=… -X main.commit=… -X main.buildDate=…"`, sorted tar with fixed mtime) for amd64/arm64, RSA-PSS-signs `checksums.txt` using the protected `release-signing` environment, and refuses to overwrite an existing release. All binaries are staged under `RUNNER_TEMP` until Go builds finish so earlier untracked artifacts cannot contaminate later binaries with `vcs.modified=true`. See `RELEASING.md`.
 - Release teardown note: `TestObservedAddressAndProbeReportEndToEnd` closes both raw client streams and waits for the server handlers to unregister before `TempDir` cleanup. This barrier must remain because deployment-report status can become applied before pool render-stamp persistence finishes.
 - Pinned action SHAs in workflows; sing-box versions use lightweight tags upstream.
 - Latest tags: v0.0.9 era. Check `git tag` for current state.
