@@ -52,7 +52,6 @@ type agentRender struct {
 	rules                []map[string]any
 	ruleSets             map[string]map[string]any
 	certificateProviders []map[string]any
-	needsSniff           bool
 }
 
 func Compile(state State, resolver AddressResolver) (CompileResult, error) {
@@ -230,10 +229,7 @@ func renderAgentConfig(render *agentRender) ([]byte, error) {
 			render.certificateProviders = append(render.certificateProviders, provider)
 		}
 	}
-	rules := render.rules
-	if render.needsSniff {
-		rules = append([]map[string]any{{"action": "sniff"}}, rules...)
-	}
+	rules := insertRequiredRouteActions(render.rules)
 	ruleSetTags := make([]string, 0, len(render.ruleSets))
 	for tag := range render.ruleSets {
 		ruleSetTags = append(ruleSetTags, tag)
@@ -418,9 +414,6 @@ func renderRuleMatch(render *agentRender, node *ProxyNode, rule Rule, output map
 			}
 		}
 		output["rule_set"] = tags
-		if rule.Match == MatchGeosite {
-			render.needsSniff = true
-		}
 	case MatchRuleSet:
 		tags := make([]string, 0, len(rule.Values))
 		for _, value := range rule.Values {
@@ -436,14 +429,70 @@ func renderRuleMatch(render *agentRender, node *ProxyNode, rule Rule, output map
 			}
 		}
 		output["rule_set"] = tags
-		render.needsSniff = true
 	default:
 		output[string(rule.Match)] = rule.Values
-		if rule.Match == MatchProtocol || rule.Match == MatchDomain || rule.Match == MatchDomainSuffix || rule.Match == MatchDomainKeyword || rule.Match == MatchDomainRegex {
-			render.needsSniff = true
-		}
 	}
 	return nil
+}
+
+type routeMetadataNeeds struct {
+	sniff   bool
+	resolve bool
+}
+
+// insertRequiredRouteActions delays metadata work until the first rule that
+// needs it. A final rule before that point can therefore route a connection
+// without paying for protocol sniffing or DNS resolution. The actions are
+// global and need to run only once because sing-box retains both the original
+// destination domain and any resolved destination addresses in route metadata.
+func insertRequiredRouteActions(rules []map[string]any) []map[string]any {
+	normalized := make([]map[string]any, 0, len(rules)+2)
+	seenSniff := false
+	seenResolve := false
+	for _, rule := range rules {
+		needs := compiledRouteMetadataNeeds(rule)
+		// Use the same ordering as sing-box's legacy-field migration when a
+		// single rule can depend on both forms of metadata.
+		if needs.resolve && !seenResolve {
+			normalized = append(normalized, map[string]any{"action": "resolve"})
+			seenResolve = true
+		}
+		if needs.sniff && !seenSniff {
+			normalized = append(normalized, map[string]any{"action": "sniff"})
+			seenSniff = true
+		}
+		normalized = append(normalized, rule)
+	}
+	return normalized
+}
+
+func compiledRouteMetadataNeeds(rule map[string]any) routeMetadataNeeds {
+	needs := routeMetadataNeeds{}
+	for _, field := range []string{"protocol", "client", "domain", "domain_suffix", "domain_keyword", "domain_regex"} {
+		if _, exists := rule[field]; exists {
+			needs.sniff = true
+		}
+	}
+	for _, field := range []string{"ip_version", "ip_is_private", "ip_cidr", "geoip"} {
+		if _, exists := rule[field]; exists {
+			needs.resolve = true
+		}
+	}
+	tags, _ := rule["rule_set"].([]string)
+	for _, tag := range tags {
+		switch {
+		case strings.HasPrefix(tag, "geoip-"):
+			needs.resolve = true
+		case strings.HasPrefix(tag, "geosite-"):
+			needs.sniff = true
+		default:
+			// The contents of a custom binary Rule Set are opaque to the
+			// master, so prepare both metadata forms before evaluating it.
+			needs.sniff = true
+			needs.resolve = true
+		}
+	}
+	return needs
 }
 
 func applyTarget(rule map[string]any, target Target) {

@@ -1086,7 +1086,8 @@ func TestProxyNodePagesUseLinkOwnedRulesAndMembershipCredentials(t *testing.T) {
 		"Every configured path reaches an exit", "A leaf Hop implies Direct; Direct remains explicit beside other branches, and Reject is always explicit.",
 		"Left-to-right relay tree", `data-proxy-inspector-open="rule-` + firstRule.ID + `"`, `data-proxy-inspector-open="rule-` + secondRule.ID + `"`,
 		"Terminal on edge-online", `proxy-map__node--reject`, `data-proxy-inspector-view="hop-` + node.Entrance.HopID + `"`,
-		"Change Agent", "Save Agent", "Create branch", `class="proxy-inspector__editor-card-body"`, `data-dialog-open="proxy-add-link-` + node.Entrance.HopID + `"`,
+		"Change Agent", "Save Agent", "Create branch", `class="proxy-inspector__editor-card-body"`, `data-dialog-open="proxy-add-link-` + node.Entrance.HopID + `"`, "ALL — fallback",
+		"Local fallback action", "Save fallback", "Relay fallback", "Route ALL to child Hop", `data-proxy-match-default="none"`,
 		"Relay branch", "This Rule has its own relay credential, authenticated user, and downstream routing context.", "Duplicate branch", "Edit relay", "Save relay",
 		"drag numbered Rule branches vertically to change their priority", `data-proxy-rule-branch="` + firstRule.ID + `"`,
 		`data-reorder-url="/proxy-nodes/` + node.ID + `/hops/` + node.Entrance.HopID + `/rules/reorder"`, "Delete branch", "View child Hop",
@@ -1353,12 +1354,21 @@ func TestHopTerminalRejectsLinkTargets(t *testing.T) {
 		t.Fatal(err)
 	}
 	request := fixture.authenticatedMutationRequest(http.MethodPost, proxyHopURL(node.ID, node.Entrance.HopID)+"/final", url.Values{
-		"csrf_token": {fixture.session.CSRFToken}, "target": {"link:lnk_abcdefghijklmnopqrst"},
+		"csrf_token": {fixture.session.CSRFToken}, "target": {"link:lnk_abcdefghijklmnopqrst"}, "return_to": {""},
 	}.Encode())
 	response := httptest.NewRecorder()
 	fixture.handler.ServeHTTP(response, request)
 	if response.Code != http.StatusBadRequest || !strings.Contains(response.Body.String(), "Direct or Reject") {
 		t.Fatalf("Link terminal target = %d %q, want 400", response.Code, response.Body.String())
+	}
+
+	request = fixture.authenticatedMutationRequest(http.MethodPost, proxyHopURL(node.ID, node.Entrance.HopID)+"/final", url.Values{
+		"csrf_token": {fixture.session.CSRFToken}, "target": {"reject"}, "return_to": {"fallback"},
+	}.Encode())
+	response = httptest.NewRecorder()
+	fixture.handler.ServeHTTP(response, request)
+	if response.Code != http.StatusSeeOther || response.Header().Get("Location") != proxyInspectorURL(node.ID, "terminal-"+node.Entrance.HopID+"-fallback") {
+		t.Fatalf("fallback terminal update = %d location %q body %q", response.Code, response.Header().Get("Location"), response.Body.String())
 	}
 }
 
@@ -1683,6 +1693,19 @@ func TestCreateProxyNodeMakesTerminalExitExplicitAndReturnsToRelayMap(t *testing
 	updated, _ = fixture.proxyNodes.ProxyNode(node.ID)
 	if len(updated.Hops) != 1 || len(updated.Links) != 0 {
 		t.Fatalf("deleting branch did not remove its child subtree: %#v", updated)
+	}
+
+	branchForm.Set("values", "")
+	branchForm.Set("child_name", "Fallback")
+	request = fixture.authenticatedMutationRequest(http.MethodPost, "/proxy-nodes/"+node.ID+"/hops/"+entrance.ID+"/links", branchForm.Encode())
+	response = httptest.NewRecorder()
+	fixture.handler.ServeHTTP(response, request)
+	if response.Code != http.StatusSeeOther || response.Header().Get("Location") != proxyNodeURL(node.ID) {
+		t.Fatalf("POST ALL branch = %d location %q body %q", response.Code, response.Header().Get("Location"), response.Body.String())
+	}
+	updated, _ = fixture.proxyNodes.ProxyNode(node.ID)
+	if len(updated.Hops) != 2 || len(updated.Links) != 1 || !updated.Links[0].Fallback || len(updated.Links[0].Rules) != 0 {
+		t.Fatalf("ALL branch creation produced %#v", updated)
 	}
 }
 

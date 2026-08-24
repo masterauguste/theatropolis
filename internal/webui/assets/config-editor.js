@@ -1037,6 +1037,33 @@ if (configTextarea && configurationForm && configurationEditor) {
     return ruleSets.some((tag) => !String(tag).startsWith("geoip-"));
   }
 
+  function routeRuleNeedsResolve(rule) {
+    if (["ip_version", "ip_is_private", "ip_cidr", "geoip"]
+      .some((name) => rule[name] !== undefined)) {
+      return true;
+    }
+    const ruleSets = listValue(rule.rule_set);
+    return ruleSets.some((tag) => !String(tag).startsWith("geosite-"));
+  }
+
+  function insertRouteMetadataActions(rules, templates = new Map()) {
+    const normalized = [];
+    let seenSniff = false;
+    let seenResolve = false;
+    for (const rule of rules) {
+      if (routeRuleNeedsResolve(rule) && !seenResolve) {
+        normalized.push(clone(templates.get("resolve") || { action: "resolve" }));
+        seenResolve = true;
+      }
+      if (routeRuleNeedsSniff(rule) && !seenSniff) {
+        normalized.push(clone(templates.get("sniff") || { action: "sniff" }));
+        seenSniff = true;
+      }
+      normalized.push(rule);
+    }
+    return normalized;
+  }
+
   function syncGuidedConfiguration() {
     const next = clone(documentModel);
     const unsupportedInbounds = listValue(next.inbounds).filter(
@@ -1066,13 +1093,14 @@ if (configTextarea && configurationForm && configurationEditor) {
       routeRuleList.querySelectorAll("[data-route-rule-card]"),
       (card) => serializeRouteRule(card, managed.tags),
     );
-    const preservedSniffRules = listValue(route.rules).filter(
-      (rule) => rule?.action === "sniff",
-    );
-    if (managedRules.some(routeRuleNeedsSniff) && preservedSniffRules.length === 0) {
-      preservedSniffRules.push({ action: "sniff" });
+    const metadataActionTemplates = new Map();
+    for (const rule of listValue(route.rules)) {
+      if ((rule?.action === "sniff" || rule?.action === "resolve") &&
+          !metadataActionTemplates.has(rule.action)) {
+        metadataActionTemplates.set(rule.action, rule);
+      }
     }
-    route.rules = [...preservedSniffRules, ...managedRules];
+    route.rules = insertRouteMetadataActions(managedRules, metadataActionTemplates);
     // Rule sets are derived from the routing rules: every referenced
     // geosite-*/geoip-* tag gets a remote binary SRS entry (spreading the
     // original entry first so extras like download_detour survive), custom
@@ -1133,7 +1161,7 @@ if (configTextarea && configurationForm && configurationEditor) {
     );
     const route = objectValue(documentModel.route) ? documentModel.route : {};
     for (const rule of listValue(route.rules)) {
-      if (rule?.action === "sniff") continue;
+      if (rule?.action === "sniff" || rule?.action === "resolve") continue;
       addRouteRule(rule, outboundByTag);
     }
     replaceSelectOptions(
@@ -1151,7 +1179,7 @@ if (configTextarea && configurationForm && configurationEditor) {
       setWarning("");
     }
     const visibleRouteRules = listValue(route.rules).filter(
-      (rule) => rule?.action !== "sniff",
+      (rule) => rule?.action !== "sniff" && rule?.action !== "resolve",
     ).length;
     summary.textContent = `${listValue(documentModel.inbounds).length} inbound(s), ${listValue(documentModel.outbounds).length} outbound(s), ${visibleRouteRules} rule(s)`;
     updateResourceCounts();

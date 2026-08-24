@@ -30,7 +30,13 @@ for (const select of document.querySelectorAll("[data-proxy-protocol]")) {
 for (const select of document.querySelectorAll("[data-proxy-match]")) {
   const update = () => {
     const values = select.closest("form")?.querySelector("[data-proxy-match-values]");
-    if (values) values.hidden = select.value === "none";
+    if (!values) return;
+    const all = select.value === "none";
+    values.hidden = all;
+    for (const input of values.querySelectorAll("input, textarea, select")) {
+      input.required = !all;
+      if (all) input.value = "";
+    }
   };
   update();
   select.addEventListener("change", update);
@@ -235,6 +241,12 @@ document.addEventListener("click", (event) => {
     const dialog = document.getElementById(button.dataset.dialogOpen);
     if (!(dialog instanceof HTMLDialogElement)) {
       return;
+    }
+    const matchDefault = button.dataset.proxyMatchDefault;
+    const matchSelect = dialog.querySelector("[data-proxy-match]");
+    if (matchDefault && matchSelect instanceof HTMLSelectElement) {
+      matchSelect.value = matchDefault;
+      matchSelect.dispatchEvent(new Event("change", { bubbles: true }));
     }
     dialogTriggers.set(dialog, button);
     if (!dialog.open) dialog.showModal();

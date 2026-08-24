@@ -75,6 +75,9 @@ type proxyTreeHopView struct {
 
 type proxyTreeRouteView struct {
 	InspectorID  string
+	ProxyID      string
+	HopID        string
+	CSRFToken    string
 	Label        string
 	Match        string
 	Values       string
@@ -292,6 +295,7 @@ func setProxyTreeCSRF(tree *proxyTreeHopView, token string) {
 		return
 	}
 	tree.CSRFToken = token
+	tree.Fallback.CSRFToken = token
 	for _, link := range tree.Children {
 		setProxyTreeCSRF(link.Child, token)
 	}
@@ -713,7 +717,7 @@ func (h *Handler) moveProxyLink(response http.ResponseWriter, request *http.Requ
 }
 
 func (h *Handler) updateProxyFinal(response http.ResponseWriter, request *http.Request) {
-	_, form, ok := h.authorizeProxyMutation(response, request, "target")
+	_, form, ok := h.authorizeProxyMutation(response, request, "target", "return_to")
 	if !ok {
 		return
 	}
@@ -734,6 +738,10 @@ func (h *Handler) updateProxyFinal(response http.ResponseWriter, request *http.R
 	}
 	if err := h.proxyNodes.SetFinal(nodeID, hopID, target); err != nil {
 		handleProxyMutationError(response, err)
+		return
+	}
+	if form.Get("return_to") == "fallback" {
+		http.Redirect(response, request, proxyInspectorURL(nodeID, "terminal-"+hopID+"-fallback"), http.StatusSeeOther)
 		return
 	}
 	if hopID == node.Entrance.HopID {
@@ -986,6 +994,8 @@ func buildProxyTree(node proxynode.ProxyNode) (*proxyTreeHopView, int, int) {
 			IsEntrance: hop.ID == node.Entrance.HopID, IngressProtocol: ingressProtocol, IngressLabel: ingressLabel,
 			Fallback: fallback,
 		}
+		view.Fallback.ProxyID = node.ID
+		view.Fallback.HopID = hop.ID
 		view.Fallback.InspectorID = "terminal-" + hop.ID + "-fallback"
 		totalRules := 0
 		for _, link := range children[hopID] {
@@ -1469,7 +1479,7 @@ func protocolLabel(protocol proxynode.Protocol) string {
 }
 
 func matchLabel(match proxynode.MatchType) string {
-	labels := map[proxynode.MatchType]string{proxynode.MatchNone: "All traffic", proxynode.MatchProtocol: "Protocol", proxynode.MatchDomain: "Domain", proxynode.MatchDomainSuffix: "Domain suffix", proxynode.MatchDomainKeyword: "Domain keyword", proxynode.MatchDomainRegex: "Domain regex", proxynode.MatchIPCIDR: "IP / CIDR", proxynode.MatchGeosite: "Geosite", proxynode.MatchGeoIP: "GeoIP", proxynode.MatchRuleSet: "Custom Rule Set", proxynode.MatchNetwork: "Network"}
+	labels := map[proxynode.MatchType]string{proxynode.MatchNone: "ALL", proxynode.MatchProtocol: "Protocol", proxynode.MatchDomain: "Domain", proxynode.MatchDomainSuffix: "Domain suffix", proxynode.MatchDomainKeyword: "Domain keyword", proxynode.MatchDomainRegex: "Domain regex", proxynode.MatchIPCIDR: "IP / CIDR", proxynode.MatchGeosite: "Geosite", proxynode.MatchGeoIP: "GeoIP", proxynode.MatchRuleSet: "Custom Rule Set", proxynode.MatchNetwork: "Network"}
 	return labels[match]
 }
 

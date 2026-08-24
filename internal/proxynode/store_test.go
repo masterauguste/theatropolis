@@ -139,13 +139,79 @@ func TestAddBranchAtomicallyCreatesRuleLinkAndChildBeforeFallback(t *testing.T) 
 			ParentHopID: node.Entrance.HopID, ChildName: "Invalid", ChildAgent: "edge-d",
 			Endpoint: testTLSEndpoint(ProtocolAnyTLS, 10443),
 		},
-		Match: MatchNone,
+		Match: MatchNone, Values: []string{"fallbacks-have-no-values"},
 	}); err == nil {
-		t.Fatal("unconditional branch was accepted")
+		t.Fatal("ALL branch with match values was accepted")
 	}
 	got, _ = store.ProxyNode(node.ID)
 	if len(got.Hops) != beforeHops || len(got.Links) != beforeLinks {
 		t.Fatalf("failed branch left topology artifacts: %#v", got)
+	}
+}
+
+func TestAllMatchCreatesAndConvertsFallbackBranches(t *testing.T) {
+	store, err := Open(filepath.Join(t.TempDir(), "proxy-node-state.json"), testBuild())
+	if err != nil {
+		t.Fatal(err)
+	}
+	node, err := store.CreateProxyNode(CreateProxyNodeInput{
+		Name: "cinema", RootAgent: "edge-a", Entrance: testTLSEndpoint(ProtocolAnyTLS, 443),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	conditional, _, conditionalRule, err := store.AddBranch(node.ID, AddBranchInput{
+		AddLinkInput: AddLinkInput{
+			ParentHopID: node.Entrance.HopID, ChildName: "Conditional", ChildAgent: "edge-b",
+			Endpoint: testTLSEndpoint(ProtocolAnyTLS, 8443),
+		},
+		Match: MatchDomainSuffix, Values: []string{"example.net"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	fallback, child, fallbackRule, err := store.AddBranch(node.ID, AddBranchInput{
+		AddLinkInput: AddLinkInput{
+			ParentHopID: node.Entrance.HopID, ChildName: "Fallback", ChildAgent: "edge-c",
+			Endpoint: testTLSEndpoint(ProtocolHysteria2, 9443), Final: Target{Type: TargetReject},
+		},
+		Match: MatchNone,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if fallbackRule.ID != "" || !fallback.Fallback || len(fallback.Rules) != 0 || fallback.ChildHopID != child.ID {
+		t.Fatalf("ALL branch = link %#v child %#v rule %#v", fallback, child, fallbackRule)
+	}
+	got, _ := store.ProxyNode(node.ID)
+	conditionalIndex := slices.IndexFunc(got.Links, func(link Link) bool { return link.ID == conditional.ID })
+	fallbackIndex := slices.IndexFunc(got.Links, func(link Link) bool { return link.ID == fallback.ID })
+	if conditionalIndex < 0 || fallbackIndex < 0 || got.Links[conditionalIndex].Order != 0 || got.Links[fallbackIndex].Order != 1 {
+		t.Fatalf("ALL branch was not last: %#v", got.Links)
+	}
+	beforeHops, beforeLinks := len(got.Hops), len(got.Links)
+	if _, _, _, err := store.AddBranch(node.ID, AddBranchInput{
+		AddLinkInput: AddLinkInput{
+			ParentHopID: node.Entrance.HopID, ChildName: "Duplicate", ChildAgent: "edge-d",
+			Endpoint: testTLSEndpoint(ProtocolAnyTLS, 10443),
+		},
+		Match: MatchNone,
+	}); !errors.Is(err, ErrConflict) {
+		t.Fatalf("second ALL branch error = %v, want conflict", err)
+	}
+	got, _ = store.ProxyNode(node.ID)
+	if len(got.Hops) != beforeHops || len(got.Links) != beforeLinks {
+		t.Fatalf("rejected ALL branch left topology artifacts: %#v", got)
+	}
+	if err := store.DeleteLink(node.ID, fallback.ID); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.UpdateRule(node.ID, conditionalRule.ID, UpdateRuleInput{LinkID: conditional.ID, Match: MatchNone}); err != nil {
+		t.Fatal(err)
+	}
+	got, _ = store.ProxyNode(node.ID)
+	if len(got.Links) != 1 || !got.Links[0].Fallback || len(got.Links[0].Rules) != 0 {
+		t.Fatalf("Rule-to-ALL conversion = %#v", got.Links)
 	}
 }
 
@@ -578,6 +644,39 @@ func TestCompileSupportsEveryManagedProtocolOnLinksAndEveryRuleMatch(t *testing.
 		if !strings.Contains(root, `"`+field+`"`) {
 			t.Errorf("root config lacks %s Rule field", field)
 		}
+	}
+}
+
+func TestInsertRequiredRouteActionsAtFirstMetadataUse(t *testing.T) {
+	t.Parallel()
+	rules := []map[string]any{
+		{"network": []string{"udp"}, "action": "route", "outbound": "early"},
+		{"domain_suffix": []string{"example.com"}, "action": "route", "outbound": "domain"},
+		{"ip_cidr": []string{"192.0.2.0/24"}, "action": "route", "outbound": "ip"},
+		{"rule_set": []string{"tp-rs-node-private"}, "action": "route", "outbound": "custom"},
+	}
+
+	normalized := insertRequiredRouteActions(rules)
+	if len(normalized) != 6 {
+		t.Fatalf("normalized Rule count = %d, want 6: %#v", len(normalized), normalized)
+	}
+	if normalized[0]["outbound"] != "early" || normalized[1]["action"] != "sniff" ||
+		normalized[2]["outbound"] != "domain" || normalized[3]["action"] != "resolve" ||
+		normalized[4]["outbound"] != "ip" || normalized[5]["outbound"] != "custom" {
+		t.Fatalf("normalized Rules in unexpected order: %#v", normalized)
+	}
+}
+
+func TestInsertRequiredRouteActionsPreparesBothForOpaqueRuleSet(t *testing.T) {
+	t.Parallel()
+	rules := []map[string]any{{
+		"rule_set": []string{"tp-rs-node-private"}, "action": "route", "outbound": "custom",
+	}}
+
+	normalized := insertRequiredRouteActions(rules)
+	if len(normalized) != 3 || normalized[0]["action"] != "resolve" ||
+		normalized[1]["action"] != "sniff" || normalized[2]["outbound"] != "custom" {
+		t.Fatalf("normalized Rules = %#v", normalized)
 	}
 }
 
@@ -1118,7 +1217,13 @@ func TestLinksOwnMatchClausesOrderAndFallback(t *testing.T) {
 	if err := json.Unmarshal(compiled.Configs["edge-a"], &config); err != nil {
 		t.Fatal(err)
 	}
-	if len(config.Route.Rules) < 6 || firstProtocolLinkID == "" || config.Route.Rules[1]["outbound"] != linkOutboundTag(second.ID) || config.Route.Rules[2]["outbound"] != linkOutboundTag(first.ID) || config.Route.Rules[3]["outbound"] != linkOutboundTag(firstProtocolLinkID) || config.Route.Rules[4]["outbound"] != linkOutboundTag(fallback.ID) {
+	routingRules := make([]map[string]any, 0, len(config.Route.Rules))
+	for _, rule := range config.Route.Rules {
+		if rule["action"] != "sniff" && rule["action"] != "resolve" {
+			routingRules = append(routingRules, rule)
+		}
+	}
+	if len(routingRules) < 5 || firstProtocolLinkID == "" || routingRules[0]["outbound"] != linkOutboundTag(second.ID) || routingRules[1]["outbound"] != linkOutboundTag(first.ID) || routingRules[2]["outbound"] != linkOutboundTag(firstProtocolLinkID) || routingRules[3]["outbound"] != linkOutboundTag(fallback.ID) {
 		t.Fatalf("compiled Link-owned rule order is wrong: %#v", config.Route.Rules)
 	}
 }

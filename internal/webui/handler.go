@@ -906,7 +906,7 @@ func (h *Handler) deployServerConfiguration(
 		)
 		return
 	}
-	config, err = ensureRequiredRouteSniff(config)
+	config, err = ensureRequiredRouteActions(config)
 	if err != nil {
 		h.renderServerError(
 			response,

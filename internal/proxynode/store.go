@@ -368,23 +368,30 @@ func (s *Store) RemoveMembership(nodeID, userID string) error {
 }
 
 func (s *Store) AddLink(nodeID string, input AddLinkInput) (Link, Hop, error) {
-	link, child, _, err := s.addLink(nodeID, input, nil)
+	link, child, _, err := s.addLink(nodeID, input, nil, false)
 	return link, child, err
 }
 
-// AddBranch atomically creates the matching Rule, its Link, and the Link's
-// child Hop. A non-entrance Hop is therefore never exposed as a standalone
-// editor artifact or left behind when Rule validation fails.
+// AddBranch atomically creates a conditional Rule or ALL fallback, its Link,
+// and the Link's child Hop. A non-entrance Hop is therefore never exposed as a
+// standalone editor artifact or left behind when validation fails.
 func (s *Store) AddBranch(nodeID string, input AddBranchInput) (Link, Hop, Rule, error) {
+	values := normalizeValues(input.Values)
+	if err := validateRule(Rule{Match: input.Match, Values: values}); err != nil {
+		return Link{}, Hop{}, Rule{}, fmt.Errorf("%w: %v", ErrInvalidState, err)
+	}
+	if input.Match == MatchNone {
+		return s.addLink(nodeID, input.AddLinkInput, nil, true)
+	}
 	ruleID, err := randomID("rul")
 	if err != nil {
 		return Link{}, Hop{}, Rule{}, err
 	}
-	rule := &Rule{ID: ruleID, Match: input.Match, Values: normalizeValues(input.Values)}
-	return s.addLink(nodeID, input.AddLinkInput, rule)
+	rule := &Rule{ID: ruleID, Match: input.Match, Values: values}
+	return s.addLink(nodeID, input.AddLinkInput, rule, false)
 }
 
-func (s *Store) addLink(nodeID string, input AddLinkInput, rule *Rule) (Link, Hop, Rule, error) {
+func (s *Store) addLink(nodeID string, input AddLinkInput, rule *Rule, fallback bool) (Link, Hop, Rule, error) {
 	input.ParentHopID = strings.TrimSpace(input.ParentHopID)
 	input.ChildName = strings.TrimSpace(input.ChildName)
 	input.ChildAgent = strings.TrimSpace(input.ChildAgent)
@@ -415,7 +422,7 @@ func (s *Store) addLink(nodeID string, input AddLinkInput, rule *Rule) (Link, Ho
 	}
 	now := s.now().UTC()
 	child := Hop{ID: hopID, Name: input.ChildName, AgentID: input.ChildAgent, Final: input.Final, CreatedAt: now, UpdatedAt: now}
-	link := Link{ID: linkID, ParentHopID: input.ParentHopID, ChildHopID: hopID, Endpoint: input.Endpoint, Credential: credential, CreatedAt: now, UpdatedAt: now}
+	link := Link{ID: linkID, ParentHopID: input.ParentHopID, ChildHopID: hopID, Fallback: fallback, Endpoint: input.Endpoint, Credential: credential, CreatedAt: now, UpdatedAt: now}
 	createdRule := Rule{}
 	if rule != nil {
 		createdRule = *rule
@@ -428,11 +435,15 @@ func (s *Store) addLink(nodeID string, input AddLinkInput, rule *Rule) (Link, Ho
 		link.Order = len(orderedSiblingLinkIndexes(*node, input.ParentHopID))
 		for siblingIndex := range node.Links {
 			sibling := &node.Links[siblingIndex]
-			if sibling.ParentHopID == input.ParentHopID && sibling.Fallback {
-				link.Order = sibling.Order
-				sibling.Order++
-				break
+			if sibling.ParentHopID != input.ParentHopID || !sibling.Fallback {
+				continue
 			}
+			if fallback {
+				return fmt.Errorf("%w: Hop already has an ALL fallback branch", ErrConflict)
+			}
+			link.Order = sibling.Order
+			sibling.Order++
+			break
 		}
 		if rule != nil {
 			createdRule.Order = ruleCountForHop(*node, input.ParentHopID)
@@ -523,12 +534,20 @@ func (s *Store) DeleteLink(nodeID, linkID string) error {
 }
 
 func (s *Store) AddRule(nodeID string, input AddRuleInput) (Rule, error) {
-	ruleID, err := randomID("rul")
-	if err != nil {
-		return Rule{}, err
+	values := normalizeValues(input.Values)
+	if err := validateRule(Rule{Match: input.Match, Values: values}); err != nil {
+		return Rule{}, fmt.Errorf("%w: %v", ErrInvalidState, err)
 	}
-	created := Rule{ID: ruleID, Match: input.Match, Values: normalizeValues(input.Values)}
-	err = s.mutateProxyNode(nodeID, func(state *State, node *ProxyNode) error {
+	fallback := input.Match == MatchNone
+	created := Rule{Match: input.Match, Values: values}
+	if !fallback {
+		ruleID, err := randomID("rul")
+		if err != nil {
+			return Rule{}, err
+		}
+		created.ID = ruleID
+	}
+	err := s.mutateProxyNode(nodeID, func(state *State, node *ProxyNode) error {
 		index := slices.IndexFunc(node.Links, func(link Link) bool { return link.ID == input.LinkID })
 		if index < 0 {
 			return ErrNotFound
@@ -536,6 +555,35 @@ func (s *Store) AddRule(nodeID string, input AddRuleInput) (Rule, error) {
 		link := &node.Links[index]
 		if link.Fallback {
 			return fmt.Errorf("%w: fallback Link cannot contain match rules", ErrConflict)
+		}
+		if fallback {
+			for siblingIndex := range node.Links {
+				sibling := node.Links[siblingIndex]
+				if sibling.ID != link.ID && sibling.ParentHopID == link.ParentHopID && sibling.Fallback {
+					return fmt.Errorf("%w: Hop already has an ALL fallback branch", ErrConflict)
+				}
+			}
+			if len(link.Rules) == 0 {
+				link.Fallback = true
+				link.UpdatedAt = s.now().UTC()
+				normalizeLinkOrders(node)
+				return nil
+			}
+			if len(link.Rules) != 1 {
+				return fmt.Errorf("%w: Link has more than one routing Rule", ErrInvalidState)
+			}
+			clonedLink, clonedHops, clonedLinks, err := cloneLinkBranch(*node, *link, s.now().UTC())
+			if err != nil {
+				return err
+			}
+			clonedLink.Rules = nil
+			clonedLink.Fallback = true
+			clonedLink.Order = len(orderedSiblingLinkIndexes(*node, link.ParentHopID))
+			node.Hops = append(node.Hops, clonedHops...)
+			node.Links = append(node.Links, clonedLink)
+			node.Links = append(node.Links, clonedLinks...)
+			normalizeLinkOrders(node)
+			return validateListenerLayout(state)
 		}
 		created.Order = ruleCountForHop(*node, link.ParentHopID)
 		if len(link.Rules) == 0 {
@@ -568,6 +616,10 @@ func (s *Store) AddRule(nodeID string, input AddRuleInput) (Rule, error) {
 }
 
 func (s *Store) UpdateRule(nodeID, ruleID string, input UpdateRuleInput) error {
+	values := normalizeValues(input.Values)
+	if err := validateRule(Rule{Match: input.Match, Values: values}); err != nil {
+		return fmt.Errorf("%w: %v", ErrInvalidState, err)
+	}
 	return s.mutateProxyNode(nodeID, func(_ *State, node *ProxyNode) error {
 		linkIndex := slices.IndexFunc(node.Links, func(link Link) bool { return link.ID == input.LinkID })
 		if linkIndex < 0 {
@@ -578,9 +630,23 @@ func (s *Store) UpdateRule(nodeID, ruleID string, input UpdateRuleInput) error {
 		if ruleIndex < 0 {
 			return ErrNotFound
 		}
+		if input.Match == MatchNone {
+			for siblingIndex := range node.Links {
+				sibling := node.Links[siblingIndex]
+				if sibling.ID != link.ID && sibling.ParentHopID == link.ParentHopID && sibling.Fallback {
+					return fmt.Errorf("%w: Hop already has an ALL fallback branch", ErrConflict)
+				}
+			}
+			link.Rules = nil
+			link.Fallback = true
+			link.UpdatedAt = s.now().UTC()
+			normalizeLinkOrders(node)
+			normalizeRuleOrders(node)
+			return nil
+		}
 		updated := link.Rules[ruleIndex]
 		updated.Match = input.Match
-		updated.Values = normalizeValues(input.Values)
+		updated.Values = values
 		link.Rules[ruleIndex] = updated
 		link.UpdatedAt = s.now().UTC()
 		return nil

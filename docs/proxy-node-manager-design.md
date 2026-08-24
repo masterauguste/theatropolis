@@ -229,9 +229,11 @@ separately configurable routing scope. Every conditional Rule owns a distinct
 Link, credential, child Hop, and downstream routing context. Compatible Links
 may still be coalesced into one physical listener, where their different
 authenticated users select their independent contexts. The first matching Rule
-wins; an optional unconditional
-fallback Link is evaluated last; otherwise the Hop's required `direct` or
-`reject` terminal is used. The compiler
+wins; an optional unconditional fallback Link is evaluated last; otherwise the
+Hop's required `direct` or `reject` terminal is used. The Rule match selector
+exposes `ALL` as that fallback choice. Selecting it creates or converts the
+branch into the Hop's single fallback Link without storing a synthetic match
+Rule, allowing unmatched traffic to relay to another Agent. The compiler
 rejects missing targets, cycles, merges, listener conflicts, duplicate wire
 credentials on a combined listener, and references outside the owning Proxy
 Node.
@@ -256,6 +258,10 @@ branches changes their exact first-match priority in place without navigating
 away from the map. Keyboard-accessible move
 buttons remain available in the Rule inspector. The branch Link inspector owns
 fallback state, the child terminal, deletion, and protocol/listener controls.
+When a local Direct or Reject fallback terminal is visible in the tree, its
+inspector edits that action in place and can open the branch wizard already set
+to `ALL`, turning the fallback into a relay without detouring through the Hop
+inspector.
 Creating a branch is Rule-first: the administrator defines the match before the
 same atomic mutation creates the Link, its unique relay identity, and its child
 Hop. A failed Rule or endpoint validation therefore cannot leave an orphaned
@@ -277,6 +283,15 @@ remote Geosite/GeoIP/custom Rule Set contents, or non-trivial regular
 expressions remain visible with a runtime-dependent marker. The master never
 performs DNS resolution for the tree because the answer observed by the Agent
 can differ by location and time.
+
+At runtime, the compiler inserts metadata actions only when ordered Rules first
+need them. A `sniff` action appears immediately before the first domain,
+Geosite/custom Rule Set, or protocol match; a `resolve` action appears
+immediately before the first destination-IP, GeoIP/custom Rule Set match. A
+custom Rule Set is opaque to the master and therefore conservatively requires
+both. If no DNS server is configured, sing-box's implicit local transport uses
+the Agent's system resolver. Earlier final Rules can still terminate routing
+without incurring either operation.
 
 Generated sing-box tags must include opaque IDs or an equivalent collision-free
 component. Human-readable names are included for clarity but are never relied
@@ -559,8 +574,8 @@ leave application state untouched.
 - Shadowsocks 2022, AnyTLS, and Hysteria2 are supported on entrances and Links.
 - Link-owned clauses support protocol, domain, domain suffix, domain keyword,
   domain regex, IP/CIDR, geosite, geoip, custom Rule Set, and network matches.
-  Each Hop has a Direct or Reject terminal, while an optional fallback Link is
-  the final relay branch.
+  `ALL` creates the optional fallback Link as the final relay branch. Each Hop
+  still has a Direct or Reject terminal for traffic not captured by a Link.
 - Credentials are generated automatically. Membership import URIs are revealed
   only on the global user's detail page; Link secrets are never displayed.
 - Agents advertise `proxy-node-config-v1`; an old Agent cannot receive a new
