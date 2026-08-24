@@ -1025,6 +1025,7 @@ func TestProxyNodePagesUseLinkOwnedRulesAndMembershipCredentials(t *testing.T) {
 	node, err := fixture.proxyNodes.CreateProxyNode(proxynode.CreateProxyNodeInput{
 		Name: "Cinema", RootName: "Entrance", RootAgent: "edge-online",
 		Entrance: proxynode.Endpoint{Protocol: proxynode.ProtocolAnyTLS, Listen: "::", ListenPort: 443, Family: "auto", TLS: proxynode.TLSConfig{Mode: proxynode.TLSModeSelfSigned, ServerName: "cinema.example"}},
+		Final:    proxynode.Target{Type: proxynode.TargetReject},
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -1066,9 +1067,9 @@ func TestProxyNodePagesUseLinkOwnedRulesAndMembershipCredentials(t *testing.T) {
 	}
 	body := response.Body.String()
 	for _, expected := range []string{
-		"Every configured path reaches an exit", "Direct and Reject run on the Agent attached to their final Hop.",
+		"Every configured path reaches an exit", "A leaf Hop implies Direct; Direct remains explicit beside other branches, and Reject is always explicit.",
 		"Left-to-right relay tree", `data-proxy-inspector-open="rule-` + firstRule.ID + `"`, `data-proxy-inspector-open="rule-` + secondRule.ID + `"`,
-		"Terminal on edge-online", "Terminal on edge-exit", `id="proxy-hop-manager"`,
+		"Terminal on edge-online", `proxy-map__node--reject`, `id="proxy-hop-manager"`,
 		`data-proxy-hop-manager-view="` + node.Entrance.HopID + `"`, "Configure this Hop's identity, terminal exit, and ordered child Links",
 		"Ordered child Links", "2 match clauses · any may match", "Edit each routing Rule by selecting its branch directly on the map", "Open Link",
 		"Shared relay Link", "2 Rule branches use this one relay endpoint, credential, and sing-box authenticated user.", "Add Rule branch", "Relay settings",
@@ -1079,9 +1080,9 @@ func TestProxyNodePagesUseLinkOwnedRulesAndMembershipCredentials(t *testing.T) {
 			t.Errorf("Proxy Node tree does not contain %q", expected)
 		}
 	}
-	for _, removed := range []string{`name="scope"`, `name="scope_type"`, `name="scope_value"`, `name="auth_user"`} {
+	for _, removed := range []string{`name="scope"`, `name="scope_type"`, `name="scope_value"`, `name="auth_user"`, `proxy-map__node--direct`, "Terminal on edge-exit"} {
 		if strings.Contains(body, removed) {
-			t.Errorf("Hop manager contains removed per-rule scope control %q", removed)
+			t.Errorf("Proxy Node tree contains removed control or Direct terminal marker %q", removed)
 		}
 	}
 	linkBranch := strings.Index(body, `data-proxy-inspector-open="rule-`+firstRule.ID+`"`)
@@ -1180,6 +1181,60 @@ func TestProxyNodePagesUseLinkOwnedRulesAndMembershipCredentials(t *testing.T) {
 	body = response.Body.String()
 	if !strings.Contains(body, "Cinema-Alice") || !strings.Contains(body, "anytls://") || !strings.Contains(body, "203.0.113.42:443") || !strings.Contains(body, "Revoke access") {
 		t.Fatalf("user page omitted membership identity or import URI: %q", body)
+	}
+}
+
+func TestProxyTreeHidesDirectOnlyOnLeafHops(t *testing.T) {
+	t.Parallel()
+
+	fixture := newWebFixture(t)
+	enrollAgent(t, fixture.registry, "edge-root")
+	enrollAgent(t, fixture.registry, "edge-reject")
+	node, err := fixture.proxyNodes.CreateProxyNode(proxynode.CreateProxyNodeInput{
+		Name: "Cinema", RootAgent: "edge-root", Final: proxynode.Target{Type: proxynode.TargetDirect},
+		Entrance: proxynode.Endpoint{
+			Protocol: proxynode.ProtocolAnyTLS, Listen: "::", ListenPort: 443, Family: "auto",
+			TLS: proxynode.TLSConfig{Mode: proxynode.TLSModeSelfSigned, ServerName: "cinema.example"},
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	render := func() string {
+		request := fixture.authenticatedRequest(http.MethodGet, proxyNodeURL(node.ID), "")
+		response := httptest.NewRecorder()
+		fixture.handler.ServeHTTP(response, request)
+		if response.Code != http.StatusOK {
+			t.Fatalf("GET Proxy Node tree = %d %q", response.Code, response.Body.String())
+		}
+		return response.Body.String()
+	}
+	if body := render(); strings.Contains(body, `proxy-map__node--direct`) {
+		t.Fatal("leaf Hop rendered a redundant Direct terminal node")
+	}
+
+	link, _, err := fixture.proxyNodes.AddLink(node.ID, proxynode.AddLinkInput{
+		ParentHopID: node.Entrance.HopID, ChildName: "Blocked", ChildAgent: "edge-reject",
+		Final: proxynode.Target{Type: proxynode.TargetReject},
+		Endpoint: proxynode.Endpoint{
+			Protocol: proxynode.ProtocolShadowsocks, Listen: "::", ListenPort: 20048, Family: "auto",
+			Method: "2022-blake3-aes-128-gcm",
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := fixture.proxyNodes.AddRule(node.ID, proxynode.AddRuleInput{
+		LinkID: link.ID, Match: proxynode.MatchProtocol, Values: []string{"bittorrent"},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	body := render()
+	if got := strings.Count(body, `proxy-map__node--direct`); got != 1 {
+		t.Fatalf("branched Hop rendered %d Direct terminal nodes, want 1", got)
+	}
+	if got := strings.Count(body, `proxy-map__node--reject`); got != 1 {
+		t.Fatalf("Reject leaf rendered %d terminal nodes, want 1", got)
 	}
 }
 

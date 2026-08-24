@@ -237,10 +237,11 @@ branch labelled with the actual match type and values. These branches are only
 distinct route presentations: clauses that target the same logical Link still
 share its child Hop, endpoint, relay credential, and single sing-box
 authenticated user. A fallback Link appears as one final fallback branch, and
-a Link with no rule remains as a visibly inactive branch. Direct/Reject targets
-identify the Agent on which they terminate. Selecting any route branch opens
-the shared Link inspector with routing ownership, protocol, fallback state,
-listener data, and controls.
+a Link with no rule remains as a visibly inactive branch. A Direct terminal is
+implicit when its Hop has no other visible branch, but remains an explicit
+fallback beside conditional branches; Reject is always an explicit terminal.
+Selecting a Rule branch edits only that Rule, while the shared Link inspector
+owns fallback state and opens protocol/listener controls.
 
 The displayed tree propagates each selected rule and every earlier first-match
 exclusion into the next Hop. Descendant branches that are provably
