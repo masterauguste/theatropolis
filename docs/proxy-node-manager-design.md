@@ -246,9 +246,17 @@ a Link with no rule remains as a visibly inactive branch. A Direct terminal is
 implicit when its Hop has no other visible branch, but remains an explicit
 fallback beside conditional branches; Reject is always an explicit terminal.
 Selecting a Rule branch edits only that Rule, while dragging numbered sibling
-branches changes their exact first-match priority. Keyboard-accessible move
+branches changes their exact first-match priority in place without navigating
+away from the map. Keyboard-accessible move
 buttons remain available in the Rule inspector. The branch Link inspector owns
-fallback state and opens protocol/listener controls.
+fallback state, the child terminal, deletion, and protocol/listener controls.
+Creating a branch is Rule-first: the administrator defines the match before the
+same atomic mutation creates the Link, its unique relay identity, and its child
+Hop. A failed Rule or endpoint validation therefore cannot leave an orphaned
+child Hop, and deleting the branch deletes its child subtree. The Hop inspector
+has only two mutations: change the hosting Agent or start this branch wizard.
+The entrance terminal remains under Entrance configuration because it has no
+parent Link.
 
 The displayed tree propagates each selected rule and every earlier first-match
 exclusion into the next Hop. Descendant branches that are provably contradictory
@@ -566,10 +574,14 @@ leave application state untouched.
   A successful Rule save returns to the refreshed relay map without reopening
   the Rule dialog.
 - The relay map is the only topology-management surface; there is no separate
-  Hop manager. A Hop inspector owns identity, its Direct/Reject terminal, and
-  Add Link. The branch Link inspector owns conditional/fallback mode,
-  deletion, child-Hop navigation, and transport settings. This keeps routing
-  intent visually attached to the exact branch and sing-box user it controls.
+  Hop manager. The Rule-first branch wizard atomically creates a Link and its
+  child Hop, so a child cannot exist independently from its parent Link. A Hop
+  inspector can only create a branch or move that Hop to another Agent. The
+  branch Link inspector owns conditional/fallback mode, its child's terminal,
+  deletion, child-Hop navigation, and transport settings; deleting a branch
+  removes its child subtree. Entrance terminal settings live with the entrance.
+  This keeps routing intent visually attached to the exact branch and sing-box
+  user it controls.
 - Legacy master deployment records and Agent active configurations are moved to
   owner-only `legacy-config-quarantine/` directories. Destructive cleanup is
   intentionally not automated in this release.

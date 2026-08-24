@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/url"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -67,6 +68,7 @@ type proxyTreeHopView struct {
 	BranchCount     int
 	Final           string
 	AgentOptions    []agentOptionView
+	NewRule         proxyRuleView
 	NewLinkEndpoint endpointView
 	CSRFToken       string
 }
@@ -467,12 +469,22 @@ func (h *Handler) proxyHopPage(response http.ResponseWriter, request *http.Reque
 }
 
 func (h *Handler) updateProxyHop(response http.ResponseWriter, request *http.Request) {
-	_, form, ok := h.authorizeProxyMutation(response, request, "name", "agent_id")
+	_, form, ok := h.authorizeProxyMutation(response, request, "agent_id")
 	if !ok {
 		return
 	}
 	nodeID, hopID := request.PathValue("proxy_id"), request.PathValue("hop_id")
-	if err := h.proxyNodes.UpdateHop(nodeID, hopID, form.Get("name"), form.Get("agent_id")); err != nil {
+	node, exists := h.proxyNodes.ProxyNode(nodeID)
+	if !exists {
+		http.NotFound(response, request)
+		return
+	}
+	hop, exists := proxyHop(node, hopID)
+	if !exists {
+		http.NotFound(response, request)
+		return
+	}
+	if err := h.proxyNodes.UpdateHop(nodeID, hopID, hop.Name, form.Get("agent_id")); err != nil {
 		handleProxyMutationError(response, err)
 		return
 	}
@@ -480,7 +492,7 @@ func (h *Handler) updateProxyHop(response http.ResponseWriter, request *http.Req
 }
 
 func (h *Handler) addProxyLink(response http.ResponseWriter, request *http.Request) {
-	fields := append([]string{"child_name", "child_agent", "child_terminal"}, endpointFormFields...)
+	fields := append([]string{"match", "values", "child_name", "child_agent", "child_terminal"}, endpointFormFields...)
 	_, form, ok := h.authorizeProxyMutation(response, request, fields...)
 	if !ok {
 		return
@@ -496,12 +508,17 @@ func (h *Handler) addProxyLink(response http.ResponseWriter, request *http.Reque
 		return
 	}
 	nodeID, hopID := request.PathValue("proxy_id"), request.PathValue("hop_id")
-	link, _, err := h.proxyNodes.AddLink(nodeID, proxynode.AddLinkInput{ParentHopID: hopID, ChildName: form.Get("child_name"), ChildAgent: form.Get("child_agent"), Endpoint: endpoint, Final: terminal})
+	_, _, rule, err := h.proxyNodes.AddBranch(nodeID, proxynode.AddBranchInput{
+		AddLinkInput: proxynode.AddLinkInput{
+			ParentHopID: hopID, ChildName: form.Get("child_name"), ChildAgent: form.Get("child_agent"), Endpoint: endpoint, Final: terminal,
+		},
+		Match: proxynode.MatchType(form.Get("match")), Values: splitProxyValues(form.Get("values")),
+	})
 	if err != nil {
 		handleProxyMutationError(response, err)
 		return
 	}
-	http.Redirect(response, request, proxyInspectorURL(nodeID, "link-"+link.ID), http.StatusSeeOther)
+	http.Redirect(response, request, proxyInspectorURL(nodeID, "rule-"+rule.ID), http.StatusSeeOther)
 }
 
 func (h *Handler) deleteProxyLink(response http.ResponseWriter, request *http.Request) {
@@ -603,11 +620,21 @@ func (h *Handler) deleteProxyRule(response http.ResponseWriter, request *http.Re
 		return
 	}
 	nodeID, linkID := request.PathValue("proxy_id"), request.PathValue("link_id")
-	if err := h.proxyNodes.DeleteRule(nodeID, linkID, form.Get("rule_id")); err != nil {
+	node, exists := h.proxyNodes.ProxyNode(nodeID)
+	if !exists {
+		http.NotFound(response, request)
+		return
+	}
+	link, exists := proxyLink(node, linkID)
+	if !exists || !slices.ContainsFunc(link.Rules, func(rule proxynode.Rule) bool { return rule.ID == form.Get("rule_id") }) {
+		http.NotFound(response, request)
+		return
+	}
+	if err := h.proxyNodes.DeleteLink(nodeID, linkID); err != nil {
 		handleProxyMutationError(response, err)
 		return
 	}
-	http.Redirect(response, request, proxyInspectorURL(nodeID, "link-"+linkID), http.StatusSeeOther)
+	http.Redirect(response, request, proxyInspectorURL(nodeID, "hop-"+link.ParentHopID), http.StatusSeeOther)
 }
 
 func (h *Handler) moveProxyRule(response http.ResponseWriter, request *http.Request) {
@@ -638,6 +665,10 @@ func (h *Handler) reorderProxyRules(response http.ResponseWriter, request *http.
 	nodeID, hopID := request.PathValue("proxy_id"), request.PathValue("hop_id")
 	if err := h.proxyNodes.ReorderRules(nodeID, hopID, splitProxyValues(form.Get("rule_ids"))); err != nil {
 		handleProxyMutationError(response, err)
+		return
+	}
+	if strings.Contains(request.Header.Get("Accept"), "application/json") {
+		response.WriteHeader(http.StatusNoContent)
 		return
 	}
 	http.Redirect(response, request, proxyNodeURL(nodeID), http.StatusSeeOther)
@@ -692,11 +723,30 @@ func (h *Handler) updateProxyFinal(response http.ResponseWriter, request *http.R
 		return
 	}
 	nodeID, hopID := request.PathValue("proxy_id"), request.PathValue("hop_id")
+	node, exists := h.proxyNodes.ProxyNode(nodeID)
+	if !exists {
+		http.NotFound(response, request)
+		return
+	}
+	if _, exists := proxyHop(node, hopID); !exists {
+		http.NotFound(response, request)
+		return
+	}
 	if err := h.proxyNodes.SetFinal(nodeID, hopID, target); err != nil {
 		handleProxyMutationError(response, err)
 		return
 	}
-	http.Redirect(response, request, proxyInspectorURL(nodeID, "hop-"+hopID), http.StatusSeeOther)
+	if hopID == node.Entrance.HopID {
+		http.Redirect(response, request, proxyNodeURL(nodeID)+"/entrance", http.StatusSeeOther)
+		return
+	}
+	for _, link := range node.Links {
+		if link.ChildHopID == hopID {
+			http.Redirect(response, request, proxyInspectorURL(nodeID, "link-"+link.ID), http.StatusSeeOther)
+			return
+		}
+	}
+	http.Redirect(response, request, proxyNodeURL(nodeID), http.StatusSeeOther)
 }
 
 func (h *Handler) endUsersPage(response http.ResponseWriter, request *http.Request) {
@@ -890,6 +940,7 @@ func (h *Handler) attachProxyTreeControls(node proxynode.ProxyNode, tree *proxyT
 	tree.ProxyID = node.ID
 	tree.Final = targetValue(hop.Final)
 	tree.AgentOptions = h.proxyAgentOptions(hop.AgentID)
+	tree.NewRule = proxyRuleView{Match: string(proxynode.MatchProtocol)}
 	tree.NewLinkEndpoint = defaultEndpointView()
 	for _, link := range tree.Children {
 		h.attachProxyTreeControls(node, link.Child)

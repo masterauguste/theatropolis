@@ -99,7 +99,7 @@ document.addEventListener("dragstart", (event) => {
     ? event.target.closest("[data-proxy-rule-branch]")
     : null;
   const list = branch?.parentElement;
-  if (!branch || !list?.matches("[data-proxy-branch-list]")) return;
+  if (!branch || !list?.matches("[data-proxy-branch-list]") || list.dataset.reorderPending === "true") return;
   draggedProxyBranch = branch;
   draggedProxyBranchOrder = proxyBranchOrder(list);
   draggedProxyBranchElements = [...list.children]
@@ -149,25 +149,43 @@ document.addEventListener("dragend", () => {
     for (const branch of draggedProxyBranchElements) list.insertBefore(branch, anchor);
   }
   const nextOrder = list ? proxyBranchOrder(list) : draggedProxyBranchOrder;
+  const previousElements = draggedProxyBranchElements;
   draggedProxyBranch = null;
   draggedProxyBranchElements = [];
   if (!list || !proxyBranchDropAccepted || nextOrder === draggedProxyBranchOrder) return;
-  const form = document.createElement("form");
-  form.method = "post";
-  form.action = list.dataset.reorderUrl || "";
-  form.hidden = true;
-  for (const [name, value] of [
-    ["csrf_token", list.dataset.csrfToken || ""],
-    ["rule_ids", mergedProxyBranchOrder(list, nextOrder)],
-  ]) {
-    const input = document.createElement("input");
-    input.type = "hidden";
-    input.name = name;
-    input.value = value;
-    form.append(input);
-  }
-  document.body.append(form);
-  form.requestSubmit();
+  const restoreOrder = () => {
+    const anchor = [...list.children]
+      .find((child) => !child.matches("[data-proxy-rule-branch]")) || null;
+    for (const branch of previousElements) list.insertBefore(branch, anchor);
+  };
+  const persistedOrder = mergedProxyBranchOrder(list, nextOrder);
+  const body = new URLSearchParams({
+    csrf_token: list.dataset.csrfToken || "",
+    rule_ids: persistedOrder,
+  });
+  list.dataset.reorderPending = "true";
+  fetch(list.dataset.reorderUrl || "", {
+    method: "POST",
+    headers: {
+      Accept: "application/json",
+      "Content-Type": "application/x-www-form-urlencoded;charset=UTF-8",
+    },
+    body,
+    credentials: "same-origin",
+  }).then((response) => {
+    if (!response.ok || response.redirected) throw new Error("reorder rejected");
+    list.dataset.proxyAllRuleIds = persistedOrder;
+    const priorities = new Map(persistedOrder.split(",").map((ruleID, index) => [ruleID, index + 1]));
+    for (const branch of list.querySelectorAll(":scope > [data-proxy-rule-branch]")) {
+      const priority = branch.querySelector(".proxy-map__priority");
+      if (priority) priority.textContent = priorities.get(branch.dataset.proxyRuleBranch) || "";
+    }
+  }).catch(() => {
+    restoreOrder();
+    window.alert("The new branch order could not be saved. The previous order was restored.");
+  }).finally(() => {
+    delete list.dataset.reorderPending;
+  });
 });
 
 const proxyDeployment = document.querySelector("[data-proxy-deployment][data-status-url]");

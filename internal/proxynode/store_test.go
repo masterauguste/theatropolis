@@ -91,6 +91,64 @@ func TestStorePersistsUsersTopologyAndGeneratedCredentials(t *testing.T) {
 	}
 }
 
+func TestAddBranchAtomicallyCreatesRuleLinkAndChildBeforeFallback(t *testing.T) {
+	store, err := Open(filepath.Join(t.TempDir(), "proxy-node-state.json"), testBuild())
+	if err != nil {
+		t.Fatal(err)
+	}
+	node, err := store.CreateProxyNode(CreateProxyNodeInput{
+		Name: "cinema", RootAgent: "edge-a", Entrance: testTLSEndpoint(ProtocolAnyTLS, 443),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	fallback, _, err := store.AddLink(node.ID, AddLinkInput{
+		ParentHopID: node.Entrance.HopID, ChildName: "Fallback", ChildAgent: "edge-c",
+		Endpoint: testTLSEndpoint(ProtocolAnyTLS, 9443),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.SetLinkFallback(node.ID, fallback.ID, true); err != nil {
+		t.Fatal(err)
+	}
+
+	link, child, rule, err := store.AddBranch(node.ID, AddBranchInput{
+		AddLinkInput: AddLinkInput{
+			ParentHopID: node.Entrance.HopID, ChildName: "Exit", ChildAgent: "edge-b",
+			Endpoint: testTLSEndpoint(ProtocolHysteria2, 8443), Final: Target{Type: TargetReject},
+		},
+		Match: MatchDomainSuffix, Values: []string{"example.net"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, _ := store.ProxyNode(node.ID)
+	linkIndex := slices.IndexFunc(got.Links, func(candidate Link) bool { return candidate.ID == link.ID })
+	fallbackIndex := slices.IndexFunc(got.Links, func(candidate Link) bool { return candidate.ID == fallback.ID })
+	if linkIndex < 0 || fallbackIndex < 0 || got.Links[linkIndex].Order != 0 || got.Links[fallbackIndex].Order != 1 {
+		t.Fatalf("branch was not inserted before fallback: %#v", got.Links)
+	}
+	if got.Links[linkIndex].ChildHopID != child.ID || len(got.Links[linkIndex].Rules) != 1 || got.Links[linkIndex].Rules[0].ID != rule.ID || rule.Order != 0 {
+		t.Fatalf("branch components were not created together: link=%#v child=%#v rule=%#v", got.Links[linkIndex], child, rule)
+	}
+
+	beforeHops, beforeLinks := len(got.Hops), len(got.Links)
+	if _, _, _, err := store.AddBranch(node.ID, AddBranchInput{
+		AddLinkInput: AddLinkInput{
+			ParentHopID: node.Entrance.HopID, ChildName: "Invalid", ChildAgent: "edge-d",
+			Endpoint: testTLSEndpoint(ProtocolAnyTLS, 10443),
+		},
+		Match: MatchNone,
+	}); err == nil {
+		t.Fatal("unconditional branch was accepted")
+	}
+	got, _ = store.ProxyNode(node.ID)
+	if len(got.Hops) != beforeHops || len(got.Links) != beforeLinks {
+		t.Fatalf("failed branch left topology artifacts: %#v", got)
+	}
+}
+
 func TestUpdateRuleEditsOnlyItsBranchWithoutRotatingCredential(t *testing.T) {
 	store, err := Open(filepath.Join(t.TempDir(), "proxy-node-state.json"), testBuild())
 	if err != nil {

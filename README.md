@@ -29,13 +29,15 @@ The master, agent, and sing-box all run as dedicated unprivileged users. A small
 ## Proxy Nodes
 
 Configuration is modeled as logical Proxy Nodes instead of editable per-server
-sing-box files. Create a Proxy Node with one entrance, then add ordered relay
-Links to its Hops. Each conditional Rule is a separately editable branch on the
-relay map. Every branch is its own logical Link, child routing context,
+sing-box files. Create a Proxy Node with one entrance, then create ordered
+branches from its Hops. The guided branch editor defines the matching Rule
+first, then atomically creates its relay Link and child Hop; a non-entrance Hop
+cannot exist without that parent Link. Each conditional Rule is a separately
+editable branch on the relay map. Every branch is its own logical Link, child routing context,
 generated credential, and sing-box authenticated user. Duplicating a branch
 copies its downstream chain and listener settings but creates fresh logical
 identities and credentials. Numbered Rule branches can be dragged vertically on
-the map to set their exact first-match priority. Links can
+the map to set their exact first-match priority without reloading the page. Links can
 independently use Shadowsocks 2022, AnyTLS, or Hysteria2. An optional fallback
 Link remains last, and otherwise traffic terminates as Direct or Reject on the
 current Hop.

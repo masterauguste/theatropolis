@@ -196,6 +196,12 @@ type AddLinkInput struct {
 	Final       Target
 }
 
+type AddBranchInput struct {
+	AddLinkInput
+	Match  MatchType
+	Values []string
+}
+
 type AddRuleInput struct {
 	LinkID string
 	Match  MatchType

@@ -1086,7 +1086,7 @@ func TestProxyNodePagesUseLinkOwnedRulesAndMembershipCredentials(t *testing.T) {
 		"Every configured path reaches an exit", "A leaf Hop implies Direct; Direct remains explicit beside other branches, and Reject is always explicit.",
 		"Left-to-right relay tree", `data-proxy-inspector-open="rule-` + firstRule.ID + `"`, `data-proxy-inspector-open="rule-` + secondRule.ID + `"`,
 		"Terminal on edge-online", `proxy-map__node--reject`, `data-proxy-inspector-view="hop-` + node.Entrance.HopID + `"`,
-		"Hop identity", "Terminal exit", "Save identity", `data-dialog-open="proxy-add-link-` + node.Entrance.HopID + `"`,
+		"Change Agent", "Save Agent", "Create branch", `data-dialog-open="proxy-add-link-` + node.Entrance.HopID + `"`,
 		"Relay branch", "This Rule has its own relay credential, authenticated user, and downstream routing context.", "Duplicate branch", "Edit relay", "Save relay",
 		"drag numbered Rule branches vertically to change their priority", `data-proxy-rule-branch="` + firstRule.ID + `"`,
 		`data-reorder-url="/proxy-nodes/` + node.ID + `/hops/` + node.Entrance.HopID + `/rules/reorder"`, "Delete branch", "View child Hop",
@@ -1224,6 +1224,14 @@ func TestProxyNodePagesUseLinkOwnedRulesAndMembershipCredentials(t *testing.T) {
 	})
 	if firstIndex < 0 || secondIndex < 0 || updated.Links[secondIndex].Rules[0].Order != 0 || updated.Links[firstIndex].Rules[0].Order != 1 {
 		t.Fatalf("dragged Rule priority was not persisted: %#v", updated.Links)
+	}
+
+	request = fixture.authenticatedMutationRequest(http.MethodPost, "/proxy-nodes/"+node.ID+"/hops/"+node.Entrance.HopID+"/rules/reorder", form.Encode())
+	request.Header.Set("Accept", "application/json")
+	response = httptest.NewRecorder()
+	fixture.handler.ServeHTTP(response, request)
+	if response.Code != http.StatusNoContent || response.Header().Get("Location") != "" {
+		t.Fatalf("async Rule reorder = %d location %q body %q", response.Code, response.Header().Get("Location"), response.Body.String())
 	}
 
 	request = fixture.authenticatedRequest(http.MethodGet, "/users/"+url.PathEscape(user.ID), "")
@@ -1519,7 +1527,8 @@ func TestAddProxyLinkIgnoresHiddenForeignProtocolFields(t *testing.T) {
 		t.Fatal(err)
 	}
 	form := url.Values{
-		"csrf_token": {fixture.session.CSRFToken}, "child_name": {"Exit"}, "child_agent": {"edge-exit"}, "child_terminal": {"direct"},
+		"csrf_token": {fixture.session.CSRFToken}, "match": {"domain_suffix"}, "values": {"example.net"},
+		"child_name": {"Exit"}, "child_agent": {"edge-exit"}, "child_terminal": {"direct"},
 		"protocol": {"shadowsocks"}, "listen": {"::"}, "listen_port": {"20048"}, "family": {"auto"},
 		"method": {"2022-blake3-aes-256-gcm"}, "tls_mode": {"self_signed"}, "server_name": {"stale.example"},
 		"mux_enabled": {"0"}, "mux_padding": {"0"}, "mux_brutal": {"0"}, "mux_brutal_up_mbps": {""}, "mux_brutal_down_mbps": {""},
@@ -1532,7 +1541,7 @@ func TestAddProxyLinkIgnoresHiddenForeignProtocolFields(t *testing.T) {
 		t.Fatalf("POST Shadowsocks Link = %d %q", response.Code, response.Body.String())
 	}
 	updated, exists := fixture.proxyNodes.ProxyNode(node.ID)
-	if !exists || len(updated.Links) != 1 {
+	if !exists || len(updated.Links) != 1 || len(updated.Links[0].Rules) != 1 {
 		t.Fatalf("updated Proxy Node = %#v, exists %v", updated, exists)
 	}
 	endpoint := updated.Links[0].Endpoint
@@ -1546,6 +1555,7 @@ func TestCreateProxyNodeMakesTerminalExitExplicitAndOpensRouting(t *testing.T) {
 
 	fixture := newWebFixture(t)
 	enrollAgent(t, fixture.registry, "edge-online")
+	enrollAgent(t, fixture.registry, "edge-child")
 	request := fixture.authenticatedRequest(http.MethodGet, "/proxy-nodes/new", "")
 	response := httptest.NewRecorder()
 	fixture.handler.ServeHTTP(response, request)
@@ -1598,10 +1608,64 @@ func TestCreateProxyNodeMakesTerminalExitExplicitAndOpensRouting(t *testing.T) {
 		t.Fatalf("GET entrance Hop inspector = %d %q", response.Code, response.Body.String())
 	}
 	body = response.Body.String()
-	for _, expected := range []string{"Terminal exit", "Add child Link", `name="child_terminal"`, "Reject traffic"} {
+	for _, expected := range []string{"Change Agent", "Save Agent", "Create branch", "1. Matching Rule", "2. Child Hop", `name="child_terminal"`, "Reject traffic"} {
 		if !strings.Contains(body, expected) {
 			t.Errorf("entrance Hop inspector does not contain %q", expected)
 		}
+	}
+	if strings.Contains(body, "Save identity") {
+		t.Error("Hop inspector still exposes identity/name editing")
+	}
+	ruleStep := strings.Index(body, "1. Matching Rule")
+	childStep := strings.Index(body, "2. Child Hop")
+	linkStep := strings.Index(body, "3. Relay Link")
+	if ruleStep < 0 || childStep < ruleStep || linkStep < childStep {
+		t.Fatalf("branch wizard is not Rule-first: rule=%d child=%d Link=%d", ruleStep, childStep, linkStep)
+	}
+
+	branchForm := url.Values{
+		"csrf_token": {fixture.session.CSRFToken}, "match": {string(proxynode.MatchDomainSuffix)}, "values": {"example.net"},
+		"child_name": {"Exit"}, "child_agent": {"edge-child"}, "child_terminal": {"direct"},
+		"protocol": {"shadowsocks"}, "listen": {"::"}, "listen_port": {"20048"}, "family": {"auto"}, "method": {"2022-blake3-aes-128-gcm"},
+		"mux_enabled": {"0"}, "mux_padding": {"0"}, "mux_brutal": {"0"}, "mux_brutal_up_mbps": {""}, "mux_brutal_down_mbps": {""},
+		"tls_mode": {"self_signed"}, "server_name": {""}, "email": {""}, "certificate_path": {""}, "key_path": {""},
+		"up_mbps": {""}, "down_mbps": {""}, "obfs_type": {""},
+	}
+	request = fixture.authenticatedMutationRequest(http.MethodPost, "/proxy-nodes/"+node.ID+"/hops/"+entrance.ID+"/links", branchForm.Encode())
+	response = httptest.NewRecorder()
+	fixture.handler.ServeHTTP(response, request)
+	if response.Code != http.StatusSeeOther || !strings.Contains(response.Header().Get("Location"), "?inspect=rule-") {
+		t.Fatalf("POST branch = %d location %q body %q", response.Code, response.Header().Get("Location"), response.Body.String())
+	}
+	updated, ok := fixture.proxyNodes.ProxyNode(node.ID)
+	if !ok || len(updated.Hops) != 2 || len(updated.Links) != 1 || len(updated.Links[0].Rules) != 1 || updated.Links[0].ChildHopID != updated.Hops[1].ID {
+		t.Fatalf("atomic branch creation produced %#v, exists %v", updated, ok)
+	}
+
+	branchForm.Set("match", string(proxynode.MatchNone))
+	request = fixture.authenticatedMutationRequest(http.MethodPost, "/proxy-nodes/"+node.ID+"/hops/"+entrance.ID+"/links", branchForm.Encode())
+	response = httptest.NewRecorder()
+	fixture.handler.ServeHTTP(response, request)
+	if response.Code != http.StatusBadRequest {
+		t.Fatalf("POST invalid branch = %d, want 400", response.Code)
+	}
+	updated, _ = fixture.proxyNodes.ProxyNode(node.ID)
+	if len(updated.Hops) != 2 || len(updated.Links) != 1 {
+		t.Fatalf("invalid branch left a child Hop or Link behind: %#v", updated)
+	}
+
+	createdLink, createdRule := updated.Links[0], updated.Links[0].Rules[0]
+	request = fixture.authenticatedMutationRequest(http.MethodPost, proxyLinkURL(node.ID, createdLink.ID)+"/rules/delete", url.Values{
+		"csrf_token": {fixture.session.CSRFToken}, "rule_id": {createdRule.ID},
+	}.Encode())
+	response = httptest.NewRecorder()
+	fixture.handler.ServeHTTP(response, request)
+	if response.Code != http.StatusSeeOther || response.Header().Get("Location") != proxyInspectorURL(node.ID, "hop-"+entrance.ID) {
+		t.Fatalf("DELETE branch = %d location %q body %q", response.Code, response.Header().Get("Location"), response.Body.String())
+	}
+	updated, _ = fixture.proxyNodes.ProxyNode(node.ID)
+	if len(updated.Hops) != 1 || len(updated.Links) != 0 {
+		t.Fatalf("deleting branch did not remove its child subtree: %#v", updated)
 	}
 }
 

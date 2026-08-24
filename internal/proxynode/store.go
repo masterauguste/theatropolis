@@ -368,6 +368,23 @@ func (s *Store) RemoveMembership(nodeID, userID string) error {
 }
 
 func (s *Store) AddLink(nodeID string, input AddLinkInput) (Link, Hop, error) {
+	link, child, _, err := s.addLink(nodeID, input, nil)
+	return link, child, err
+}
+
+// AddBranch atomically creates the matching Rule, its Link, and the Link's
+// child Hop. A non-entrance Hop is therefore never exposed as a standalone
+// editor artifact or left behind when Rule validation fails.
+func (s *Store) AddBranch(nodeID string, input AddBranchInput) (Link, Hop, Rule, error) {
+	ruleID, err := randomID("rul")
+	if err != nil {
+		return Link{}, Hop{}, Rule{}, err
+	}
+	rule := &Rule{ID: ruleID, Match: input.Match, Values: normalizeValues(input.Values)}
+	return s.addLink(nodeID, input.AddLinkInput, rule)
+}
+
+func (s *Store) addLink(nodeID string, input AddLinkInput, rule *Rule) (Link, Hop, Rule, error) {
 	input.ParentHopID = strings.TrimSpace(input.ParentHopID)
 	input.ChildName = strings.TrimSpace(input.ChildName)
 	input.ChildAgent = strings.TrimSpace(input.ChildAgent)
@@ -376,43 +393,56 @@ func (s *Store) AddLink(nodeID string, input AddLinkInput) (Link, Hop, error) {
 		input.Final = Target{Type: TargetDirect}
 	}
 	if !validName(input.ChildName) || !validAgentID(input.ChildAgent) {
-		return Link{}, Hop{}, fmt.Errorf("%w: invalid child Hop", ErrInvalidState)
+		return Link{}, Hop{}, Rule{}, fmt.Errorf("%w: invalid child Hop", ErrInvalidState)
 	}
 	if (input.Final.Type != TargetDirect && input.Final.Type != TargetReject) || input.Final.LinkID != "" {
-		return Link{}, Hop{}, fmt.Errorf("%w: initial terminal exit must be Direct or Reject", ErrInvalidState)
+		return Link{}, Hop{}, Rule{}, fmt.Errorf("%w: initial terminal exit must be Direct or Reject", ErrInvalidState)
 	}
 	if err := generateEndpointSecrets(&input.Endpoint); err != nil {
-		return Link{}, Hop{}, err
+		return Link{}, Hop{}, Rule{}, err
 	}
 	linkID, err := randomID("lnk")
 	if err != nil {
-		return Link{}, Hop{}, err
+		return Link{}, Hop{}, Rule{}, err
 	}
 	hopID, err := randomID("hop")
 	if err != nil {
-		return Link{}, Hop{}, err
+		return Link{}, Hop{}, Rule{}, err
 	}
 	credential, err := generateCredential(input.Endpoint)
 	if err != nil {
-		return Link{}, Hop{}, err
+		return Link{}, Hop{}, Rule{}, err
 	}
 	now := s.now().UTC()
 	child := Hop{ID: hopID, Name: input.ChildName, AgentID: input.ChildAgent, Final: input.Final, CreatedAt: now, UpdatedAt: now}
 	link := Link{ID: linkID, ParentHopID: input.ParentHopID, ChildHopID: hopID, Endpoint: input.Endpoint, Credential: credential, CreatedAt: now, UpdatedAt: now}
+	createdRule := Rule{}
+	if rule != nil {
+		createdRule = *rule
+		link.Rules = []Rule{createdRule}
+	}
 	err = s.mutateProxyNode(nodeID, func(state *State, node *ProxyNode) error {
 		if !slices.ContainsFunc(node.Hops, func(hop Hop) bool { return hop.ID == input.ParentHopID }) {
 			return ErrNotFound
 		}
-		for _, sibling := range node.Links {
-			if sibling.ParentHopID == input.ParentHopID && sibling.Order >= link.Order {
-				link.Order = sibling.Order + 1
+		link.Order = len(orderedSiblingLinkIndexes(*node, input.ParentHopID))
+		for siblingIndex := range node.Links {
+			sibling := &node.Links[siblingIndex]
+			if sibling.ParentHopID == input.ParentHopID && sibling.Fallback {
+				link.Order = sibling.Order
+				sibling.Order++
+				break
 			}
+		}
+		if rule != nil {
+			createdRule.Order = ruleCountForHop(*node, input.ParentHopID)
+			link.Rules[0] = createdRule
 		}
 		node.Hops = append(node.Hops, child)
 		node.Links = append(node.Links, link)
 		return validateListenerLayout(state)
 	})
-	return link, child, err
+	return link, child, createdRule, err
 }
 
 func (s *Store) UpdateLink(nodeID, linkID string, endpoint Endpoint) error {
