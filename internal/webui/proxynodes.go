@@ -99,19 +99,28 @@ type endUserListView struct {
 }
 
 type endUserDetailView struct {
-	ID            string
-	Name          string
-	AssignedCount int
-	ProxyAccess   []userProxyAccessView
+	ID              string
+	Name            string
+	ProxyNodeCount  int
+	AssignedAccess  []userProxyAccessView
+	AvailableAccess []userProxyOptionView
 }
 
 type userProxyAccessView struct {
-	ProxyID   string
-	ProxyName string
-	ProxyURL  string
-	Assigned  bool
-	AuthUser  string
-	URIs      []credentialURIView
+	ProxyID       string
+	ProxyName     string
+	ProxyURL      string
+	DialogID      string
+	Initial       string
+	EntranceLabel string
+	EntranceAgent string
+	AuthUser      string
+	URIs          []credentialURIView
+}
+
+type userProxyOptionView struct {
+	ProxyID string
+	Label   string
 }
 
 type credentialURIView struct {
@@ -340,16 +349,7 @@ func (h *Handler) deployProxyNodes(response http.ResponseWriter, request *http.R
 			return
 		}
 	}
-	if h.proxyDeployer == nil {
-		http.Error(response, "Proxy Node deployment is unavailable", http.StatusServiceUnavailable)
-		return
-	}
-	if _, err := h.proxyDeployer.Start(); err != nil {
-		status := http.StatusConflict
-		if !errors.Is(err, proxynode.ErrDeploymentActive) {
-			status = http.StatusBadRequest
-		}
-		http.Error(response, err.Error(), status)
+	if !h.queueProxyDeployment(response) {
 		return
 	}
 	redirect := "/proxy-nodes"
@@ -357,6 +357,22 @@ func (h *Handler) deployProxyNodes(response http.ResponseWriter, request *http.R
 		redirect = proxyNodeURL(id)
 	}
 	http.Redirect(response, request, redirect, http.StatusSeeOther)
+}
+
+func (h *Handler) queueProxyDeployment(response http.ResponseWriter) bool {
+	if h.proxyDeployer == nil {
+		http.Error(response, "Proxy Node deployment is unavailable", http.StatusServiceUnavailable)
+		return false
+	}
+	if _, err := h.proxyDeployer.Start(); err != nil {
+		status := http.StatusConflict
+		if !errors.Is(err, proxynode.ErrDeploymentActive) {
+			status = http.StatusBadRequest
+		}
+		http.Error(response, err.Error(), status)
+		return false
+	}
+	return true
 }
 
 func (h *Handler) proxyDeploymentStatus(response http.ResponseWriter, request *http.Request) {
@@ -739,25 +755,43 @@ func (h *Handler) endUserPage(response http.ResponseWriter, request *http.Reques
 		return
 	}
 	state := h.proxyNodes.Snapshot()
-	detail := &endUserDetailView{ID: user.ID, Name: user.Name}
+	detail := &endUserDetailView{ID: user.ID, Name: user.Name, ProxyNodeCount: len(state.ProxyNodes)}
 	for _, node := range state.ProxyNodes {
-		access := userProxyAccessView{ProxyID: node.ID, ProxyName: node.Name, ProxyURL: proxyNodeURL(node.ID)}
+		root, _ := proxyHop(node, node.Entrance.HopID)
+		access := userProxyAccessView{
+			ProxyID: node.ID, ProxyName: node.Name, ProxyURL: proxyNodeURL(node.ID),
+			DialogID: "user-proxy-access-" + node.ID, Initial: strings.ToUpper(node.Name[:1]),
+			EntranceLabel: protocolLabel(node.Entrance.Endpoint.Protocol), EntranceAgent: root.AgentID,
+		}
+		assigned := false
 		for _, membership := range node.Memberships {
 			if membership.UserID != user.ID {
 				continue
 			}
-			access.Assigned = true
-			detail.AssignedCount++
+			assigned = true
 			access.AuthUser = node.Name + "-" + user.Name
 			access.URIs = h.membershipURIs(node, user, membership)
 			break
 		}
-		detail.ProxyAccess = append(detail.ProxyAccess, access)
+		if assigned {
+			detail.AssignedAccess = append(detail.AssignedAccess, access)
+			continue
+		}
+		detail.AvailableAccess = append(detail.AvailableAccess, userProxyOptionView{
+			ProxyID: node.ID,
+			Label:   node.Name + " — " + access.EntranceLabel + " · " + access.EntranceAgent,
+		})
 	}
-	sort.Slice(detail.ProxyAccess, func(left, right int) bool {
-		return strings.ToLower(detail.ProxyAccess[left].ProxyName) < strings.ToLower(detail.ProxyAccess[right].ProxyName)
+	sort.Slice(detail.AssignedAccess, func(left, right int) bool {
+		return strings.ToLower(detail.AssignedAccess[left].ProxyName) < strings.ToLower(detail.AssignedAccess[right].ProxyName)
 	})
-	h.render(response, http.StatusOK, "user.html", pageData{Title: user.Name, ActiveNav: "users", CSRFToken: session.CSRFToken, EndUser: detail})
+	sort.Slice(detail.AvailableAccess, func(left, right int) bool {
+		return strings.ToLower(detail.AvailableAccess[left].Label) < strings.ToLower(detail.AvailableAccess[right].Label)
+	})
+	h.render(response, http.StatusOK, "user.html", pageData{
+		Title: user.Name, ActiveNav: "users", CSRFToken: session.CSRFToken, EndUser: detail,
+		ProxyDeployment: h.proxyDeploymentView(), ProxyDeployEnabled: h.proxyDeployer != nil,
+	})
 }
 
 func (h *Handler) addUserProxyAccess(response http.ResponseWriter, request *http.Request) {
@@ -785,6 +819,22 @@ func (h *Handler) removeUserProxyAccess(response http.ResponseWriter, request *h
 	userID := request.PathValue("user_id")
 	if err := h.proxyNodes.RemoveMembership(form.Get("proxy_id"), userID); err != nil {
 		handleProxyMutationError(response, err)
+		return
+	}
+	http.Redirect(response, request, "/users/"+url.PathEscape(userID), http.StatusSeeOther)
+}
+
+func (h *Handler) deployUserProxyAccess(response http.ResponseWriter, request *http.Request) {
+	_, _, ok := h.authorizeProxyMutation(response, request)
+	if !ok {
+		return
+	}
+	userID := request.PathValue("user_id")
+	if _, exists := h.proxyNodes.User(userID); !exists {
+		http.NotFound(response, request)
+		return
+	}
+	if !h.queueProxyDeployment(response) {
 		return
 	}
 	http.Redirect(response, request, "/users/"+url.PathEscape(userID), http.StatusSeeOther)

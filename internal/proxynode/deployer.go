@@ -2,6 +2,7 @@ package proxynode
 
 import (
 	"context"
+	"crypto/sha256"
 	"errors"
 	"fmt"
 	"sort"
@@ -81,7 +82,10 @@ func (d *Deployer) Start() (FleetDeployment, error) {
 	if err != nil {
 		return FleetDeployment{}, err
 	}
-	agents := deploymentOrder(compiled)
+	agents, err := d.changedAgents(compiled)
+	if err != nil {
+		return FleetDeployment{}, err
+	}
 	for _, agentID := range agents {
 		if !d.controller.CanDeployProxyNodeConfiguration(agentID) {
 			return FleetDeployment{}, fmt.Errorf("Agent %q is offline or cannot deploy configuration", agentID)
@@ -99,6 +103,26 @@ func (d *Deployer) Start() (FleetDeployment, error) {
 	d.job = job
 	go d.run(jobID, compiled, agents, revision)
 	return cloneFleetDeployment(*job), nil
+}
+
+func (d *Deployer) changedAgents(compiled CompileResult) ([]string, error) {
+	ordered := deploymentOrder(compiled)
+	changed := make([]string, 0, len(ordered))
+	for _, agentID := range ordered {
+		current, err := d.controller.LatestDeployment(context.Background(), agentID)
+		if errors.Is(err, deployment.ErrNotFound) {
+			changed = append(changed, agentID)
+			continue
+		}
+		if err != nil {
+			return nil, fmt.Errorf("inspect latest deployment for Agent %q: %w", agentID, err)
+		}
+		digest := sha256.Sum256(compiled.Configs[agentID])
+		if current.Status != deployment.StatusApplied || current.RenderedDigest() != digest {
+			changed = append(changed, agentID)
+		}
+	}
+	return changed, nil
 }
 
 func (d *Deployer) Current() (FleetDeployment, bool) {

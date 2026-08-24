@@ -35,10 +35,12 @@ Shadowsocks 2022, AnyTLS, or Hysteria2. Sibling Links are evaluated in order;
 the first Link with any matching clause wins, an optional fallback Link remains
 last, and otherwise traffic terminates as Direct or Reject on the current Hop.
 
-Granting Proxy Node access from a global user's settings generates a unique
-membership credential. Import URIs are revealed only on that user's detail
-page. Deploying compiles the complete desired fleet and applies receiver Hops
-before senders.
+Granting Proxy Node access from a global user's settings uses a searchable
+picker and generates a unique membership credential. Assigned Nodes appear as
+compact tags whose detail dialogs reveal the import URIs. The same page can
+deploy pending access changes. Deployment compiles the complete desired fleet,
+skips Agents whose applied configuration digest is already current, and applies
+changed receiver Hops before changed senders.
 
 The full architecture and old-format cutover policy are recorded in
 [docs/proxy-node-manager-design.md](docs/proxy-node-manager-design.md).

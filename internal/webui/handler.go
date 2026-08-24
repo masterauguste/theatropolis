@@ -200,6 +200,7 @@ type pageData struct {
 	Hop                   *hopDetailView
 	Link                  *linkDetailView
 	ProxyDeployment       *proxyDeploymentView
+	ProxyDeployEnabled    bool
 }
 
 type fleetStats struct {
@@ -406,6 +407,7 @@ func (h *Handler) routes() {
 	h.mux.HandleFunc("GET /users/{user_id}", h.endUserPage)
 	h.mux.HandleFunc("POST /users/{user_id}/access", h.addUserProxyAccess)
 	h.mux.HandleFunc("POST /users/{user_id}/access/remove", h.removeUserProxyAccess)
+	h.mux.HandleFunc("POST /users/{user_id}/deploy", h.deployUserProxyAccess)
 	h.mux.HandleFunc("POST /users/{user_id}/rename", h.renameEndUser)
 	h.mux.HandleFunc("POST /users/{user_id}/delete", h.deleteEndUser)
 	h.mux.HandleFunc("GET /servers/content", h.serversContent)

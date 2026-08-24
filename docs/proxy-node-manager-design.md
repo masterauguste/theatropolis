@@ -225,6 +225,14 @@ not literally simultaneous, so operations that change both sides of a Link
 must use a staged deployment which never exposes an unauthenticated or
 unintended route.
 
+Before preflight and queueing, fleet deployment compares each compiled Agent
+configuration's SHA-256 digest with that Agent's latest successfully applied
+rendered digest. Agents whose digest is already current are skipped: they do
+not need to be online and their sing-box process is not restarted. Availability
+checks and receiver-before-sender ordering apply to the remaining changed
+Agents. A Membership-only change therefore normally restarts only the Proxy
+Node's entrance Agent; an entirely unchanged deployment is a successful no-op.
+
 ## Renames
 
 Proxy Node and End User names are mutable. A rename immediately changes the

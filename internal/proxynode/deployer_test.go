@@ -48,6 +48,24 @@ func (c *applyingController) LatestDeployment(ctx context.Context, agentID strin
 	return c.store.LatestForAgent(ctx, agentID)
 }
 
+func waitForFleetDeployment(t *testing.T, deployer *Deployer) FleetDeployment {
+	t.Helper()
+	deadline := time.Now().Add(3 * time.Second)
+	for {
+		job, exists := deployer.Current()
+		if exists && job.Status == FleetDeploymentApplied {
+			return job
+		}
+		if exists && job.Status == FleetDeploymentFailed {
+			t.Fatalf("fleet deployment failed: %s", job.Error)
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("fleet deployment did not finish")
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+}
+
 func TestDeployerAppliesReceiversBeforeSendersAndRecordsManagedAgents(t *testing.T) {
 	store, err := Open(filepath.Join(t.TempDir(), "state.json"), testBuild())
 	if err != nil {
@@ -86,20 +104,7 @@ func TestDeployerAppliesReceiversBeforeSendersAndRecordsManagedAgents(t *testing
 	if _, err := deployer.Start(); err != nil {
 		t.Fatal(err)
 	}
-	deadline := time.Now().Add(3 * time.Second)
-	for {
-		job, exists := deployer.Current()
-		if exists && job.Status == FleetDeploymentApplied {
-			break
-		}
-		if exists && job.Status == FleetDeploymentFailed {
-			t.Fatalf("fleet deployment failed: %s", job.Error)
-		}
-		if time.Now().After(deadline) {
-			t.Fatal("fleet deployment did not finish")
-		}
-		time.Sleep(10 * time.Millisecond)
-	}
+	waitForFleetDeployment(t, deployer)
 	controller.mu.Lock()
 	order := append([]string(nil), controller.order...)
 	controller.mu.Unlock()
@@ -108,6 +113,42 @@ func TestDeployerAppliesReceiversBeforeSendersAndRecordsManagedAgents(t *testing
 	}
 	if got := store.Snapshot().ManagedAgents; !slices.Equal(got, []string{"edge-a", "edge-b", "edge-c"}) {
 		t.Fatalf("managed Agents = %v", got)
+	}
+
+	bob, err := store.CreateUser("bob")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.AddMembership(node.ID, bob.ID); err != nil {
+		t.Fatal(err)
+	}
+	controller.mu.Lock()
+	controller.order = nil
+	controller.mu.Unlock()
+	if _, err := deployer.Start(); err != nil {
+		t.Fatal(err)
+	}
+	waitForFleetDeployment(t, deployer)
+	controller.mu.Lock()
+	order = append([]string(nil), controller.order...)
+	controller.mu.Unlock()
+	if !slices.Equal(order, []string{"edge-a"}) {
+		t.Fatalf("user-only deployment order = %v, want only the entrance Agent", order)
+	}
+
+	controller.mu.Lock()
+	controller.order = nil
+	controller.mu.Unlock()
+	controller.deployable = map[string]bool{}
+	if _, err := deployer.Start(); err != nil {
+		t.Fatalf("unchanged offline Agents blocked no-op deployment: %v", err)
+	}
+	waitForFleetDeployment(t, deployer)
+	controller.mu.Lock()
+	deployed := len(controller.order)
+	controller.mu.Unlock()
+	if deployed != 0 {
+		t.Fatalf("no-op deployment restarted %d Agents", deployed)
 	}
 }
 

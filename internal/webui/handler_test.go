@@ -89,7 +89,16 @@ type testAgentController struct {
 	deploymentListCalls int
 	probeErr            error
 	probeRequests       []probeRequest
+	autoApply           bool
 }
+
+type fixedProxyResolver struct{}
+
+func (fixedProxyResolver) AgentAddressForFamily(string, pool.Family) (string, bool) {
+	return "203.0.113.42", true
+}
+
+func (fixedProxyResolver) DefaultTLSAddress(string) string { return "proxy.example.com" }
 
 func (c *testAgentController) DeploymentRecords(
 	ctx context.Context,
@@ -225,13 +234,17 @@ func (c *testAgentController) QueueDeployment(
 	if err := c.store.Create(ctx, record); err != nil {
 		return deployment.Record{}, err
 	}
-	return c.store.Transition(
+	record, err = c.store.Transition(
 		ctx,
 		record.ID,
 		deployment.StatusDeploying,
 		"",
 		time.Now().UTC(),
 	)
+	if err != nil || !c.autoApply {
+		return record, err
+	}
+	return c.store.Transition(ctx, record.ID, deployment.StatusApplied, "", time.Now().UTC())
 }
 
 func (c *testAgentController) RevokeAgent(
@@ -1174,11 +1187,34 @@ func TestUserSettingsOwnProxyNodeAccessAssignments(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	archive, err := fixture.proxyNodes.CreateProxyNode(proxynode.CreateProxyNodeInput{
+		Name: "Archive", RootAgent: "edge-online",
+		Entrance: proxynode.Endpoint{
+			Protocol: proxynode.ProtocolAnyTLS, Listen: "::", ListenPort: 8443, Family: "auto",
+			TLS: proxynode.TLSConfig{Mode: proxynode.TLSModeSelfSigned, ServerName: "archive.example"},
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	deployer, err := proxynode.NewDeployer(fixture.proxyNodes, fixedProxyResolver{}, fixture.controller)
+	if err != nil {
+		t.Fatal(err)
+	}
+	fixture.controller.autoApply = true
+	fixture.handler.(*Handler).proxyDeployer = deployer
 
 	request := fixture.authenticatedRequest(http.MethodGet, "/users/"+url.PathEscape(user.ID), "")
 	response := httptest.NewRecorder()
 	fixture.handler.ServeHTTP(response, request)
-	if response.Code != http.StatusOK || !strings.Contains(response.Body.String(), "Grant access") || !strings.Contains(response.Body.String(), "Cinema") {
+	body := response.Body.String()
+	if response.Code != http.StatusOK ||
+		!strings.Contains(body, `data-dialog-open="grant-user-proxy-access"`) ||
+		!strings.Contains(body, `name="proxy_id"`) ||
+		!strings.Contains(body, `Search Proxy Nodes`) ||
+		!strings.Contains(body, `<option value="`+node.ID+`">Cinema — AnyTLS · edge-online</option>`) ||
+		!strings.Contains(body, `<option value="`+archive.ID+`">Archive — AnyTLS · edge-online</option>`) ||
+		!strings.Contains(body, `action="/users/`+user.ID+`/deploy"`) {
 		t.Fatalf("user settings omitted Proxy Node grant control: %d %q", response.Code, response.Body.String())
 	}
 
@@ -1193,6 +1229,42 @@ func TestUserSettingsOwnProxyNodeAccessAssignments(t *testing.T) {
 	updated, _ := fixture.proxyNodes.ProxyNode(node.ID)
 	if len(updated.Memberships) != 1 || updated.Memberships[0].UserID != user.ID || updated.Memberships[0].Credential.Secret == "" {
 		t.Fatalf("granted membership = %#v", updated.Memberships)
+	}
+
+	request = fixture.authenticatedRequest(http.MethodGet, "/users/"+url.PathEscape(user.ID), "")
+	response = httptest.NewRecorder()
+	fixture.handler.ServeHTTP(response, request)
+	body = response.Body.String()
+	if response.Code != http.StatusOK ||
+		!strings.Contains(body, `class="user-node-tag"`) ||
+		!strings.Contains(body, `data-dialog-open="user-proxy-access-`+node.ID+`"`) ||
+		!strings.Contains(body, "Cinema-Alice") ||
+		!strings.Contains(body, `<option value="`+archive.ID+`">Archive — AnyTLS · edge-online</option>`) ||
+		strings.Contains(body, `<option value="`+node.ID+`">`) {
+		t.Fatalf("user settings did not separate assigned tags from searchable options: %d %q", response.Code, body)
+	}
+
+	request = fixture.authenticatedMutationRequest(http.MethodPost, "/users/"+url.PathEscape(user.ID)+"/deploy", url.Values{
+		"csrf_token": {fixture.session.CSRFToken},
+	}.Encode())
+	response = httptest.NewRecorder()
+	fixture.handler.ServeHTTP(response, request)
+	if response.Code != http.StatusSeeOther || response.Header().Get("Location") != "/users/"+url.PathEscape(user.ID) {
+		t.Fatalf("deploy user access = %d %q", response.Code, response.Header().Get("Location"))
+	}
+	deadline := time.Now().Add(3 * time.Second)
+	for {
+		job, exists := deployer.Current()
+		if exists && job.Status == proxynode.FleetDeploymentApplied {
+			break
+		}
+		if exists && job.Status == proxynode.FleetDeploymentFailed {
+			t.Fatalf("user access deployment failed: %s", job.Error)
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("user access deployment did not finish")
+		}
+		time.Sleep(10 * time.Millisecond)
 	}
 
 	request = fixture.authenticatedRequest(http.MethodGet, proxyNodeURL(node.ID), "")
