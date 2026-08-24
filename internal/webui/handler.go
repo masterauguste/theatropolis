@@ -397,6 +397,7 @@ func (h *Handler) routes() {
 	h.mux.HandleFunc("GET /proxy-nodes/{proxy_id}/links/{link_id}", h.proxyLinkPage)
 	h.mux.HandleFunc("POST /proxy-nodes/{proxy_id}/links/{link_id}", h.updateProxyLink)
 	h.mux.HandleFunc("POST /proxy-nodes/{proxy_id}/links/{link_id}/rules", h.addProxyRule)
+	h.mux.HandleFunc("POST /proxy-nodes/{proxy_id}/links/{link_id}/rules/{rule_id}", h.updateProxyRule)
 	h.mux.HandleFunc("POST /proxy-nodes/{proxy_id}/links/{link_id}/rules/delete", h.deleteProxyRule)
 	h.mux.HandleFunc("POST /proxy-nodes/{proxy_id}/links/{link_id}/rules/move", h.moveProxyRule)
 	h.mux.HandleFunc("POST /proxy-nodes/{proxy_id}/links/{link_id}/fallback", h.updateProxyLinkFallback)

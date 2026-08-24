@@ -134,8 +134,12 @@ document.addEventListener("click", (event) => {
     for (const view of views) {
       view.hidden = view !== selected;
     }
+    const sourceDialog = inspectorButton.closest("dialog");
+    if (sourceDialog instanceof HTMLDialogElement && sourceDialog !== dialog && sourceDialog.open) {
+      sourceDialog.close();
+    }
     dialogTriggers.set(dialog, inspectorButton);
-    dialog.showModal();
+    if (!dialog.open) dialog.showModal();
     return;
   }
 
@@ -146,7 +150,7 @@ document.addEventListener("click", (event) => {
       return;
     }
     dialogTriggers.set(dialog, button);
-    dialog.showModal();
+    if (!dialog.open) dialog.showModal();
     return;
   }
 
@@ -163,6 +167,28 @@ if (initialManagedHop) {
   manageHopButton?.click();
   const cleanURL = new URL(window.location.href);
   cleanURL.searchParams.delete("manage_hop");
+  window.history.replaceState(null, "", cleanURL);
+}
+
+const initialInspector = new URLSearchParams(window.location.search).get("inspect");
+if (initialInspector) {
+  const inspectorButton = [...document.querySelectorAll("[data-proxy-inspector-open]")]
+    .find((button) => button.dataset.proxyInspectorOpen === initialInspector);
+  if (inspectorButton) {
+    inspectorButton.click();
+  } else {
+    const dialog = document.getElementById("proxy-tree-inspector");
+    const views = dialog instanceof HTMLDialogElement
+      ? [...dialog.querySelectorAll("[data-proxy-inspector-view]")]
+      : [];
+    const selected = views.find((view) => view.dataset.proxyInspectorView === initialInspector);
+    if (selected && dialog instanceof HTMLDialogElement) {
+      for (const view of views) view.hidden = view !== selected;
+      dialog.showModal();
+    }
+  }
+  const cleanURL = new URL(window.location.href);
+  cleanURL.searchParams.delete("inspect");
   window.history.replaceState(null, "", cleanURL);
 }
 

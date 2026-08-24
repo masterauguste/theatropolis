@@ -57,9 +57,11 @@ type proxyTreeHopView struct {
 	IngressLabel    string
 	Routes          []proxyTreeRouteView
 	Fallback        proxyTreeRouteView
+	ShowFallback    bool
 	Children        []proxyTreeLinkView
 	Branches        []proxyTreeBranchView
 	TerminalCount   int
+	RuntimeBranches int
 	BranchCount     int
 	Manager         *hopDetailView
 	AgentOptions    []agentOptionView
@@ -76,6 +78,7 @@ type proxyTreeRouteView struct {
 	TargetDetail string
 	TargetKind   string
 	TargetURL    string
+	Uncertain    bool
 }
 
 type proxyTreeLinkView struct {
@@ -86,7 +89,8 @@ type proxyTreeLinkView struct {
 	Listener   string
 	Family     string
 	Endpoint   endpointView
-	Conditions []proxyTreeRouteView
+	Rules      []proxyRuleView
+	NewRule    proxyRuleView
 	Used       bool
 	Fallback   bool
 	Child      *proxyTreeHopView
@@ -97,11 +101,13 @@ type proxyTreeLinkView struct {
 // child endpoint and credential remain represented by one proxyTreeLinkView.
 type proxyTreeBranchView struct {
 	LinkID     string
+	RuleID     string
 	Protocol   string
 	RuleLabel  string
 	RuleValues string
 	Used       bool
 	Fallback   bool
+	Uncertain  bool
 	Child      *proxyTreeHopView
 }
 
@@ -187,6 +193,7 @@ type proxyRuleView struct {
 	Match       string
 	MatchLabel  string
 	Values      string
+	FormValues  string
 	CanMoveUp   bool
 	CanMoveDown bool
 }
@@ -526,7 +533,7 @@ func (h *Handler) addProxyLink(response http.ResponseWriter, request *http.Reque
 		handleProxyMutationError(response, err)
 		return
 	}
-	http.Redirect(response, request, proxyLinkURL(nodeID, link.ID), http.StatusSeeOther)
+	http.Redirect(response, request, proxyInspectorURL(nodeID, "link-"+link.ID), http.StatusSeeOther)
 }
 
 func (h *Handler) deleteProxyLink(response http.ResponseWriter, request *http.Request) {
@@ -561,13 +568,7 @@ func (h *Handler) proxyLinkPage(response http.ResponseWriter, request *http.Requ
 		return
 	}
 	child, _ := proxyHop(node, link.ChildHopID)
-	rules := make([]proxyRuleView, 0, len(link.Rules))
-	for index, rule := range link.Rules {
-		rules = append(rules, proxyRuleView{
-			ID: rule.ID, Position: index + 1, Match: string(rule.Match), MatchLabel: matchLabel(rule.Match),
-			Values: strings.Join(rule.Values, ", "), CanMoveUp: index > 0, CanMoveDown: index+1 < len(link.Rules),
-		})
-	}
+	rules := proxyRuleViews(link.Rules)
 	h.render(response, http.StatusOK, "proxy-node-link.html", pageData{
 		Title: node.Name + " Link", ActiveNav: "proxy-nodes", CSRFToken: session.CSRFToken,
 		ProxyNode: h.proxyNodeDetail(node), Endpoint: endpointViewFor(link.Endpoint),
@@ -604,7 +605,7 @@ func (h *Handler) updateProxyLink(response http.ResponseWriter, request *http.Re
 		handleProxyMutationError(response, err)
 		return
 	}
-	http.Redirect(response, request, proxyLinkURL(nodeID, linkID), http.StatusSeeOther)
+	http.Redirect(response, request, proxyInspectorURL(nodeID, "link-"+linkID), http.StatusSeeOther)
 }
 
 func (h *Handler) addProxyRule(response http.ResponseWriter, request *http.Request) {
@@ -613,11 +614,27 @@ func (h *Handler) addProxyRule(response http.ResponseWriter, request *http.Reque
 		return
 	}
 	nodeID, linkID := request.PathValue("proxy_id"), request.PathValue("link_id")
-	if _, err := h.proxyNodes.AddRule(nodeID, proxynode.AddRuleInput{LinkID: linkID, Match: proxynode.MatchType(form.Get("match")), Values: splitProxyValues(form.Get("values"))}); err != nil {
+	rule, err := h.proxyNodes.AddRule(nodeID, proxynode.AddRuleInput{LinkID: linkID, Match: proxynode.MatchType(form.Get("match")), Values: splitProxyValues(form.Get("values"))})
+	if err != nil {
 		handleProxyMutationError(response, err)
 		return
 	}
-	http.Redirect(response, request, proxyLinkURL(nodeID, linkID), http.StatusSeeOther)
+	http.Redirect(response, request, proxyInspectorURL(nodeID, "rule-"+rule.ID), http.StatusSeeOther)
+}
+
+func (h *Handler) updateProxyRule(response http.ResponseWriter, request *http.Request) {
+	_, form, ok := h.authorizeProxyMutation(response, request, "match", "values")
+	if !ok {
+		return
+	}
+	nodeID, linkID, ruleID := request.PathValue("proxy_id"), request.PathValue("link_id"), request.PathValue("rule_id")
+	if err := h.proxyNodes.UpdateRule(nodeID, ruleID, proxynode.AddRuleInput{
+		LinkID: linkID, Match: proxynode.MatchType(form.Get("match")), Values: splitProxyValues(form.Get("values")),
+	}); err != nil {
+		handleProxyMutationError(response, err)
+		return
+	}
+	http.Redirect(response, request, proxyInspectorURL(nodeID, "rule-"+ruleID), http.StatusSeeOther)
 }
 
 func (h *Handler) deleteProxyRule(response http.ResponseWriter, request *http.Request) {
@@ -630,7 +647,7 @@ func (h *Handler) deleteProxyRule(response http.ResponseWriter, request *http.Re
 		handleProxyMutationError(response, err)
 		return
 	}
-	http.Redirect(response, request, proxyLinkURL(nodeID, linkID), http.StatusSeeOther)
+	http.Redirect(response, request, proxyInspectorURL(nodeID, "link-"+linkID), http.StatusSeeOther)
 }
 
 func (h *Handler) moveProxyRule(response http.ResponseWriter, request *http.Request) {
@@ -650,7 +667,7 @@ func (h *Handler) moveProxyRule(response http.ResponseWriter, request *http.Requ
 		handleProxyMutationError(response, err)
 		return
 	}
-	http.Redirect(response, request, proxyLinkURL(nodeID, linkID), http.StatusSeeOther)
+	http.Redirect(response, request, proxyInspectorURL(nodeID, "rule-"+form.Get("rule_id")), http.StatusSeeOther)
 }
 
 func (h *Handler) updateProxyLinkFallback(response http.ResponseWriter, request *http.Request) {
@@ -668,7 +685,7 @@ func (h *Handler) updateProxyLinkFallback(response http.ResponseWriter, request 
 		handleProxyMutationError(response, err)
 		return
 	}
-	http.Redirect(response, request, proxyLinkURL(nodeID, linkID), http.StatusSeeOther)
+	http.Redirect(response, request, proxyInspectorURL(nodeID, "link-"+linkID), http.StatusSeeOther)
 }
 
 func (h *Handler) moveProxyLink(response http.ResponseWriter, request *http.Request) {
@@ -955,8 +972,8 @@ func buildProxyTree(node proxynode.ProxyNode) (*proxyTreeHopView, int, int) {
 		})
 	}
 	unusedLinks := 0
-	var visit func(string, *proxynode.Link) *proxyTreeHopView
-	visit = func(hopID string, incoming *proxynode.Link) *proxyTreeHopView {
+	var visit func(string, *proxynode.Link, proxyTreeConstraint, bool) *proxyTreeHopView
+	visit = func(hopID string, incoming *proxynode.Link, constraint proxyTreeConstraint, includeDetails bool) *proxyTreeHopView {
 		hop, exists := hops[hopID]
 		if !exists {
 			return nil
@@ -980,63 +997,92 @@ func buildProxyTree(node proxynode.ProxyNode) (*proxyTreeHopView, int, int) {
 			Fallback: fallback,
 		}
 		view.Fallback.InspectorID = "terminal-" + hop.ID + "-fallback"
-		if fallback.TargetKind != string(proxynode.TargetLink) {
-			view.TerminalCount++
-		}
+		earlierRules := make([]proxynode.Rule, 0)
 		for index := range children[hopID] {
 			link := children[hopID][index]
-			conditions := make([]proxyTreeRouteView, 0, len(link.Rules))
-			for ruleIndex, rule := range link.Rules {
-				conditions = append(conditions, proxyTreeRouteView{
-					Label: "Match " + strconv.Itoa(ruleIndex+1), Match: matchLabel(rule.Match), Values: strings.Join(rule.Values, ", "),
-					TargetKind: string(proxynode.TargetLink), TargetLabel: "Link to " + hops[link.ChildHopID].Name,
-				})
-			}
-			if link.Fallback {
-				conditions = append(conditions, proxyTreeRouteView{Label: "Fallback", Match: "When no conditional Link matches", TargetKind: string(proxynode.TargetLink)})
-			}
 			used := link.Fallback || len(link.Rules) > 0
-			if !used {
+			if includeDetails && !used {
 				unusedLinks++
 			}
-			child := visit(link.ChildHopID, &link)
-			view.Children = append(view.Children, proxyTreeLinkView{
-				ID: link.ID, EditURL: proxyLinkURL(node.ID, link.ID), Protocol: protocolLabel(link.Endpoint.Protocol),
-				ListenPort: link.Endpoint.ListenPort, Listener: listenEndpointLabel(link.Endpoint.Listen, link.Endpoint.ListenPort),
-				Family: relayFamilyLabel(link.Endpoint.Family), Endpoint: endpointViewFor(link.Endpoint), Conditions: conditions, Used: used,
-				Fallback: link.Fallback, Child: child,
-			})
+			if includeDetails {
+				child := visit(link.ChildHopID, &link, proxyTreeConstraint{}, true)
+				view.Children = append(view.Children, proxyTreeLinkView{
+					ID: link.ID, EditURL: proxyLinkURL(node.ID, link.ID), Protocol: protocolLabel(link.Endpoint.Protocol),
+					ListenPort: link.Endpoint.ListenPort, Listener: listenEndpointLabel(link.Endpoint.Listen, link.Endpoint.ListenPort),
+					Family: relayFamilyLabel(link.Endpoint.Family), Endpoint: endpointViewFor(link.Endpoint),
+					Rules: proxyRuleViews(link.Rules), NewRule: proxyRuleView{Match: string(proxynode.MatchProtocol)}, Used: used,
+					Fallback: link.Fallback, Child: child,
+				})
+				if child != nil {
+					view.BranchCount += child.BranchCount
+				}
+			}
 			protocol := protocolLabel(link.Endpoint.Protocol)
-			visibleBranches := 1
 			switch {
 			case link.Fallback:
-				view.Branches = append(view.Branches, proxyTreeBranchView{
-					LinkID: link.ID, Protocol: protocol, RuleLabel: "Fallback", RuleValues: "When no rule matches",
-					Used: true, Fallback: true, Child: child,
-				})
+				branchConstraint := constraint.selectFallback(earlierRules)
+				if branchConstraint.feasible() {
+					child := visit(link.ChildHopID, &link, branchConstraint, false)
+					uncertain := branchConstraint.runtimeDependent() && !constraint.runtimeDependent()
+					view.Branches = append(view.Branches, proxyTreeBranchView{
+						LinkID: link.ID, Protocol: protocol, RuleLabel: "Fallback", RuleValues: "When no earlier rule matches",
+						Used: true, Fallback: true, Uncertain: uncertain, Child: child,
+					})
+					if uncertain {
+						view.RuntimeBranches++
+					}
+					if child != nil {
+						view.TerminalCount += child.TerminalCount
+						view.RuntimeBranches += child.RuntimeBranches
+					}
+				}
 			case len(link.Rules) == 0:
+				child := visit(link.ChildHopID, &link, constraint, false)
 				view.Branches = append(view.Branches, proxyTreeBranchView{
 					LinkID: link.ID, Protocol: protocol, RuleLabel: "Inactive Link", RuleValues: "Add a match rule",
 					Child: child,
 				})
+				if child != nil {
+					view.TerminalCount += child.TerminalCount
+					view.RuntimeBranches += child.RuntimeBranches
+				}
 			default:
-				visibleBranches = len(link.Rules)
 				for _, rule := range link.Rules {
-					view.Branches = append(view.Branches, proxyTreeBranchView{
-						LinkID: link.ID, Protocol: protocol, RuleLabel: matchLabel(rule.Match), RuleValues: strings.Join(rule.Values, ", "),
-						Used: true, Child: child,
-					})
+					branchConstraint := constraint.selectRule(rule, earlierRules)
+					if branchConstraint.feasible() {
+						child := visit(link.ChildHopID, &link, branchConstraint, false)
+						uncertain := branchConstraint.runtimeDependent() && !constraint.runtimeDependent()
+						view.Branches = append(view.Branches, proxyTreeBranchView{
+							LinkID: link.ID, RuleID: rule.ID, Protocol: protocol, RuleLabel: matchLabel(rule.Match), RuleValues: strings.Join(rule.Values, ", "),
+							Used: true, Uncertain: uncertain, Child: child,
+						})
+						if uncertain {
+							view.RuntimeBranches++
+						}
+						if child != nil {
+							view.TerminalCount += child.TerminalCount
+							view.RuntimeBranches += child.RuntimeBranches
+						}
+					}
+					earlierRules = append(earlierRules, rule)
 				}
 			}
-			if child != nil {
-				view.TerminalCount += child.TerminalCount * visibleBranches
-				view.BranchCount += child.BranchCount
+		}
+		fallbackConstraint := constraint.selectFallback(earlierRules)
+		view.ShowFallback = fallback.TargetKind != string(proxynode.TargetLink) && fallbackConstraint.feasible()
+		if view.ShowFallback {
+			view.Fallback.Uncertain = fallbackConstraint.runtimeDependent() && !constraint.runtimeDependent()
+			view.TerminalCount++
+			if view.Fallback.Uncertain {
+				view.RuntimeBranches++
 			}
 		}
-		view.BranchCount += len(view.Children)
+		if includeDetails {
+			view.BranchCount += len(view.Children)
+		}
 		return view
 	}
-	root := visit(node.Entrance.HopID, nil)
+	root := visit(node.Entrance.HopID, nil, proxyTreeConstraint{}, true)
 	if root == nil {
 		return nil, 0, unusedLinks
 	}
@@ -1329,6 +1375,18 @@ func linkRoutingLabel(link proxynode.Link) string {
 	return strconv.Itoa(len(link.Rules)) + " match clauses · any may match"
 }
 
+func proxyRuleViews(rules []proxynode.Rule) []proxyRuleView {
+	views := make([]proxyRuleView, 0, len(rules))
+	for index, rule := range rules {
+		views = append(views, proxyRuleView{
+			ID: rule.ID, Position: index + 1, Match: string(rule.Match), MatchLabel: matchLabel(rule.Match),
+			Values: strings.Join(rule.Values, ", "), FormValues: strings.Join(rule.Values, "\n"),
+			CanMoveUp: index > 0, CanMoveDown: index+1 < len(rules),
+		})
+	}
+	return views
+}
+
 func targetLabel(node proxynode.ProxyNode, target proxynode.Target) string {
 	if target.Type == proxynode.TargetDirect {
 		return "Direct"
@@ -1369,6 +1427,9 @@ func proxyHopURL(nodeID, hopID string) string {
 }
 func proxyHopManagerURL(nodeID, hopID string) string {
 	return proxyNodeURL(nodeID) + "?manage_hop=" + url.QueryEscape(hopID)
+}
+func proxyInspectorURL(nodeID, viewID string) string {
+	return proxyNodeURL(nodeID) + "?inspect=" + url.QueryEscape(viewID)
 }
 func proxyLinkURL(nodeID, linkID string) string {
 	return "/proxy-nodes/" + url.PathEscape(nodeID) + "/links/" + url.PathEscape(linkID)

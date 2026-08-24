@@ -156,7 +156,7 @@
 }
 
 .proxy-map__warning {
-  margin-left: auto;
+  margin-left: 0;
   padding: 0.3rem 0.55rem;
   color: var(--amber-700);
   background: var(--amber-100);
@@ -164,6 +164,8 @@
   font-size: 0.75rem;
   font-weight: 750;
 }
+
+.proxy-map__health > .proxy-map__warning:nth-child(3) { margin-left: auto; }
 
 .proxy-map {
   overflow: auto;
@@ -304,6 +306,7 @@
 .proxy-map__outcome:only-child::after { display: none; }
 
 .proxy-map__route-label {
+  position: relative;
   width: 10.5rem;
   padding: 0.45rem 0.55rem;
   background: var(--surface);
@@ -346,6 +349,24 @@
 
 .proxy-map__link--unused { background: var(--amber-100); border-color: var(--amber-700); border-style: dashed; }
 .proxy-map__link--fallback { box-shadow: inset 3px 0 0 var(--accent-700); }
+.proxy-map__link--runtime,
+.proxy-map__route-label--runtime { border-color: var(--amber-700); border-style: dashed; }
+
+.proxy-map__runtime {
+  position: absolute;
+  top: 0.3rem;
+  right: 0.35rem;
+  display: grid;
+  width: 1rem;
+  height: 1rem;
+  place-items: center;
+  color: var(--amber-700);
+  background: var(--surface);
+  border: 1px solid var(--amber-700);
+  border-radius: 999px;
+  font-size: 0.65rem;
+  font-weight: 850;
+}
 
 dialog.proxy-inspector { width: min(60rem, calc(100vw - 2rem)); height: min(82vh, 52rem); }
 .proxy-inspector .modal__surface { width: 100%; height: 100%; }
@@ -362,6 +383,17 @@ dialog.proxy-inspector { width: min(60rem, calc(100vw - 2rem)); height: min(82vh
 .proxy-inspector__route > span:last-child { color: var(--ink-500); font-size: 0.76rem; white-space: nowrap; }
 .proxy-inspector__route--fallback { border-style: dashed; }
 .proxy-inspector__actions { display: flex; margin-top: 1.25rem; flex-wrap: wrap; gap: 0.65rem; }
+.proxy-rule-editor { margin-top: 1.25rem; }
+.proxy-rule-branch-list { display: grid; gap: 0.5rem; }
+.proxy-rule-branch-list .button {
+  display: grid;
+  width: 100%;
+  grid-template-columns: 1.5rem minmax(7rem, 0.4fr) minmax(0, 1fr);
+  align-items: center;
+  text-align: left;
+}
+.proxy-rule-branch-list .button > span { color: var(--ink-500); font-size: 0.72rem; }
+.proxy-rule-branch-list .button > small { overflow: hidden; color: var(--ink-500); text-overflow: ellipsis; white-space: nowrap; }
 
 dialog.proxy-hop-manager { width: min(74rem, calc(100vw - 2rem)); height: min(92vh, 64rem); max-height: 92vh; }
 .proxy-hop-manager .modal__surface { width: 100%; height: 100%; }

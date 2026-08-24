@@ -502,6 +502,30 @@ func (s *Store) AddRule(nodeID string, input AddRuleInput) (Rule, error) {
 	return created, err
 }
 
+func (s *Store) UpdateRule(nodeID, ruleID string, input AddRuleInput) error {
+	return s.mutateProxyNode(nodeID, func(_ *State, node *ProxyNode) error {
+		for linkIndex := range node.Links {
+			if node.Links[linkIndex].ID != input.LinkID {
+				continue
+			}
+			if node.Links[linkIndex].Fallback {
+				return fmt.Errorf("%w: fallback Link cannot contain match rules", ErrConflict)
+			}
+			for ruleIndex := range node.Links[linkIndex].Rules {
+				if node.Links[linkIndex].Rules[ruleIndex].ID != ruleID {
+					continue
+				}
+				node.Links[linkIndex].Rules[ruleIndex].Match = input.Match
+				node.Links[linkIndex].Rules[ruleIndex].Values = normalizeValues(input.Values)
+				node.Links[linkIndex].UpdatedAt = s.now().UTC()
+				return nil
+			}
+			return ErrNotFound
+		}
+		return ErrNotFound
+	})
+}
+
 func (s *Store) DeleteRule(nodeID, linkID, ruleID string) error {
 	return s.mutateProxyNode(nodeID, func(_ *State, node *ProxyNode) error {
 		for index := range node.Links {

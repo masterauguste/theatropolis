@@ -91,6 +91,47 @@ func TestStorePersistsUsersTopologyAndGeneratedCredentials(t *testing.T) {
 	}
 }
 
+func TestUpdateRulePreservesLinkAndCredentialIdentity(t *testing.T) {
+	store, err := Open(filepath.Join(t.TempDir(), "proxy-node-state.json"), testBuild())
+	if err != nil {
+		t.Fatal(err)
+	}
+	node, err := store.CreateProxyNode(CreateProxyNodeInput{
+		Name: "cinema", RootAgent: "edge-a", Entrance: testTLSEndpoint(ProtocolAnyTLS, 443),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	link, _, err := store.AddLink(node.ID, AddLinkInput{
+		ParentHopID: node.Entrance.HopID, ChildName: "Exit", ChildAgent: "edge-b",
+		Endpoint: testTLSEndpoint(ProtocolHysteria2, 8443),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	rule, err := store.AddRule(node.ID, AddRuleInput{LinkID: link.ID, Match: MatchDomain, Values: []string{"old.example"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.UpdateRule(node.ID, rule.ID, AddRuleInput{
+		LinkID: link.ID, Match: MatchIPCIDR, Values: []string{"203.0.113.0/24"},
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	updated, ok := store.ProxyNode(node.ID)
+	if !ok || len(updated.Links) != 1 || len(updated.Links[0].Rules) != 1 {
+		t.Fatalf("updated Proxy Node = %#v, exists %v", updated, ok)
+	}
+	if updated.Links[0].ID != link.ID || updated.Links[0].Credential != link.Credential {
+		t.Fatal("editing a Rule changed its shared Link or credential identity")
+	}
+	got := updated.Links[0].Rules[0]
+	if got.ID != rule.ID || got.Match != MatchIPCIDR || !slices.Equal(got.Values, []string{"203.0.113.0/24"}) {
+		t.Fatalf("updated Rule = %#v", got)
+	}
+}
+
 func TestStoreRejectsCorruptNewStateInsteadOfResetting(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "proxy-node-state.json")
 	contents := `{"schema":"theatropolis/proxy-node-state","schema_version":1,"last_used_by":{"component":"master","version":"v1","commit":"x","recorded_at":"2026-01-01T00:00:00Z"},"data":{"users":[],"proxy_nodes":[],"unexpected":true}}`

@@ -242,6 +242,16 @@ identify the Agent on which they terminate. Selecting any route branch opens
 the shared Link inspector with routing ownership, protocol, fallback state,
 listener data, and controls.
 
+The displayed tree propagates each selected rule and every earlier first-match
+exclusion into the next Hop. Descendant branches that are provably
+contradictory are omitted, including disjoint protocol/network values, domain
+constraints, and IP CIDRs; a covered fallback is omitted as well. This is a
+conservative three-state analysis. Relationships that depend on live DNS,
+remote Geosite/GeoIP/custom Rule Set contents, or non-trivial regular
+expressions remain visible with a runtime-dependent marker. The master never
+performs DNS resolution for the tree because the answer observed by the Agent
+can differ by location and time.
+
 Generated sing-box tags must include opaque IDs or an equivalent collision-free
 component. Human-readable names are included for clarity but are never relied
 on for uniqueness.
@@ -532,6 +542,15 @@ leave application state untouched.
 - A single Agent may host multiple Hops and compatible shared listeners. The
   logical topology remains a rooted tree with branching, no merging, and no
   cycles.
+- The relay map renders every conditional Rule as a separate branch. Selecting
+  a branch edits only that Rule; adding, deleting, or reordering Rules is done
+  from the map rather than from the Hop manager or relay endpoint form. A
+  physical Link still owns the child endpoint and exactly one generated relay
+  credential, even when several Rule branches select it.
+- The shared Link inspector owns its conditional/fallback mode and transport
+  settings. The Hop manager owns only Hop identity, its Direct/Reject terminal,
+  and child-Link topology/order. This keeps routing intent visually attached to
+  the exact branch it controls without multiplying sing-box users.
 - Legacy master deployment records and Agent active configurations are moved to
   owner-only `legacy-config-quarantine/` directories. Destructive cleanup is
   intentionally not automated in this release.
