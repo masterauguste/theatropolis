@@ -267,7 +267,7 @@ func (h *Handler) createProxyNode(response http.ResponseWriter, request *http.Re
 		handleProxyMutationError(response, err)
 		return
 	}
-	http.Redirect(response, request, proxyInspectorURL(node.ID, "hop-"+node.Entrance.HopID), http.StatusSeeOther)
+	http.Redirect(response, request, proxyNodeURL(node.ID), http.StatusSeeOther)
 }
 
 func (h *Handler) proxyNodePage(response http.ResponseWriter, request *http.Request) {
@@ -508,7 +508,7 @@ func (h *Handler) addProxyLink(response http.ResponseWriter, request *http.Reque
 		return
 	}
 	nodeID, hopID := request.PathValue("proxy_id"), request.PathValue("hop_id")
-	_, _, rule, err := h.proxyNodes.AddBranch(nodeID, proxynode.AddBranchInput{
+	_, _, _, err = h.proxyNodes.AddBranch(nodeID, proxynode.AddBranchInput{
 		AddLinkInput: proxynode.AddLinkInput{
 			ParentHopID: hopID, ChildName: form.Get("child_name"), ChildAgent: form.Get("child_agent"), Endpoint: endpoint, Final: terminal,
 		},
@@ -518,7 +518,7 @@ func (h *Handler) addProxyLink(response http.ResponseWriter, request *http.Reque
 		handleProxyMutationError(response, err)
 		return
 	}
-	http.Redirect(response, request, proxyInspectorURL(nodeID, "rule-"+rule.ID), http.StatusSeeOther)
+	http.Redirect(response, request, proxyNodeURL(nodeID), http.StatusSeeOther)
 }
 
 func (h *Handler) deleteProxyLink(response http.ResponseWriter, request *http.Request) {
@@ -590,12 +590,12 @@ func (h *Handler) addProxyRule(response http.ResponseWriter, request *http.Reque
 		return
 	}
 	nodeID, linkID := request.PathValue("proxy_id"), request.PathValue("link_id")
-	rule, err := h.proxyNodes.AddRule(nodeID, proxynode.AddRuleInput{LinkID: linkID, Match: proxynode.MatchType(form.Get("match")), Values: splitProxyValues(form.Get("values"))})
+	_, err := h.proxyNodes.AddRule(nodeID, proxynode.AddRuleInput{LinkID: linkID, Match: proxynode.MatchType(form.Get("match")), Values: splitProxyValues(form.Get("values"))})
 	if err != nil {
 		handleProxyMutationError(response, err)
 		return
 	}
-	http.Redirect(response, request, proxyInspectorURL(nodeID, "rule-"+rule.ID), http.StatusSeeOther)
+	http.Redirect(response, request, proxyNodeURL(nodeID), http.StatusSeeOther)
 }
 
 func (h *Handler) updateProxyRule(response http.ResponseWriter, request *http.Request) {

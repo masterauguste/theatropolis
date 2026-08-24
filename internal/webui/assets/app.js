@@ -16,16 +16,6 @@ function updateProxyEndpointForm(select) {
   for (const field of form.querySelectorAll("[data-proxy-files]")) {
     field.hidden = protocol === "shadowsocks" || tlsMode !== "files";
   }
-  const muxEnabled = protocol === "shadowsocks" &&
-    form.querySelector("[data-proxy-mux-enabled]")?.value === "1";
-  const muxBrutal = muxEnabled &&
-    form.querySelector("[data-proxy-mux-brutal]")?.value === "1";
-  for (const field of form.querySelectorAll("[data-proxy-mux-options]")) {
-    field.hidden = !muxEnabled;
-  }
-  for (const field of form.querySelectorAll("[data-proxy-mux-brutal-bandwidth]")) {
-    field.hidden = !muxBrutal;
-  }
 }
 
 for (const select of document.querySelectorAll("[data-proxy-protocol]")) {
@@ -35,11 +25,6 @@ for (const select of document.querySelectorAll("[data-proxy-protocol]")) {
     "change",
     () => updateProxyEndpointForm(select),
   );
-  for (const muxSelect of select.closest("form")?.querySelectorAll(
-    "[data-proxy-mux-enabled], [data-proxy-mux-brutal]",
-  ) || []) {
-    muxSelect.addEventListener("change", () => updateProxyEndpointForm(select));
-  }
 }
 
 for (const select of document.querySelectorAll("[data-proxy-match]")) {

@@ -283,7 +283,7 @@ func renderListener(group *listenerGroup) (map[string]any, map[string]any, error
 	case ProtocolShadowsocks:
 		inbound["method"] = endpoint.Method
 		inbound["password"] = endpoint.ServerKey
-		if multiplex := renderInboundMultiplex(endpoint.Multiplex); multiplex != nil {
+		if multiplex := renderInboundMultiplex(listenerMultiplex(group)); multiplex != nil {
 			inbound["multiplex"] = multiplex
 		}
 	case ProtocolAnyTLS, ProtocolHysteria2:
@@ -291,6 +291,7 @@ func renderListener(group *listenerGroup) (map[string]any, map[string]any, error
 		inbound["tls"] = tls
 		provider = certificateProvider
 		if endpoint.Protocol == ProtocolHysteria2 {
+			inbound["bbr_profile"] = "aggressive"
 			if endpoint.UpMbps > 0 {
 				inbound["up_mbps"] = endpoint.UpMbps
 			}
@@ -305,6 +306,24 @@ func renderListener(group *listenerGroup) (map[string]any, map[string]any, error
 		return nil, nil, errors.New("unsupported listener protocol")
 	}
 	return inbound, provider, nil
+}
+
+// listenerMultiplex enables inbound support when any logical Link attached to
+// the shared listener requests it. Each parent outbound still decides
+// independently whether to send multiplexed sessions.
+func listenerMultiplex(group *listenerGroup) *MultiplexConfig {
+	for _, candidate := range group.candidates {
+		if candidate.endpoint.Multiplex == nil {
+			continue
+		}
+		config := *candidate.endpoint.Multiplex
+		if config.Brutal != nil {
+			brutal := *config.Brutal
+			config.Brutal = &brutal
+		}
+		return &config
+	}
+	return nil
 }
 
 func renderInboundTLS(group *listenerGroup) (map[string]any, map[string]any) {

@@ -18,22 +18,35 @@ type listenerSecrets struct {
 	obfsSecret string
 }
 
+// listenerMultiplexPolicy contains only the inbound-wide parts of multiplex
+// configuration. Whether an individual Link uses multiplex belongs to its
+// parent outbound and therefore does not make an otherwise identical listener
+// incompatible.
+type listenerMultiplexPolicy struct {
+	Padding bool             `json:"padding,omitempty"`
+	Brutal  *TCPBrutalConfig `json:"brutal,omitempty"`
+}
+
 // listenerKeys deliberately excludes listener-owned generated secrets. Those
 // values are reconciled across compatible refs while per-user credentials stay
-// unique. Any user-selected listener option remains part of the compatibility
-// key, so unlike configurations can never be silently combined.
+// unique. Listener-wide options remain part of the compatibility key; the
+// per-Link mux usage toggle is aggregated separately by the compiler.
 func listenerKeys(agentID string, endpoint Endpoint) (string, string, error) {
 	compatible := struct {
-		Protocol   Protocol         `json:"protocol"`
-		Listen     string           `json:"listen"`
-		ListenPort int              `json:"listen_port"`
-		Method     string           `json:"method,omitempty"`
-		Multiplex  *MultiplexConfig `json:"multiplex,omitempty"`
-		TLS        TLSConfig        `json:"tls,omitempty"`
-		UpMbps     int              `json:"up_mbps,omitempty"`
-		DownMbps   int              `json:"down_mbps,omitempty"`
-		ObfsType   string           `json:"obfs_type,omitempty"`
-	}{endpoint.Protocol, endpoint.Listen, endpoint.ListenPort, endpoint.Method, endpoint.Multiplex, endpoint.TLS, endpoint.UpMbps, endpoint.DownMbps, endpoint.ObfsType}
+		Protocol   Protocol                `json:"protocol"`
+		Listen     string                  `json:"listen"`
+		ListenPort int                     `json:"listen_port"`
+		Method     string                  `json:"method,omitempty"`
+		Multiplex  listenerMultiplexPolicy `json:"multiplex"`
+		TLS        TLSConfig               `json:"tls,omitempty"`
+		UpMbps     int                     `json:"up_mbps,omitempty"`
+		DownMbps   int                     `json:"down_mbps,omitempty"`
+		ObfsType   string                  `json:"obfs_type,omitempty"`
+	}{
+		Protocol: endpoint.Protocol, Listen: endpoint.Listen, ListenPort: endpoint.ListenPort, Method: endpoint.Method,
+		Multiplex: listenerMultiplexPolicyFor(endpoint.Multiplex), TLS: endpoint.TLS,
+		UpMbps: endpoint.UpMbps, DownMbps: endpoint.DownMbps, ObfsType: endpoint.ObfsType,
+	}
 	encoded, err := json.Marshal(compatible)
 	if err != nil {
 		return "", "", err
@@ -46,6 +59,13 @@ func listenerKeys(agentID string, endpoint Endpoint) (string, string, error) {
 	}
 	socket := agentID + "/" + network + "/" + endpoint.Listen + ":" + fmt.Sprint(endpoint.ListenPort)
 	return socket + "/" + string(encoded), socket, nil
+}
+
+func listenerMultiplexPolicyFor(config *MultiplexConfig) listenerMultiplexPolicy {
+	if config == nil {
+		return listenerMultiplexPolicy{}
+	}
+	return listenerMultiplexPolicy{Padding: config.Padding, Brutal: config.Brutal}
 }
 
 func listenerSocketClaims(agentID string, endpoint Endpoint) ([]string, error) {

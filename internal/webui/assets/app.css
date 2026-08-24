@@ -412,12 +412,14 @@ dialog.proxy-inspector { width: min(60rem, calc(100vw - 2rem)); height: min(82vh
 .proxy-inspector__route--fallback { border-style: dashed; }
 .proxy-inspector__actions { display: flex; margin-top: 1.25rem; flex-wrap: wrap; gap: 0.65rem; }
 .proxy-inspector__actions > form { display: inline-flex; gap: 0.45rem; }
-.proxy-inspector__editor-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); margin-top: 1.25rem; gap: 1rem; }
+.proxy-inspector__editor-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); margin-top: 1.25rem; align-items: start; gap: 1rem; }
 .proxy-inspector__editor-card { overflow: hidden; background: var(--surface); border: 1px solid var(--ink-200); border-radius: var(--radius-md); }
 .proxy-inspector__editor-card > header { padding: 0.8rem 1rem; background: var(--surface-sunken); border-bottom: 1px solid var(--ink-200); }
 .proxy-inspector__editor-card h3 { margin: 0; font-size: 1rem; }
 .proxy-inspector__editor-card header p { margin-top: 0.15rem; color: var(--ink-500); font-size: 0.78rem; }
-.proxy-inspector__editor-card > form { padding: 1rem; }
+.proxy-inspector__editor-card > form,
+.proxy-inspector__editor-card-body { padding: 1rem; }
+.proxy-inspector__editor-card-body .button { width: 100%; justify-content: center; }
 .proxy-rule-editor { margin-top: 1.25rem; }
 .proxy-rule-branch-list { display: grid; gap: 0.5rem; }
 .proxy-rule-branch-list .button {

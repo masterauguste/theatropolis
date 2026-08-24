@@ -92,7 +92,10 @@ settings are compatible. At minimum this includes the Agent, network, listen
 address, port, protocol, transport, TLS behavior, and protocol options that
 apply to the complete listener. An incompatible collision on the same socket is
 a validation error and must not be resolved by silently changing either Proxy
-Node.
+Node. A Link's decision to use Shadowsocks multiplexing is the exception: it is
+an outbound choice, so the shared inbound enables multiplex support whenever
+any attached Link requests it while non-multiplexed Links continue to dial the
+same listener normally.
 
 ### Hop
 
@@ -126,17 +129,20 @@ generated listener secret. Membership and Link user credentials are never
 shared. Shadowsocks claims both TCP and UDP for conflict detection; AnyTLS
 claims TCP and Hysteria2 claims UDP, so AnyTLS and Hysteria2 may use the same
 numeric port but neither can overlap a Shadowsocks listener on that address.
+Every generated Hysteria2 listener explicitly uses the `aggressive` BBR profile.
 Existing state with compatible per-endpoint listener secrets is reconciled to
 one stable listener identity when loaded. Listener lifetime is derived from its
 logical references: deleting one Membership or Link removes only its user and
 routing identity, while the physical listener remains for other references;
 deleting the final reference removes the listener on the next deployment.
 
-For a Shadowsocks Link with multiplexing enabled, the child inbound accepts
-multiplexed sessions and the parent outbound explicitly selects `smux`.
-Multiplex protocol selection is an outbound-only sing-box option; the child
-inbound therefore carries the shared padding and TCP Brutal policy but no
-`protocol` field.
+For a Shadowsocks Link with multiplexing enabled, its parent outbound explicitly
+selects `smux`. The child inbound enables multiplex support if at least one Link
+attached to that physical listener requests it. Links that do not request mux
+omit outbound multiplex configuration and continue to use ordinary sessions on
+the same listener. Padding and TCP Brutal remain accepted in existing stored
+state for compatibility but are not exposed by the guided editor; unlike the
+per-Link mux usage toggle, their inbound policy remains listener-wide.
 
 Each conditional Link owns exactly one routing Rule when active. A ruleless Link
 is inactive unless it is explicitly the Hop's fallback Link. Sibling Rules are
@@ -256,7 +262,9 @@ Hop. A failed Rule or endpoint validation therefore cannot leave an orphaned
 child Hop, and deleting the branch deletes its child subtree. The Hop inspector
 has only two mutations: change the hosting Agent or start this branch wizard.
 The entrance terminal remains under Entrance configuration because it has no
-parent Link.
+parent Link. Creating either a Proxy Node entrance or a child branch returns to
+the relay map with the details window closed; selection is always an explicit
+operator action.
 
 The displayed tree propagates each selected rule and every earlier first-match
 exclusion into the next Hop. Descendant branches that are provably contradictory
@@ -560,6 +568,10 @@ leave application state untouched.
 - A single Agent may host multiple Hops and compatible shared listeners. The
   logical topology remains a rooted tree with branching, no merging, and no
   cycles.
+- A shared Shadowsocks listener enables inbound multiplex support when any
+  attached Link requests it. Only those requesting Links receive `smux` on
+  their parent outbounds; other Links on the listener remain non-multiplexed.
+  Padding and TCP Brutal are intentionally absent from the current UI.
 - The relay map renders every conditional Rule as a separate branch. Selecting
   a branch edits only that Rule; adding, deleting, or reordering Rules is done
   directly from the map. Every visible Rule branch owns a distinct logical

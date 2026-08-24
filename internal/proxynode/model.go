@@ -102,10 +102,10 @@ type Endpoint struct {
 	ObfsSecret string           `json:"obfs_secret,omitempty"`
 }
 
-// MultiplexConfig is the server-side multiplex policy on a Shadowsocks
-// inbound. A managed Link mirrors it onto the parent outbound with the smux
-// protocol so the relay actually uses the capability; entrance clients may
-// opt into it themselves.
+// MultiplexConfig records whether this logical Link's parent outbound uses
+// multiplexing. A shared Shadowsocks listener enables inbound support when any
+// attached Link requests it. Padding and Brutal remain persisted for backward
+// compatibility but are not currently exposed by the guided editor.
 type MultiplexConfig struct {
 	Enabled bool             `json:"enabled"`
 	Padding bool             `json:"padding,omitempty"`

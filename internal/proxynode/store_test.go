@@ -654,6 +654,107 @@ func TestCompileMirrorsShadowsocksInboundMultiplexOntoManagedLinkOutbound(t *tes
 	}
 }
 
+func TestSharedShadowsocksListenerEnablesMuxForOnlyRequestingLinks(t *testing.T) {
+	store, err := Open(filepath.Join(t.TempDir(), "state.json"), testBuild())
+	if err != nil {
+		t.Fatal(err)
+	}
+	plainNode, err := store.CreateProxyNode(CreateProxyNodeInput{Name: "plain", RootAgent: "edge-plain", Entrance: testTLSEndpoint(ProtocolAnyTLS, 443)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	muxNode, err := store.CreateProxyNode(CreateProxyNodeInput{Name: "mux", RootAgent: "edge-mux", Entrance: testTLSEndpoint(ProtocolAnyTLS, 444)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	plainEndpoint := Endpoint{
+		Protocol: ProtocolShadowsocks, Listen: "::", ListenPort: 20048, Family: "ipv4",
+		Method: "2022-blake3-aes-128-gcm",
+	}
+	_, _, err = store.AddLink(plainNode.ID, AddLinkInput{
+		ParentHopID: plainNode.Entrance.HopID, ChildName: "Shared", ChildAgent: "edge-shared", Endpoint: plainEndpoint,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	muxEndpoint := plainEndpoint
+	muxEndpoint.Multiplex = &MultiplexConfig{Enabled: true}
+	muxLink, _, err := store.AddLink(muxNode.ID, AddLinkInput{
+		ParentHopID: muxNode.Entrance.HopID, ChildName: "Shared", ChildAgent: "edge-shared", Endpoint: muxEndpoint,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	compiled, err := Compile(store.Snapshot(), testResolver{
+		"edge-plain": "192.0.2.10", "edge-mux": "192.0.2.11", "edge-shared": "192.0.2.12",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	type renderedConfig struct {
+		Inbounds []struct {
+			Type      string         `json:"type"`
+			Users     []renderUser   `json:"users"`
+			Multiplex map[string]any `json:"multiplex"`
+		} `json:"inbounds"`
+		Outbounds []struct {
+			Type      string         `json:"type"`
+			Multiplex map[string]any `json:"multiplex"`
+		} `json:"outbounds"`
+	}
+	decode := func(agentID string) renderedConfig {
+		t.Helper()
+		var config renderedConfig
+		if err := json.Unmarshal(compiled.Configs[agentID], &config); err != nil {
+			t.Fatal(err)
+		}
+		return config
+	}
+	shared := decode("edge-shared")
+	if len(shared.Inbounds) != 1 || len(shared.Inbounds[0].Users) != 2 || shared.Inbounds[0].Multiplex["enabled"] != true {
+		t.Fatalf("shared listener did not aggregate mux support: %#v", shared.Inbounds)
+	}
+	for agentID, wantMux := range map[string]bool{"edge-plain": false, "edge-mux": true} {
+		config := decode(agentID)
+		var outboundMux map[string]any
+		for _, outbound := range config.Outbounds {
+			if outbound.Type == string(ProtocolShadowsocks) {
+				outboundMux = outbound.Multiplex
+				break
+			}
+		}
+		if wantMux && outboundMux["protocol"] != "smux" {
+			t.Fatalf("%s mux outbound = %#v, want smux", agentID, outboundMux)
+		}
+		if !wantMux && outboundMux != nil {
+			t.Fatalf("%s plain outbound unexpectedly uses mux: %#v", agentID, outboundMux)
+		}
+	}
+
+	padded := muxEndpoint
+	padded.Multiplex = &MultiplexConfig{Enabled: true, Padding: true}
+	if err := store.UpdateLink(muxNode.ID, muxLink.ID, padded); err == nil || !strings.Contains(err.Error(), "incompatible logical inbounds") {
+		t.Fatalf("mixed hidden listener-wide mux policy error = %v", err)
+	}
+	if err := store.DeleteLink(muxNode.ID, muxLink.ID); err != nil {
+		t.Fatal(err)
+	}
+	compiled, err = Compile(store.Snapshot(), testResolver{
+		"edge-plain": "192.0.2.10", "edge-mux": "192.0.2.11", "edge-shared": "192.0.2.12",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var sharedAfterDelete renderedConfig
+	if err := json.Unmarshal(compiled.Configs["edge-shared"], &sharedAfterDelete); err != nil {
+		t.Fatal(err)
+	}
+	if len(sharedAfterDelete.Inbounds) != 1 || sharedAfterDelete.Inbounds[0].Multiplex != nil {
+		t.Fatalf("listener retained mux after its final requesting Link was removed: %#v", sharedAfterDelete.Inbounds)
+	}
+}
+
 func TestCompileCombinesCompatibleRelayListenersAcrossProxyNodes(t *testing.T) {
 	protocols := []Protocol{ProtocolShadowsocks, ProtocolAnyTLS, ProtocolHysteria2}
 	for _, protocol := range protocols {
@@ -726,8 +827,9 @@ func TestCompileCombinesCompatibleRelayListenersAcrossProxyNodes(t *testing.T) {
 			}
 			var childConfig struct {
 				Inbounds []struct {
-					Type  string `json:"type"`
-					Users []struct {
+					Type       string `json:"type"`
+					BBRProfile string `json:"bbr_profile"`
+					Users      []struct {
 						Name     string `json:"name"`
 						Password string `json:"password"`
 					} `json:"users"`
@@ -742,6 +844,9 @@ func TestCompileCombinesCompatibleRelayListenersAcrossProxyNodes(t *testing.T) {
 			if childConfig.Inbounds[0].Users[0].Name == childConfig.Inbounds[0].Users[1].Name ||
 				childConfig.Inbounds[0].Users[0].Password == childConfig.Inbounds[0].Users[1].Password {
 				t.Fatalf("combined %s listener did not retain distinct Link identities: %#v", protocol, childConfig.Inbounds[0].Users)
+			}
+			if protocol == ProtocolHysteria2 && childConfig.Inbounds[0].BBRProfile != "aggressive" {
+				t.Fatalf("Hysteria2 listener bbr_profile = %q, want aggressive", childConfig.Inbounds[0].BBRProfile)
 			}
 			if protocol == ProtocolShadowsocks {
 				for _, agentID := range []string{"edge-a", "edge-b"} {

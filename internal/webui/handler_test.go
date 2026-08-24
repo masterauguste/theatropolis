@@ -1086,7 +1086,7 @@ func TestProxyNodePagesUseLinkOwnedRulesAndMembershipCredentials(t *testing.T) {
 		"Every configured path reaches an exit", "A leaf Hop implies Direct; Direct remains explicit beside other branches, and Reject is always explicit.",
 		"Left-to-right relay tree", `data-proxy-inspector-open="rule-` + firstRule.ID + `"`, `data-proxy-inspector-open="rule-` + secondRule.ID + `"`,
 		"Terminal on edge-online", `proxy-map__node--reject`, `data-proxy-inspector-view="hop-` + node.Entrance.HopID + `"`,
-		"Change Agent", "Save Agent", "Create branch", `data-dialog-open="proxy-add-link-` + node.Entrance.HopID + `"`,
+		"Change Agent", "Save Agent", "Create branch", `class="proxy-inspector__editor-card-body"`, `data-dialog-open="proxy-add-link-` + node.Entrance.HopID + `"`,
 		"Relay branch", "This Rule has its own relay credential, authenticated user, and downstream routing context.", "Duplicate branch", "Edit relay", "Save relay",
 		"drag numbered Rule branches vertically to change their priority", `data-proxy-rule-branch="` + firstRule.ID + `"`,
 		`data-reorder-url="/proxy-nodes/` + node.ID + `/hops/` + node.Entrance.HopID + `/rules/reorder"`, "Delete branch", "View child Hop",
@@ -1097,7 +1097,7 @@ func TestProxyNodePagesUseLinkOwnedRulesAndMembershipCredentials(t *testing.T) {
 			t.Errorf("Proxy Node tree does not contain %q", expected)
 		}
 	}
-	for _, removed := range []string{`name="scope"`, `name="scope_type"`, `name="scope_value"`, `name="auth_user"`, `proxy-map__node--direct`, "Terminal on edge-exit", `id="proxy-hop-manager"`, `data-proxy-hop-manage`, `data-proxy-hop-manager-view`, "Ordered child Links"} {
+	for _, removed := range []string{`name="scope"`, `name="scope_type"`, `name="scope_value"`, `name="auth_user"`, `proxy-map__node--direct`, "Terminal on edge-exit", `id="proxy-hop-manager"`, `data-proxy-hop-manage`, `data-proxy-hop-manager-view`, "Ordered child Links", "Mux padding", "TCP Brutal"} {
 		if strings.Contains(body, removed) {
 			t.Errorf("Proxy Node tree contains removed control or Direct terminal marker %q", removed)
 		}
@@ -1243,6 +1243,20 @@ func TestProxyNodePagesUseLinkOwnedRulesAndMembershipCredentials(t *testing.T) {
 	body = response.Body.String()
 	if !strings.Contains(body, "Cinema-Alice") || !strings.Contains(body, "anytls://") || !strings.Contains(body, "203.0.113.42:443") || !strings.Contains(body, "Revoke access") {
 		t.Fatalf("user page omitted membership identity or import URI: %q", body)
+	}
+
+	beforeDuplicate, _ := fixture.proxyNodes.ProxyNode(node.ID)
+	request = fixture.authenticatedMutationRequest(http.MethodPost, proxyLinkURL(node.ID, link.ID)+"/rules", url.Values{
+		"csrf_token": {fixture.session.CSRFToken}, "match": {string(proxynode.MatchNetwork)}, "values": {"udp"},
+	}.Encode())
+	response = httptest.NewRecorder()
+	fixture.handler.ServeHTTP(response, request)
+	if response.Code != http.StatusSeeOther || response.Header().Get("Location") != proxyNodeURL(node.ID) {
+		t.Fatalf("POST duplicated branch = %d location %q body %q", response.Code, response.Header().Get("Location"), response.Body.String())
+	}
+	afterDuplicate, _ := fixture.proxyNodes.ProxyNode(node.ID)
+	if len(afterDuplicate.Hops) <= len(beforeDuplicate.Hops) {
+		t.Fatalf("duplicated branch did not create a child subtree: before=%d after=%d", len(beforeDuplicate.Hops), len(afterDuplicate.Hops))
 	}
 }
 
@@ -1540,6 +1554,9 @@ func TestAddProxyLinkIgnoresHiddenForeignProtocolFields(t *testing.T) {
 	if response.Code != http.StatusSeeOther {
 		t.Fatalf("POST Shadowsocks Link = %d %q", response.Code, response.Body.String())
 	}
+	if got, want := response.Header().Get("Location"), proxyNodeURL(node.ID); got != want {
+		t.Fatalf("POST Shadowsocks Link redirect = %q, want %q", got, want)
+	}
 	updated, exists := fixture.proxyNodes.ProxyNode(node.ID)
 	if !exists || len(updated.Links) != 1 || len(updated.Links[0].Rules) != 1 {
 		t.Fatalf("updated Proxy Node = %#v, exists %v", updated, exists)
@@ -1550,7 +1567,7 @@ func TestAddProxyLinkIgnoresHiddenForeignProtocolFields(t *testing.T) {
 	}
 }
 
-func TestCreateProxyNodeMakesTerminalExitExplicitAndOpensRouting(t *testing.T) {
+func TestCreateProxyNodeMakesTerminalExitExplicitAndReturnsToRelayMap(t *testing.T) {
 	t.Parallel()
 
 	fixture := newWebFixture(t)
@@ -1596,7 +1613,7 @@ func TestCreateProxyNodeMakesTerminalExitExplicitAndOpensRouting(t *testing.T) {
 	if !ok || entrance.Name != "Entrance" || entrance.Final.Type != proxynode.TargetReject {
 		t.Fatalf("created entrance = %#v, exists %v", entrance, ok)
 	}
-	wantLocation := proxyInspectorURL(node.ID, "hop-"+entrance.ID)
+	wantLocation := proxyNodeURL(node.ID)
 	if got := response.Header().Get("Location"); got != wantLocation {
 		t.Fatalf("create redirect = %q, want %q", got, wantLocation)
 	}
@@ -1634,7 +1651,7 @@ func TestCreateProxyNodeMakesTerminalExitExplicitAndOpensRouting(t *testing.T) {
 	request = fixture.authenticatedMutationRequest(http.MethodPost, "/proxy-nodes/"+node.ID+"/hops/"+entrance.ID+"/links", branchForm.Encode())
 	response = httptest.NewRecorder()
 	fixture.handler.ServeHTTP(response, request)
-	if response.Code != http.StatusSeeOther || !strings.Contains(response.Header().Get("Location"), "?inspect=rule-") {
+	if response.Code != http.StatusSeeOther || response.Header().Get("Location") != proxyNodeURL(node.ID) {
 		t.Fatalf("POST branch = %d location %q body %q", response.Code, response.Header().Get("Location"), response.Body.String())
 	}
 	updated, ok := fixture.proxyNodes.ProxyNode(node.ID)
