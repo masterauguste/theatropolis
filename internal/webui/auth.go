@@ -48,8 +48,10 @@ const (
 	passwordMaxRunes     = 128
 	passwordDocumentType = "password"
 
-	DefaultSessionIdleTimeout     = 30 * time.Minute
-	DefaultSessionAbsoluteTimeout = 12 * time.Hour
+	// Browser sessions use a rolling inactivity window. Each successful
+	// authenticated request refreshes both the server-side deadline and the
+	// persistent browser cookie.
+	DefaultSessionIdleTimeout     = 7 * 24 * time.Hour
 	defaultSessionPersistInterval = time.Minute
 	DefaultLoginFailureLimit      = 10
 	DefaultLoginFailureWindow     = time.Minute
@@ -99,8 +101,8 @@ type passwordAccessDocument struct {
 }
 
 // Session contains the plaintext browser credentials returned at login or
-// successful authentication. ExpiresAt is the absolute session expiration;
-// the server separately enforces the shorter sliding idle timeout.
+// successful authentication. ExpiresAt is the current rolling inactivity
+// deadline and is refreshed after every successful authenticated request.
 type Session struct {
 	Token     string
 	CSRFToken string
@@ -108,9 +110,11 @@ type Session struct {
 }
 
 type memorySession struct {
-	csrfSecret        [credentialBytes]byte
-	createdAt         time.Time
-	lastSeenAt        time.Time
+	csrfSecret [credentialBytes]byte
+	createdAt  time.Time
+	lastSeenAt time.Time
+	// absoluteExpiresAt retains the session-file v1 field name for backward
+	// compatibility, but now stores the rolling inactivity deadline.
 	absoluteExpiresAt time.Time
 }
 
@@ -158,16 +162,15 @@ type AccessManager struct {
 	activityInterval    time.Duration
 	persistSnapshotHook func(map[[sha256.Size]byte]*memorySession) error
 
-	sessionIdleTimeout     time.Duration
-	sessionAbsoluteTimeout time.Duration
-	loginFailureLimit      int
-	loginFailureWindow     time.Duration
-	maxLoginClients        int
-	maxSessions            int
-	now                    func() time.Time
-	random                 io.Reader
-	sessionPath            string
-	credentialBinding      [sha256.Size]byte
+	sessionIdleTimeout time.Duration
+	loginFailureLimit  int
+	loginFailureWindow time.Duration
+	maxLoginClients    int
+	maxSessions        int
+	now                func() time.Time
+	random             io.Reader
+	sessionPath        string
+	credentialBinding  [sha256.Size]byte
 }
 
 // InitializeAccess creates a legacy v1 access-key file. It remains available
@@ -849,11 +852,11 @@ func (m *AccessManager) loadSessions() error {
 			csrfSecret:        csrf,
 			createdAt:         stored.CreatedAt.UTC(),
 			lastSeenAt:        stored.LastSeenAt.UTC(),
-			absoluteExpiresAt: stored.AbsoluteExpiresAt.UTC(),
+			absoluteExpiresAt: stored.LastSeenAt.UTC().Add(m.sessionIdleTimeout),
 		}
 		if session.createdAt.IsZero() ||
 			session.lastSeenAt.Before(session.createdAt) ||
-			!session.absoluteExpiresAt.After(session.createdAt) {
+			!stored.AbsoluteExpiresAt.After(stored.CreatedAt) {
 			return errors.New("session file contains invalid timestamps")
 		}
 		if !m.sessionExpiredLocked(session, now) {
@@ -945,17 +948,16 @@ func cloneSessions(sessions map[[sha256.Size]byte]*memorySession) map[[sha256.Si
 
 func newAccessManager() *AccessManager {
 	return &AccessManager{
-		sessions:               make(map[[sha256.Size]byte]*memorySession),
-		sessionIdleTimeout:     DefaultSessionIdleTimeout,
-		sessionAbsoluteTimeout: DefaultSessionAbsoluteTimeout,
-		loginFailureLimit:      DefaultLoginFailureLimit,
-		loginFailureWindow:     DefaultLoginFailureWindow,
-		maxSessions:            defaultMaxSessions,
-		maxLoginClients:        defaultMaxLoginClients,
-		activityInterval:       defaultSessionPersistInterval,
-		failures:               make(map[[sha256.Size]byte]loginFailureLimiter),
-		now:                    time.Now,
-		random:                 rand.Reader,
+		sessions:           make(map[[sha256.Size]byte]*memorySession),
+		sessionIdleTimeout: DefaultSessionIdleTimeout,
+		loginFailureLimit:  DefaultLoginFailureLimit,
+		loginFailureWindow: DefaultLoginFailureWindow,
+		maxSessions:        defaultMaxSessions,
+		maxLoginClients:    defaultMaxLoginClients,
+		activityInterval:   defaultSessionPersistInterval,
+		failures:           make(map[[sha256.Size]byte]loginFailureLimiter),
+		now:                time.Now,
+		random:             rand.Reader,
 	}
 }
 
@@ -1021,7 +1023,7 @@ func (m *AccessManager) LoginForClient(client, username, password string) (Sessi
 	defer clear(csrf[:])
 
 	tokenDigest := sha256.Sum256(token[:])
-	absoluteExpiresAt := now.Add(m.sessionAbsoluteTimeout)
+	absoluteExpiresAt := now.Add(m.sessionIdleTimeout)
 	session := &memorySession{
 		csrfSecret:        csrf,
 		createdAt:         now,
@@ -1432,13 +1434,13 @@ func (m *AccessManager) evictOldestSessionLocked() {
 }
 
 func (m *AccessManager) sessionExpiredLocked(session *memorySession, now time.Time) bool {
-	return !now.Before(session.absoluteExpiresAt) ||
-		!now.Before(session.lastSeenAt.Add(m.sessionIdleTimeout))
+	return !now.Before(session.absoluteExpiresAt)
 }
 
 func (m *AccessManager) touchSessionLocked(session *memorySession, now time.Time) {
 	if now.After(session.lastSeenAt) {
 		session.lastSeenAt = now
+		session.absoluteExpiresAt = now.Add(m.sessionIdleTimeout)
 	}
 }
 

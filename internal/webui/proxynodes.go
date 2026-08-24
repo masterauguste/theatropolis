@@ -1142,13 +1142,13 @@ func (h *Handler) authorizeProxyMutation(response http.ResponseWriter, request *
 		http.Error(response, "request form is invalid", http.StatusBadRequest)
 		return Session{}, nil, false
 	}
+	if !h.authorizeCSRF(response, token, form.Get("csrf_token")) {
+		http.Error(response, "request was not authorized", http.StatusForbidden)
+		return Session{}, nil, false
+	}
 	session, err := h.access.Authenticate(token)
 	if err != nil {
 		h.redirectToLogin(response, request)
-		return Session{}, nil, false
-	}
-	if !h.access.AuthorizeCSRF(token, form.Get("csrf_token")) {
-		http.Error(response, "request was not authorized", http.StatusForbidden)
 		return Session{}, nil, false
 	}
 	return session, form, true

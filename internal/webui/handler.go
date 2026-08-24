@@ -473,7 +473,7 @@ func (h *Handler) root(response http.ResponseWriter, request *http.Request) {
 		http.NotFound(response, request)
 		return
 	}
-	if _, ok := h.authenticate(request); !ok {
+	if _, ok := h.authenticate(response, request); !ok {
 		http.Redirect(response, request, "/login", http.StatusSeeOther)
 		return
 	}
@@ -499,7 +499,7 @@ func (h *Handler) asset(path, contentType string) http.HandlerFunc {
 }
 
 func (h *Handler) loginPage(response http.ResponseWriter, request *http.Request) {
-	if _, ok := h.authenticate(request); ok {
+	if _, ok := h.authenticate(response, request); ok {
 		http.Redirect(response, request, "/servers", http.StatusSeeOther)
 		return
 	}
@@ -602,7 +602,7 @@ func (h *Handler) logout(response http.ResponseWriter, request *http.Request) {
 		return
 	}
 	form, err := readExactForm(response, request, maxLoginBodyBytes, "csrf_token")
-	if err != nil || !h.access.AuthorizeCSRF(sessionToken, form.Get("csrf_token")) {
+	if err != nil || !h.authorizeCSRF(response, sessionToken, form.Get("csrf_token")) {
 		http.Error(response, "request was not authorized", http.StatusForbidden)
 		return
 	}
@@ -632,7 +632,7 @@ func (h *Handler) serversPage(response http.ResponseWriter, request *http.Reques
 }
 
 func (h *Handler) serversContent(response http.ResponseWriter, request *http.Request) {
-	session, ok := h.authenticate(request)
+	session, ok := h.authenticate(response, request)
 	if !ok {
 		http.Error(response, "unauthorized", http.StatusUnauthorized)
 		return
@@ -718,7 +718,7 @@ func (h *Handler) settingsPageData(session Session) pageData {
 
 func (h *Handler) masterVersions(response http.ResponseWriter, request *http.Request) {
 	response.Header().Set("Cache-Control", "no-store")
-	if _, ok := h.authenticate(request); !ok {
+	if _, ok := h.authenticate(response, request); !ok {
 		http.Error(response, "unauthorized", http.StatusUnauthorized)
 		return
 	}
@@ -734,7 +734,7 @@ func (h *Handler) masterVersions(response http.ResponseWriter, request *http.Req
 }
 
 func (h *Handler) masterUpdateStatus(response http.ResponseWriter, request *http.Request) {
-	if _, ok := h.authenticate(request); !ok {
+	if _, ok := h.authenticate(response, request); !ok {
 		response.Header().Set("Content-Type", "application/json")
 		response.WriteHeader(http.StatusUnauthorized)
 		_, _ = io.WriteString(response, `{"status":"restarting"}`+"\n")
@@ -874,7 +874,7 @@ func (h *Handler) deployServerConfiguration(
 		http.Error(response, "request form is invalid", http.StatusBadRequest)
 		return
 	}
-	session, err := h.access.Authenticate(sessionToken)
+	session, err := h.authenticateSession(response, sessionToken)
 	if err != nil {
 		if strings.Contains(request.Header.Get("Accept"), "application/json") {
 			http.Error(response, "unauthorized", http.StatusUnauthorized)
@@ -883,7 +883,7 @@ func (h *Handler) deployServerConfiguration(
 		}
 		return
 	}
-	if !h.access.AuthorizeCSRF(sessionToken, form.Get("csrf_token")) {
+	if !h.authorizeCSRF(response, sessionToken, form.Get("csrf_token")) {
 		http.Error(response, "request was not authorized", http.StatusForbidden)
 		return
 	}
@@ -1093,11 +1093,11 @@ func (h *Handler) revokeServer(response http.ResponseWriter, request *http.Reque
 		"confirm_revoke",
 		"csrf_token",
 	)
-	if err != nil || !h.access.AuthorizeCSRF(sessionToken, form.Get("csrf_token")) {
+	if err != nil || !h.authorizeCSRF(response, sessionToken, form.Get("csrf_token")) {
 		http.Error(response, "request was not authorized", http.StatusForbidden)
 		return
 	}
-	if _, err := h.access.Authenticate(sessionToken); err != nil {
+	if _, err := h.authenticateSession(response, sessionToken); err != nil {
 		h.redirectToLogin(response, request)
 		return
 	}
@@ -1143,11 +1143,11 @@ func (h *Handler) replaceServer(response http.ResponseWriter, request *http.Requ
 		"csrf_token",
 		"ttl_seconds",
 	)
-	if err != nil || !h.access.AuthorizeCSRF(sessionToken, form.Get("csrf_token")) {
+	if err != nil || !h.authorizeCSRF(response, sessionToken, form.Get("csrf_token")) {
 		http.Error(response, "request was not authorized", http.StatusForbidden)
 		return
 	}
-	if _, err := h.access.Authenticate(sessionToken); err != nil {
+	if _, err := h.authenticateSession(response, sessionToken); err != nil {
 		h.redirectToLogin(response, request)
 		return
 	}
@@ -1231,11 +1231,11 @@ func (h *Handler) updateAgent(response http.ResponseWriter, request *http.Reques
 		"csrf_token",
 		"target_version",
 	)
-	if err != nil || !h.access.AuthorizeCSRF(sessionToken, form.Get("csrf_token")) {
+	if err != nil || !h.authorizeCSRF(response, sessionToken, form.Get("csrf_token")) {
 		http.Error(response, "request was not authorized", http.StatusForbidden)
 		return
 	}
-	session, err := h.access.Authenticate(sessionToken)
+	session, err := h.authenticateSession(response, sessionToken)
 	if err != nil {
 		h.redirectToLogin(response, request)
 		return
@@ -1354,11 +1354,11 @@ func (h *Handler) updateAllAgents(response http.ResponseWriter, request *http.Re
 		maxEnrollmentBodyBytes,
 		"csrf_token",
 	)
-	if err != nil || !h.access.AuthorizeCSRF(sessionToken, form.Get("csrf_token")) {
+	if err != nil || !h.authorizeCSRF(response, sessionToken, form.Get("csrf_token")) {
 		http.Error(response, "request was not authorized", http.StatusForbidden)
 		return
 	}
-	session, err := h.access.Authenticate(sessionToken)
+	session, err := h.authenticateSession(response, sessionToken)
 	if err != nil {
 		h.redirectToLogin(response, request)
 		return
@@ -1448,11 +1448,11 @@ func (h *Handler) updateSingBox(
 		"target_version",
 	)
 	if err != nil ||
-		!h.access.AuthorizeCSRF(sessionToken, form.Get("csrf_token")) {
+		!h.authorizeCSRF(response, sessionToken, form.Get("csrf_token")) {
 		http.Error(response, "request was not authorized", http.StatusForbidden)
 		return
 	}
-	session, err := h.access.Authenticate(sessionToken)
+	session, err := h.authenticateSession(response, sessionToken)
 	if err != nil {
 		h.redirectToLogin(response, request)
 		return
@@ -1544,11 +1544,11 @@ func (h *Handler) updateMaster(response http.ResponseWriter, request *http.Reque
 		maxEnrollmentBodyBytes,
 		"csrf_token",
 	)
-	if err != nil || !h.access.AuthorizeCSRF(sessionToken, form.Get("csrf_token")) {
+	if err != nil || !h.authorizeCSRF(response, sessionToken, form.Get("csrf_token")) {
 		http.Error(response, "request was not authorized", http.StatusForbidden)
 		return
 	}
-	if _, err := h.access.Authenticate(sessionToken); err != nil {
+	if _, err := h.authenticateSession(response, sessionToken); err != nil {
 		h.redirectToLogin(response, request)
 		return
 	}
@@ -1778,7 +1778,7 @@ type versionCatalogResponse struct {
 
 func (h *Handler) serverVersions(response http.ResponseWriter, request *http.Request) {
 	response.Header().Set("Cache-Control", "no-store")
-	if _, ok := h.authenticate(request); !ok {
+	if _, ok := h.authenticate(response, request); !ok {
 		http.Error(response, "unauthorized", http.StatusUnauthorized)
 		return
 	}
@@ -1859,7 +1859,7 @@ type ruleSetOptionsResponse struct {
 }
 
 func (h *Handler) serverRuleSetOptions(response http.ResponseWriter, request *http.Request) {
-	if _, ok := h.authenticate(request); !ok {
+	if _, ok := h.authenticate(response, request); !ok {
 		http.Error(response, "unauthorized", http.StatusUnauthorized)
 		return
 	}
@@ -1987,7 +1987,7 @@ func (h *Handler) enrollmentResultPage(response http.ResponseWriter, request *ht
 		h.redirectToLogin(response, request)
 		return
 	}
-	session, err := h.access.Authenticate(sessionToken)
+	session, err := h.authenticateSession(response, sessionToken)
 	if err != nil {
 		h.redirectToLogin(response, request)
 		return
@@ -2029,11 +2029,11 @@ func (h *Handler) createServer(response http.ResponseWriter, request *http.Reque
 		"default_tls_address",
 		"ttl_seconds",
 	)
-	if err != nil || !h.access.AuthorizeCSRF(sessionToken, form.Get("csrf_token")) {
+	if err != nil || !h.authorizeCSRF(response, sessionToken, form.Get("csrf_token")) {
 		http.Error(response, "request was not authorized", http.StatusForbidden)
 		return
 	}
-	session, err := h.access.Authenticate(sessionToken)
+	session, err := h.authenticateSession(response, sessionToken)
 	if err != nil {
 		h.redirectToLogin(response, request)
 		return
@@ -2527,12 +2527,38 @@ func (h *Handler) render(
 	}
 }
 
-func (h *Handler) authenticate(request *http.Request) (Session, bool) {
+func (h *Handler) authenticateSession(
+	response http.ResponseWriter,
+	token string,
+) (Session, error) {
+	session, err := h.access.Authenticate(token)
+	if err == nil && response.Header().Get("Set-Cookie") == "" {
+		http.SetCookie(response, NewSessionCookie(session.Token, session.ExpiresAt))
+	}
+	return session, err
+}
+
+func (h *Handler) authorizeCSRF(
+	response http.ResponseWriter,
+	token string,
+	csrfToken string,
+) bool {
+	if !h.access.AuthorizeCSRF(token, csrfToken) {
+		return false
+	}
+	_, err := h.authenticateSession(response, token)
+	return err == nil
+}
+
+func (h *Handler) authenticate(
+	response http.ResponseWriter,
+	request *http.Request,
+) (Session, bool) {
 	token, ok := h.sessionToken(request)
 	if !ok {
 		return Session{}, false
 	}
-	session, err := h.access.Authenticate(token)
+	session, err := h.authenticateSession(response, token)
 	return session, err == nil
 }
 
@@ -2540,7 +2566,7 @@ func (h *Handler) requireAuthentication(
 	response http.ResponseWriter,
 	request *http.Request,
 ) (Session, bool) {
-	session, ok := h.authenticate(request)
+	session, ok := h.authenticate(response, request)
 	if !ok {
 		h.redirectToLogin(response, request)
 		return Session{}, false

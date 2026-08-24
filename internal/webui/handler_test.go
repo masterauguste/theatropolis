@@ -304,6 +304,21 @@ func TestProtectedPagesRequireAuthenticationAndConfiguredHost(t *testing.T) {
 		t.Fatalf("wrong Host status = %d, want %d", response.Code, http.StatusMisdirectedRequest)
 	}
 
+	rollingNow := time.Now().UTC().Add(4 * 24 * time.Hour).Truncate(time.Second)
+	fixture.access.now = func() time.Time { return rollingNow }
+	request = fixture.request(http.MethodGet, "/servers", "")
+	request.AddCookie(NewSessionCookie(fixture.session.Token, fixture.session.ExpiresAt))
+	response = httptest.NewRecorder()
+	fixture.handler.ServeHTTP(response, request)
+	if response.Code != http.StatusOK {
+		t.Fatalf("authenticated GET /servers after four idle days = %d", response.Code)
+	}
+	cookies := response.Result().Cookies()
+	if len(cookies) != 1 || cookies[0].Name != SessionCookieName ||
+		!cookies[0].Expires.Equal(rollingNow.Add(DefaultSessionIdleTimeout)) {
+		t.Fatalf("rolling session cookie was not refreshed: %#v", cookies)
+	}
+
 	request = httptest.NewRequest(http.MethodGet, "http://127.0.0.1/healthz", nil)
 	response = httptest.NewRecorder()
 	fixture.handler.ServeHTTP(response, request)

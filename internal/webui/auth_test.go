@@ -759,7 +759,6 @@ func TestSessionAuthenticationIdleExpiryCSRFAndLogout(t *testing.T) {
 	now := time.Date(2026, 7, 27, 12, 0, 0, 0, time.UTC)
 	manager.now = func() time.Time { return now }
 	manager.sessionIdleTimeout = 10 * time.Minute
-	manager.sessionAbsoluteTimeout = time.Hour
 
 	session, err := manager.Login(username, password)
 	if err != nil {
@@ -769,7 +768,7 @@ func TestSessionAuthenticationIdleExpiryCSRFAndLogout(t *testing.T) {
 		len(session.CSRFToken) != encodedCredentialLength {
 		t.Fatalf("Login() returned malformed session: %+v", session)
 	}
-	if want := now.Add(time.Hour); !session.ExpiresAt.Equal(want) {
+	if want := now.Add(10 * time.Minute); !session.ExpiresAt.Equal(want) {
 		t.Fatalf("session ExpiresAt = %v, want %v", session.ExpiresAt, want)
 	}
 
@@ -791,8 +790,12 @@ func TestSessionAuthenticationIdleExpiryCSRFAndLogout(t *testing.T) {
 	}
 
 	now = now.Add(9 * time.Minute)
-	if _, err := manager.Authenticate(session.Token); err != nil {
+	refreshed, err := manager.Authenticate(session.Token)
+	if err != nil {
 		t.Fatalf("Authenticate() before idle expiry error = %v", err)
+	}
+	if want := now.Add(10 * time.Minute); !refreshed.ExpiresAt.Equal(want) {
+		t.Fatalf("rolling ExpiresAt = %v, want %v", refreshed.ExpiresAt, want)
 	}
 	now = now.Add(9 * time.Minute)
 	if _, err := manager.Authenticate(session.Token); err != nil {
@@ -879,10 +882,10 @@ func TestPersistentSessionSurvivesManagerRestartAndLogout(t *testing.T) {
 		t.Fatal(err)
 	}
 	// Sessions are reloaded with the real clock inside
-	// loadAccessWithPasswordDeriverAndSessions (the injected now is only
-	// applied afterwards), so a hardcoded date goes stale within a day and
-	// the reloaded session would be dropped as idle-expired.
-	now := time.Now().UTC().Truncate(time.Second)
+	// loadAccessWithPasswordDeriverAndSessions (the injected clock is applied
+	// afterwards). Create this one four days ago to verify the persisted rolling
+	// session survives both a multi-day browser absence and a master restart.
+	now := time.Now().UTC().Add(-4 * 24 * time.Hour).Truncate(time.Second)
 	load := func() *AccessManager {
 		manager, err := loadAccessWithPasswordDeriverAndSessions(
 			accessPath,
@@ -947,29 +950,34 @@ func TestFailedCSRFAttemptDoesNotRefreshIdleExpiry(t *testing.T) {
 	}
 }
 
-func TestSessionAbsoluteExpiryCannotBeExtended(t *testing.T) {
+func TestSessionRollingExpiryExtendsBeyondOriginalDeadline(t *testing.T) {
 	t.Parallel()
 
 	manager, username, password := newTestAdminAccessManager(t)
 	now := time.Date(2026, 7, 27, 12, 0, 0, 0, time.UTC)
 	manager.now = func() time.Time { return now }
 	manager.sessionIdleTimeout = 10 * time.Minute
-	manager.sessionAbsoluteTimeout = 25 * time.Minute
 
 	session, err := manager.Login(username, password)
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, elapsed := range []time.Duration{9, 18, 24} {
+	for _, elapsed := range []time.Duration{9, 18, 27, 36} {
 		now = time.Date(2026, 7, 27, 12, 0, 0, 0, time.UTC).
 			Add(elapsed * time.Minute)
 		if _, err := manager.Authenticate(session.Token); err != nil {
 			t.Fatalf("Authenticate() at %v error = %v", elapsed*time.Minute, err)
 		}
 	}
-	now = time.Date(2026, 7, 27, 12, 25, 0, 0, time.UTC)
+	// The session is still valid well beyond its original ten-minute cookie
+	// deadline because every successful interaction renewed it.
+	now = time.Date(2026, 7, 27, 12, 45, 0, 0, time.UTC)
+	if _, err := manager.Authenticate(session.Token); err != nil {
+		t.Fatalf("Authenticate() after repeated rolling renewal error = %v", err)
+	}
+	now = time.Date(2026, 7, 27, 12, 55, 0, 0, time.UTC)
 	if _, err := manager.Authenticate(session.Token); !errors.Is(err, ErrAuthenticationFailed) {
-		t.Fatalf("Authenticate() at absolute expiry error = %v", err)
+		t.Fatalf("Authenticate() at rolling idle expiry error = %v", err)
 	}
 }
 

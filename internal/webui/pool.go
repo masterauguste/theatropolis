@@ -244,7 +244,7 @@ func (h *Handler) poolPageData(_ context.Context, session Session) pageData {
 }
 
 func (h *Handler) poolContent(response http.ResponseWriter, request *http.Request) {
-	session, ok := h.authenticate(request)
+	session, ok := h.authenticate(response, request)
 	if !ok {
 		http.Error(response, "unauthorized", http.StatusUnauthorized)
 		return
@@ -279,7 +279,7 @@ func (h *Handler) upsertPoolEntry(response http.ResponseWriter, request *http.Re
 		"remark",
 		"outbound_json",
 	)
-	if err != nil || !h.access.AuthorizeCSRF(sessionToken, form.Get("csrf_token")) {
+	if err != nil || !h.authorizeCSRF(response, sessionToken, form.Get("csrf_token")) {
 		http.Error(response, "request was not authorized", http.StatusForbidden)
 		return
 	}
@@ -360,7 +360,7 @@ func (h *Handler) deletePoolEntry(response http.ResponseWriter, request *http.Re
 		"csrf_token",
 		"name",
 	)
-	if err != nil || !h.access.AuthorizeCSRF(sessionToken, form.Get("csrf_token")) {
+	if err != nil || !h.authorizeCSRF(response, sessionToken, form.Get("csrf_token")) {
 		http.Error(response, "request was not authorized", http.StatusForbidden)
 		return
 	}
@@ -397,7 +397,7 @@ func (h *Handler) deletePoolEntry(response http.ResponseWriter, request *http.Re
 }
 
 func (h *Handler) serverPoolOptions(response http.ResponseWriter, request *http.Request) {
-	if _, ok := h.authenticate(request); !ok {
+	if _, ok := h.authenticate(response, request); !ok {
 		http.Error(response, "unauthorized", http.StatusUnauthorized)
 		return
 	}
@@ -458,7 +458,7 @@ func (h *Handler) setServerAddress(response http.ResponseWriter, request *http.R
 		"override_ipv4",
 		"override_ipv6",
 	)
-	if err != nil || !h.access.AuthorizeCSRF(sessionToken, form.Get("csrf_token")) {
+	if err != nil || !h.authorizeCSRF(response, sessionToken, form.Get("csrf_token")) {
 		http.Error(response, "request was not authorized", http.StatusForbidden)
 		return
 	}
@@ -533,7 +533,7 @@ func (h *Handler) setServerTLSAddress(response http.ResponseWriter, request *htt
 		"csrf_token",
 		"default_tls_address",
 	)
-	if err != nil || !h.access.AuthorizeCSRF(sessionToken, form.Get("csrf_token")) {
+	if err != nil || !h.authorizeCSRF(response, sessionToken, form.Get("csrf_token")) {
 		http.Error(response, "request was not authorized", http.StatusForbidden)
 		return
 	}
@@ -599,7 +599,7 @@ func (h *Handler) requestAddressProbe(response http.ResponseWriter, request *htt
 		"csrf_token",
 		"family",
 	)
-	if err != nil || !h.access.AuthorizeCSRF(sessionToken, form.Get("csrf_token")) {
+	if err != nil || !h.authorizeCSRF(response, sessionToken, form.Get("csrf_token")) {
 		http.Error(response, "request was not authorized", http.StatusForbidden)
 		return
 	}
