@@ -58,6 +58,7 @@ type proxyTreeHopView struct {
 	Routes          []proxyTreeRouteView
 	Fallback        proxyTreeRouteView
 	Children        []proxyTreeLinkView
+	Branches        []proxyTreeBranchView
 	TerminalCount   int
 	BranchCount     int
 	Manager         *hopDetailView
@@ -86,6 +87,19 @@ type proxyTreeLinkView struct {
 	Family     string
 	Endpoint   endpointView
 	Conditions []proxyTreeRouteView
+	Used       bool
+	Fallback   bool
+	Child      *proxyTreeHopView
+}
+
+// proxyTreeBranchView is one visible route through a logical Link. A Link with
+// multiple ORed rules appears once per rule in the relay map, while its shared
+// child endpoint and credential remain represented by one proxyTreeLinkView.
+type proxyTreeBranchView struct {
+	LinkID     string
+	Protocol   string
+	RuleLabel  string
+	RuleValues string
 	Used       bool
 	Fallback   bool
 	Child      *proxyTreeHopView
@@ -992,8 +1006,30 @@ func buildProxyTree(node proxynode.ProxyNode) (*proxyTreeHopView, int, int) {
 				Family: relayFamilyLabel(link.Endpoint.Family), Endpoint: endpointViewFor(link.Endpoint), Conditions: conditions, Used: used,
 				Fallback: link.Fallback, Child: child,
 			})
+			protocol := protocolLabel(link.Endpoint.Protocol)
+			visibleBranches := 1
+			switch {
+			case link.Fallback:
+				view.Branches = append(view.Branches, proxyTreeBranchView{
+					LinkID: link.ID, Protocol: protocol, RuleLabel: "Fallback", RuleValues: "When no rule matches",
+					Used: true, Fallback: true, Child: child,
+				})
+			case len(link.Rules) == 0:
+				view.Branches = append(view.Branches, proxyTreeBranchView{
+					LinkID: link.ID, Protocol: protocol, RuleLabel: "Inactive Link", RuleValues: "Add a match rule",
+					Child: child,
+				})
+			default:
+				visibleBranches = len(link.Rules)
+				for _, rule := range link.Rules {
+					view.Branches = append(view.Branches, proxyTreeBranchView{
+						LinkID: link.ID, Protocol: protocol, RuleLabel: matchLabel(rule.Match), RuleValues: strings.Join(rule.Values, ", "),
+						Used: true, Child: child,
+					})
+				}
+			}
 			if child != nil {
-				view.TerminalCount += child.TerminalCount
+				view.TerminalCount += child.TerminalCount * visibleBranches
 				view.BranchCount += child.BranchCount
 			}
 		}
@@ -1363,7 +1399,7 @@ func protocolLabel(protocol proxynode.Protocol) string {
 	case proxynode.ProtocolHysteria2:
 		return "Hysteria2"
 	case proxynode.ProtocolShadowsocks:
-		return "Shadowsocks 2022"
+		return "SS2022"
 	default:
 		return string(protocol)
 	}

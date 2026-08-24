@@ -101,6 +101,14 @@ func Open(path string, build BuildInfo) (*Store, error) {
 	if err := validateState(stored.Data); err != nil {
 		return nil, err
 	}
+	if changed, err := reconcileSharedListenerSecrets(&stored.Data, nil); err != nil {
+		return nil, fmt.Errorf("%w: reconcile shared listeners: %v", ErrInvalidState, err)
+	} else if changed {
+		stored.Data.Revision++
+	}
+	if err := validateState(stored.Data); err != nil {
+		return nil, err
+	}
 	store.state = stored.Data
 	store.build = build
 	return store, nil
@@ -255,7 +263,7 @@ func (s *Store) CreateProxyNode(input CreateProxyNodeInput) (ProxyNode, error) {
 			}
 		}
 		state.ProxyNodes = append(state.ProxyNodes, created)
-		return nil
+		return validateListenerLayout(state)
 	})
 	return created, err
 }
@@ -289,7 +297,7 @@ func (s *Store) DeleteProxyNode(id string) error {
 
 func (s *Store) UpdateEntrance(nodeID string, endpoint Endpoint) error {
 	endpoint = normalizeEndpoint(endpoint)
-	return s.mutateProxyNode(nodeID, func(_ *State, node *ProxyNode) error {
+	return s.mutateProxyNode(nodeID, func(state *State, node *ProxyNode) error {
 		old := node.Entrance.Endpoint
 		preserveEndpointSecrets(old, &endpoint)
 		if err := generateEndpointSecrets(&endpoint); err != nil {
@@ -307,7 +315,7 @@ func (s *Store) UpdateEntrance(nodeID string, endpoint Endpoint) error {
 			}
 		}
 		node.Entrance.Endpoint = endpoint
-		return nil
+		return validateListenerLayout(state)
 	})
 }
 
@@ -380,7 +388,7 @@ func (s *Store) AddLink(nodeID string, input AddLinkInput) (Link, Hop, error) {
 	now := s.now().UTC()
 	child := Hop{ID: hopID, Name: input.ChildName, AgentID: input.ChildAgent, Final: input.Final, CreatedAt: now, UpdatedAt: now}
 	link := Link{ID: linkID, ParentHopID: input.ParentHopID, ChildHopID: hopID, Endpoint: input.Endpoint, Credential: credential, CreatedAt: now, UpdatedAt: now}
-	err = s.mutateProxyNode(nodeID, func(_ *State, node *ProxyNode) error {
+	err = s.mutateProxyNode(nodeID, func(state *State, node *ProxyNode) error {
 		if !slices.ContainsFunc(node.Hops, func(hop Hop) bool { return hop.ID == input.ParentHopID }) {
 			return ErrNotFound
 		}
@@ -391,14 +399,14 @@ func (s *Store) AddLink(nodeID string, input AddLinkInput) (Link, Hop, error) {
 		}
 		node.Hops = append(node.Hops, child)
 		node.Links = append(node.Links, link)
-		return nil
+		return validateListenerLayout(state)
 	})
 	return link, child, err
 }
 
 func (s *Store) UpdateLink(nodeID, linkID string, endpoint Endpoint) error {
 	endpoint = normalizeEndpoint(endpoint)
-	return s.mutateProxyNode(nodeID, func(_ *State, node *ProxyNode) error {
+	return s.mutateProxyNode(nodeID, func(state *State, node *ProxyNode) error {
 		for index := range node.Links {
 			if node.Links[index].ID != linkID {
 				continue
@@ -417,7 +425,7 @@ func (s *Store) UpdateLink(nodeID, linkID string, endpoint Endpoint) error {
 			}
 			node.Links[index].Endpoint = endpoint
 			node.Links[index].UpdatedAt = s.now().UTC()
-			return nil
+			return validateListenerLayout(state)
 		}
 		return ErrNotFound
 	})
@@ -429,13 +437,13 @@ func (s *Store) UpdateHop(nodeID, hopID, name, agentID string) error {
 	if !validName(name) || !validAgentID(agentID) {
 		return fmt.Errorf("%w: invalid Hop", ErrInvalidState)
 	}
-	return s.mutateProxyNode(nodeID, func(_ *State, node *ProxyNode) error {
+	return s.mutateProxyNode(nodeID, func(state *State, node *ProxyNode) error {
 		for index := range node.Hops {
 			if node.Hops[index].ID == hopID {
 				node.Hops[index].Name = name
 				node.Hops[index].AgentID = agentID
 				node.Hops[index].UpdatedAt = s.now().UTC()
-				return nil
+				return validateListenerLayout(state)
 			}
 		}
 		return ErrNotFound
@@ -666,6 +674,9 @@ func (s *Store) mutate(mutation func(*State) error) error {
 	next := cloneState(s.state)
 	if err := mutation(&next); err != nil {
 		return err
+	}
+	if _, err := reconcileSharedListenerSecrets(&next, &s.state); err != nil {
+		return fmt.Errorf("reconcile shared listeners: %w", err)
 	}
 	next.Revision++
 	if err := validateState(next); err != nil {

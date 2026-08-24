@@ -1041,6 +1041,9 @@ func TestProxyNodePagesUseLinkOwnedRulesAndMembershipCredentials(t *testing.T) {
 	if _, err := fixture.proxyNodes.AddRule(node.ID, proxynode.AddRuleInput{LinkID: link.ID, Match: proxynode.MatchDomainSuffix, Values: []string{"example.net"}}); err != nil {
 		t.Fatal(err)
 	}
+	if _, err := fixture.proxyNodes.AddRule(node.ID, proxynode.AddRuleInput{LinkID: link.ID, Match: proxynode.MatchProtocol, Values: []string{"bittorrent"}}); err != nil {
+		t.Fatal(err)
+	}
 
 	request := fixture.authenticatedRequest(http.MethodGet, proxyHopURL(node.ID, node.Entrance.HopID), "")
 	response := httptest.NewRecorder()
@@ -1064,7 +1067,7 @@ func TestProxyNodePagesUseLinkOwnedRulesAndMembershipCredentials(t *testing.T) {
 		"Left-to-right relay tree", `data-proxy-inspector-open="link-`, "Match 1", "Link to Exit",
 		"Terminal on edge-online", "Terminal on edge-exit", `id="proxy-hop-manager"`,
 		`data-proxy-hop-manager-view="` + node.Entrance.HopID + `"`, "Configure this Hop's identity, terminal exit, and ordered child Links",
-		"Ordered child Links", "Domain suffix · example.net", "Routing &amp; endpoint",
+		"Ordered child Links", "2 match clauses · any may match", "Routing &amp; endpoint",
 		`<option value="shadowsocks"`, `<option value="anytls"`, `<option value="hysteria2"`,
 		"example.net", "Address family", "Multiplex", "[::]:8443",
 	} {
@@ -1081,6 +1084,35 @@ func TestProxyNodePagesUseLinkOwnedRulesAndMembershipCredentials(t *testing.T) {
 	fallbackBranch := strings.Index(body, `data-proxy-inspector-open="terminal-`+node.Entrance.HopID+`-fallback"`)
 	if linkBranch < 0 || fallbackBranch < 0 || fallbackBranch < linkBranch {
 		t.Errorf("fallback branch is not rendered after the Link branch: link=%d fallback=%d", linkBranch, fallbackBranch)
+	}
+	linkButtonStart := strings.LastIndex(body[:linkBranch], "<button")
+	linkButtonEnd := strings.Index(body[linkBranch:], "</button>")
+	if linkButtonStart < 0 || linkButtonEnd < 0 {
+		t.Fatal("Proxy Node tree omitted the Link button")
+	}
+	linkButtonEnd += linkBranch
+	linkButtonOpenEnd := strings.Index(body[linkButtonStart:linkButtonEnd], ">")
+	if linkButtonOpenEnd < 0 {
+		t.Fatal("Proxy Node Link button has no closing angle bracket")
+	}
+	linkButtonInner := strings.TrimSpace(body[linkButtonStart+linkButtonOpenEnd+1 : linkButtonEnd])
+	if !strings.Contains(linkButtonInner, "Domain suffix") || !strings.Contains(linkButtonInner, "example.net") {
+		t.Errorf("tree Link button content = %q, want the first match rule", linkButtonInner)
+	}
+	if strings.Contains(linkButtonInner, "SS2022") {
+		t.Errorf("tree Link button content = %q, should not show protocol", linkButtonInner)
+	}
+	if got := strings.Count(body, `data-proxy-inspector-open="link-`+link.ID+`"`); got != 2 {
+		t.Errorf("tree rendered %d branches for one Link with two match rules, want 2", got)
+	}
+	if !strings.Contains(body, `<span class="panel__count">3 exits</span>`) {
+		t.Error("tree exit count did not include both visible rule branches")
+	}
+	if !strings.Contains(body, "Protocol</b><span>bittorrent") {
+		t.Error("tree omitted the second match-rule branch")
+	}
+	if !strings.Contains(body, "<dt>Protocol</dt><dd>SS2022</dd>") {
+		t.Error("Link inspector did not use the abbreviated SS2022 label")
 	}
 
 	request = fixture.authenticatedRequest(http.MethodGet, proxyLinkURL(node.ID, link.ID), "")

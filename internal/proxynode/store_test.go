@@ -322,6 +322,327 @@ func TestCompileMirrorsShadowsocksInboundMultiplexOntoManagedLinkOutbound(t *tes
 			}
 		}
 	}
+	var parent struct {
+		Outbounds []struct {
+			Type      string         `json:"type"`
+			Multiplex map[string]any `json:"multiplex"`
+		} `json:"outbounds"`
+	}
+	if err := json.Unmarshal(compiled.Configs["edge-a"], &parent); err != nil {
+		t.Fatal(err)
+	}
+	var parentMultiplex map[string]any
+	for _, outbound := range parent.Outbounds {
+		if outbound.Type == string(ProtocolShadowsocks) {
+			parentMultiplex = outbound.Multiplex
+			break
+		}
+	}
+	if got := parentMultiplex["protocol"]; got != "smux" {
+		t.Fatalf("parent Shadowsocks multiplex protocol = %#v, want smux", got)
+	}
+
+	var child struct {
+		Inbounds []struct {
+			Type      string         `json:"type"`
+			Multiplex map[string]any `json:"multiplex"`
+		} `json:"inbounds"`
+	}
+	if err := json.Unmarshal(compiled.Configs["edge-b"], &child); err != nil {
+		t.Fatal(err)
+	}
+	var childMultiplex map[string]any
+	for _, inbound := range child.Inbounds {
+		if inbound.Type == string(ProtocolShadowsocks) {
+			childMultiplex = inbound.Multiplex
+			break
+		}
+	}
+	if _, exists := childMultiplex["protocol"]; exists {
+		t.Fatalf("child inbound unexpectedly received outbound-only multiplex protocol: %#v", childMultiplex)
+	}
+}
+
+func TestCompileCombinesCompatibleRelayListenersAcrossProxyNodes(t *testing.T) {
+	protocols := []Protocol{ProtocolShadowsocks, ProtocolAnyTLS, ProtocolHysteria2}
+	for _, protocol := range protocols {
+		t.Run(string(protocol), func(t *testing.T) {
+			store, err := Open(filepath.Join(t.TempDir(), "state.json"), testBuild())
+			if err != nil {
+				t.Fatal(err)
+			}
+			first, err := store.CreateProxyNode(CreateProxyNodeInput{Name: "first", RootAgent: "edge-a", Entrance: testTLSEndpoint(ProtocolAnyTLS, 443)})
+			if err != nil {
+				t.Fatal(err)
+			}
+			second, err := store.CreateProxyNode(CreateProxyNodeInput{Name: "second", RootAgent: "edge-b", Entrance: testTLSEndpoint(ProtocolAnyTLS, 444)})
+			if err != nil {
+				t.Fatal(err)
+			}
+			endpoint := testTLSEndpoint(protocol, 20048)
+			if protocol == ProtocolShadowsocks {
+				endpoint = Endpoint{
+					Protocol: protocol, Listen: "::", ListenPort: 20048, Family: "ipv4",
+					Method: "2022-blake3-aes-128-gcm", Multiplex: &MultiplexConfig{Enabled: true},
+				}
+			} else if protocol == ProtocolHysteria2 {
+				endpoint.ObfsType = "salamander"
+			}
+			firstLink, _, err := store.AddLink(first.ID, AddLinkInput{
+				ParentHopID: first.Entrance.HopID, ChildName: "Shared-C", ChildAgent: "edge-c", Endpoint: endpoint,
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			secondLink, _, err := store.AddLink(second.ID, AddLinkInput{
+				ParentHopID: second.Entrance.HopID, ChildName: "Shared-C", ChildAgent: "edge-c", Endpoint: endpoint,
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if firstLink.Credential.Secret == secondLink.Credential.Secret {
+				t.Fatal("shared listener reused a Link user credential")
+			}
+
+			state := store.Snapshot()
+			var firstEndpoint, secondEndpoint Endpoint
+			for _, node := range state.ProxyNodes {
+				for _, link := range node.Links {
+					switch link.ID {
+					case firstLink.ID:
+						firstEndpoint = link.Endpoint
+					case secondLink.ID:
+						secondEndpoint = link.Endpoint
+					}
+				}
+			}
+			switch protocol {
+			case ProtocolShadowsocks:
+				if firstEndpoint.ServerKey == "" || firstEndpoint.ServerKey != secondEndpoint.ServerKey {
+					t.Fatalf("Shadowsocks listener keys differ: %q != %q", firstEndpoint.ServerKey, secondEndpoint.ServerKey)
+				}
+			case ProtocolHysteria2:
+				if firstEndpoint.ObfsSecret == "" || firstEndpoint.ObfsSecret != secondEndpoint.ObfsSecret {
+					t.Fatalf("Hysteria2 listener obfuscation secrets differ: %q != %q", firstEndpoint.ObfsSecret, secondEndpoint.ObfsSecret)
+				}
+			}
+
+			compiled, err := Compile(state, testResolver{
+				"edge-a": "192.0.2.10", "edge-b": "192.0.2.11", "edge-c": "192.0.2.12",
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			var childConfig struct {
+				Inbounds []struct {
+					Type  string `json:"type"`
+					Users []struct {
+						Name     string `json:"name"`
+						Password string `json:"password"`
+					} `json:"users"`
+				} `json:"inbounds"`
+			}
+			if err := json.Unmarshal(compiled.Configs["edge-c"], &childConfig); err != nil {
+				t.Fatal(err)
+			}
+			if len(childConfig.Inbounds) != 1 || childConfig.Inbounds[0].Type != string(protocol) || len(childConfig.Inbounds[0].Users) != 2 {
+				t.Fatalf("combined %s listener = %#v", protocol, childConfig.Inbounds)
+			}
+			if childConfig.Inbounds[0].Users[0].Name == childConfig.Inbounds[0].Users[1].Name ||
+				childConfig.Inbounds[0].Users[0].Password == childConfig.Inbounds[0].Users[1].Password {
+				t.Fatalf("combined %s listener did not retain distinct Link identities: %#v", protocol, childConfig.Inbounds[0].Users)
+			}
+			if protocol == ProtocolShadowsocks {
+				for _, agentID := range []string{"edge-a", "edge-b"} {
+					if !strings.Contains(string(compiled.Configs[agentID]), `"protocol": "smux"`) {
+						t.Fatalf("%s did not use smux for shared Shadowsocks listener", agentID)
+					}
+				}
+			}
+		})
+	}
+}
+
+func TestDeletingSharedLinkRemovesOnlyItsUserUntilLastReference(t *testing.T) {
+	for _, protocol := range []Protocol{ProtocolShadowsocks, ProtocolAnyTLS, ProtocolHysteria2} {
+		t.Run(string(protocol), func(t *testing.T) {
+			store, err := Open(filepath.Join(t.TempDir(), "state.json"), testBuild())
+			if err != nil {
+				t.Fatal(err)
+			}
+			first, _ := store.CreateProxyNode(CreateProxyNodeInput{Name: "first", RootAgent: "edge-a", Entrance: testTLSEndpoint(ProtocolAnyTLS, 443)})
+			second, _ := store.CreateProxyNode(CreateProxyNodeInput{Name: "second", RootAgent: "edge-b", Entrance: testTLSEndpoint(ProtocolAnyTLS, 444)})
+			endpoint := testTLSEndpoint(protocol, 20048)
+			if protocol == ProtocolShadowsocks {
+				endpoint = Endpoint{
+					Protocol: protocol, Listen: "::", ListenPort: 20048, Family: "ipv4",
+					Method: "2022-blake3-aes-128-gcm", Multiplex: &MultiplexConfig{Enabled: true},
+				}
+			} else if protocol == ProtocolHysteria2 {
+				endpoint.ObfsType = "salamander"
+			}
+			firstLink, _, err := store.AddLink(first.ID, AddLinkInput{
+				ParentHopID: first.Entrance.HopID, ChildName: "First-C", ChildAgent: "edge-c", Endpoint: endpoint,
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			secondLink, _, err := store.AddLink(second.ID, AddLinkInput{
+				ParentHopID: second.Entrance.HopID, ChildName: "Second-C", ChildAgent: "edge-c", Endpoint: endpoint,
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := store.DeleteLink(first.ID, firstLink.ID); err != nil {
+				t.Fatal(err)
+			}
+			compiled, err := Compile(store.Snapshot(), testResolver{
+				"edge-a": "192.0.2.10", "edge-b": "192.0.2.11", "edge-c": "192.0.2.12",
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			var childConfig struct {
+				Inbounds []struct {
+					Users []struct {
+						Name string `json:"name"`
+					} `json:"users"`
+				} `json:"inbounds"`
+			}
+			if err := json.Unmarshal(compiled.Configs["edge-c"], &childConfig); err != nil {
+				t.Fatal(err)
+			}
+			if len(childConfig.Inbounds) != 1 || len(childConfig.Inbounds[0].Users) != 1 ||
+				!strings.HasPrefix(childConfig.Inbounds[0].Users[0].Name, "second-link-") {
+				t.Fatalf("listener after deleting one shared Link = %#v", childConfig.Inbounds)
+			}
+
+			if err := store.SetManagedAgents([]string{"edge-a", "edge-b", "edge-c"}); err != nil {
+				t.Fatal(err)
+			}
+			if err := store.DeleteLink(second.ID, secondLink.ID); err != nil {
+				t.Fatal(err)
+			}
+			deployer, err := NewDeployer(store, testResolver{
+				"edge-a": "192.0.2.10", "edge-b": "192.0.2.11", "edge-c": "192.0.2.12",
+			}, &applyingController{})
+			if err != nil {
+				t.Fatal(err)
+			}
+			cleanup, _, err := deployer.compileCompleteFleet()
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := json.Unmarshal(cleanup.Configs["edge-c"], &childConfig); err != nil {
+				t.Fatal(err)
+			}
+			if len(childConfig.Inbounds) != 0 {
+				t.Fatalf("last shared listener was not removed: %#v", childConfig.Inbounds)
+			}
+		})
+	}
+}
+
+func TestOpenReconcilesExistingSharedListenerSecrets(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "state.json")
+	store, err := Open(path, testBuild())
+	if err != nil {
+		t.Fatal(err)
+	}
+	first, _ := store.CreateProxyNode(CreateProxyNodeInput{Name: "first", RootAgent: "edge-a", Entrance: testTLSEndpoint(ProtocolAnyTLS, 443)})
+	second, _ := store.CreateProxyNode(CreateProxyNodeInput{Name: "second", RootAgent: "edge-b", Entrance: testTLSEndpoint(ProtocolAnyTLS, 444)})
+	endpoint := Endpoint{
+		Protocol: ProtocolShadowsocks, Listen: "::", ListenPort: 20048, Family: "ipv4",
+		Method: "2022-blake3-aes-128-gcm",
+	}
+	if _, _, err := store.AddLink(first.ID, AddLinkInput{ParentHopID: first.Entrance.HopID, ChildName: "First-C", ChildAgent: "edge-c", Endpoint: endpoint}); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := store.AddLink(second.ID, AddLinkInput{ParentHopID: second.Entrance.HopID, ChildName: "Second-C", ChildAgent: "edge-c", Endpoint: endpoint}); err != nil {
+		t.Fatal(err)
+	}
+	contents, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var stored envelope
+	if err := json.Unmarshal(contents, &stored); err != nil {
+		t.Fatal(err)
+	}
+	canonical := stored.Data.ProxyNodes[0].Links[0].Endpoint.ServerKey
+	legacyKey, err := randomBase64(16)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for legacyKey == canonical {
+		legacyKey, err = randomBase64(16)
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	stored.Data.ProxyNodes[1].Links[0].Endpoint.ServerKey = legacyKey
+	legacyRevision := stored.Data.Revision
+	encoded, err := json.MarshalIndent(stored, "", "  ")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, append(encoded, '\n'), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	reloaded, err := Open(path, testBuild())
+	if err != nil {
+		t.Fatal(err)
+	}
+	state := reloaded.Snapshot()
+	if state.Revision != legacyRevision+1 {
+		t.Fatalf("reconciled revision = %d, want %d", state.Revision, legacyRevision+1)
+	}
+	if got := state.ProxyNodes[1].Links[0].Endpoint.ServerKey; got != canonical {
+		t.Fatalf("reconciled listener key = %q, want %q", got, canonical)
+	}
+	if err := reloaded.MarkReady(); err != nil {
+		t.Fatal(err)
+	}
+	persisted, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(persisted), legacyKey) {
+		t.Fatal("MarkReady persisted the superseded per-Link listener key")
+	}
+}
+
+func TestStoreDetectsOverlappingProtocolTransportsOnOneSocket(t *testing.T) {
+	shadowsocks := Endpoint{
+		Protocol: ProtocolShadowsocks, Listen: "::", ListenPort: 20048, Family: "ipv4",
+		Method: "2022-blake3-aes-128-gcm",
+	}
+	for _, firstProtocol := range []Protocol{ProtocolAnyTLS, ProtocolHysteria2} {
+		t.Run("shadowsocks-conflicts-with-"+string(firstProtocol), func(t *testing.T) {
+			store, err := Open(filepath.Join(t.TempDir(), "state.json"), testBuild())
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, err := store.CreateProxyNode(CreateProxyNodeInput{Name: "first", RootAgent: "edge-a", Entrance: testTLSEndpoint(firstProtocol, 20048)}); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := store.CreateProxyNode(CreateProxyNodeInput{Name: "second", RootAgent: "edge-a", Entrance: shadowsocks}); err == nil || !errors.Is(err, ErrConflict) {
+				t.Fatalf("CreateProxyNode() error = %v, want transport conflict", err)
+			}
+		})
+	}
+
+	store, err := Open(filepath.Join(t.TempDir(), "compatible.json"), testBuild())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.CreateProxyNode(CreateProxyNodeInput{Name: "tcp", RootAgent: "edge-a", Entrance: testTLSEndpoint(ProtocolAnyTLS, 20048)}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.CreateProxyNode(CreateProxyNodeInput{Name: "udp", RootAgent: "edge-a", Entrance: testTLSEndpoint(ProtocolHysteria2, 20048)}); err != nil {
+		t.Fatalf("separate TCP and UDP listeners should share a port: %v", err)
+	}
 }
 
 func TestLinksOwnMatchClausesOrderAndFallback(t *testing.T) {
@@ -487,20 +808,27 @@ func TestSchemaV1MigrationRejectsInterleavedLinkRules(t *testing.T) {
 	}
 }
 
-func TestCompileRejectsIncompatibleLogicalInboundsOnOneSocket(t *testing.T) {
+func TestStoreAndCompilerRejectIncompatibleLogicalInboundsOnOneSocket(t *testing.T) {
 	store, err := Open(filepath.Join(t.TempDir(), "state.json"), testBuild())
 	if err != nil {
 		t.Fatal(err)
 	}
 	user, _ := store.CreateUser("alice")
 	first, _ := store.CreateProxyNode(CreateProxyNodeInput{Name: "first", RootName: "A", RootAgent: "edge-a", Entrance: testTLSEndpoint(ProtocolAnyTLS, 443)})
-	secondEndpoint := testTLSEndpoint(ProtocolAnyTLS, 443)
+	secondEndpoint := testTLSEndpoint(ProtocolAnyTLS, 8443)
 	secondEndpoint.TLS.ServerName = "different.example.com"
 	second, _ := store.CreateProxyNode(CreateProxyNodeInput{Name: "second", RootName: "A", RootAgent: "edge-a", Entrance: secondEndpoint})
 	_, _ = store.AddMembership(first.ID, user.ID)
 	other, _ := store.CreateUser("bob")
 	_, _ = store.AddMembership(second.ID, other.ID)
-	if _, err := Compile(store.Snapshot(), testResolver{"edge-a": "192.0.2.10"}); err == nil || !strings.Contains(err.Error(), "incompatible logical inbounds") {
+	conflicting := secondEndpoint
+	conflicting.ListenPort = 443
+	if err := store.UpdateEntrance(second.ID, conflicting); err == nil || !strings.Contains(err.Error(), "incompatible logical inbounds") {
+		t.Fatalf("UpdateEntrance() error = %v, want listener conflict", err)
+	}
+	legacyState := store.Snapshot()
+	legacyState.ProxyNodes[1].Entrance.Endpoint = conflicting
+	if _, err := Compile(legacyState, testResolver{"edge-a": "192.0.2.10"}); err == nil || !strings.Contains(err.Error(), "incompatible logical inbounds") {
 		t.Fatalf("Compile() error = %v, want listener conflict", err)
 	}
 }

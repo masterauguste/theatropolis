@@ -34,6 +34,9 @@ Links to its Hops. Each Link owns its match clauses and can independently use
 Shadowsocks 2022, AnyTLS, or Hysteria2. Sibling Links are evaluated in order;
 the first Link with any matching clause wins, an optional fallback Link remains
 last, and otherwise traffic terminates as Direct or Reject on the current Hop.
+Compatible logical inbounds may share one Agent port across Proxy Nodes: the
+listener-level material is reused while every Membership and Link retains a
+distinct credential and authenticated-user routing identity.
 
 Granting Proxy Node access from a global user's settings uses a searchable
 picker and generates a unique membership credential. Assigned Nodes appear as

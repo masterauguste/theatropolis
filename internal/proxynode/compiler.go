@@ -59,6 +59,10 @@ func Compile(state State, resolver AddressResolver) (CompileResult, error) {
 	if resolver == nil {
 		return CompileResult{}, errors.New("Proxy Node compiler requires an address resolver")
 	}
+	state = cloneState(state)
+	if _, err := reconcileSharedListenerSecrets(&state, nil); err != nil {
+		return CompileResult{}, fmt.Errorf("reconcile shared listeners: %w", err)
+	}
 	if err := validateState(state); err != nil {
 		return CompileResult{}, err
 	}
@@ -174,10 +178,16 @@ func groupListeners(byAgent map[string]*agentRender, candidates []*ingressCandid
 		if err != nil {
 			return err
 		}
-		if existing, exists := sockets[socket]; exists && existing != key {
-			return fmt.Errorf("Agent %q has incompatible logical inbounds on %s", candidate.hop.AgentID, socket)
+		claims, err := listenerSocketClaims(candidate.hop.AgentID, candidate.endpoint)
+		if err != nil {
+			return err
 		}
-		sockets[socket] = key
+		for _, claim := range claims {
+			if existing, exists := sockets[claim]; exists && existing != key {
+				return fmt.Errorf("Agent %q has incompatible logical inbounds on %s (%s)", candidate.hop.AgentID, socket, claim)
+			}
+			sockets[claim] = key
+		}
 		group := groups[key]
 		if group == nil {
 			group = &listenerGroup{
@@ -206,34 +216,6 @@ func groupListeners(byAgent map[string]*agentRender, candidates []*ingressCandid
 		sort.Slice(render.groups, func(left, right int) bool { return render.groups[left].key < render.groups[right].key })
 	}
 	return nil
-}
-
-func listenerKeys(agentID string, endpoint Endpoint) (string, string, error) {
-	compatible := struct {
-		Protocol   Protocol         `json:"protocol"`
-		Listen     string           `json:"listen"`
-		ListenPort int              `json:"listen_port"`
-		Method     string           `json:"method,omitempty"`
-		ServerKey  string           `json:"server_key,omitempty"`
-		Multiplex  *MultiplexConfig `json:"multiplex,omitempty"`
-		TLS        TLSConfig        `json:"tls,omitempty"`
-		UpMbps     int              `json:"up_mbps,omitempty"`
-		DownMbps   int              `json:"down_mbps,omitempty"`
-		ObfsType   string           `json:"obfs_type,omitempty"`
-		ObfsSecret string           `json:"obfs_secret,omitempty"`
-	}{endpoint.Protocol, endpoint.Listen, endpoint.ListenPort, endpoint.Method, endpoint.ServerKey, endpoint.Multiplex, endpoint.TLS, endpoint.UpMbps, endpoint.DownMbps, endpoint.ObfsType, endpoint.ObfsSecret}
-	encoded, err := json.Marshal(compatible)
-	if err != nil {
-		return "", "", err
-	}
-	network := "tcp"
-	if endpoint.Protocol == ProtocolHysteria2 {
-		network = "udp"
-	} else if endpoint.Protocol == ProtocolShadowsocks {
-		network = "tcp+udp"
-	}
-	socket := agentID + "/" + network + "/" + endpoint.Listen + ":" + fmt.Sprint(endpoint.ListenPort)
-	return socket + "/" + string(encoded), socket, nil
 }
 
 func renderAgentConfig(render *agentRender) ([]byte, error) {
@@ -301,7 +283,7 @@ func renderListener(group *listenerGroup) (map[string]any, map[string]any, error
 	case ProtocolShadowsocks:
 		inbound["method"] = endpoint.Method
 		inbound["password"] = endpoint.ServerKey
-		if multiplex := renderMultiplex(endpoint.Multiplex); multiplex != nil {
+		if multiplex := renderInboundMultiplex(endpoint.Multiplex); multiplex != nil {
 			inbound["multiplex"] = multiplex
 		}
 	case ProtocolAnyTLS, ProtocolHysteria2:
@@ -464,7 +446,7 @@ func renderLinkOutbound(node ProxyNode, link Link, child Hop, resolver AddressRe
 	case ProtocolShadowsocks:
 		outbound["method"] = endpoint.Method
 		outbound["password"] = endpoint.ServerKey + ":" + link.Credential.Secret
-		if multiplex := renderMultiplex(endpoint.Multiplex); multiplex != nil {
+		if multiplex := renderOutboundMultiplex(endpoint.Multiplex); multiplex != nil {
 			outbound["multiplex"] = multiplex
 		}
 	case ProtocolAnyTLS, ProtocolHysteria2:
@@ -490,7 +472,7 @@ func renderLinkOutbound(node ProxyNode, link Link, child Hop, resolver AddressRe
 	return outbound, nil
 }
 
-func renderMultiplex(config *MultiplexConfig) map[string]any {
+func renderInboundMultiplex(config *MultiplexConfig) map[string]any {
 	if config == nil {
 		return nil
 	}
@@ -502,6 +484,16 @@ func renderMultiplex(config *MultiplexConfig) map[string]any {
 		multiplex["brutal"] = map[string]any{
 			"enabled": true, "up_mbps": config.Brutal.UpMbps, "down_mbps": config.Brutal.DownMbps,
 		}
+	}
+	return multiplex
+}
+
+func renderOutboundMultiplex(config *MultiplexConfig) map[string]any {
+	multiplex := renderInboundMultiplex(config)
+	if multiplex != nil {
+		// The protocol is selected by the dialing side. Set it explicitly so a
+		// sing-box default change cannot silently alter managed relay Links.
+		multiplex["protocol"] = "smux"
 	}
 	return multiplex
 }

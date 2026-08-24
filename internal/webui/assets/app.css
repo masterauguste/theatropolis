@@ -322,16 +322,18 @@
 .proxy-map__condition > span { overflow: hidden; font-size: 0.74rem; text-overflow: ellipsis; white-space: nowrap; }
 
 .proxy-map__link {
-  width: 7.5rem;
+  width: 10.5rem;
   min-height: 3.4rem;
-  padding: 0.55rem 0.65rem;
-  flex-direction: column;
+  padding: 0.5rem 0.65rem;
   justify-content: center;
   text-align: left;
   background: var(--accent-100);
   border: 1px solid var(--accent-700);
   border-radius: var(--radius-md);
 }
+
+.proxy-map__link .proxy-map__condition { width: 100%; }
+.proxy-map__link .proxy-map__condition b { color: var(--accent-700); }
 
 .proxy-map__link::after {
   position: absolute;
@@ -342,8 +344,6 @@
   content: "";
 }
 
-.proxy-map__link span { color: var(--ink-500); font-size: 0.7rem; }
-.proxy-map__link > small { color: var(--accent-700); font-size: 0.62rem; font-weight: 800; letter-spacing: 0.05em; text-transform: uppercase; }
 .proxy-map__link--unused { background: var(--amber-100); border-color: var(--amber-700); border-style: dashed; }
 .proxy-map__link--fallback { box-shadow: inset 3px 0 0 var(--accent-700); }
 

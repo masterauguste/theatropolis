@@ -103,8 +103,9 @@ type Endpoint struct {
 }
 
 // MultiplexConfig is the server-side multiplex policy on a Shadowsocks
-// inbound. A managed Link mirrors it onto the parent outbound so the relay
-// actually uses the capability; entrance clients may opt into it themselves.
+// inbound. A managed Link mirrors it onto the parent outbound with the smux
+// protocol so the relay actually uses the capability; entrance clients may
+// opt into it themselves.
 type MultiplexConfig struct {
 	Enabled bool             `json:"enabled"`
 	Padding bool             `json:"padding,omitempty"`

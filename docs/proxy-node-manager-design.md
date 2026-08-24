@@ -117,6 +117,27 @@ The initial topology is a strict rooted tree:
 A Link connects one parent hop to one child hop. Its relay protocol and
 protocol-specific options are configured independently.
 
+Logical inbounds across one or more Proxy Nodes may share a physical listener
+when their Agent, listen address, transport, protocol, and all administrator-
+selected listener options are compatible. Listener-owned generated material is
+reused automatically: the Shadowsocks 2022 server key and Hysteria2
+obfuscation secret belong to the shared listener, while AnyTLS has no separate
+generated listener secret. Membership and Link user credentials are never
+shared. Shadowsocks claims both TCP and UDP for conflict detection; AnyTLS
+claims TCP and Hysteria2 claims UDP, so AnyTLS and Hysteria2 may use the same
+numeric port but neither can overlap a Shadowsocks listener on that address.
+Existing state with compatible per-endpoint listener secrets is reconciled to
+one stable listener identity when loaded. Listener lifetime is derived from its
+logical references: deleting one Membership or Link removes only its user and
+routing identity, while the physical listener remains for other references;
+deleting the final reference removes the listener on the next deployment.
+
+For a Shadowsocks Link with multiplexing enabled, the child inbound accepts
+multiplexed sessions and the parent outbound explicitly selects `smux`.
+Multiplex protocol selection is an outbound-only sing-box option; the child
+inbound therefore carries the shared padding and TCP Brutal policy but no
+`protocol` field.
+
 Each Link also owns zero or more routing match clauses. Clauses on one Link are
 ORed together, sibling Links are evaluated in administrator-defined order, and
 the first matching Link wins. A Link with no clauses is inactive unless it is
@@ -211,10 +232,15 @@ over. Consequently, the terminal action for a relayed path executes on that
 path's final Hop, not on its entrance or an earlier relay.
 
 The Proxy Node overview renders this model as a recursive routing tree. Hop
-cards show their terminal behavior, Link edges show their owned match clauses
-or fallback status, and Direct/Reject targets identify the Agent on which they
-terminate. Configured but unreferenced Links are visibly warned so an
-administrator can distinguish a complete traffic path from unused topology.
+cards stay compact, and each Link-owned match clause appears as its own visible
+branch labelled with the actual match type and values. These branches are only
+distinct route presentations: clauses that target the same logical Link still
+share its child Hop, endpoint, relay credential, and single sing-box
+authenticated user. A fallback Link appears as one final fallback branch, and
+a Link with no rule remains as a visibly inactive branch. Direct/Reject targets
+identify the Agent on which they terminate. Selecting any route branch opens
+the shared Link inspector with routing ownership, protocol, fallback state,
+listener data, and controls.
 
 Generated sing-box tags must include opaque IDs or an equivalent collision-free
 component. Human-readable names are included for clarity but are never relied

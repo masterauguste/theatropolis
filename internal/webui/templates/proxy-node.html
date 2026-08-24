@@ -12,8 +12,8 @@
 
 {{define "proxy-tree-link"}}
 <div class="proxy-map__outcome">
-  <button class="proxy-map__link{{if not .Used}} proxy-map__link--unused{{end}}{{if .Fallback}} proxy-map__link--fallback{{end}}" type="button" data-proxy-inspector-open="link-{{.ID}}" aria-label="View {{.Protocol}} Link to {{.Child.Name}}, port {{.ListenPort}}">
-    {{if .Fallback}}<small>Fallback</small>{{else if .Used}}<small>{{len .Conditions}} match {{if eq (len .Conditions) 1}}clause{{else}}clauses{{end}}</small>{{else}}<small>Inactive</small>{{end}}<strong>{{.Protocol}}</strong><span>port {{.ListenPort}}</span>
+  <button class="proxy-map__link{{if not .Used}} proxy-map__link--unused{{end}}{{if .Fallback}} proxy-map__link--fallback{{end}}" type="button" data-proxy-inspector-open="link-{{.LinkID}}" aria-label="View {{.RuleLabel}}{{if .RuleValues}}: {{.RuleValues}}{{end}} on {{.Protocol}} Link to {{.Child.Name}}">
+    <span class="proxy-map__condition"><b>{{.RuleLabel}}</b>{{if .RuleValues}}<span>{{.RuleValues}}</span>{{end}}</span>
   </button>
   {{template "proxy-tree-hop" .Child}}
 </div>
@@ -26,8 +26,8 @@
     <span><strong>{{.Name}}</strong><small>{{.AgentID}}</small></span>
   </button>
   <div class="proxy-map__outcomes">
-    {{range .Children}}{{if not .Fallback}}{{template "proxy-tree-link" .}}{{end}}{{end}}
-    {{range .Children}}{{if .Fallback}}{{template "proxy-tree-link" .}}{{end}}{{end}}
+    {{range .Branches}}{{if not .Fallback}}{{template "proxy-tree-link" .}}{{end}}{{end}}
+    {{range .Branches}}{{if .Fallback}}{{template "proxy-tree-link" .}}{{end}}{{end}}
     {{if ne .Fallback.TargetKind "link"}}{{template "proxy-tree-terminal" .Fallback}}{{end}}
   </div>
 </article>
