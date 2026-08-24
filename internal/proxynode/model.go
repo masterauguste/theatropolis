@@ -6,7 +6,7 @@ import "time"
 
 const (
 	SchemaID      = "theatropolis/proxy-node-state"
-	SchemaVersion = 2
+	SchemaVersion = 3
 )
 
 type Protocol string
@@ -151,6 +151,7 @@ type Link struct {
 
 type Rule struct {
 	ID           string    `json:"id"`
+	Order        int       `json:"order"`
 	Match        MatchType `json:"match"`
 	Values       []string  `json:"values,omitempty"`
 	LegacyTarget *Target   `json:"target,omitempty"`
@@ -199,4 +200,11 @@ type AddRuleInput struct {
 	LinkID string
 	Match  MatchType
 	Values []string
+}
+
+type UpdateRuleInput struct {
+	SourceLinkID string
+	TargetLinkID string
+	Match        MatchType
+	Values       []string
 }

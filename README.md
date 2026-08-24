@@ -32,10 +32,13 @@ Configuration is modeled as logical Proxy Nodes instead of editable per-server
 sing-box files. Create a Proxy Node with one entrance, then add ordered relay
 Links to its Hops. Each conditional Rule is a separately editable branch on the
 relay map, while every branch targeting the same Link shares that Link's
-endpoint and generated credential. Links can independently use Shadowsocks
-2022, AnyTLS, or Hysteria2. Sibling Links and their Rules are evaluated in
-order; the first matching Rule wins, an optional fallback Link remains last,
-and otherwise traffic terminates as Direct or Reject on the current Hop.
+endpoint and generated credential. A Rule can be moved between sibling Links
+from its branch editor without rotating either Link's credential. Numbered Rule
+branches can be dragged vertically on the map to set their exact first-match
+priority, including interleaving Rules that target different Links. Links can
+independently use Shadowsocks 2022, AnyTLS, or Hysteria2. An optional fallback
+Link remains last, and otherwise traffic terminates as Direct or Reject on the
+current Hop.
 Compatible logical inbounds may share one Agent port across Proxy Nodes: the
 listener-level material is reused while every Membership and Link retains a
 distinct credential and authenticated-user routing identity.

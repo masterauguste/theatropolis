@@ -91,7 +91,7 @@ func TestStorePersistsUsersTopologyAndGeneratedCredentials(t *testing.T) {
 	}
 }
 
-func TestUpdateRulePreservesLinkAndCredentialIdentity(t *testing.T) {
+func TestUpdateRuleMovesDestinationWithoutRotatingLinkCredentials(t *testing.T) {
 	store, err := Open(filepath.Join(t.TempDir(), "proxy-node-state.json"), testBuild())
 	if err != nil {
 		t.Fatal(err)
@@ -102,9 +102,16 @@ func TestUpdateRulePreservesLinkAndCredentialIdentity(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	link, _, err := store.AddLink(node.ID, AddLinkInput{
+	link, child, err := store.AddLink(node.ID, AddLinkInput{
 		ParentHopID: node.Entrance.HopID, ChildName: "Exit", ChildAgent: "edge-b",
 		Endpoint: testTLSEndpoint(ProtocolHysteria2, 8443),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	target, _, err := store.AddLink(node.ID, AddLinkInput{
+		ParentHopID: node.Entrance.HopID, ChildName: "Alternate", ChildAgent: "edge-c",
+		Endpoint: testTLSEndpoint(ProtocolAnyTLS, 9443),
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -113,22 +120,43 @@ func TestUpdateRulePreservesLinkAndCredentialIdentity(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := store.UpdateRule(node.ID, rule.ID, AddRuleInput{
-		LinkID: link.ID, Match: MatchIPCIDR, Values: []string{"203.0.113.0/24"},
+	if err := store.UpdateRule(node.ID, rule.ID, UpdateRuleInput{
+		SourceLinkID: link.ID, TargetLinkID: target.ID,
+		Match: MatchIPCIDR, Values: []string{"203.0.113.0/24"},
 	}); err != nil {
 		t.Fatal(err)
 	}
 
 	updated, ok := store.ProxyNode(node.ID)
-	if !ok || len(updated.Links) != 1 || len(updated.Links[0].Rules) != 1 {
+	if !ok || len(updated.Links) != 2 {
 		t.Fatalf("updated Proxy Node = %#v, exists %v", updated, ok)
 	}
-	if updated.Links[0].ID != link.ID || updated.Links[0].Credential != link.Credential {
-		t.Fatal("editing a Rule changed its shared Link or credential identity")
+	sourceIndex := slices.IndexFunc(updated.Links, func(candidate Link) bool { return candidate.ID == link.ID })
+	targetIndex := slices.IndexFunc(updated.Links, func(candidate Link) bool { return candidate.ID == target.ID })
+	if sourceIndex < 0 || targetIndex < 0 {
+		t.Fatalf("updated Links = %#v", updated.Links)
 	}
-	got := updated.Links[0].Rules[0]
+	if updated.Links[sourceIndex].Credential != link.Credential || updated.Links[targetIndex].Credential != target.Credential {
+		t.Fatal("moving a Rule rotated a Link credential")
+	}
+	if len(updated.Links[sourceIndex].Rules) != 0 || len(updated.Links[targetIndex].Rules) != 1 {
+		t.Fatalf("Rule destination was not moved: %#v", updated.Links)
+	}
+	got := updated.Links[targetIndex].Rules[0]
 	if got.ID != rule.ID || got.Match != MatchIPCIDR || !slices.Equal(got.Values, []string{"203.0.113.0/24"}) {
 		t.Fatalf("updated Rule = %#v", got)
+	}
+	nested, _, err := store.AddLink(node.ID, AddLinkInput{
+		ParentHopID: child.ID, ChildName: "Nested", ChildAgent: "edge-d",
+		Endpoint: testTLSEndpoint(ProtocolHysteria2, 10443),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.UpdateRule(node.ID, rule.ID, UpdateRuleInput{
+		SourceLinkID: target.ID, TargetLinkID: nested.ID, Match: MatchProtocol, Values: []string{"http"},
+	}); !errors.Is(err, ErrConflict) {
+		t.Fatalf("move Rule to non-sibling Link error = %v, want ErrConflict", err)
 	}
 }
 
@@ -700,13 +728,16 @@ func TestLinksOwnMatchClausesOrderAndFallback(t *testing.T) {
 	first, _, _ := store.AddLink(node.ID, AddLinkInput{ParentHopID: node.Entrance.HopID, ChildName: "First", ChildAgent: "edge-b", Endpoint: testTLSEndpoint(ProtocolAnyTLS, 8443)})
 	second, _, _ := store.AddLink(node.ID, AddLinkInput{ParentHopID: node.Entrance.HopID, ChildName: "Second", ChildAgent: "edge-c", Endpoint: testTLSEndpoint(ProtocolAnyTLS, 9443)})
 	fallback, _, _ := store.AddLink(node.ID, AddLinkInput{ParentHopID: node.Entrance.HopID, ChildName: "Fallback", ChildAgent: "edge-d", Endpoint: testTLSEndpoint(ProtocolAnyTLS, 10443)})
-	if _, err := store.AddRule(node.ID, AddRuleInput{LinkID: first.ID, Match: MatchDomainSuffix, Values: []string{"example.com"}}); err != nil {
+	firstDomain, err := store.AddRule(node.ID, AddRuleInput{LinkID: first.ID, Match: MatchDomainSuffix, Values: []string{"example.com"}})
+	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := store.AddRule(node.ID, AddRuleInput{LinkID: first.ID, Match: MatchProtocol, Values: []string{"bittorrent"}}); err != nil {
+	firstProtocol, err := store.AddRule(node.ID, AddRuleInput{LinkID: first.ID, Match: MatchProtocol, Values: []string{"bittorrent"}})
+	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := store.AddRule(node.ID, AddRuleInput{LinkID: second.ID, Match: MatchNetwork, Values: []string{"udp"}}); err != nil {
+	secondNetwork, err := store.AddRule(node.ID, AddRuleInput{LinkID: second.ID, Match: MatchNetwork, Values: []string{"udp"}})
+	if err != nil {
 		t.Fatal(err)
 	}
 	if _, err := store.AddRule(node.ID, AddRuleInput{LinkID: fallback.ID, Match: MatchDomain, Values: []string{"discarded.example"}}); err != nil {
@@ -720,6 +751,12 @@ func TestLinksOwnMatchClausesOrderAndFallback(t *testing.T) {
 	}
 	if err := store.MoveLink(node.ID, second.ID, -1); err != nil {
 		t.Fatal(err)
+	}
+	if err := store.ReorderRules(node.ID, node.Entrance.HopID, []string{secondNetwork.ID, firstDomain.ID, firstProtocol.ID}); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.ReorderRules(node.ID, node.Entrance.HopID, []string{secondNetwork.ID, secondNetwork.ID, firstProtocol.ID}); !errors.Is(err, ErrConflict) {
+		t.Fatalf("duplicate dragged Rule order error = %v, want conflict", err)
 	}
 
 	state := store.Snapshot()
@@ -752,6 +789,48 @@ func TestLinksOwnMatchClausesOrderAndFallback(t *testing.T) {
 	}
 	if len(config.Route.Rules) < 6 || config.Route.Rules[1]["outbound"] != linkOutboundTag(second.ID) || config.Route.Rules[2]["outbound"] != linkOutboundTag(first.ID) || config.Route.Rules[3]["outbound"] != linkOutboundTag(first.ID) || config.Route.Rules[4]["outbound"] != linkOutboundTag(fallback.ID) {
 		t.Fatalf("compiled Link-owned rule order is wrong: %#v", config.Route.Rules)
+	}
+}
+
+func TestOpenMigratesSchemaV2LinkGroupedRulesToHopPriority(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "state.json")
+	store, err := Open(path, testBuild())
+	if err != nil {
+		t.Fatal(err)
+	}
+	node, _ := store.CreateProxyNode(CreateProxyNodeInput{Name: "cinema", RootAgent: "edge-a", Entrance: testTLSEndpoint(ProtocolAnyTLS, 443)})
+	first, _, _ := store.AddLink(node.ID, AddLinkInput{ParentHopID: node.Entrance.HopID, ChildName: "First", ChildAgent: "edge-b", Endpoint: testTLSEndpoint(ProtocolAnyTLS, 8443)})
+	second, _, _ := store.AddLink(node.ID, AddLinkInput{ParentHopID: node.Entrance.HopID, ChildName: "Second", ChildAgent: "edge-c", Endpoint: testTLSEndpoint(ProtocolAnyTLS, 9443)})
+	firstRule, _ := store.AddRule(node.ID, AddRuleInput{LinkID: first.ID, Match: MatchDomain, Values: []string{"first.example"}})
+	secondRule, _ := store.AddRule(node.ID, AddRuleInput{LinkID: second.ID, Match: MatchDomain, Values: []string{"second.example"}})
+	state := store.Snapshot()
+	for linkIndex := range state.ProxyNodes[0].Links {
+		for ruleIndex := range state.ProxyNodes[0].Links[linkIndex].Rules {
+			state.ProxyNodes[0].Links[linkIndex].Rules[ruleIndex].Order = 0
+		}
+	}
+	legacy := envelope{Schema: SchemaID, SchemaVersion: 2, LastUsedBy: normalizeBuild(testBuild(), time.Now()), Data: state}
+	encoded, err := json.MarshalIndent(legacy, "", "  ")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, append(encoded, '\n'), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	migrated, err := Open(path, testBuild())
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, _ := migrated.ProxyNode(node.ID)
+	orders := make(map[string]int)
+	for _, link := range got.Links {
+		for _, rule := range link.Rules {
+			orders[rule.ID] = rule.Order
+		}
+	}
+	if orders[firstRule.ID] != 0 || orders[secondRule.ID] != 1 {
+		t.Fatalf("migrated Rule order = %#v", orders)
 	}
 }
 
@@ -797,8 +876,8 @@ func TestOpenMigratesSchemaV1HopRulesOntoLinks(t *testing.T) {
 		t.Fatal(err)
 	}
 	contents, _ := os.ReadFile(path)
-	if !strings.Contains(string(contents), `"schema_version": 2`) || strings.Contains(string(contents), `"target"`) || strings.Contains(string(contents), `"rules": null`) {
-		t.Fatalf("migrated state was not persisted as schema v2: %s", contents)
+	if !strings.Contains(string(contents), `"schema_version": 3`) || strings.Contains(string(contents), `"target"`) || strings.Contains(string(contents), `"rules": null`) {
+		t.Fatalf("migrated state was not persisted as schema v3: %s", contents)
 	}
 }
 

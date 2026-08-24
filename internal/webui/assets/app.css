@@ -282,6 +282,15 @@
   gap: 1.25rem;
 }
 
+.proxy-map__outcome[draggable="true"] { cursor: grab; }
+.proxy-map__outcome[draggable="true"]:active { cursor: grabbing; }
+.proxy-map__outcome.is-dragging { opacity: 0.38; }
+.proxy-map__outcome--unreachable > .proxy-map__link { opacity: 0.58; }
+.proxy-map__outcome.is-drop-target > .proxy-map__link {
+  border-color: var(--accent-700);
+  box-shadow: 0 0 0 3px rgb(110 38 38 / 16%), var(--shadow-sm);
+}
+
 .proxy-map__outcome::before {
   position: absolute;
   top: 50%;
@@ -335,6 +344,26 @@
   border-radius: var(--radius-md);
 }
 
+.proxy-map__drag-handle {
+  color: var(--ink-400);
+  font-size: 0.85rem;
+  font-weight: 800;
+  letter-spacing: -0.18em;
+}
+
+.proxy-map__priority {
+  display: grid;
+  width: 1.35rem;
+  height: 1.35rem;
+  flex: 0 0 auto;
+  place-items: center;
+  color: var(--accent-700);
+  background: var(--accent-100);
+  border-radius: 999px;
+  font-size: 0.65rem;
+  font-weight: 800;
+}
+
 .proxy-map__link .proxy-map__condition { width: 100%; }
 .proxy-map__link .proxy-map__condition b { color: var(--accent-700); }
 
@@ -383,6 +412,13 @@ dialog.proxy-inspector { width: min(60rem, calc(100vw - 2rem)); height: min(82vh
 .proxy-inspector__route > span:last-child { color: var(--ink-500); font-size: 0.76rem; white-space: nowrap; }
 .proxy-inspector__route--fallback { border-style: dashed; }
 .proxy-inspector__actions { display: flex; margin-top: 1.25rem; flex-wrap: wrap; gap: 0.65rem; }
+.proxy-inspector__actions > form { display: inline-flex; gap: 0.45rem; }
+.proxy-inspector__editor-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); margin-top: 1.25rem; gap: 1rem; }
+.proxy-inspector__editor-card { overflow: hidden; background: var(--surface); border: 1px solid var(--ink-200); border-radius: var(--radius-md); }
+.proxy-inspector__editor-card > header { padding: 0.8rem 1rem; background: var(--surface-sunken); border-bottom: 1px solid var(--ink-200); }
+.proxy-inspector__editor-card h3 { margin: 0; font-size: 1rem; }
+.proxy-inspector__editor-card header p { margin-top: 0.15rem; color: var(--ink-500); font-size: 0.78rem; }
+.proxy-inspector__editor-card > form { padding: 1rem; }
 .proxy-rule-editor { margin-top: 1.25rem; }
 .proxy-rule-branch-list { display: grid; gap: 0.5rem; }
 .proxy-rule-branch-list .button {
@@ -394,31 +430,6 @@ dialog.proxy-inspector { width: min(60rem, calc(100vw - 2rem)); height: min(82vh
 }
 .proxy-rule-branch-list .button > span { color: var(--ink-500); font-size: 0.72rem; }
 .proxy-rule-branch-list .button > small { overflow: hidden; color: var(--ink-500); text-overflow: ellipsis; white-space: nowrap; }
-
-dialog.proxy-hop-manager { width: min(74rem, calc(100vw - 2rem)); height: min(92vh, 64rem); max-height: 92vh; }
-.proxy-hop-manager .modal__surface { width: 100%; height: 100%; }
-.proxy-hop-manager__title { display: flex; margin-bottom: 1rem; align-items: flex-start; justify-content: space-between; gap: 1rem; }
-.proxy-hop-manager__title > div:last-child { display: flex; flex-wrap: wrap; gap: 0.55rem; }
-.proxy-hop-manager__title h2 { margin-bottom: 0.2rem; }
-.proxy-hop-manager__title p:not(.eyebrow) { color: var(--ink-500); }
-.proxy-hop-manager__grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 1rem; }
-.proxy-hop-manager__card,
-.proxy-hop-manager__section { overflow: hidden; background: var(--surface); border: 1px solid var(--ink-200); border-radius: var(--radius-md); }
-.proxy-hop-manager__card > header,
-.proxy-hop-manager__section > header { display: flex; padding: 0.8rem 1rem; align-items: flex-start; justify-content: space-between; gap: 1rem; background: var(--surface-sunken); border-bottom: 1px solid var(--ink-200); }
-.proxy-hop-manager__card > header { display: block; }
-.proxy-hop-manager__card h3,
-.proxy-hop-manager__section h3 { margin: 0; font-size: 1rem; }
-.proxy-hop-manager__card header p,
-.proxy-hop-manager__section header p { margin-top: 0.15rem; color: var(--ink-500); font-size: 0.78rem; }
-.proxy-hop-manager__card > form { padding: 1rem; }
-.proxy-hop-manager__section { margin-top: 1rem; }
-.proxy-hop-manager__links { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); padding: 1rem; gap: 0.75rem; }
-.proxy-hop-manager__links article { display: grid; grid-template-columns: auto auto minmax(0, 1fr); align-items: start; padding: 0.75rem; gap: 0.55rem; border: 1px solid var(--ink-200); border-radius: var(--radius-sm); }
-.proxy-hop-manager__links article > span:nth-child(3) { display: grid; gap: 0.1rem; }
-.proxy-hop-manager__links article small { color: var(--ink-500); }
-.proxy-hop-manager__links article > div { display: flex; grid-column: 1 / -1; align-items: center; flex-wrap: wrap; gap: 0.55rem; }
-.proxy-hop-manager__links form { display: inline-flex; }
 
 .proxy-node-settings { overflow: hidden; }
 .proxy-node-settings > summary { padding: 0.9rem 1.25rem; cursor: pointer; list-style-position: inside; }
@@ -460,11 +471,8 @@ dialog.proxy-hop-manager { width: min(74rem, calc(100vw - 2rem)); height: min(92
   .proxy-inspector__facts div:first-child { border-top: 0; }
   .proxy-inspector__route { align-items: flex-start; flex-direction: column; gap: 0.25rem; }
   .proxy-inspector__route > span:last-child { white-space: normal; }
-  dialog.proxy-inspector,
-  dialog.proxy-hop-manager { width: calc(100vw - 1rem); height: calc(100vh - 1rem); max-height: calc(100vh - 1rem); }
-  .proxy-hop-manager__title { flex-direction: column; }
-  .proxy-hop-manager__grid,
-  .proxy-hop-manager__links { grid-template-columns: 1fr; }
+  dialog.proxy-inspector { width: calc(100vw - 1rem); height: calc(100vh - 1rem); max-height: calc(100vh - 1rem); }
+  .proxy-inspector__editor-grid { grid-template-columns: 1fr; }
   .proxy-node-settings__body > section + section { border-top: 1px solid var(--ink-200); border-left: 0; }
 }
 

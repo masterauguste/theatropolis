@@ -60,11 +60,14 @@ func TestBuildProxyTreePropagatesRuleConstraints(t *testing.T) {
 		t.Fatalf("unexpected root tree: %#v", tree)
 	}
 	child := tree.Branches[0].Child
-	if len(child.Branches) != 1 {
-		t.Fatalf("B displayed %d B-to-C branches behind the HTTP A-to-B path, want 1", len(child.Branches))
+	if len(child.Branches) != 2 {
+		t.Fatalf("B displayed %d B-to-C branches behind the HTTP A-to-B path, want both configured branches", len(child.Branches))
 	}
-	if got := child.Branches[0].RuleValues; got != "http" {
-		t.Fatalf("reachable B-to-C rule = %q, want http", got)
+	if got := child.Branches[0]; got.RuleValues != "bittorrent" || !got.Unreachable {
+		t.Fatalf("shadowed B-to-C rule = %#v, want an unreachable bittorrent branch", got)
+	}
+	if got := child.Branches[1]; got.RuleValues != "http" || got.Unreachable {
+		t.Fatalf("reachable B-to-C rule = %#v, want http", got)
 	}
 	if child.ShowFallback {
 		t.Fatal("B terminal remained visible even though its HTTP path is fully routed to C")

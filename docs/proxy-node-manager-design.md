@@ -216,11 +216,13 @@ At an entrance, authentication maps a connection to a Membership-specific
 Node's root routing tree. At a relay inbound, authentication maps the
 connection to that Link's identity and selects the child Hop's routing tree.
 
-Child Links at each Hop are ordered and their Link-owned match clauses apply to
-all Proxy Node traffic which reaches that Hop. There is no separately
-configurable routing scope. Multiple clauses on one Link are ORed. The first
-matching Link wins; an optional unconditional fallback Link is evaluated last;
-otherwise the Hop's required `direct` or `reject` terminal is used. The compiler
+Each Link-owned Rule has an explicit priority among all Rules at its parent Hop
+and applies to all Proxy Node traffic which reaches that Hop. There is no
+separately configurable routing scope. Multiple Rules may target one Link and
+share its transport, but Rules targeting different Links may be interleaved in
+the priority sequence. The first matching Rule wins; an optional unconditional
+fallback Link is evaluated last; otherwise the Hop's required `direct` or
+`reject` terminal is used. The compiler
 rejects missing targets, cycles, merges, listener conflicts, duplicate wire
 credentials on a combined listener, and references outside the owning Proxy
 Node.
@@ -240,13 +242,16 @@ authenticated user. A fallback Link appears as one final fallback branch, and
 a Link with no rule remains as a visibly inactive branch. A Direct terminal is
 implicit when its Hop has no other visible branch, but remains an explicit
 fallback beside conditional branches; Reject is always an explicit terminal.
-Selecting a Rule branch edits only that Rule, while the shared Link inspector
-owns fallback state and opens protocol/listener controls.
+Selecting a Rule branch edits only that Rule, while dragging numbered sibling
+branches changes their exact first-match priority. Keyboard-accessible move
+buttons remain available in the Rule inspector. The shared Link inspector owns
+fallback state and opens protocol/listener controls.
 
 The displayed tree propagates each selected rule and every earlier first-match
-exclusion into the next Hop. Descendant branches that are provably
-contradictory are omitted, including disjoint protocol/network values, domain
-constraints, and IP CIDRs; a covered fallback is omitted as well. This is a
+exclusion into the next Hop. Descendant branches that are provably contradictory
+remain visible as shadowed configuration so an administrator can drag them
+ahead of the Rule currently covering them. They do not contribute reachable
+exits; a covered fallback is omitted. This is a
 conservative three-state analysis. Relationships that depend on live DNS,
 remote Geosite/GeoIP/custom Rule Set contents, or non-trivial regular
 expressions remain visible with a runtime-dependent marker. The master never
@@ -314,7 +319,7 @@ fields with separate purposes. Conceptually:
 ```json
 {
   "schema": "theatropolis/proxy-node-state",
-  "schema_version": 2,
+  "schema_version": 3,
   "last_used_by": {
     "component": "master",
     "version": "v1.0.0",
@@ -545,13 +550,24 @@ leave application state untouched.
   cycles.
 - The relay map renders every conditional Rule as a separate branch. Selecting
   a branch edits only that Rule; adding, deleting, or reordering Rules is done
-  from the map rather than from the Hop manager or relay endpoint form. A
-  physical Link still owns the child endpoint and exactly one generated relay
-  credential, even when several Rule branches select it.
-- The shared Link inspector owns its conditional/fallback mode and transport
-  settings. The Hop manager owns only Hop identity, its Direct/Reject terminal,
-  and child-Link topology/order. This keeps routing intent visually attached to
-  the exact branch it controls without multiplying sing-box users.
+  directly from the map. A physical Link still owns the child endpoint and
+  exactly one generated relay credential, even when several Rule branches
+  select it.
+- Rule priority is explicit across the entire parent Hop, so Rules targeting
+  different sibling Links can be interleaved. Dragging a numbered branch writes
+  that exact order; the compiler emits it unchanged before the fallback Link
+  and terminal.
+- A Rule can be reassigned to another conditional sibling Link from its branch
+  editor. The move is atomic, preserves the Rule ID and both Links' credentials,
+  and preserves the Rule's parent-Hop priority. Cross-Hop and
+  fallback-Link destinations are rejected. A successful save returns to the
+  refreshed relay map without reopening the Rule dialog.
+- The relay map is the only topology-management surface; there is no separate
+  Hop manager. A Hop inspector owns identity, its Direct/Reject terminal, and
+  Add Link. The shared Link inspector owns conditional/fallback mode,
+  deletion, child-Hop navigation, and transport settings. This keeps routing
+  intent visually attached to the exact branch it controls without multiplying
+  sing-box users.
 - Legacy master deployment records and Agent active configurations are moved to
   owner-only `legacy-config-quarantine/` directories. Destructive cleanup is
   intentionally not automated in this release.

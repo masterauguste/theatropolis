@@ -197,8 +197,6 @@ type pageData struct {
 	EndUser               *endUserDetailView
 	AgentOptions          []agentOptionView
 	Endpoint              endpointView
-	Hop                   *hopDetailView
-	Link                  *linkDetailView
 	ProxyDeployment       *proxyDeploymentView
 	ProxyDeployEnabled    bool
 }
@@ -400,6 +398,7 @@ func (h *Handler) routes() {
 	h.mux.HandleFunc("POST /proxy-nodes/{proxy_id}/links/{link_id}/rules/{rule_id}", h.updateProxyRule)
 	h.mux.HandleFunc("POST /proxy-nodes/{proxy_id}/links/{link_id}/rules/delete", h.deleteProxyRule)
 	h.mux.HandleFunc("POST /proxy-nodes/{proxy_id}/links/{link_id}/rules/move", h.moveProxyRule)
+	h.mux.HandleFunc("POST /proxy-nodes/{proxy_id}/hops/{hop_id}/rules/reorder", h.reorderProxyRules)
 	h.mux.HandleFunc("POST /proxy-nodes/{proxy_id}/links/{link_id}/fallback", h.updateProxyLinkFallback)
 	h.mux.HandleFunc("POST /proxy-nodes/{proxy_id}/links/{link_id}/move", h.moveProxyLink)
 	h.mux.HandleFunc("POST /proxy-nodes/{proxy_id}/hops/{hop_id}/final", h.updateProxyFinal)

@@ -1008,6 +1008,7 @@ func TestProxyNodePagesUseLinkOwnedRulesAndMembershipCredentials(t *testing.T) {
 	fixture := newWebFixture(t)
 	enrollAgent(t, fixture.registry, "edge-online")
 	enrollAgent(t, fixture.registry, "edge-exit")
+	enrollAgent(t, fixture.registry, "edge-alt")
 	fixture.controller.sessions["edge-exit"] = true
 	poolRegistry, err := pool.Open(filepath.Join(t.TempDir(), "outbound-pool.json"))
 	if err != nil {
@@ -1055,7 +1056,7 @@ func TestProxyNodePagesUseLinkOwnedRulesAndMembershipCredentials(t *testing.T) {
 	if response.Code != http.StatusSeeOther {
 		t.Fatalf("GET legacy Hop page = %d %q", response.Code, response.Body.String())
 	}
-	if got, want := response.Header().Get("Location"), proxyHopManagerURL(node.ID, node.Entrance.HopID); got != want {
+	if got, want := response.Header().Get("Location"), proxyInspectorURL(node.ID, "hop-"+node.Entrance.HopID); got != want {
 		t.Fatalf("legacy Hop redirect = %q, want %q", got, want)
 	}
 
@@ -1069,10 +1070,11 @@ func TestProxyNodePagesUseLinkOwnedRulesAndMembershipCredentials(t *testing.T) {
 	for _, expected := range []string{
 		"Every configured path reaches an exit", "A leaf Hop implies Direct; Direct remains explicit beside other branches, and Reject is always explicit.",
 		"Left-to-right relay tree", `data-proxy-inspector-open="rule-` + firstRule.ID + `"`, `data-proxy-inspector-open="rule-` + secondRule.ID + `"`,
-		"Terminal on edge-online", `proxy-map__node--reject`, `id="proxy-hop-manager"`,
-		`data-proxy-hop-manager-view="` + node.Entrance.HopID + `"`, "Configure this Hop's identity, terminal exit, and ordered child Links",
-		"Ordered child Links", "2 match clauses · any may match", "Edit each routing Rule by selecting its branch directly on the map", "Open Link",
-		"Shared relay Link", "2 Rule branches use this one relay endpoint, credential, and sing-box authenticated user.", "Add Rule branch", "Relay settings",
+		"Terminal on edge-online", `proxy-map__node--reject`, `data-proxy-inspector-view="hop-` + node.Entrance.HopID + `"`,
+		"Hop identity", "Terminal exit", "Save identity", `data-dialog-open="proxy-add-link-` + node.Entrance.HopID + `"`,
+		"Shared relay Link", "2 Rule branches use this one relay endpoint, credential, and sing-box authenticated user.", "Add Rule branch", "Edit relay", "Save relay",
+		"drag numbered Rule branches vertically to change their priority", `data-proxy-rule-branch="` + firstRule.ID + `"`,
+		`data-reorder-url="/proxy-nodes/` + node.ID + `/hops/` + node.Entrance.HopID + `/rules/reorder"`, "Delete Link", "View child Hop",
 		`<option value="shadowsocks"`, `<option value="anytls"`, `<option value="hysteria2"`,
 		"example.net", "Address family", "Multiplex", "[::]:8443",
 	} {
@@ -1080,7 +1082,7 @@ func TestProxyNodePagesUseLinkOwnedRulesAndMembershipCredentials(t *testing.T) {
 			t.Errorf("Proxy Node tree does not contain %q", expected)
 		}
 	}
-	for _, removed := range []string{`name="scope"`, `name="scope_type"`, `name="scope_value"`, `name="auth_user"`, `proxy-map__node--direct`, "Terminal on edge-exit"} {
+	for _, removed := range []string{`name="scope"`, `name="scope_type"`, `name="scope_value"`, `name="auth_user"`, `proxy-map__node--direct`, "Terminal on edge-exit", `id="proxy-hop-manager"`, `data-proxy-hop-manage`, `data-proxy-hop-manager-view`, "Ordered child Links"} {
 		if strings.Contains(body, removed) {
 			t.Errorf("Proxy Node tree contains removed control or Direct terminal marker %q", removed)
 		}
@@ -1128,29 +1130,40 @@ func TestProxyNodePagesUseLinkOwnedRulesAndMembershipCredentials(t *testing.T) {
 	request = fixture.authenticatedRequest(http.MethodGet, proxyLinkURL(node.ID, link.ID), "")
 	response = httptest.NewRecorder()
 	fixture.handler.ServeHTTP(response, request)
+	if response.Code != http.StatusSeeOther {
+		t.Fatalf("GET legacy Link settings = %d %q", response.Code, response.Body.String())
+	}
+	if got, want := response.Header().Get("Location"), proxyInspectorURL(node.ID, "link-"+link.ID); got != want {
+		t.Fatalf("legacy Link redirect = %q, want %q", got, want)
+	}
+	targetLink, _, err := fixture.proxyNodes.AddLink(node.ID, proxynode.AddLinkInput{
+		ParentHopID: node.Entrance.HopID, ChildName: "Alternate", ChildAgent: "edge-alt",
+		Endpoint: proxynode.Endpoint{
+			Protocol: proxynode.ProtocolShadowsocks, Listen: "::", ListenPort: 9443, Family: "auto",
+			Method: "2022-blake3-aes-128-gcm",
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	request = fixture.authenticatedRequest(http.MethodGet, proxyNodeURL(node.ID), "")
+	response = httptest.NewRecorder()
+	fixture.handler.ServeHTTP(response, request)
 	if response.Code != http.StatusOK {
-		t.Fatalf("GET Link settings = %d %q", response.Code, response.Body.String())
+		t.Fatalf("GET Proxy Node destinations = %d %q", response.Code, response.Body.String())
 	}
 	body = response.Body.String()
-	for _, expected := range []string{
-		"Shared relay Link", "Relay to Exit", "Protocol, listener, and credential settings shared by 2 Rule branches",
-		"Edit routing Rules directly from the relay map", "One shared transport", "It does not create additional sing-box users",
-		"Relay endpoint", "Save relay settings",
-	} {
-		if !strings.Contains(body, expected) {
-			t.Errorf("Link settings do not contain %q", expected)
-		}
-	}
-	for _, removed := range []string{"Match clauses", "Add clause", `data-proxy-match`, `<option value="none">All traffic</option>`, `name="target"`} {
-		if strings.Contains(body, removed) {
-			t.Errorf("Link settings contain obsolete Hop-owned routing control %q", removed)
-		}
+	if !strings.Contains(body, `name="target_link_id"`) ||
+		!strings.Contains(body, `<option value="`+link.ID+`" selected>Exit · edge-exit</option>`) ||
+		!strings.Contains(body, `<option value="`+targetLink.ID+`">Alternate · edge-alt</option>`) {
+		t.Fatalf("Rule editor omitted sibling Link destinations: %q", body)
 	}
 
 	form := url.Values{
-		"csrf_token": {fixture.session.CSRFToken},
-		"match":      {string(proxynode.MatchIPCIDR)},
-		"values":     {"203.0.113.0/24"},
+		"csrf_token":     {fixture.session.CSRFToken},
+		"target_link_id": {targetLink.ID},
+		"match":          {string(proxynode.MatchIPCIDR)},
+		"values":         {"203.0.113.0/24"},
 	}
 	request = fixture.authenticatedMutationRequest(http.MethodPost, proxyLinkURL(node.ID, link.ID)+"/rules/"+firstRule.ID, form.Encode())
 	response = httptest.NewRecorder()
@@ -1158,18 +1171,43 @@ func TestProxyNodePagesUseLinkOwnedRulesAndMembershipCredentials(t *testing.T) {
 	if response.Code != http.StatusSeeOther {
 		t.Fatalf("POST Rule update = %d %q", response.Code, response.Body.String())
 	}
-	if got, want := response.Header().Get("Location"), proxyInspectorURL(node.ID, "rule-"+firstRule.ID); got != want {
+	if got, want := response.Header().Get("Location"), proxyNodeURL(node.ID); got != want {
 		t.Fatalf("Rule update redirect = %q, want %q", got, want)
 	}
 	updated, exists := fixture.proxyNodes.ProxyNode(node.ID)
-	if !exists || len(updated.Links) != 1 || len(updated.Links[0].Rules) != 2 {
+	if !exists || len(updated.Links) != 2 {
 		t.Fatalf("updated Proxy Node = %#v, exists %v", updated, exists)
 	}
-	if updated.Links[0].ID != link.ID || updated.Links[0].Credential != link.Credential {
-		t.Fatal("Rule update changed the shared Link or credential")
+	sourceIndex := slices.IndexFunc(updated.Links, func(candidate proxynode.Link) bool { return candidate.ID == link.ID })
+	targetIndex := slices.IndexFunc(updated.Links, func(candidate proxynode.Link) bool { return candidate.ID == targetLink.ID })
+	if sourceIndex < 0 || targetIndex < 0 {
+		t.Fatalf("updated Links = %#v", updated.Links)
 	}
-	if got := updated.Links[0].Rules[0]; got.ID != firstRule.ID || got.Match != proxynode.MatchIPCIDR || !slices.Equal(got.Values, []string{"203.0.113.0/24"}) {
+	if updated.Links[sourceIndex].Credential != link.Credential || updated.Links[targetIndex].Credential != targetLink.Credential {
+		t.Fatal("Rule destination update rotated a Link credential")
+	}
+	if len(updated.Links[sourceIndex].Rules) != 1 || updated.Links[sourceIndex].Rules[0].ID != secondRule.ID || len(updated.Links[targetIndex].Rules) != 1 {
+		t.Fatalf("Rule destination was not moved: %#v", updated.Links)
+	}
+	if got := updated.Links[targetIndex].Rules[0]; got.ID != firstRule.ID || got.Match != proxynode.MatchIPCIDR || !slices.Equal(got.Values, []string{"203.0.113.0/24"}) {
 		t.Fatalf("updated Rule = %#v", got)
+	}
+
+	form = url.Values{
+		"csrf_token": {fixture.session.CSRFToken},
+		"rule_ids":   {secondRule.ID + "," + firstRule.ID},
+	}
+	request = fixture.authenticatedMutationRequest(http.MethodPost, "/proxy-nodes/"+node.ID+"/hops/"+node.Entrance.HopID+"/rules/reorder", form.Encode())
+	response = httptest.NewRecorder()
+	fixture.handler.ServeHTTP(response, request)
+	if response.Code != http.StatusSeeOther || response.Header().Get("Location") != proxyNodeURL(node.ID) {
+		t.Fatalf("POST Rule reorder = %d location %q body %q", response.Code, response.Header().Get("Location"), response.Body.String())
+	}
+	updated, _ = fixture.proxyNodes.ProxyNode(node.ID)
+	sourceIndex = slices.IndexFunc(updated.Links, func(candidate proxynode.Link) bool { return candidate.ID == link.ID })
+	targetIndex = slices.IndexFunc(updated.Links, func(candidate proxynode.Link) bool { return candidate.ID == targetLink.ID })
+	if updated.Links[sourceIndex].Rules[0].Order != 0 || updated.Links[targetIndex].Rules[0].Order != 1 {
+		t.Fatalf("dragged Rule priority was not persisted: %#v", updated.Links)
 	}
 
 	request = fixture.authenticatedRequest(http.MethodGet, "/users/"+url.PathEscape(user.ID), "")
@@ -1532,7 +1570,7 @@ func TestCreateProxyNodeMakesTerminalExitExplicitAndOpensRouting(t *testing.T) {
 	if !ok || entrance.Name != "Entrance" || entrance.Final.Type != proxynode.TargetReject {
 		t.Fatalf("created entrance = %#v, exists %v", entrance, ok)
 	}
-	wantLocation := proxyHopManagerURL(node.ID, entrance.ID)
+	wantLocation := proxyInspectorURL(node.ID, "hop-"+entrance.ID)
 	if got := response.Header().Get("Location"); got != wantLocation {
 		t.Fatalf("create redirect = %q, want %q", got, wantLocation)
 	}
@@ -1541,12 +1579,12 @@ func TestCreateProxyNodeMakesTerminalExitExplicitAndOpensRouting(t *testing.T) {
 	response = httptest.NewRecorder()
 	fixture.handler.ServeHTTP(response, request)
 	if response.Code != http.StatusOK {
-		t.Fatalf("GET entrance Hop manager = %d %q", response.Code, response.Body.String())
+		t.Fatalf("GET entrance Hop inspector = %d %q", response.Code, response.Body.String())
 	}
 	body = response.Body.String()
 	for _, expected := range []string{"Terminal exit", "Add child Link", `name="child_terminal"`, "Reject traffic"} {
 		if !strings.Contains(body, expected) {
-			t.Errorf("entrance Hop manager does not contain %q", expected)
+			t.Errorf("entrance Hop inspector does not contain %q", expected)
 		}
 	}
 }

@@ -342,24 +342,36 @@ func renderHopRules(render *agentRender, candidate *ingressCandidate) error {
 		}
 	}
 	sort.Slice(links, func(left, right int) bool { return links[left].Order < links[right].Order })
+	type routedRule struct {
+		link *Link
+		rule Rule
+	}
+	rules := make([]routedRule, 0)
 	for _, link := range links {
 		for _, rule := range link.Rules {
-			if len(allLabels) == 0 {
-				continue
-			}
-			rendered := map[string]any{"inbound": []string{candidate.inboundTag}, "auth_user": allLabels}
-			if err := renderRuleMatch(render, candidate.node, rule, rendered); err != nil {
-				return err
-			}
-			rendered["action"] = "route"
-			rendered["outbound"] = linkOutboundTag(link.ID)
-			render.rules = append(render.rules, rendered)
+			rules = append(rules, routedRule{link: link, rule: rule})
 		}
+	}
+	sort.SliceStable(rules, func(left, right int) bool { return rules[left].rule.Order < rules[right].rule.Order })
+	for _, route := range rules {
+		if len(allLabels) == 0 {
+			continue
+		}
+		rendered := map[string]any{"inbound": []string{candidate.inboundTag}, "auth_user": allLabels}
+		if err := renderRuleMatch(render, candidate.node, route.rule, rendered); err != nil {
+			return err
+		}
+		rendered["action"] = "route"
+		rendered["outbound"] = linkOutboundTag(route.link.ID)
+		render.rules = append(render.rules, rendered)
+	}
+	for _, link := range links {
 		if link.Fallback && len(allLabels) > 0 {
 			render.rules = append(render.rules, map[string]any{
 				"inbound": []string{candidate.inboundTag}, "auth_user": allLabels,
 				"action": "route", "outbound": linkOutboundTag(link.ID),
 			})
+			break
 		}
 	}
 	if len(allLabels) > 0 {

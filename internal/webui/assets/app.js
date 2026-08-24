@@ -64,6 +64,97 @@ for (const button of document.querySelectorAll("[data-copy-value]")) {
   });
 }
 
+let draggedProxyBranch = null;
+let draggedProxyBranchOrder = "";
+let draggedProxyBranchElements = [];
+let proxyBranchDropAccepted = false;
+
+const directProxyBranch = (target, list) => {
+  const branch = target instanceof Element ? target.closest("[data-proxy-rule-branch]") : null;
+  return branch?.parentElement === list ? branch : null;
+};
+
+const proxyBranchOrder = (list) => [...list.children]
+  .filter((child) => child.matches("[data-proxy-rule-branch]"))
+  .map((child) => child.dataset.proxyRuleBranch)
+  .join(",");
+
+document.addEventListener("dragstart", (event) => {
+  const branch = event.target instanceof Element
+    ? event.target.closest("[data-proxy-rule-branch]")
+    : null;
+  const list = branch?.parentElement;
+  if (!branch || !list?.matches("[data-proxy-branch-list]")) return;
+  draggedProxyBranch = branch;
+  draggedProxyBranchOrder = proxyBranchOrder(list);
+  draggedProxyBranchElements = [...list.children]
+    .filter((child) => child.matches("[data-proxy-rule-branch]"));
+  proxyBranchDropAccepted = false;
+  branch.classList.add("is-dragging");
+  event.dataTransfer.effectAllowed = "move";
+  event.dataTransfer.setData("text/plain", branch.dataset.proxyRuleBranch || "route-rule");
+});
+
+document.addEventListener("dragover", (event) => {
+  if (!draggedProxyBranch) return;
+  const list = draggedProxyBranch.parentElement;
+  if (!list || !(event.target instanceof Element) || !list.contains(event.target)) return;
+  event.preventDefault();
+  event.dataTransfer.dropEffect = "move";
+  for (const branch of list.querySelectorAll(":scope > .is-drop-target")) {
+    branch.classList.remove("is-drop-target");
+  }
+  const target = directProxyBranch(event.target, list);
+  if (!target || target === draggedProxyBranch) return;
+  target.classList.add("is-drop-target");
+  const bounds = target.getBoundingClientRect();
+  const after = event.clientY > bounds.top + bounds.height / 2;
+  list.insertBefore(draggedProxyBranch, after ? target.nextElementSibling : target);
+});
+
+document.addEventListener("drop", (event) => {
+  if (!draggedProxyBranch) return;
+  const list = draggedProxyBranch.parentElement;
+  if (list && event.target instanceof Element && list.contains(event.target)) {
+    event.preventDefault();
+    proxyBranchDropAccepted = true;
+  }
+});
+
+document.addEventListener("dragend", () => {
+  if (!draggedProxyBranch) return;
+  const list = draggedProxyBranch.parentElement;
+  draggedProxyBranch.classList.remove("is-dragging");
+  for (const branch of list?.querySelectorAll(":scope > .is-drop-target") || []) {
+    branch.classList.remove("is-drop-target");
+  }
+  if (list && !proxyBranchDropAccepted) {
+    const anchor = [...list.children]
+      .find((child) => !child.matches("[data-proxy-rule-branch]")) || null;
+    for (const branch of draggedProxyBranchElements) list.insertBefore(branch, anchor);
+  }
+  const nextOrder = list ? proxyBranchOrder(list) : draggedProxyBranchOrder;
+  draggedProxyBranch = null;
+  draggedProxyBranchElements = [];
+  if (!list || !proxyBranchDropAccepted || nextOrder === draggedProxyBranchOrder) return;
+  const form = document.createElement("form");
+  form.method = "post";
+  form.action = list.dataset.reorderUrl || "";
+  form.hidden = true;
+  for (const [name, value] of [
+    ["csrf_token", list.dataset.csrfToken || ""],
+    ["rule_ids", nextOrder],
+  ]) {
+    const input = document.createElement("input");
+    input.type = "hidden";
+    input.name = name;
+    input.value = value;
+    form.append(input);
+  }
+  document.body.append(form);
+  form.requestSubmit();
+});
+
 const proxyDeployment = document.querySelector("[data-proxy-deployment][data-status-url]");
 if (proxyDeployment) {
   const pollProxyDeployment = async () => {
@@ -101,28 +192,6 @@ const redirectForExpiredSession = (response) => {
 };
 
 document.addEventListener("click", (event) => {
-  const manageHopButton = event.target.closest("[data-proxy-hop-manage]");
-  if (manageHopButton) {
-    const dialog = document.getElementById("proxy-hop-manager");
-    const hopID = manageHopButton.dataset.proxyHopManage;
-    if (!(dialog instanceof HTMLDialogElement)) return;
-    const views = [...dialog.querySelectorAll("[data-proxy-hop-manager-view]")];
-    const selected = views.find((view) => view.dataset.proxyHopManagerView === hopID);
-    if (!selected) return;
-    for (const view of views) {
-      view.hidden = view !== selected;
-    }
-    const sourceDialog = manageHopButton.closest("dialog");
-    if (sourceDialog instanceof HTMLDialogElement && sourceDialog !== dialog && sourceDialog.open) {
-      sourceDialog.close();
-    }
-    const treeButton = [...document.querySelectorAll("[data-proxy-inspector-open]")]
-      .find((button) => button.dataset.proxyInspectorOpen === `hop-${hopID}`);
-    dialogTriggers.set(dialog, treeButton || manageHopButton);
-    if (!dialog.open) dialog.showModal();
-    return;
-  }
-
   const inspectorButton = event.target.closest("[data-proxy-inspector-open]");
   if (inspectorButton) {
     const dialog = document.getElementById("proxy-tree-inspector");
@@ -159,16 +228,6 @@ document.addEventListener("click", (event) => {
     closeButton.closest("dialog")?.close();
   }
 });
-
-const initialManagedHop = new URLSearchParams(window.location.search).get("manage_hop");
-if (initialManagedHop) {
-  const manageHopButton = [...document.querySelectorAll("[data-proxy-hop-manage]")]
-    .find((button) => button.dataset.proxyHopManage === initialManagedHop);
-  manageHopButton?.click();
-  const cleanURL = new URL(window.location.href);
-  cleanURL.searchParams.delete("manage_hop");
-  window.history.replaceState(null, "", cleanURL);
-}
 
 const initialInspector = new URLSearchParams(window.location.search).get("inspect");
 if (initialInspector) {

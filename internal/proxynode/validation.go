@@ -144,6 +144,7 @@ func validateProxyNode(node ProxyNode, users map[string]User) error {
 	links := make(map[string]Link, len(node.Links))
 	parentByChild := make(map[string]string, len(node.Links))
 	outgoing := make(map[string][]Link, len(node.Hops))
+	ruleOrders := make(map[string][]int, len(node.Hops))
 	for _, link := range node.Links {
 		if !validID(link.ID, "lnk_") || link.Order < 0 || link.CreatedAt.IsZero() || link.UpdatedAt.IsZero() {
 			return errors.New("invalid Link")
@@ -176,7 +177,7 @@ func validateProxyNode(node ProxyNode, users map[string]User) error {
 			return errors.New("fallback Link cannot contain match rules")
 		}
 		for _, rule := range link.Rules {
-			if !validID(rule.ID, "rul_") || rule.LegacyTarget != nil {
+			if !validID(rule.ID, "rul_") || rule.Order < 0 || rule.LegacyTarget != nil {
 				return errors.New("invalid Link Rule")
 			}
 			if err := validateRule(rule); err != nil {
@@ -185,10 +186,19 @@ func validateProxyNode(node ProxyNode, users map[string]User) error {
 			if rule.Match == MatchNone {
 				return errors.New("unconditional routing must use a fallback Link")
 			}
+			ruleOrders[link.ParentHopID] = append(ruleOrders[link.ParentHopID], rule.Order)
 		}
 		links[link.ID] = link
 		parentByChild[link.ChildHopID] = link.ParentHopID
 		outgoing[link.ParentHopID] = append(outgoing[link.ParentHopID], link)
+	}
+	for hopID, orders := range ruleOrders {
+		sort.Ints(orders)
+		for expected, order := range orders {
+			if order != expected {
+				return fmt.Errorf("route Rule order for Hop %q is not contiguous", hopID)
+			}
+		}
 	}
 	for parentID, siblings := range outgoing {
 		sort.Slice(siblings, func(left, right int) bool { return siblings[left].Order < siblings[right].Order })

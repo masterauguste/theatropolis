@@ -92,6 +92,11 @@ func Open(path string, build BuildInfo) (*Store, error) {
 		if err := migrateSchemaV1(&stored.Data); err != nil {
 			return nil, fmt.Errorf("%w: migrate schema version 1: %v", ErrInvalidState, err)
 		}
+		stored.SchemaVersion = 2
+	}
+	if stored.SchemaVersion == 2 {
+		migrateSchemaV2(&stored.Data)
+		stored.SchemaVersion = SchemaVersion
 	} else if stored.SchemaVersion != SchemaVersion {
 		return nil, fmt.Errorf("%w: unsupported schema version %d", ErrInvalidState, stored.SchemaVersion)
 	}
@@ -476,6 +481,7 @@ func (s *Store) DeleteLink(nodeID, linkID string) error {
 		node.Hops = slices.DeleteFunc(node.Hops, func(hop Hop) bool { return removeHops[hop.ID] })
 		node.Links = slices.DeleteFunc(node.Links, func(link Link) bool { return removeLinks[link.ID] })
 		normalizeLinkOrders(node)
+		normalizeRuleOrders(node)
 		return nil
 	})
 }
@@ -492,6 +498,7 @@ func (s *Store) AddRule(nodeID string, input AddRuleInput) (Rule, error) {
 				if node.Links[index].Fallback {
 					return fmt.Errorf("%w: fallback Link cannot contain match rules", ErrConflict)
 				}
+				created.Order = ruleCountForHop(*node, node.Links[index].ParentHopID)
 				node.Links[index].Rules = append(node.Links[index].Rules, created)
 				node.Links[index].UpdatedAt = s.now().UTC()
 				return nil
@@ -502,27 +509,38 @@ func (s *Store) AddRule(nodeID string, input AddRuleInput) (Rule, error) {
 	return created, err
 }
 
-func (s *Store) UpdateRule(nodeID, ruleID string, input AddRuleInput) error {
+func (s *Store) UpdateRule(nodeID, ruleID string, input UpdateRuleInput) error {
 	return s.mutateProxyNode(nodeID, func(_ *State, node *ProxyNode) error {
-		for linkIndex := range node.Links {
-			if node.Links[linkIndex].ID != input.LinkID {
-				continue
-			}
-			if node.Links[linkIndex].Fallback {
-				return fmt.Errorf("%w: fallback Link cannot contain match rules", ErrConflict)
-			}
-			for ruleIndex := range node.Links[linkIndex].Rules {
-				if node.Links[linkIndex].Rules[ruleIndex].ID != ruleID {
-					continue
-				}
-				node.Links[linkIndex].Rules[ruleIndex].Match = input.Match
-				node.Links[linkIndex].Rules[ruleIndex].Values = normalizeValues(input.Values)
-				node.Links[linkIndex].UpdatedAt = s.now().UTC()
-				return nil
-			}
+		sourceIndex := slices.IndexFunc(node.Links, func(link Link) bool { return link.ID == input.SourceLinkID })
+		targetIndex := slices.IndexFunc(node.Links, func(link Link) bool { return link.ID == input.TargetLinkID })
+		if sourceIndex < 0 || targetIndex < 0 {
 			return ErrNotFound
 		}
-		return ErrNotFound
+		source, target := &node.Links[sourceIndex], &node.Links[targetIndex]
+		if source.ParentHopID != target.ParentHopID {
+			return fmt.Errorf("%w: Rule destination must be a sibling Link", ErrConflict)
+		}
+		if target.Fallback {
+			return fmt.Errorf("%w: fallback Link cannot contain match rules", ErrConflict)
+		}
+		ruleIndex := slices.IndexFunc(source.Rules, func(rule Rule) bool { return rule.ID == ruleID })
+		if ruleIndex < 0 {
+			return ErrNotFound
+		}
+		updated := source.Rules[ruleIndex]
+		updated.Match = input.Match
+		updated.Values = normalizeValues(input.Values)
+		now := s.now().UTC()
+		if sourceIndex == targetIndex {
+			source.Rules[ruleIndex] = updated
+			source.UpdatedAt = now
+			return nil
+		}
+		source.Rules = slices.Delete(source.Rules, ruleIndex, ruleIndex+1)
+		source.UpdatedAt = now
+		target.Rules = append(target.Rules, updated)
+		target.UpdatedAt = now
+		return nil
 	})
 }
 
@@ -537,6 +555,7 @@ func (s *Store) DeleteRule(nodeID, linkID, ruleID string) error {
 			if len(node.Links[index].Rules) == before {
 				return ErrNotFound
 			}
+			normalizeRuleOrders(node)
 			return nil
 		}
 		return ErrNotFound
@@ -548,24 +567,49 @@ func (s *Store) MoveRule(nodeID, linkID, ruleID string, delta int) error {
 		return fmt.Errorf("%w: invalid Rule movement", ErrInvalidState)
 	}
 	return s.mutateProxyNode(nodeID, func(_ *State, node *ProxyNode) error {
-		for linkIndex := range node.Links {
-			if node.Links[linkIndex].ID != linkID {
-				continue
-			}
-			rules := node.Links[linkIndex].Rules
-			index := slices.IndexFunc(rules, func(rule Rule) bool { return rule.ID == ruleID })
-			if index < 0 {
-				return ErrNotFound
-			}
-			target := index + delta
-			if target < 0 || target >= len(rules) {
-				return nil
-			}
-			rules[index], rules[target] = rules[target], rules[index]
-			node.Links[linkIndex].Rules = rules
+		linkIndex := slices.IndexFunc(node.Links, func(link Link) bool { return link.ID == linkID })
+		if linkIndex < 0 || !slices.ContainsFunc(node.Links[linkIndex].Rules, func(rule Rule) bool { return rule.ID == ruleID }) {
+			return ErrNotFound
+		}
+		ordered := orderedRulesForHop(*node, node.Links[linkIndex].ParentHopID)
+		index := slices.IndexFunc(ordered, func(entry orderedRule) bool { return entry.rule.ID == ruleID })
+		target := index + delta
+		if target < 0 || target >= len(ordered) {
 			return nil
 		}
-		return ErrNotFound
+		ordered[index], ordered[target] = ordered[target], ordered[index]
+		applyRuleOrder(node, ordered)
+		return nil
+	})
+}
+
+func (s *Store) ReorderRules(nodeID, hopID string, ruleIDs []string) error {
+	return s.mutateProxyNode(nodeID, func(_ *State, node *ProxyNode) error {
+		if !slices.ContainsFunc(node.Hops, func(hop Hop) bool { return hop.ID == hopID }) {
+			return ErrNotFound
+		}
+		ordered := orderedRulesForHop(*node, hopID)
+		if len(ruleIDs) != len(ordered) {
+			return fmt.Errorf("%w: reordered Rule set is incomplete", ErrConflict)
+		}
+		byID := make(map[string]orderedRule, len(ordered))
+		for _, entry := range ordered {
+			byID[entry.rule.ID] = entry
+		}
+		next := make([]orderedRule, 0, len(ordered))
+		for _, id := range ruleIDs {
+			entry, exists := byID[id]
+			if !exists {
+				return fmt.Errorf("%w: reordered Rule does not belong to this Hop", ErrConflict)
+			}
+			delete(byID, id)
+			next = append(next, entry)
+		}
+		if len(byID) != 0 {
+			return fmt.Errorf("%w: reordered Rule set contains duplicates", ErrConflict)
+		}
+		applyRuleOrder(node, next)
+		return nil
 	})
 }
 
@@ -610,6 +654,7 @@ func (s *Store) SetLinkFallback(nodeID, linkID string, fallback bool) error {
 			node.Links[index].Rules = nil
 			node.Links[index].Fallback = true
 			normalizeLinkOrders(node)
+			normalizeRuleOrders(node)
 			return nil
 		}
 		node.Links[index].Fallback = false
@@ -952,6 +997,57 @@ func normalizeLinkOrders(node *ProxyNode) {
 		})
 		for order, index := range indexes {
 			node.Links[index].Order = order
+		}
+	}
+}
+
+type orderedRule struct {
+	linkIndex int
+	ruleIndex int
+	rule      Rule
+}
+
+func orderedRulesForHop(node ProxyNode, hopID string) []orderedRule {
+	result := make([]orderedRule, 0)
+	for linkIndex := range node.Links {
+		if node.Links[linkIndex].ParentHopID != hopID {
+			continue
+		}
+		for ruleIndex, rule := range node.Links[linkIndex].Rules {
+			result = append(result, orderedRule{linkIndex: linkIndex, ruleIndex: ruleIndex, rule: rule})
+		}
+	}
+	sort.SliceStable(result, func(left, right int) bool { return result[left].rule.Order < result[right].rule.Order })
+	return result
+}
+
+func applyRuleOrder(node *ProxyNode, ordered []orderedRule) {
+	for order, entry := range ordered {
+		node.Links[entry.linkIndex].Rules[entry.ruleIndex].Order = order
+	}
+}
+
+func normalizeRuleOrders(node *ProxyNode) {
+	for _, hop := range node.Hops {
+		applyRuleOrder(node, orderedRulesForHop(*node, hop.ID))
+	}
+}
+
+func ruleCountForHop(node ProxyNode, hopID string) int {
+	return len(orderedRulesForHop(node, hopID))
+}
+
+func migrateSchemaV2(state *State) {
+	for nodeIndex := range state.ProxyNodes {
+		node := &state.ProxyNodes[nodeIndex]
+		for _, hop := range node.Hops {
+			order := 0
+			for _, linkIndex := range orderedSiblingLinkIndexes(*node, hop.ID) {
+				for ruleIndex := range node.Links[linkIndex].Rules {
+					node.Links[linkIndex].Rules[ruleIndex].Order = order
+					order++
+				}
+			}
 		}
 	}
 }
