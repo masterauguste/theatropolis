@@ -31,17 +31,17 @@ The master, agent, and sing-box all run as dedicated unprivileged users. A small
 Configuration is modeled as logical Proxy Nodes instead of editable per-server
 sing-box files. Create a Proxy Node with one entrance, then add ordered relay
 Links to its Hops. Each conditional Rule is a separately editable branch on the
-relay map, while every branch targeting the same Link shares that Link's
-endpoint and generated credential. A Rule can be moved between sibling Links
-from its branch editor without rotating either Link's credential. Numbered Rule
-branches can be dragged vertically on the map to set their exact first-match
-priority, including interleaving Rules that target different Links. Links can
+relay map. Every branch is its own logical Link, child routing context,
+generated credential, and sing-box authenticated user. Duplicating a branch
+copies its downstream chain and listener settings but creates fresh logical
+identities and credentials. Numbered Rule branches can be dragged vertically on
+the map to set their exact first-match priority. Links can
 independently use Shadowsocks 2022, AnyTLS, or Hysteria2. An optional fallback
 Link remains last, and otherwise traffic terminates as Direct or Reject on the
 current Hop.
 Compatible logical inbounds may share one Agent port across Proxy Nodes: the
-listener-level material is reused while every Membership and Link retains a
-distinct credential and authenticated-user routing identity.
+listener-level material is reused while every Membership and branch Link retains
+a distinct credential and authenticated-user routing identity.
 
 Granting Proxy Node access from a global user's settings uses a searchable
 picker and generates a unique membership credential. Assigned Nodes appear as

@@ -96,6 +96,12 @@ func Open(path string, build BuildInfo) (*Store, error) {
 	}
 	if stored.SchemaVersion == 2 {
 		migrateSchemaV2(&stored.Data)
+		stored.SchemaVersion = 3
+	}
+	if stored.SchemaVersion == 3 {
+		if err := migrateSchemaV3(&stored.Data); err != nil {
+			return nil, fmt.Errorf("%w: migrate schema version 3: %v", ErrInvalidState, err)
+		}
 		stored.SchemaVersion = SchemaVersion
 	} else if stored.SchemaVersion != SchemaVersion {
 		return nil, fmt.Errorf("%w: unsupported schema version %d", ErrInvalidState, stored.SchemaVersion)
@@ -492,54 +498,61 @@ func (s *Store) AddRule(nodeID string, input AddRuleInput) (Rule, error) {
 		return Rule{}, err
 	}
 	created := Rule{ID: ruleID, Match: input.Match, Values: normalizeValues(input.Values)}
-	err = s.mutateProxyNode(nodeID, func(_ *State, node *ProxyNode) error {
-		for index := range node.Links {
-			if node.Links[index].ID == input.LinkID {
-				if node.Links[index].Fallback {
-					return fmt.Errorf("%w: fallback Link cannot contain match rules", ErrConflict)
-				}
-				created.Order = ruleCountForHop(*node, node.Links[index].ParentHopID)
-				node.Links[index].Rules = append(node.Links[index].Rules, created)
-				node.Links[index].UpdatedAt = s.now().UTC()
-				return nil
+	err = s.mutateProxyNode(nodeID, func(state *State, node *ProxyNode) error {
+		index := slices.IndexFunc(node.Links, func(link Link) bool { return link.ID == input.LinkID })
+		if index < 0 {
+			return ErrNotFound
+		}
+		link := &node.Links[index]
+		if link.Fallback {
+			return fmt.Errorf("%w: fallback Link cannot contain match rules", ErrConflict)
+		}
+		created.Order = ruleCountForHop(*node, link.ParentHopID)
+		if len(link.Rules) == 0 {
+			link.Rules = []Rule{created}
+			link.UpdatedAt = s.now().UTC()
+			return nil
+		}
+		if len(link.Rules) != 1 {
+			return fmt.Errorf("%w: Link has more than one routing Rule", ErrInvalidState)
+		}
+		clonedLink, clonedHops, clonedLinks, err := cloneLinkBranch(*node, *link, s.now().UTC())
+		if err != nil {
+			return err
+		}
+		clonedLink.Rules = []Rule{created}
+		clonedLink.Order = len(orderedSiblingLinkIndexes(*node, link.ParentHopID))
+		for siblingIndex := range node.Links {
+			if node.Links[siblingIndex].ParentHopID == link.ParentHopID && node.Links[siblingIndex].Fallback {
+				clonedLink.Order = node.Links[siblingIndex].Order
+				node.Links[siblingIndex].Order++
+				break
 			}
 		}
-		return ErrNotFound
+		node.Hops = append(node.Hops, clonedHops...)
+		node.Links = append(node.Links, clonedLink)
+		node.Links = append(node.Links, clonedLinks...)
+		return validateListenerLayout(state)
 	})
 	return created, err
 }
 
 func (s *Store) UpdateRule(nodeID, ruleID string, input UpdateRuleInput) error {
 	return s.mutateProxyNode(nodeID, func(_ *State, node *ProxyNode) error {
-		sourceIndex := slices.IndexFunc(node.Links, func(link Link) bool { return link.ID == input.SourceLinkID })
-		targetIndex := slices.IndexFunc(node.Links, func(link Link) bool { return link.ID == input.TargetLinkID })
-		if sourceIndex < 0 || targetIndex < 0 {
+		linkIndex := slices.IndexFunc(node.Links, func(link Link) bool { return link.ID == input.LinkID })
+		if linkIndex < 0 {
 			return ErrNotFound
 		}
-		source, target := &node.Links[sourceIndex], &node.Links[targetIndex]
-		if source.ParentHopID != target.ParentHopID {
-			return fmt.Errorf("%w: Rule destination must be a sibling Link", ErrConflict)
-		}
-		if target.Fallback {
-			return fmt.Errorf("%w: fallback Link cannot contain match rules", ErrConflict)
-		}
-		ruleIndex := slices.IndexFunc(source.Rules, func(rule Rule) bool { return rule.ID == ruleID })
+		link := &node.Links[linkIndex]
+		ruleIndex := slices.IndexFunc(link.Rules, func(rule Rule) bool { return rule.ID == ruleID })
 		if ruleIndex < 0 {
 			return ErrNotFound
 		}
-		updated := source.Rules[ruleIndex]
+		updated := link.Rules[ruleIndex]
 		updated.Match = input.Match
 		updated.Values = normalizeValues(input.Values)
-		now := s.now().UTC()
-		if sourceIndex == targetIndex {
-			source.Rules[ruleIndex] = updated
-			source.UpdatedAt = now
-			return nil
-		}
-		source.Rules = slices.Delete(source.Rules, ruleIndex, ruleIndex+1)
-		source.UpdatedAt = now
-		target.Rules = append(target.Rules, updated)
-		target.UpdatedAt = now
+		link.Rules[ruleIndex] = updated
+		link.UpdatedAt = s.now().UTC()
 		return nil
 	})
 }
@@ -863,6 +876,106 @@ func normalizeValues(values []string) []string {
 	return result
 }
 
+// cloneLinkBranch creates an independent logical routing context while
+// preserving the branch's physical listener settings. Every cloned Link gets
+// a fresh credential and every cloned Hop/Rule gets a fresh opaque identity.
+// This lets compatible branches share one sing-box listener without sharing
+// the auth_user that selects their downstream routing policy.
+func cloneLinkBranch(node ProxyNode, root Link, now time.Time) (Link, []Hop, []Link, error) {
+	children := make(map[string][]Link, len(node.Hops))
+	hops := make(map[string]Hop, len(node.Hops))
+	for _, hop := range node.Hops {
+		hops[hop.ID] = hop
+	}
+	for _, link := range node.Links {
+		children[link.ParentHopID] = append(children[link.ParentHopID], link)
+	}
+	for parent := range children {
+		sort.SliceStable(children[parent], func(left, right int) bool {
+			return children[parent][left].Order < children[parent][right].Order
+		})
+	}
+
+	clonedHops := make([]Hop, 0)
+	clonedLinks := make([]Link, 0)
+	active := make(map[string]bool, len(node.Hops))
+	var cloneHop func(string) (string, error)
+	cloneHop = func(oldHopID string) (string, error) {
+		if len(clonedHops)+len(clonedLinks) >= maxTopologyEntities {
+			return "", fmt.Errorf("%w: cloned topology exceeds entity limit", ErrInvalidState)
+		}
+		if active[oldHopID] {
+			return "", fmt.Errorf("%w: cannot clone a cyclic topology", ErrInvalidState)
+		}
+		oldHop, exists := hops[oldHopID]
+		if !exists {
+			return "", fmt.Errorf("%w: cloned Link references a missing Hop", ErrInvalidState)
+		}
+		newHopID, err := randomID("hop")
+		if err != nil {
+			return "", err
+		}
+		clonedHop := oldHop
+		clonedHop.ID = newHopID
+		clonedHop.LegacyRules = nil
+		clonedHop.CreatedAt = now
+		clonedHop.UpdatedAt = now
+		clonedHops = append(clonedHops, clonedHop)
+		active[oldHopID] = true
+		defer delete(active, oldHopID)
+		for _, oldLink := range children[oldHopID] {
+			newChildID, err := cloneHop(oldLink.ChildHopID)
+			if err != nil {
+				return "", err
+			}
+			newLinkID, err := randomID("lnk")
+			if err != nil {
+				return "", err
+			}
+			credential, err := generateCredential(oldLink.Endpoint)
+			if err != nil {
+				return "", err
+			}
+			clonedLink := oldLink
+			clonedLink.ID = newLinkID
+			clonedLink.ParentHopID = newHopID
+			clonedLink.ChildHopID = newChildID
+			clonedLink.Credential = credential
+			clonedLink.CreatedAt = now
+			clonedLink.UpdatedAt = now
+			clonedLink.Rules = append([]Rule(nil), oldLink.Rules...)
+			for ruleIndex := range clonedLink.Rules {
+				clonedLink.Rules[ruleIndex].ID, err = randomID("rul")
+				if err != nil {
+					return "", err
+				}
+			}
+			clonedLinks = append(clonedLinks, clonedLink)
+		}
+		return newHopID, nil
+	}
+
+	childID, err := cloneHop(root.ChildHopID)
+	if err != nil {
+		return Link{}, nil, nil, err
+	}
+	linkID, err := randomID("lnk")
+	if err != nil {
+		return Link{}, nil, nil, err
+	}
+	credential, err := generateCredential(root.Endpoint)
+	if err != nil {
+		return Link{}, nil, nil, err
+	}
+	clonedRoot := root
+	clonedRoot.ID = linkID
+	clonedRoot.ChildHopID = childID
+	clonedRoot.Credential = credential
+	clonedRoot.CreatedAt = now
+	clonedRoot.UpdatedAt = now
+	return clonedRoot, clonedHops, clonedLinks, nil
+}
+
 func migrateSchemaV1(state *State) error {
 	for nodeIndex := range state.ProxyNodes {
 		node := &state.ProxyNodes[nodeIndex]
@@ -1050,4 +1163,47 @@ func migrateSchemaV2(state *State) {
 			}
 		}
 	}
+}
+
+// Schema v4 makes a visible Rule branch the credential and routing isolation
+// boundary. Older Links could own several Rules, causing those visually
+// distinct paths to arrive at one shared child auth_user. Split each extra Rule
+// into a sibling Link and clone its downstream subtree so the migrated topology
+// initially retains the same behavior while gaining independent credentials.
+func migrateSchemaV3(state *State) error {
+	now := time.Now().UTC()
+	for nodeIndex := range state.ProxyNodes {
+		node := &state.ProxyNodes[nodeIndex]
+		for {
+			if len(node.Hops)+len(node.Links) > maxTopologyEntities {
+				return fmt.Errorf("Proxy Node %q exceeds migration entity limit", node.Name)
+			}
+			linkIndex := slices.IndexFunc(node.Links, func(link Link) bool { return len(link.Rules) > 1 })
+			if linkIndex < 0 {
+				break
+			}
+			original := node.Links[linkIndex]
+			rules := append([]Rule(nil), original.Rules...)
+			node.Links[linkIndex].Rules = []Rule{rules[0]}
+			for siblingIndex := range node.Links {
+				if node.Links[siblingIndex].ParentHopID == original.ParentHopID && node.Links[siblingIndex].Order > original.Order {
+					node.Links[siblingIndex].Order += len(rules) - 1
+				}
+			}
+			for ruleIndex := 1; ruleIndex < len(rules); ruleIndex++ {
+				clonedRoot, clonedHops, clonedLinks, err := cloneLinkBranch(*node, original, now)
+				if err != nil {
+					return err
+				}
+				clonedRoot.Order = original.Order + ruleIndex
+				clonedRoot.Rules = []Rule{rules[ruleIndex]}
+				node.Hops = append(node.Hops, clonedHops...)
+				node.Links = append(node.Links, clonedRoot)
+				node.Links = append(node.Links, clonedLinks...)
+			}
+		}
+		normalizeLinkOrders(node)
+		normalizeRuleOrders(node)
+	}
+	return nil
 }

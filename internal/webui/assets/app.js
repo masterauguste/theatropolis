@@ -79,6 +79,21 @@ const proxyBranchOrder = (list) => [...list.children]
   .map((child) => child.dataset.proxyRuleBranch)
   .join(",");
 
+const mergedProxyBranchOrder = (list, visibleOrder) => {
+  const allRuleIDs = (list.dataset.proxyAllRuleIds || "").split(",").filter(Boolean);
+  const visibleRuleIDs = visibleOrder.split(",").filter(Boolean);
+  if (allRuleIDs.length === visibleRuleIDs.length) return visibleOrder;
+  const visibleSet = new Set(visibleRuleIDs);
+  let visibleIndex = 0;
+  const merged = allRuleIDs.map((ruleID) => {
+    if (!visibleSet.has(ruleID)) return ruleID;
+    const replacement = visibleRuleIDs[visibleIndex];
+    visibleIndex += 1;
+    return replacement;
+  });
+  return visibleIndex === visibleRuleIDs.length ? merged.join(",") : visibleOrder;
+};
+
 document.addEventListener("dragstart", (event) => {
   const branch = event.target instanceof Element
     ? event.target.closest("[data-proxy-rule-branch]")
@@ -143,7 +158,7 @@ document.addEventListener("dragend", () => {
   form.hidden = true;
   for (const [name, value] of [
     ["csrf_token", list.dataset.csrfToken || ""],
-    ["rule_ids", nextOrder],
+    ["rule_ids", mergedProxyBranchOrder(list, nextOrder)],
   ]) {
     const input = document.createElement("input");
     input.type = "hidden";

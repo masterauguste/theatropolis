@@ -285,7 +285,6 @@
 .proxy-map__outcome[draggable="true"] { cursor: grab; }
 .proxy-map__outcome[draggable="true"]:active { cursor: grabbing; }
 .proxy-map__outcome.is-dragging { opacity: 0.38; }
-.proxy-map__outcome--unreachable > .proxy-map__link { opacity: 0.58; }
 .proxy-map__outcome.is-drop-target > .proxy-map__link {
   border-color: var(--accent-700);
   box-shadow: 0 0 0 3px rgb(110 38 38 / 16%), var(--shadow-sm);

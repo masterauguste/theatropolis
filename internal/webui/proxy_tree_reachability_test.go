@@ -1,6 +1,7 @@
 package webui
 
 import (
+	"fmt"
 	"testing"
 
 	"github.com/masterauguste/theatropolis/internal/proxynode"
@@ -60,20 +61,56 @@ func TestBuildProxyTreePropagatesRuleConstraints(t *testing.T) {
 		t.Fatalf("unexpected root tree: %#v", tree)
 	}
 	child := tree.Branches[0].Child
-	if len(child.Branches) != 2 {
-		t.Fatalf("B displayed %d B-to-C branches behind the HTTP A-to-B path, want both configured branches", len(child.Branches))
+	if len(child.Branches) != 1 {
+		t.Fatalf("B displayed %d B-to-C branches behind the HTTP A-to-B path, want only the feasible branch", len(child.Branches))
 	}
-	if got := child.Branches[0]; got.RuleValues != "bittorrent" || !got.Unreachable {
-		t.Fatalf("shadowed B-to-C rule = %#v, want an unreachable bittorrent branch", got)
-	}
-	if got := child.Branches[1]; got.RuleValues != "http" || got.Unreachable {
+	if got := child.Branches[0]; got.RuleValues != "http" {
 		t.Fatalf("reachable B-to-C rule = %#v, want http", got)
+	}
+	if child.AllRuleIDs != "rule-bt,rule-http" {
+		t.Fatalf("B complete Rule order = %q, want hidden and visible Rules", child.AllRuleIDs)
 	}
 	if child.ShowFallback {
 		t.Fatal("B terminal remained visible even though its HTTP path is fully routed to C")
 	}
 	if exits != 2 { // C's Direct exit plus A's unmatched Direct exit.
 		t.Fatalf("visible exits = %d, want 2", exits)
+	}
+}
+
+func TestBuildProxyTreePlacesExactDomainOnlyUnderCompatibleParentSuffix(t *testing.T) {
+	endpoint := proxynode.Endpoint{Protocol: proxynode.ProtocolShadowsocks, Listen: "::", ListenPort: 20048}
+	netCoffee := proxynode.Rule{ID: "rule-net-coffee", Order: 0, Match: proxynode.MatchDomainSuffix, Values: []string{"net.coffee"}}
+	heNet := proxynode.Rule{ID: "rule-he-net", Order: 1, Match: proxynode.MatchDomainSuffix, Values: []string{"bgp.he.net"}}
+	ipNetCoffee := proxynode.Rule{ID: "rule-ip-net-coffee", Order: 0, Match: proxynode.MatchDomain, Values: []string{"ip.net.coffee"}}
+	node := proxynode.ProxyNode{
+		ID: "proxy-test", Name: "Test", Entrance: proxynode.Entrance{HopID: "hop-a", Endpoint: endpoint},
+		Hops: []proxynode.Hop{
+			{ID: "hop-a", Name: "A", AgentID: "agent-a", Final: proxynode.Target{Type: proxynode.TargetDirect}},
+			{ID: "hop-b-net", Name: "B", AgentID: "agent-b", Final: proxynode.Target{Type: proxynode.TargetDirect}},
+			{ID: "hop-b-he", Name: "B", AgentID: "agent-b", Final: proxynode.Target{Type: proxynode.TargetDirect}},
+			{ID: "hop-c", Name: "C", AgentID: "agent-c", Final: proxynode.Target{Type: proxynode.TargetDirect}},
+		},
+		Links: []proxynode.Link{
+			{ID: "link-ab-net", ParentHopID: "hop-a", ChildHopID: "hop-b-net", Order: 0, Rules: []proxynode.Rule{netCoffee}, Endpoint: endpoint},
+			{ID: "link-ab-he", ParentHopID: "hop-a", ChildHopID: "hop-b-he", Order: 1, Rules: []proxynode.Rule{heNet}, Endpoint: endpoint},
+			{ID: "link-bc", ParentHopID: "hop-b-net", ChildHopID: "hop-c", Order: 0, Rules: []proxynode.Rule{ipNetCoffee}, Endpoint: endpoint},
+		},
+	}
+
+	tree, _, _ := buildProxyTree(node)
+	if tree == nil || len(tree.Branches) != 2 {
+		t.Fatalf("A branches = %#v, want both parent suffixes", tree)
+	}
+	firstChild, secondChild := tree.Branches[0].Child, tree.Branches[1].Child
+	if firstChild == nil || len(firstChild.Branches) != 1 || firstChild.Branches[0].RuleID != ipNetCoffee.ID {
+		t.Fatalf("net.coffee child branches = %#v, want ip.net.coffee", firstChild)
+	}
+	if secondChild == nil || len(secondChild.Branches) != 0 {
+		t.Fatalf("bgp.he.net child branches = %#v, want no incompatible ip.net.coffee Link", secondChild)
+	}
+	if secondChild.AllRuleIDs != "" {
+		t.Fatalf("isolated bgp.he.net context inherited unrelated Rules: %q", secondChild.AllRuleIDs)
 	}
 }
 
@@ -97,16 +134,23 @@ func TestBuildProxyTreeKeepsDomainToIPPathsAsRuntimeDependent(t *testing.T) {
 
 func proxyReachabilityNode(parentRule proxynode.Rule, childRules []proxynode.Rule) proxynode.ProxyNode {
 	endpoint := proxynode.Endpoint{Protocol: proxynode.ProtocolShadowsocks, Listen: "::", ListenPort: 20048}
-	return proxynode.ProxyNode{
+	node := proxynode.ProxyNode{
 		ID: "proxy-test", Name: "Test", Entrance: proxynode.Entrance{HopID: "hop-a", Endpoint: endpoint},
 		Hops: []proxynode.Hop{
 			{ID: "hop-a", Name: "A", AgentID: "agent-a", Final: proxynode.Target{Type: proxynode.TargetDirect}},
 			{ID: "hop-b", Name: "B", AgentID: "agent-b", Final: proxynode.Target{Type: proxynode.TargetDirect}},
-			{ID: "hop-c", Name: "C", AgentID: "agent-c", Final: proxynode.Target{Type: proxynode.TargetDirect}},
 		},
 		Links: []proxynode.Link{
 			{ID: "link-ab", ParentHopID: "hop-a", ChildHopID: "hop-b", Order: 0, Rules: []proxynode.Rule{parentRule}, Endpoint: endpoint},
-			{ID: "link-bc", ParentHopID: "hop-b", ChildHopID: "hop-c", Order: 0, Rules: childRules, Endpoint: endpoint},
 		},
 	}
+	for index, rule := range childRules {
+		hopID := fmt.Sprintf("hop-c-%d", index)
+		node.Hops = append(node.Hops, proxynode.Hop{ID: hopID, Name: "C", AgentID: "agent-c", Final: proxynode.Target{Type: proxynode.TargetDirect}})
+		node.Links = append(node.Links, proxynode.Link{
+			ID: fmt.Sprintf("link-bc-%d", index), ParentHopID: "hop-b", ChildHopID: hopID, Order: index,
+			Rules: []proxynode.Rule{rule}, Endpoint: endpoint,
+		})
+	}
+	return node
 }

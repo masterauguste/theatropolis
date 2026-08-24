@@ -17,6 +17,9 @@ const (
 	maxStateBytes = 16 << 20
 	maxNameBytes  = 96
 	maxValueBytes = 1024
+	// Branch duplication and the schema-v4 migration clone downstream trees.
+	// Keep malformed or pathological state from causing unbounded expansion.
+	maxTopologyEntities = 10_000
 )
 
 var (
@@ -124,6 +127,9 @@ func validateProxyNode(node ProxyNode, users map[string]User) error {
 	if len(node.Hops) == 0 {
 		return errors.New("Proxy Node has no entrance Hop")
 	}
+	if len(node.Hops)+len(node.Links) > maxTopologyEntities {
+		return errors.New("Proxy Node exceeds topology entity limit")
+	}
 	if err := validateEndpoint(node.Entrance.Endpoint); err != nil {
 		return fmt.Errorf("invalid entrance: %w", err)
 	}
@@ -175,6 +181,9 @@ func validateProxyNode(node ProxyNode, users map[string]User) error {
 		}
 		if link.Fallback && len(link.Rules) != 0 {
 			return errors.New("fallback Link cannot contain match rules")
+		}
+		if len(link.Rules) > 1 {
+			return errors.New("Link cannot contain more than one routing Rule")
 		}
 		for _, rule := range link.Rules {
 			if !validID(rule.ID, "rul_") || rule.Order < 0 || rule.LegacyTarget != nil {

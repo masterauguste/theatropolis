@@ -6,7 +6,7 @@ import "time"
 
 const (
 	SchemaID      = "theatropolis/proxy-node-state"
-	SchemaVersion = 3
+	SchemaVersion = 4
 )
 
 type Protocol string
@@ -203,8 +203,7 @@ type AddRuleInput struct {
 }
 
 type UpdateRuleInput struct {
-	SourceLinkID string
-	TargetLinkID string
-	Match        MatchType
-	Values       []string
+	LinkID string
+	Match  MatchType
+	Values []string
 }

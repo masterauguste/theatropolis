@@ -1072,9 +1072,9 @@ func TestProxyNodePagesUseLinkOwnedRulesAndMembershipCredentials(t *testing.T) {
 		"Left-to-right relay tree", `data-proxy-inspector-open="rule-` + firstRule.ID + `"`, `data-proxy-inspector-open="rule-` + secondRule.ID + `"`,
 		"Terminal on edge-online", `proxy-map__node--reject`, `data-proxy-inspector-view="hop-` + node.Entrance.HopID + `"`,
 		"Hop identity", "Terminal exit", "Save identity", `data-dialog-open="proxy-add-link-` + node.Entrance.HopID + `"`,
-		"Shared relay Link", "2 Rule branches use this one relay endpoint, credential, and sing-box authenticated user.", "Add Rule branch", "Edit relay", "Save relay",
+		"Relay branch", "This Rule has its own relay credential, authenticated user, and downstream routing context.", "Duplicate branch", "Edit relay", "Save relay",
 		"drag numbered Rule branches vertically to change their priority", `data-proxy-rule-branch="` + firstRule.ID + `"`,
-		`data-reorder-url="/proxy-nodes/` + node.ID + `/hops/` + node.Entrance.HopID + `/rules/reorder"`, "Delete Link", "View child Hop",
+		`data-reorder-url="/proxy-nodes/` + node.ID + `/hops/` + node.Entrance.HopID + `/rules/reorder"`, "Delete branch", "View child Hop",
 		`<option value="shadowsocks"`, `<option value="anytls"`, `<option value="hysteria2"`,
 		"example.net", "Address family", "Multiplex", "[::]:8443",
 	} {
@@ -1153,17 +1153,14 @@ func TestProxyNodePagesUseLinkOwnedRulesAndMembershipCredentials(t *testing.T) {
 		t.Fatalf("GET Proxy Node destinations = %d %q", response.Code, response.Body.String())
 	}
 	body = response.Body.String()
-	if !strings.Contains(body, `name="target_link_id"`) ||
-		!strings.Contains(body, `<option value="`+link.ID+`" selected>Exit · edge-exit</option>`) ||
-		!strings.Contains(body, `<option value="`+targetLink.ID+`">Alternate · edge-alt</option>`) {
-		t.Fatalf("Rule editor omitted sibling Link destinations: %q", body)
+	if strings.Contains(body, `name="target_link_id"`) || !strings.Contains(body, "Private branch credential and auth_user") {
+		t.Fatalf("Rule editor still exposes shared Link destinations or omits isolation: %q", body)
 	}
 
 	form := url.Values{
-		"csrf_token":     {fixture.session.CSRFToken},
-		"target_link_id": {targetLink.ID},
-		"match":          {string(proxynode.MatchIPCIDR)},
-		"values":         {"203.0.113.0/24"},
+		"csrf_token": {fixture.session.CSRFToken},
+		"match":      {string(proxynode.MatchIPCIDR)},
+		"values":     {"203.0.113.0/24"},
 	}
 	request = fixture.authenticatedMutationRequest(http.MethodPost, proxyLinkURL(node.ID, link.ID)+"/rules/"+firstRule.ID, form.Encode())
 	response = httptest.NewRecorder()
@@ -1175,7 +1172,7 @@ func TestProxyNodePagesUseLinkOwnedRulesAndMembershipCredentials(t *testing.T) {
 		t.Fatalf("Rule update redirect = %q, want %q", got, want)
 	}
 	updated, exists := fixture.proxyNodes.ProxyNode(node.ID)
-	if !exists || len(updated.Links) != 2 {
+	if !exists || len(updated.Links) != 3 {
 		t.Fatalf("updated Proxy Node = %#v, exists %v", updated, exists)
 	}
 	sourceIndex := slices.IndexFunc(updated.Links, func(candidate proxynode.Link) bool { return candidate.ID == link.ID })
@@ -1184,12 +1181,12 @@ func TestProxyNodePagesUseLinkOwnedRulesAndMembershipCredentials(t *testing.T) {
 		t.Fatalf("updated Links = %#v", updated.Links)
 	}
 	if updated.Links[sourceIndex].Credential != link.Credential || updated.Links[targetIndex].Credential != targetLink.Credential {
-		t.Fatal("Rule destination update rotated a Link credential")
+		t.Fatal("Rule update rotated a branch credential")
 	}
-	if len(updated.Links[sourceIndex].Rules) != 1 || updated.Links[sourceIndex].Rules[0].ID != secondRule.ID || len(updated.Links[targetIndex].Rules) != 1 {
-		t.Fatalf("Rule destination was not moved: %#v", updated.Links)
+	if len(updated.Links[sourceIndex].Rules) != 1 || updated.Links[sourceIndex].Rules[0].ID != firstRule.ID || len(updated.Links[targetIndex].Rules) != 0 {
+		t.Fatalf("Rule left its isolated branch: %#v", updated.Links)
 	}
-	if got := updated.Links[targetIndex].Rules[0]; got.ID != firstRule.ID || got.Match != proxynode.MatchIPCIDR || !slices.Equal(got.Values, []string{"203.0.113.0/24"}) {
+	if got := updated.Links[sourceIndex].Rules[0]; got.ID != firstRule.ID || got.Match != proxynode.MatchIPCIDR || !slices.Equal(got.Values, []string{"203.0.113.0/24"}) {
 		t.Fatalf("updated Rule = %#v", got)
 	}
 
@@ -1204,9 +1201,13 @@ func TestProxyNodePagesUseLinkOwnedRulesAndMembershipCredentials(t *testing.T) {
 		t.Fatalf("POST Rule reorder = %d location %q body %q", response.Code, response.Header().Get("Location"), response.Body.String())
 	}
 	updated, _ = fixture.proxyNodes.ProxyNode(node.ID)
-	sourceIndex = slices.IndexFunc(updated.Links, func(candidate proxynode.Link) bool { return candidate.ID == link.ID })
-	targetIndex = slices.IndexFunc(updated.Links, func(candidate proxynode.Link) bool { return candidate.ID == targetLink.ID })
-	if updated.Links[sourceIndex].Rules[0].Order != 0 || updated.Links[targetIndex].Rules[0].Order != 1 {
+	firstIndex := slices.IndexFunc(updated.Links, func(candidate proxynode.Link) bool {
+		return len(candidate.Rules) == 1 && candidate.Rules[0].ID == firstRule.ID
+	})
+	secondIndex := slices.IndexFunc(updated.Links, func(candidate proxynode.Link) bool {
+		return len(candidate.Rules) == 1 && candidate.Rules[0].ID == secondRule.ID
+	})
+	if firstIndex < 0 || secondIndex < 0 || updated.Links[secondIndex].Rules[0].Order != 0 || updated.Links[firstIndex].Rules[0].Order != 1 {
 		t.Fatalf("dragged Rule priority was not persisted: %#v", updated.Links)
 	}
 

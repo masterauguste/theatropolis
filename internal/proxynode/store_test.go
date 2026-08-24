@@ -91,7 +91,7 @@ func TestStorePersistsUsersTopologyAndGeneratedCredentials(t *testing.T) {
 	}
 }
 
-func TestUpdateRuleMovesDestinationWithoutRotatingLinkCredentials(t *testing.T) {
+func TestUpdateRuleEditsOnlyItsBranchWithoutRotatingCredential(t *testing.T) {
 	store, err := Open(filepath.Join(t.TempDir(), "proxy-node-state.json"), testBuild())
 	if err != nil {
 		t.Fatal(err)
@@ -121,8 +121,8 @@ func TestUpdateRuleMovesDestinationWithoutRotatingLinkCredentials(t *testing.T) 
 		t.Fatal(err)
 	}
 	if err := store.UpdateRule(node.ID, rule.ID, UpdateRuleInput{
-		SourceLinkID: link.ID, TargetLinkID: target.ID,
-		Match: MatchIPCIDR, Values: []string{"203.0.113.0/24"},
+		LinkID: link.ID,
+		Match:  MatchIPCIDR, Values: []string{"203.0.113.0/24"},
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -137,16 +137,16 @@ func TestUpdateRuleMovesDestinationWithoutRotatingLinkCredentials(t *testing.T) 
 		t.Fatalf("updated Links = %#v", updated.Links)
 	}
 	if updated.Links[sourceIndex].Credential != link.Credential || updated.Links[targetIndex].Credential != target.Credential {
-		t.Fatal("moving a Rule rotated a Link credential")
+		t.Fatal("editing a Rule rotated a Link credential")
 	}
-	if len(updated.Links[sourceIndex].Rules) != 0 || len(updated.Links[targetIndex].Rules) != 1 {
-		t.Fatalf("Rule destination was not moved: %#v", updated.Links)
+	if len(updated.Links[sourceIndex].Rules) != 1 || len(updated.Links[targetIndex].Rules) != 0 {
+		t.Fatalf("Rule left its isolated branch: %#v", updated.Links)
 	}
-	got := updated.Links[targetIndex].Rules[0]
+	got := updated.Links[sourceIndex].Rules[0]
 	if got.ID != rule.ID || got.Match != MatchIPCIDR || !slices.Equal(got.Values, []string{"203.0.113.0/24"}) {
 		t.Fatalf("updated Rule = %#v", got)
 	}
-	nested, _, err := store.AddLink(node.ID, AddLinkInput{
+	_, _, err = store.AddLink(node.ID, AddLinkInput{
 		ParentHopID: child.ID, ChildName: "Nested", ChildAgent: "edge-d",
 		Endpoint: testTLSEndpoint(ProtocolHysteria2, 10443),
 	})
@@ -154,9 +154,173 @@ func TestUpdateRuleMovesDestinationWithoutRotatingLinkCredentials(t *testing.T) 
 		t.Fatal(err)
 	}
 	if err := store.UpdateRule(node.ID, rule.ID, UpdateRuleInput{
-		SourceLinkID: target.ID, TargetLinkID: nested.ID, Match: MatchProtocol, Values: []string{"http"},
-	}); !errors.Is(err, ErrConflict) {
-		t.Fatalf("move Rule to non-sibling Link error = %v, want ErrConflict", err)
+		LinkID: target.ID, Match: MatchProtocol, Values: []string{"http"},
+	}); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("edit Rule through another Link error = %v, want ErrNotFound", err)
+	}
+}
+
+func TestSecondRuleCreatesIndependentBranchAndClonesDownstreamContext(t *testing.T) {
+	store, err := Open(filepath.Join(t.TempDir(), "proxy-node-state.json"), testBuild())
+	if err != nil {
+		t.Fatal(err)
+	}
+	node, err := store.CreateProxyNode(CreateProxyNodeInput{
+		Name: "cinema", RootAgent: "edge-a", Entrance: testTLSEndpoint(ProtocolAnyTLS, 443),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	rootLink, child, err := store.AddLink(node.ID, AddLinkInput{
+		ParentHopID: node.Entrance.HopID, ChildName: "Transit", ChildAgent: "edge-b",
+		Endpoint: testTLSEndpoint(ProtocolAnyTLS, 8443),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	downstream, _, err := store.AddLink(node.ID, AddLinkInput{
+		ParentHopID: child.ID, ChildName: "Exit", ChildAgent: "edge-c",
+		Endpoint: testTLSEndpoint(ProtocolHysteria2, 9443),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.AddRule(node.ID, AddRuleInput{LinkID: downstream.ID, Match: MatchDomain, Values: []string{"inside.example"}}); err != nil {
+		t.Fatal(err)
+	}
+	first, err := store.AddRule(node.ID, AddRuleInput{LinkID: rootLink.ID, Match: MatchDomainSuffix, Values: []string{"net.coffee"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, err := store.AddRule(node.ID, AddRuleInput{LinkID: rootLink.ID, Match: MatchDomainSuffix, Values: []string{"bgp.he.net"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	got, _ := store.ProxyNode(node.ID)
+	rootBranches := make([]Link, 0, 2)
+	for _, link := range got.Links {
+		if link.ParentHopID == node.Entrance.HopID {
+			rootBranches = append(rootBranches, link)
+		}
+		if len(link.Rules) > 1 {
+			t.Fatalf("Link retained multiple routing Rules: %#v", link)
+		}
+	}
+	if len(rootBranches) != 2 {
+		t.Fatalf("root branch count = %d, want 2: %#v", len(rootBranches), rootBranches)
+	}
+	if rootBranches[0].ChildHopID == rootBranches[1].ChildHopID || rootBranches[0].Credential == rootBranches[1].Credential {
+		t.Fatalf("branches share logical context or credential: %#v", rootBranches)
+	}
+	if rootBranches[0].Endpoint != rootBranches[1].Endpoint {
+		t.Fatalf("compatible physical listener settings were not copied: %#v", rootBranches)
+	}
+	ruleLinks := map[string]Link{}
+	for _, link := range rootBranches {
+		if len(link.Rules) == 1 {
+			ruleLinks[link.Rules[0].ID] = link
+		}
+	}
+	if _, exists := ruleLinks[first.ID]; !exists {
+		t.Fatalf("first Rule branch missing: %#v", rootBranches)
+	}
+	if _, exists := ruleLinks[second.ID]; !exists {
+		t.Fatalf("second Rule branch missing: %#v", rootBranches)
+	}
+	for _, root := range rootBranches {
+		children := 0
+		for _, link := range got.Links {
+			if link.ParentHopID == root.ChildHopID {
+				children++
+				if len(link.Rules) != 1 || link.Rules[0].Match != MatchDomain {
+					t.Fatalf("downstream Rule was not cloned with the branch: %#v", link)
+				}
+			}
+		}
+		if children != 1 {
+			t.Fatalf("branch child count = %d, want 1", children)
+		}
+	}
+
+	compiled, err := Compile(store.Snapshot(), testResolver{
+		"edge-a": "192.0.2.10", "edge-b": "192.0.2.11", "edge-c": "192.0.2.12",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var transit struct {
+		Inbounds []struct {
+			Users []struct {
+				Name string `json:"name"`
+			} `json:"users"`
+		} `json:"inbounds"`
+		Route struct {
+			Rules []struct {
+				AuthUser []string `json:"auth_user"`
+				Domain   []string `json:"domain"`
+			} `json:"rules"`
+		} `json:"route"`
+	}
+	if err := json.Unmarshal(compiled.Configs["edge-b"], &transit); err != nil {
+		t.Fatal(err)
+	}
+	if len(transit.Inbounds) != 1 || len(transit.Inbounds[0].Users) != 2 {
+		t.Fatalf("shared physical listener users = %#v", transit.Inbounds)
+	}
+	authUsers := make(map[string]bool)
+	for _, rule := range transit.Route.Rules {
+		if slices.Equal(rule.Domain, []string{"inside.example"}) && len(rule.AuthUser) == 1 {
+			authUsers[rule.AuthUser[0]] = true
+		}
+	}
+	if len(authUsers) != 2 {
+		t.Fatalf("downstream routing was not scoped to two branch auth_users: %#v", transit.Route.Rules)
+	}
+}
+
+func TestOpenMigratesSchemaV3MultiRuleLinksIntoIndependentBranches(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "proxy-node-state.json")
+	store, err := Open(path, testBuild())
+	if err != nil {
+		t.Fatal(err)
+	}
+	node, _ := store.CreateProxyNode(CreateProxyNodeInput{Name: "cinema", RootAgent: "edge-a", Entrance: testTLSEndpoint(ProtocolAnyTLS, 443)})
+	link, _, _ := store.AddLink(node.ID, AddLinkInput{ParentHopID: node.Entrance.HopID, ChildName: "Exit", ChildAgent: "edge-b", Endpoint: testTLSEndpoint(ProtocolAnyTLS, 8443)})
+	first, _ := store.AddRule(node.ID, AddRuleInput{LinkID: link.ID, Match: MatchDomainSuffix, Values: []string{"net.coffee"}})
+	state := store.Snapshot()
+	state.ProxyNodes[0].Links[0].Rules = append(state.ProxyNodes[0].Links[0].Rules, Rule{
+		ID: "rul_abcdefghijklmnopqrst", Order: 1, Match: MatchDomainSuffix, Values: []string{"bgp.he.net"},
+	})
+	legacy := envelope{Schema: SchemaID, SchemaVersion: 3, LastUsedBy: normalizeBuild(testBuild(), time.Now()), Data: state}
+	contents, err := json.MarshalIndent(legacy, "", "  ")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, append(contents, '\n'), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	migrated, err := Open(path, testBuild())
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, _ := migrated.ProxyNode(node.ID)
+	if len(got.Links) != 2 || len(got.Hops) != 3 {
+		t.Fatalf("migrated topology = %#v", got)
+	}
+	if got.Links[0].ID != link.ID || got.Links[0].Rules[0].ID != first.ID {
+		t.Fatalf("first branch identity was not preserved: %#v", got.Links)
+	}
+	if got.Links[0].ChildHopID == got.Links[1].ChildHopID || got.Links[0].Credential == got.Links[1].Credential || len(got.Links[1].Rules) != 1 {
+		t.Fatalf("migrated branches are not isolated: %#v", got.Links)
+	}
+	if err := migrated.MarkReady(); err != nil {
+		t.Fatal(err)
+	}
+	persisted, _ := os.ReadFile(path)
+	if !strings.Contains(string(persisted), `"schema_version": 4`) {
+		t.Fatalf("migrated state was not persisted as schema v4: %s", persisted)
 	}
 }
 
@@ -762,13 +926,17 @@ func TestLinksOwnMatchClausesOrderAndFallback(t *testing.T) {
 	state := store.Snapshot()
 	updated := state.ProxyNodes[0]
 	orders := map[string]int{}
+	firstProtocolLinkID := ""
 	for _, link := range updated.Links {
 		orders[link.ID] = link.Order
+		if len(link.Rules) == 1 && link.Rules[0].ID == firstProtocol.ID {
+			firstProtocolLinkID = link.ID
+		}
 		if link.ID == fallback.ID && len(link.Rules) != 0 {
 			t.Fatalf("fallback Link retained clauses: %#v", link.Rules)
 		}
 	}
-	if orders[second.ID] != 0 || orders[first.ID] != 1 || orders[fallback.ID] != 2 {
+	if len(orders) != 4 || orders[second.ID] != 0 || orders[first.ID] != 1 || orders[fallback.ID] != 3 {
 		t.Fatalf("Link order = %#v", orders)
 	}
 	if err := store.MoveLink(node.ID, fallback.ID, -1); !errors.Is(err, ErrConflict) {
@@ -787,7 +955,7 @@ func TestLinksOwnMatchClausesOrderAndFallback(t *testing.T) {
 	if err := json.Unmarshal(compiled.Configs["edge-a"], &config); err != nil {
 		t.Fatal(err)
 	}
-	if len(config.Route.Rules) < 6 || config.Route.Rules[1]["outbound"] != linkOutboundTag(second.ID) || config.Route.Rules[2]["outbound"] != linkOutboundTag(first.ID) || config.Route.Rules[3]["outbound"] != linkOutboundTag(first.ID) || config.Route.Rules[4]["outbound"] != linkOutboundTag(fallback.ID) {
+	if len(config.Route.Rules) < 6 || firstProtocolLinkID == "" || config.Route.Rules[1]["outbound"] != linkOutboundTag(second.ID) || config.Route.Rules[2]["outbound"] != linkOutboundTag(first.ID) || config.Route.Rules[3]["outbound"] != linkOutboundTag(firstProtocolLinkID) || config.Route.Rules[4]["outbound"] != linkOutboundTag(fallback.ID) {
 		t.Fatalf("compiled Link-owned rule order is wrong: %#v", config.Route.Rules)
 	}
 }
@@ -876,8 +1044,8 @@ func TestOpenMigratesSchemaV1HopRulesOntoLinks(t *testing.T) {
 		t.Fatal(err)
 	}
 	contents, _ := os.ReadFile(path)
-	if !strings.Contains(string(contents), `"schema_version": 3`) || strings.Contains(string(contents), `"target"`) || strings.Contains(string(contents), `"rules": null`) {
-		t.Fatalf("migrated state was not persisted as schema v3: %s", contents)
+	if !strings.Contains(string(contents), `"schema_version": 4`) || strings.Contains(string(contents), `"target"`) || strings.Contains(string(contents), `"rules": null`) {
+		t.Fatalf("migrated state was not persisted as schema v4: %s", contents)
 	}
 }
 
