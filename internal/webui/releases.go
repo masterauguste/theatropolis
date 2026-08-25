@@ -34,8 +34,8 @@ type ReleaseCatalog interface {
 
 // GitHubReleaseCatalog discovers Theatropolis releases through GitHub's release
 // metadata so a tag is not offered until every supported binary and its checksum
-// manifest exist. The sing-box catalog uses the public Git transport because its
-// platform-specific asset names are validated by the sing-box updater itself.
+// manifest exist. The sing-box catalog applies the same rule to the dedicated,
+// signed V2Ray-API build repository.
 type GitHubReleaseCatalog struct {
 	client         *http.Client
 	refsURL        string
@@ -73,9 +73,13 @@ func NewGitHubReleaseCatalog(client *http.Client) *GitHubReleaseCatalog {
 
 func NewSingBoxReleaseCatalog(client *http.Client) *GitHubReleaseCatalog {
 	catalog := NewGitHubReleaseCatalog(client)
-	catalog.releasesURL = ""
-	catalog.requiredAssets = nil
-	catalog.refsURL = "https://github.com/SagerNet/sing-box.git/info/refs?service=git-upload-pack"
+	catalog.releasesURL = "https://api.github.com/repos/" + singboxupdate.ReleaseRepository + "/releases?per_page=100"
+	catalog.requiredAssets = []string{
+		"checksums.txt",
+		"checksums.txt.sig",
+		"sing-box-{version}-linux-amd64.tar.gz",
+		"sing-box-{version}-linux-arm64.tar.gz",
+	}
 	catalog.validVersion = singboxupdate.ValidVersion
 	return catalog
 }
@@ -159,6 +163,11 @@ func hasReleaseAssets(release githubRelease, required []string) bool {
 		assets[asset.Name] = struct{}{}
 	}
 	for _, name := range required {
+		name = strings.ReplaceAll(
+			name,
+			"{version}",
+			strings.TrimPrefix(release.TagName, "v"),
+		)
 		if _, exists := assets[name]; !exists {
 			return false
 		}

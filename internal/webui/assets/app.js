@@ -670,7 +670,11 @@ if (versionCatalogURL) {
 
   if (document.querySelector("[data-sing-box-version-select]")) {
     const singBoxLoading = document.querySelector("[data-sing-box-catalog-loading]");
+    const fleetSelect = document.querySelector("[data-fleet-sing-box-select]");
+    const fleetSubmit = document.querySelector("[data-fleet-sing-box-submit]");
     if (singBoxLoading) singBoxLoading.hidden = false;
+    if (fleetSelect) fleetSelect.disabled = true;
+    if (fleetSubmit) fleetSubmit.disabled = true;
     fetchCatalog("sing-box").then((data) => {
       const select = document.querySelector("[data-sing-box-version-select]");
       if (select) {
@@ -690,6 +694,9 @@ if (versionCatalogURL) {
           option.textContent = "No versions available";
           select.appendChild(option);
         }
+        const hasVersion = select.value !== "";
+        if (fleetSelect) fleetSelect.disabled = !hasVersion;
+        if (fleetSubmit) fleetSubmit.disabled = !hasVersion;
       }
       const warning = document.querySelector("[data-sing-box-catalog-warning]");
       const info = document.querySelector("[data-sing-box-catalog-info]");
@@ -703,6 +710,8 @@ if (versionCatalogURL) {
       if (select) {
         select.innerHTML = '<option value="">Versions unavailable</option>';
       }
+      if (fleetSelect) fleetSelect.disabled = true;
+      if (fleetSubmit) fleetSubmit.disabled = true;
       const warning = document.querySelector("[data-sing-box-catalog-warning]");
       if (warning) {
         warning.textContent = error.message;

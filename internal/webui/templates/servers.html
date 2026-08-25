@@ -77,7 +77,7 @@
 <!doctype html>
 <html lang="en">
 {{template "document-head" .}}
-<body>
+<body data-version-catalog-url="/servers/versions">
   <a class="skip-link" href="#main">Skip to content</a>
   {{template "global-header" .}}
   <main class="main" id="main">
@@ -106,6 +106,31 @@
       {{if .Notice}}
       <div class="notice notice--success" role="status">{{.Notice}}</div>
       {{end}}
+      {{if .Error}}
+      <div class="notice notice--error" role="alert">{{.Error}}</div>
+      {{end}}
+
+      <section class="panel fleet-runtime-panel" aria-labelledby="fleet-runtime-heading">
+        <div class="panel__header">
+          <div>
+            <h2 id="fleet-runtime-heading">Fleet sing-box runtime</h2>
+            <p>Choose one signed V2Ray-API build for every connected compatible Agent.</p>
+          </div>
+        </div>
+        <form action="/servers/sing-box-update-all" method="post" class="fleet-runtime-form">
+          <input type="hidden" name="csrf_token" value="{{.CSRFToken}}">
+          <label class="field">
+            <span>Target sing-box version</span>
+            <select name="target_version" data-sing-box-version-select data-fleet-sing-box-select required disabled>
+              <option value="" disabled selected>loading available versions…</option>
+            </select>
+            <small class="inline-loading" data-sing-box-catalog-loading><span class="loading-spinner loading-spinner--small" aria-hidden="true"></span><span>Loading signed releases…</span></small>
+            <small data-sing-box-catalog-warning hidden class="field-warning"></small>
+            <small data-sing-box-catalog-info>Offline, incompatible, busy, and already-matching Agents are skipped.</small>
+          </label>
+          <button class="button button--primary" type="submit" data-submit-button data-submit-label="Queuing…" data-fleet-sing-box-submit disabled>Change connected Agents</button>
+        </form>
+      </section>
 
       <div id="servers-content" class="async-region" data-async-region data-async-url="/servers/content" data-async-loading-label="Loading servers…" aria-live="polite" aria-busy="true">
         <div class="loading-state" role="status">

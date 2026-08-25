@@ -760,6 +760,8 @@ func TestServersPageUsesRealEnrollmentAndConnectionState(t *testing.T) {
 	fixture.handler.ServeHTTP(response, request)
 	if response.Code != http.StatusOK ||
 		!strings.Contains(response.Body.String(), `data-async-url="/servers/content"`) ||
+		!strings.Contains(response.Body.String(), `data-version-catalog-url="/servers/versions"`) ||
+		!strings.Contains(response.Body.String(), `action="/servers/sing-box-update-all"`) ||
 		!strings.Contains(response.Body.String(), "Loading servers…") {
 		t.Fatalf("GET /servers did not render the loading shell: %d %s", response.Code, response.Body.String())
 	}
@@ -2031,13 +2033,104 @@ func TestAgentUpdateAllRejectsBadCSRF(t *testing.T) {
 	}
 }
 
-func TestSingBoxUpdateQueuesExactPrerelease(t *testing.T) {
+func TestSingBoxUpdateAllQueuesSelectedReleaseForConnectedAgents(t *testing.T) {
+	t.Parallel()
+
+	fixture := newWebFixture(t)
+	for _, agentID := range []string{"edge-online", "edge-second", "edge-offline"} {
+		enrollAgent(t, fixture.registry, agentID)
+	}
+	fixture.controller.sessions["edge-second"] = true
+	fixture.handler.(*Handler).singBoxReleases = testReleaseCatalog{
+		releases: []AgentRelease{
+			{Tag: "v1.14.0"},
+			{Tag: "v1.14.0-rc.1", Prerelease: true},
+		},
+	}
+	form := url.Values{
+		"csrf_token":     {fixture.session.CSRFToken},
+		"target_version": {"v1.14.0-rc.1"},
+	}.Encode()
+	request := fixture.authenticatedMutationRequest(
+		http.MethodPost,
+		"/servers/sing-box-update-all",
+		form,
+	)
+	response := httptest.NewRecorder()
+	fixture.handler.ServeHTTP(response, request)
+	if response.Code != http.StatusOK {
+		t.Fatalf("sing-box update-all response = %d %q", response.Code, response.Body.String())
+	}
+	if !strings.Contains(
+		response.Body.String(),
+		"Queued sing-box v1.14.0-rc.1 for 2 connected server(s).",
+	) || !strings.Contains(response.Body.String(), "1 enrolled server(s) skipped") {
+		t.Fatalf("sing-box update-all notice missing from %q", response.Body.String())
+	}
+	for _, agentID := range []string{"edge-online", "edge-second"} {
+		state, exists := fixture.controller.singBoxUpdates[agentID]
+		if !exists || state.TargetVersion != "v1.14.0-rc.1" {
+			t.Fatalf("queued sing-box update for %s = %+v, exists=%v", agentID, state, exists)
+		}
+	}
+	if _, exists := fixture.controller.singBoxUpdates["edge-offline"]; exists {
+		t.Fatal("offline Agent received a sing-box update")
+	}
+}
+
+func TestSingBoxUpdateAllRejectsUnpublishedReleaseAndBadCSRF(t *testing.T) {
+	t.Parallel()
+
+	fixture := newWebFixture(t)
+	enrollAgent(t, fixture.registry, "edge-online")
+	fixture.handler.(*Handler).singBoxReleases = testReleaseCatalog{
+		releases: []AgentRelease{{Tag: "v1.14.0-rc.1", Prerelease: true}},
+	}
+	tests := []struct {
+		name   string
+		csrf   string
+		target string
+		status int
+	}{
+		{
+			name: "unpublished release", csrf: fixture.session.CSRFToken,
+			target: "v1.14.0-rc.2", status: http.StatusBadRequest,
+		},
+		{
+			name: "bad CSRF", csrf: "bogus",
+			target: "v1.14.0-rc.1", status: http.StatusForbidden,
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			form := url.Values{
+				"csrf_token":     {test.csrf},
+				"target_version": {test.target},
+			}.Encode()
+			request := fixture.authenticatedMutationRequest(
+				http.MethodPost,
+				"/servers/sing-box-update-all",
+				form,
+			)
+			response := httptest.NewRecorder()
+			fixture.handler.ServeHTTP(response, request)
+			if response.Code != test.status {
+				t.Fatalf("response = %d %q, want %d", response.Code, response.Body.String(), test.status)
+			}
+		})
+	}
+	if len(fixture.controller.singBoxUpdates) != 0 {
+		t.Fatalf("rejected fleet update queued changes: %+v", fixture.controller.singBoxUpdates)
+	}
+}
+
+func TestSingBoxUpdateQueuesExactReleaseCandidate(t *testing.T) {
 	t.Parallel()
 	fixture := newWebFixture(t)
 	enrollAgent(t, fixture.registry, "edge-online")
 	form := url.Values{
 		"csrf_token":     {fixture.session.CSRFToken},
-		"target_version": {"v1.14.0-alpha.27"},
+		"target_version": {"v1.14.0-rc.1"},
 	}.Encode()
 	request := fixture.authenticatedMutationRequest(
 		http.MethodPost,
@@ -2054,7 +2147,7 @@ func TestSingBoxUpdateQueuesExactPrerelease(t *testing.T) {
 		)
 	}
 	state, exists := fixture.controller.singBoxUpdates["edge-online"]
-	if !exists || state.TargetVersion != "v1.14.0-alpha.27" {
+	if !exists || state.TargetVersion != "v1.14.0-rc.1" {
 		t.Fatalf("queued sing-box update = %+v, exists=%v", state, exists)
 	}
 }
@@ -2065,7 +2158,7 @@ func TestServerPageRendersSingBoxUpdateForm(t *testing.T) {
 	enrollAgent(t, fixture.registry, "edge-online")
 	fixture.handler.(*Handler).singBoxReleases = testReleaseCatalog{
 		releases: []AgentRelease{
-			{Tag: "v1.14.0-alpha.27", Prerelease: true},
+			{Tag: "v1.14.0-rc.1", Prerelease: true},
 			{Tag: "v1.14.0", Prerelease: false},
 		},
 	}
@@ -2101,7 +2194,7 @@ func TestServerVersionsEndpointReturnsIndependentCatalogs(t *testing.T) {
 	}}
 	fixture.handler.(*Handler).singBoxReleases = testReleaseCatalog{
 		releases: []AgentRelease{
-			{Tag: "v1.14.0-alpha.27", Prerelease: true},
+			{Tag: "v1.14.0-rc.1", Prerelease: true},
 			{Tag: "v1.14.0", Prerelease: false},
 		},
 	}
@@ -2110,8 +2203,8 @@ func TestServerVersionsEndpointReturnsIndependentCatalogs(t *testing.T) {
 		want    []string
 		reject  string
 	}{
-		{catalog: "agent", want: []string{"v1.14.0-beta.7", "v1.13.2"}, reject: "v1.14.0-alpha.27"},
-		{catalog: "sing-box", want: []string{"v1.14.0-alpha.27", "v1.14.0"}, reject: "v1.13.2"},
+		{catalog: "agent", want: []string{"v1.14.0-beta.7", "v1.13.2"}, reject: "v1.14.0-rc.1"},
+		{catalog: "sing-box", want: []string{"v1.14.0-rc.1", "v1.14.0"}, reject: "v1.13.2"},
 	} {
 		request := fixture.authenticatedRequest(
 			http.MethodGet,
@@ -2131,6 +2224,32 @@ func TestServerVersionsEndpointReturnsIndependentCatalogs(t *testing.T) {
 		}
 		if strings.Contains(body, test.reject) {
 			t.Fatalf("%s versions response unexpectedly contains %q: %q", test.catalog, test.reject, body)
+		}
+	}
+}
+
+func TestFleetVersionsEndpointReturnsSingBoxCatalogWithoutAgentContext(t *testing.T) {
+	t.Parallel()
+	fixture := newWebFixture(t)
+	fixture.handler.(*Handler).singBoxReleases = testReleaseCatalog{
+		releases: []AgentRelease{
+			{Tag: "v1.14.0"},
+			{Tag: "v1.14.0-rc.1", Prerelease: true},
+		},
+	}
+	request := fixture.authenticatedRequest(
+		http.MethodGet,
+		"/servers/versions?catalog=sing-box",
+		"",
+	)
+	response := httptest.NewRecorder()
+	fixture.handler.ServeHTTP(response, request)
+	if response.Code != http.StatusOK {
+		t.Fatalf("fleet versions response = %d %q", response.Code, response.Body.String())
+	}
+	for _, version := range []string{"v1.14.0", "v1.14.0-rc.1"} {
+		if !strings.Contains(response.Body.String(), version) {
+			t.Fatalf("fleet versions response missing %q: %q", version, response.Body.String())
 		}
 	}
 }

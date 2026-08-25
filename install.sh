@@ -8,8 +8,8 @@ REPOSITORY="masterauguste/theatropolis"
 INSTALL_DIRECTORY="/usr/local/bin"
 UPDATE_HELPER_DIRECTORY="/usr/local/libexec/theatropolis"
 UPDATE_HELPER_PATH="${UPDATE_HELPER_DIRECTORY}/theatropolis-update-helper"
-SING_BOX_VERSION="1.14.0-beta.2"
-SING_BOX_REPOSITORY="SagerNet/sing-box"
+SING_BOX_VERSION="1.14.0-rc.1"
+SING_BOX_REPOSITORY="masterauguste/sing-box-v2ray-api-builds"
 SING_BOX_LIBRARY_DIRECTORY="/usr/local/lib/theatropolis/sing-box"
 MASTER_USER="theatropolis-master"
 AGENT_USER="theatropolis-agent"
@@ -438,11 +438,11 @@ flock -n 9 ||
 case "$(uname -m)" in
 x86_64 | amd64)
 	ARCHITECTURE="amd64"
-	SING_BOX_SHA256="f68715815741e59f25e32904cabcd5924a0461a910d8e9c9612512b957709ef4"
+	SING_BOX_SHA256="f45605ba0b022c2383815eb7522741dfb930cc04f08262f9a4e4f8ea0b4441b9"
 	;;
 aarch64 | arm64)
 	ARCHITECTURE="arm64"
-	SING_BOX_SHA256="0f20254efb5218086d1c8458c524b73eae1461aaa966db1adb1526b1b0599165"
+	SING_BOX_SHA256="3276fe082f46675c52f11fb3a9cf3b9d5e846d2a464ae7c7e216af4195ff03cf"
 	;;
 *) fail "only amd64 and arm64 are supported" ;;
 esac
@@ -584,7 +584,52 @@ prepare_sing_box() {
 	SING_BOX_ARCHIVE="${SING_BOX_PACKAGE}.tar.gz"
 	SING_BOX_RELEASE_BASE="https://github.com/${SING_BOX_REPOSITORY}/releases/download/v${SING_BOX_VERSION}"
 	SING_BOX_ARCHIVE_PATH="$TEMP_DIRECTORY/$SING_BOX_ARCHIVE"
+	SING_BOX_MANIFEST_PATH="$TEMP_DIRECTORY/sing-box-checksums.txt"
+	SING_BOX_SIGNATURE_PATH="$TEMP_DIRECTORY/sing-box-checksums.txt.sig"
+	SING_BOX_PUBLIC_KEY_PATH="$TEMP_DIRECTORY/sing-box-release-signing-public.pem"
 	# Word splitting is intentional for the constant curl option list.
+	# shellcheck disable=SC2086
+	curl $CURL_OPTIONS \
+		-o "$SING_BOX_MANIFEST_PATH" \
+		"$SING_BOX_RELEASE_BASE/checksums.txt"
+	# shellcheck disable=SC2086
+	curl $CURL_OPTIONS \
+		-o "$SING_BOX_SIGNATURE_PATH" \
+		"$SING_BOX_RELEASE_BASE/checksums.txt.sig"
+
+	cat >"$SING_BOX_PUBLIC_KEY_PATH" <<'EOF'
+-----BEGIN PUBLIC KEY-----
+MIIBojANBgkqhkiG9w0BAQEFAAOCAY8AMIIBigKCAYEAyfM82BiyFd5HnGrCDVWz
+cbNsmNVt4gRudcg+aF4rtZeHQ6a0+NA18MjwWqAxGDyjd1Zbh1RSV/SneSMoQs7r
+0JgyTirWp+iqhQFVuSgwSIaC+p8rcLJ/g09wADBOwJJJJK8xlLwiRa1TTlKGS7Q8
+f3x/g/1DeD72oIyEwC4Sr06aefv0kjzPQ4NvN4ArCakWeRf1+LNDirWwCFdYTaU7
+p4azubUGlopolqPSI5NYHqICSGoi1KOkQWbH8A4dH7u87TbRrd3k9hBy2oTbYZrH
+ztukFC5x4iWEnAW94P1CxHWPIL/E4QELSoD/bfm9t4zSsqZAOoHzjqSRkPyMqVOP
+EgT8WenoIQV2jJsNYacpG+HdBOHxw7KHlutl1kojuBIXB4+sLRGnZ9KsU6uPZJqA
+E8ytHGgU3PKNx/cDrPzElJ/4NXFkEL6xwAVzbJVgLP3Ik53QREvqgL4ifAwH+gQ0
+Td2bRXboqG6wtCBLGSk6FM2SJJrAej2vvItY78x75t5tAgMBAAE=
+-----END PUBLIC KEY-----
+EOF
+	if ! openssl dgst -sha256 \
+		-verify "$SING_BOX_PUBLIC_KEY_PATH" \
+		-signature "$SING_BOX_SIGNATURE_PATH" \
+		-sigopt rsa_padding_mode:pss \
+		-sigopt rsa_pss_saltlen:32 \
+		"$SING_BOX_MANIFEST_PATH" >/dev/null; then
+		fail "sing-box checksum manifest signature verification failed"
+	fi
+
+	SING_BOX_SIGNED_SHA256="$(
+		awk -v archive="$SING_BOX_ARCHIVE" '
+			$2 == archive { matches++; checksum = $1 }
+			END { if (matches == 1) print checksum }
+		' "$SING_BOX_MANIFEST_PATH"
+	)"
+	printf '%s' "$SING_BOX_SIGNED_SHA256" |
+		grep -Eq '^[a-f0-9]{64}$' ||
+		fail "sing-box release checksum is missing or invalid"
+	[ "$SING_BOX_SIGNED_SHA256" = "$SING_BOX_SHA256" ] ||
+		fail "sing-box signed checksum does not match the installer pin"
 	# shellcheck disable=SC2086
 	curl $CURL_OPTIONS \
 		-o "$SING_BOX_ARCHIVE_PATH" \

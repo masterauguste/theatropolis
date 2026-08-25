@@ -13,7 +13,7 @@ TEST_ROOT="$TEST_DIRECTORY/root"
 MOCK_BIN="$TEST_DIRECTORY/bin"
 RELEASE_DIRECTORY="$TEST_DIRECTORY/release"
 RELEASE_STAGE="$TEST_DIRECTORY/release-stage"
-SING_BOX_VERSION="1.14.0-beta.2"
+SING_BOX_VERSION="1.14.0-rc.1"
 SING_BOX_PACKAGE="sing-box-${SING_BOX_VERSION}-linux-amd64"
 SING_BOX_ARCHIVE="${SING_BOX_PACKAGE}.tar.gz"
 SING_BOX_STAGE="$TEST_DIRECTORY/sing-box-stage"
@@ -99,6 +99,11 @@ tar -czf "$RELEASE_DIRECTORY/theatropolis_linux_amd64.tar.gz" \
 tar -czf "$RELEASE_DIRECTORY/$SING_BOX_ARCHIVE" \
 	-C "$SING_BOX_STAGE" \
 	"$SING_BOX_PACKAGE"
+printf '%s  %s\n' \
+	'f45605ba0b022c2383815eb7522741dfb930cc04f08262f9a4e4f8ea0b4441b9' \
+	"$SING_BOX_ARCHIVE" \
+	>"$RELEASE_DIRECTORY/sing-box-checksums.txt"
+: >"$RELEASE_DIRECTORY/sing-box-checksums.txt.sig"
 (
 	cd "$RELEASE_DIRECTORY"
 	ARCHIVE_CHECKSUM="$(
@@ -162,14 +167,20 @@ case "$SOURCE" in
 */theatropolis_linux_amd64.tar.gz)
 	cp "$TEST_RELEASE_DIRECTORY/theatropolis_linux_amd64.tar.gz" "$OUTPUT"
 	;;
+*/sing-box-v2ray-api-builds/releases/download/v1.14.0-rc.1/checksums.txt)
+	cp "$TEST_RELEASE_DIRECTORY/sing-box-checksums.txt" "$OUTPUT"
+	;;
+*/sing-box-v2ray-api-builds/releases/download/v1.14.0-rc.1/checksums.txt.sig)
+	cp "$TEST_RELEASE_DIRECTORY/sing-box-checksums.txt.sig" "$OUTPUT"
+	;;
 */checksums.txt)
 	cp "$TEST_RELEASE_DIRECTORY/checksums.txt" "$OUTPUT"
 	;;
 */checksums.txt.sig)
 	cp "$TEST_RELEASE_DIRECTORY/checksums.txt.sig" "$OUTPUT"
 	;;
-*/sing-box-1.14.0-beta.2-linux-amd64.tar.gz)
-	cp "$TEST_RELEASE_DIRECTORY/sing-box-1.14.0-beta.2-linux-amd64.tar.gz" "$OUTPUT"
+*/sing-box-1.14.0-rc.1-linux-amd64.tar.gz)
+	cp "$TEST_RELEASE_DIRECTORY/sing-box-1.14.0-rc.1-linux-amd64.tar.gz" "$OUTPUT"
 	;;
 *)
 	printf 'unexpected mock curl source: %s\n' "$SOURCE" >&2
@@ -180,15 +191,20 @@ EOF
 
 cat >"$MOCK_BIN/openssl" <<'EOF'
 #!/bin/sh
+case "$*" in
+*sing-box-release-signing-public.pem*)
+	[ "${TEST_SING_BOX_SIGNATURE_FAIL:-no}" != "yes" ] || exit 1
+	;;
+esac
 exit 0
 EOF
 
 cat >"$MOCK_BIN/sha256sum" <<'EOF'
 #!/bin/sh
 case "${1:-}" in
-*"/sing-box-1.14.0-beta.2-linux-amd64.tar.gz")
+*"/sing-box-1.14.0-rc.1-linux-amd64.tar.gz")
 	printf '%s  %s\n' \
-		'f68715815741e59f25e32904cabcd5924a0461a910d8e9c9612512b957709ef4' \
+		'f45605ba0b022c2383815eb7522741dfb930cc04f08262f9a4e4f8ea0b4441b9' \
 		"$1"
 	;;
 *) exec /usr/bin/sha256sum "$@" ;;
@@ -287,11 +303,13 @@ EOF
 chmod +x "$MOCK_BIN"/*
 
 run_installer() {
+	TEST_SING_BOX_SIGNATURE_FAIL_VALUE="${1:-no}"
 	PATH="$MOCK_BIN:$PATH" \
 		TEST_RELEASE_DIRECTORY="$RELEASE_DIRECTORY" \
 		TEST_MV_LOG="$MV_LOG" \
 		TEST_CHOWN_LOG="$CHOWN_LOG" \
 		TEST_SYSTEMCTL_LOG="$SYSTEMCTL_LOG" \
+		TEST_SING_BOX_SIGNATURE_FAIL="$TEST_SING_BOX_SIGNATURE_FAIL_VALUE" \
 		sh "$TEST_DIRECTORY/install.sh" agent \
 		--master master.example.com:8443 \
 		--token "$VALID_TOKEN" \
@@ -403,13 +421,23 @@ if find "$STATE_DIRECTORY" -maxdepth 1 \
 	fail "successful installation left a staged token behind"
 fi
 
+set +e
+SING_BOX_SIGNATURE_OUTPUT="$(run_installer yes 2>&1)"
+SING_BOX_SIGNATURE_STATUS="$?"
+set -e
+[ "$SING_BOX_SIGNATURE_STATUS" -ne 0 ] ||
+	fail "installer unexpectedly accepted an invalid sing-box signature"
+printf '%s' "$SING_BOX_SIGNATURE_OUTPUT" |
+	grep -Fq 'sing-box checksum manifest signature verification failed' ||
+	fail "sing-box signature rejection did not provide a useful diagnostic"
+
 # Git Bash cannot reliably create a native Windows symlink without optional
 # host privileges. The Linux CI run below remains authoritative for this case.
 case "$TEST_PLATFORM" in
 MINGW* | MSYS*) exit 0 ;;
 esac
 
-# The pinned upstream archive is rejected before extraction if any expected
+# The pinned V2Ray-API archive is rejected before extraction if any expected
 # member is a symbolic link, even when its path and checksum otherwise pass.
 rm -f -- "$SING_BOX_STAGE/$SING_BOX_PACKAGE/libcronet.so"
 ln -s /etc/shadow "$SING_BOX_STAGE/$SING_BOX_PACKAGE/libcronet.so"

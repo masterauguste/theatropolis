@@ -446,6 +446,26 @@ dialog.proxy-inspector { width: min(60rem, calc(100vw - 2rem)); height: min(82vh
 .inline-form { display: flex; gap: .75rem; padding: 1.25rem; }
 .inline-form input { flex: 1; }
 
+.fleet-runtime-panel {
+  margin-bottom: 1.25rem;
+}
+
+.fleet-runtime-form {
+  display: grid;
+  padding: 1.25rem;
+  align-items: end;
+  gap: 1rem;
+  grid-template-columns: minmax(260px, 1fr) auto;
+}
+
+.fleet-runtime-form .field {
+  margin: 0;
+}
+
+.fleet-runtime-form .button {
+  min-height: 46px;
+}
+
 .membership-list { display: grid; }
 .membership-list > article,
 .membership-list > a {
@@ -2997,6 +3017,14 @@ body:has(dialog[open]) {
   .page-header {
     align-items: flex-start;
     flex-direction: column;
+  }
+
+  .fleet-runtime-form {
+    grid-template-columns: 1fr;
+  }
+
+  .fleet-runtime-form .button {
+    width: 100%;
   }
 
   .metric-grid,

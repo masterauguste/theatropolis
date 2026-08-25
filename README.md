@@ -22,7 +22,9 @@ The enrollment token identifies the server entry. The agent stores no server nam
 
 To move an existing server record to replacement hardware, open that server's management dialog and create a replacement command. The existing agent remains authorized until the one-time token is redeemed; redemption swaps its public key, disconnects its old control session, and retains the master's last deployment for immediate replay. The equivalent local command is `sudo theatropolis-master create-enrollment --server edge-1 --replace-agent`.
 
-The installer verifies release archives against an RSA-PSS-signed SHA-256 manifest—no compiler or Go toolchain is installed. Agent installations include the pinned official sing-box 1.14.0-beta.2 binary for the detected architecture. After installation, the master can remotely select and install newer stable or prerelease Theatropolis versions published on GitHub.
+The installer verifies release archives against RSA-PSS-signed SHA-256 manifests—no compiler or Go toolchain is installed. Agent installations include a pinned sing-box 1.14 release-candidate binary built from the unmodified upstream source with V2Ray API support and published by [sing-box-v2ray-api-builds](https://github.com/masterauguste/sing-box-v2ray-api-builds). After installation, the master can remotely install newer stable or release-candidate sing-box builds from that channel and stable or prerelease Theatropolis versions published on GitHub.
+
+The Servers page can also schedule one selected sing-box version across every connected compatible Agent. Offline Agents, Agents already running that version, and Agents with an update already pending are left unchanged and reported as skipped.
 
 The master, agent, and sing-box all run as dedicated unprivileged users. A small root-only update helper has no listener and accepts updates only through fixed systemd units. Theatropolis releases must pass signature verification and cannot be downgraded; downloaded sing-box candidates are executed for validation only after dropping to the agent account. See [SECURITY.md](SECURITY.md) for the boundary and its limits.
 

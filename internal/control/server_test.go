@@ -476,7 +476,7 @@ func TestQueueSingBoxUpdateSupportsExactPrerelease(t *testing.T) {
 	server := newTestServer(deployment.NewMemoryStore(), nil)
 	const agentID = "edge-sing-box-update"
 	const requestID = "singbox_0123456789abcdef"
-	const targetVersion = "v1.14.0-alpha.27"
+	const targetVersion = "v1.14.0-rc.1"
 	enrollTestIdentity(t, server.Identities, agentID)
 	session := newSession(agentID)
 	session.capabilities[SingBoxUpdateCapability] = struct{}{}

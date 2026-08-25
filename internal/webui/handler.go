@@ -425,6 +425,7 @@ func (h *Handler) routes() {
 		h.deploymentStatus,
 	)
 	h.mux.HandleFunc("GET /servers/{agent_id}/manage", h.serverPage)
+	h.mux.HandleFunc("GET /servers/versions", h.fleetVersions)
 	h.mux.HandleFunc(
 		"GET /servers/{agent_id}/versions",
 		h.serverVersions,
@@ -452,6 +453,7 @@ func (h *Handler) routes() {
 	h.mux.HandleFunc("POST /servers/{agent_id}/revoke", h.revokeServer)
 	h.mux.HandleFunc("POST /servers/{agent_id}/replace", h.replaceServer)
 	h.mux.HandleFunc("POST /servers/agent-update-all", h.updateAllAgents)
+	h.mux.HandleFunc("POST /servers/sing-box-update-all", h.updateAllSingBox)
 	h.mux.HandleFunc("POST /servers/{agent_id}/agent-update", h.updateAgent)
 	h.mux.HandleFunc("POST /servers/{agent_id}/sing-box-update", h.updateSingBox)
 	h.mux.HandleFunc("POST /master-update", h.updateMaster)
@@ -1428,6 +1430,133 @@ func (h *Handler) updateAllAgents(response http.ResponseWriter, request *http.Re
 	})
 }
 
+func (h *Handler) updateAllSingBox(response http.ResponseWriter, request *http.Request) {
+	sessionToken, ok := h.sessionToken(request)
+	if !ok {
+		h.redirectToLogin(response, request)
+		return
+	}
+	if h.rejectInvalidMutationOrigin(response, request) {
+		return
+	}
+	form, err := readExactForm(
+		response,
+		request,
+		maxEnrollmentBodyBytes,
+		"csrf_token",
+		"target_version",
+	)
+	if err != nil || !h.authorizeCSRF(response, sessionToken, form.Get("csrf_token")) {
+		http.Error(response, "request was not authorized", http.StatusForbidden)
+		return
+	}
+	session, err := h.authenticateSession(response, sessionToken)
+	if err != nil {
+		h.redirectToLogin(response, request)
+		return
+	}
+	renderError := func(status int, message string) {
+		h.render(response, status, "servers.html", pageData{
+			Title:     "Servers",
+			ActiveNav: "servers",
+			CSRFToken: session.CSRFToken,
+			Error:     message,
+		})
+	}
+	targetVersion := strings.TrimSpace(form.Get("target_version"))
+	if !singboxupdate.ValidVersion(targetVersion) {
+		renderError(
+			http.StatusBadRequest,
+			"Choose an exact sing-box 1.14+ stable or release-candidate build.",
+		)
+		return
+	}
+	if h.singBoxReleases == nil {
+		renderError(http.StatusServiceUnavailable, "The sing-box release catalog is unavailable.")
+		return
+	}
+	releases, err := h.singBoxReleases.Versions(request.Context())
+	if err != nil {
+		renderError(
+			http.StatusServiceUnavailable,
+			"The sing-box release catalog could not be loaded.",
+		)
+		return
+	}
+	if !containsRelease(releases, targetVersion) {
+		renderError(
+			http.StatusBadRequest,
+			"That sing-box release does not have the required signed binaries.",
+		)
+		return
+	}
+
+	queued := 0
+	skipped := 0
+	for _, snapshot := range h.registry.Snapshot(h.currentTime()) {
+		if snapshot.State != identity.AgentStateEnrolled {
+			continue
+		}
+		info, online := h.sessions.AgentInfo(snapshot.ID)
+		if !online || info.SingBoxVersion == targetVersion ||
+			!h.controller.CanUpdateSingBox(snapshot.ID) {
+			skipped++
+			continue
+		}
+		requestID, idErr := randomOpaqueID("singbox")
+		if idErr != nil {
+			h.logger.Error(
+				"generate sing-box update ID",
+				"agent_id", snapshot.ID,
+				"error", idErr,
+			)
+			skipped++
+			continue
+		}
+		if queueErr := h.controller.QueueSingBoxUpdate(
+			request.Context(),
+			snapshot.ID,
+			requestID,
+			targetVersion,
+		); queueErr != nil {
+			if !errors.Is(queueErr, singboxupdate.ErrUpdatePending) &&
+				!errors.Is(queueErr, control.ErrAgentOffline) {
+				h.logger.Error(
+					"queue fleet sing-box update",
+					"agent_id", snapshot.ID,
+					"error", queueErr,
+				)
+			}
+			skipped++
+			continue
+		}
+		queued++
+	}
+	h.logger.Info(
+		"fleet sing-box update queued",
+		"target_version", targetVersion,
+		"queued", queued,
+		"skipped", skipped,
+	)
+	notice := fmt.Sprintf(
+		"Queued sing-box %s for %d connected server(s).",
+		targetVersion,
+		queued,
+	)
+	if skipped > 0 {
+		notice += fmt.Sprintf(
+			" %d enrolled server(s) skipped (offline, incompatible, already on that version, or already updating).",
+			skipped,
+		)
+	}
+	h.render(response, http.StatusOK, "servers.html", pageData{
+		Title:     "Servers",
+		ActiveNav: "servers",
+		CSRFToken: session.CSRFToken,
+		Notice:    notice,
+	})
+}
+
 func (h *Handler) updateSingBox(
 	response http.ResponseWriter,
 	request *http.Request,
@@ -1466,7 +1595,7 @@ func (h *Handler) updateSingBox(
 	message := ""
 	statusCode := http.StatusBadRequest
 	if !singboxupdate.ValidVersion(targetVersion) {
-		message = "Choose an exact sing-box 1.14+ stable or testing release."
+		message = "Choose an exact sing-box 1.14+ stable or release-candidate build."
 	} else if snapshot.State != identity.AgentStateEnrolled ||
 		!h.controller.CanUpdateSingBox(snapshot.ID) {
 		message = "sing-box update control is unavailable until this server is online with a compatible agent."
@@ -1688,7 +1817,7 @@ func (h *Handler) serverPageData(
 		}
 		if h.controller.CanUpdateSingBox(snapshot.ID) {
 			detail.SingBoxUpdateEnabled = true
-			detail.SingBoxUpdateHint = "Choose any published sing-box 1.14+ stable or testing release. The official GitHub asset digest is verified before installation."
+			detail.SingBoxUpdateHint = "Choose a published sing-box 1.14+ stable or release-candidate build with V2Ray API. Its signed checksum manifest and GitHub asset digest are verified before installation."
 		} else if online {
 			detail.SingBoxUpdateHint = "Rerun the current agent installer once to enable secure sing-box installation and updates."
 		} else {
@@ -1774,6 +1903,29 @@ type versionCatalogResponse struct {
 	LatestSingBoxVersion  string             `json:"latest_sing_box_version"`
 	SingBoxVersions       []agentVersionView `json:"sing_box_versions"`
 	SingBoxCatalogWarning string             `json:"sing_box_catalog_warning,omitempty"`
+}
+
+func (h *Handler) fleetVersions(response http.ResponseWriter, request *http.Request) {
+	response.Header().Set("Cache-Control", "no-store")
+	if _, ok := h.authenticate(response, request); !ok {
+		http.Error(response, "unauthorized", http.StatusUnauthorized)
+		return
+	}
+	if request.URL.Query().Get("catalog") != "sing-box" {
+		http.Error(response, "unknown version catalog", http.StatusBadRequest)
+		return
+	}
+	result := versionCatalogResponse{}
+	result.SingBoxVersions, result.LatestSingBoxVersion,
+		result.SingBoxCatalogWarning = h.releaseVersionsFor(
+		request.Context(),
+		h.singBoxReleases,
+		"sing-box",
+	)
+	response.Header().Set("Content-Type", "application/json")
+	if err := json.NewEncoder(response).Encode(result); err != nil {
+		h.logger.Warn("encode fleet version catalog", "error", err)
+	}
 }
 
 func (h *Handler) serverVersions(response http.ResponseWriter, request *http.Request) {

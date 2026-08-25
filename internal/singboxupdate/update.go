@@ -5,9 +5,13 @@ import (
 	"bytes"
 	"compress/gzip"
 	"context"
+	"crypto"
+	"crypto/rsa"
 	"crypto/sha256"
+	"crypto/x509"
 	"encoding/hex"
 	"encoding/json"
+	"encoding/pem"
 	"errors"
 	"fmt"
 	"io"
@@ -27,14 +31,19 @@ const (
 	processingFileName = ".sing-box-update-request.processing.json"
 	resultFileName     = "sing-box-update-result.json"
 	maxMetadataBytes   = 4 << 20
+	maxManifestBytes   = 128 << 10
+	maxSignatureBytes  = 8 << 10
 	maxArchiveBytes    = 96 << 20
 	maxComponentBytes  = 80 << 20
+	// ReleaseRepository publishes signed, upstream-source sing-box builds with
+	// the V2Ray API tag required by Theatropolis traffic accounting.
+	ReleaseRepository = "masterauguste/sing-box-v2ray-api-builds"
 )
 
 var (
 	ErrUpdatePending = errors.New("a sing-box update is already pending")
 	versionPattern   = regexp.MustCompile(
-		`\Av(?:1\.(?:1[4-9]|[2-9][0-9])|[2-9][0-9]*\.[0-9]+)\.[0-9]+(?:-(?:alpha|beta|rc)\.[0-9]+)?\z`,
+		`\Av(?:1\.(?:1[4-9]|[2-9][0-9])|(?:[2-9]|[1-9][0-9]+)\.[0-9]+)\.[0-9]+(?:-rc\.[0-9]+)?\z`,
 	)
 	requestIDPattern = regexp.MustCompile(`\A[A-Za-z0-9_-]{16,128}\z`)
 	digestPattern    = regexp.MustCompile(`\Asha256:([0-9a-f]{64})\z`)
@@ -244,6 +253,18 @@ type githubAsset struct {
 	BrowserDownloadURL string `json:"browser_download_url"`
 }
 
+const releaseSigningPublicKeyPEM = `-----BEGIN PUBLIC KEY-----
+MIIBojANBgkqhkiG9w0BAQEFAAOCAY8AMIIBigKCAYEAyfM82BiyFd5HnGrCDVWz
+cbNsmNVt4gRudcg+aF4rtZeHQ6a0+NA18MjwWqAxGDyjd1Zbh1RSV/SneSMoQs7r
+0JgyTirWp+iqhQFVuSgwSIaC+p8rcLJ/g09wADBOwJJJJK8xlLwiRa1TTlKGS7Q8
+f3x/g/1DeD72oIyEwC4Sr06aefv0kjzPQ4NvN4ArCakWeRf1+LNDirWwCFdYTaU7
+p4azubUGlopolqPSI5NYHqICSGoi1KOkQWbH8A4dH7u87TbRrd3k9hBy2oTbYZrH
+ztukFC5x4iWEnAW94P1CxHWPIL/E4QELSoD/bfm9t4zSsqZAOoHzjqSRkPyMqVOP
+EgT8WenoIQV2jJsNYacpG+HdBOHxw7KHlutl1kojuBIXB4+sLRGnZ9KsU6uPZJqA
+E8ytHGgU3PKNx/cDrPzElJ/4NXFkEL6xwAVzbJVgLP3Ik53QREvqgL4ifAwH+gQ0
+Td2bRXboqG6wtCBLGSk6FM2SJJrAej2vvItY78x75t5tAgMBAAE=
+-----END PUBLIC KEY-----`
+
 func applyRelease(
 	ctx context.Context,
 	options ApplyOptions,
@@ -257,7 +278,7 @@ func applyRelease(
 	if client == nil {
 		client = secureHTTPClient()
 	}
-	apiURL := "https://api.github.com/repos/SagerNet/sing-box/releases/tags/" +
+	apiURL := "https://api.github.com/repos/" + ReleaseRepository + "/releases/tags/" +
 		request.TargetVersion
 	metadata, err := download(ctx, client, apiURL, maxMetadataBytes)
 	if err != nil {
@@ -272,33 +293,60 @@ func applyRelease(
 	}
 	version := strings.TrimPrefix(request.TargetVersion, "v")
 	assetName := "sing-box-" + version + "-linux-" + architecture + ".tar.gz"
-	var selected *githubAsset
-	for index := range release.Assets {
-		if release.Assets[index].Name == assetName {
-			if selected != nil {
-				return errors.New("sing-box release contains duplicate target assets")
-			}
-			selected = &release.Assets[index]
-		}
+	selected, err := selectReleaseAsset(release.Assets, assetName, maxArchiveBytes)
+	if err != nil {
+		return err
 	}
 	if selected == nil || selected.Size <= 0 || selected.Size > maxArchiveBytes {
 		return errors.New("sing-box release does not contain a valid target archive")
 	}
-	digestMatch := digestPattern.FindStringSubmatch(selected.Digest)
-	if len(digestMatch) != 2 {
-		return errors.New("sing-box release is missing its SHA-256 digest")
-	}
-	expectedURL := "https://github.com/SagerNet/sing-box/releases/download/" +
+	expectedURL := "https://github.com/" + ReleaseRepository + "/releases/download/" +
 		request.TargetVersion + "/" + assetName
 	if selected.BrowserDownloadURL != expectedURL {
 		return errors.New("sing-box release returned an unexpected download URL")
+	}
+	manifestAsset, err := selectReleaseAsset(release.Assets, "checksums.txt", maxManifestBytes)
+	if err != nil {
+		return err
+	}
+	signatureAsset, err := selectReleaseAsset(release.Assets, "checksums.txt.sig", maxSignatureBytes)
+	if err != nil {
+		return err
+	}
+	if manifestAsset == nil || signatureAsset == nil {
+		return errors.New("sing-box release is missing its signed checksum manifest")
+	}
+	manifest, err := downloadVerifiedAsset(
+		ctx, client, manifestAsset, request.TargetVersion, maxManifestBytes,
+	)
+	if err != nil {
+		return fmt.Errorf("download sing-box checksum manifest: %w", err)
+	}
+	signature, err := downloadVerifiedAsset(
+		ctx, client, signatureAsset, request.TargetVersion, maxSignatureBytes,
+	)
+	if err != nil {
+		return fmt.Errorf("download sing-box checksum signature: %w", err)
+	}
+	if err := verifyChecksumManifest(
+		manifest,
+		signature,
+		[]byte(releaseSigningPublicKeyPEM),
+	); err != nil {
+		return err
+	}
+	expectedArchiveDigest, err := checksumForAsset(manifest, assetName)
+	if err != nil {
+		return err
 	}
 	archive, err := download(ctx, client, selected.BrowserDownloadURL, maxArchiveBytes)
 	if err != nil {
 		return fmt.Errorf("download sing-box release: %w", err)
 	}
 	actualDigest := sha256.Sum256(archive)
-	if !strings.EqualFold(hex.EncodeToString(actualDigest[:]), digestMatch[1]) {
+	actualDigestHex := hex.EncodeToString(actualDigest[:])
+	if !strings.EqualFold(actualDigestHex, expectedArchiveDigest) ||
+		!assetDigestMatches(*selected, actualDigestHex) {
 		return errors.New("sing-box release checksum verification failed")
 	}
 	binary, library, err := extractArchive(archive, version, architecture)
@@ -306,6 +354,122 @@ func applyRelease(
 		return err
 	}
 	return installComponents(ctx, options, request.TargetVersion, binary, library)
+}
+
+func selectReleaseAsset(
+	assets []githubAsset,
+	name string,
+	maxSize int64,
+) (*githubAsset, error) {
+	var selected *githubAsset
+	for index := range assets {
+		if assets[index].Name != name {
+			continue
+		}
+		if selected != nil {
+			return nil, errors.New("sing-box release contains duplicate target assets")
+		}
+		selected = &assets[index]
+	}
+	if selected == nil {
+		return nil, nil
+	}
+	if selected.Size <= 0 || selected.Size > maxSize ||
+		!validReleaseAssetURL(*selected, name) {
+		return nil, errors.New("sing-box release contains an invalid target asset")
+	}
+	if len(digestPattern.FindStringSubmatch(selected.Digest)) != 2 {
+		return nil, errors.New("sing-box release is missing its SHA-256 digest")
+	}
+	return selected, nil
+}
+
+func validReleaseAssetURL(asset githubAsset, name string) bool {
+	prefix := "https://github.com/" + ReleaseRepository + "/releases/download/"
+	return strings.HasPrefix(asset.BrowserDownloadURL, prefix) &&
+		strings.HasSuffix(asset.BrowserDownloadURL, "/"+name)
+}
+
+func downloadVerifiedAsset(
+	ctx context.Context,
+	client *http.Client,
+	asset *githubAsset,
+	tag string,
+	limit int64,
+) ([]byte, error) {
+	expectedURL := "https://github.com/" + ReleaseRepository +
+		"/releases/download/" + tag + "/" + asset.Name
+	if asset.BrowserDownloadURL != expectedURL {
+		return nil, errors.New("sing-box release returned an unexpected download URL")
+	}
+	contents, err := download(ctx, client, asset.BrowserDownloadURL, limit)
+	if err != nil {
+		return nil, err
+	}
+	digest := sha256.Sum256(contents)
+	if !assetDigestMatches(*asset, hex.EncodeToString(digest[:])) {
+		return nil, errors.New("sing-box release asset digest verification failed")
+	}
+	return contents, nil
+}
+
+func assetDigestMatches(asset githubAsset, actual string) bool {
+	match := digestPattern.FindStringSubmatch(asset.Digest)
+	return len(match) == 2 && strings.EqualFold(actual, match[1])
+}
+
+func verifyChecksumManifest(manifest, signature, publicPEM []byte) error {
+	block, trailing := pem.Decode(publicPEM)
+	if block == nil || len(trailing) != 0 || block.Type != "PUBLIC KEY" {
+		return errors.New("sing-box release signing public key is invalid")
+	}
+	parsed, err := x509.ParsePKIXPublicKey(block.Bytes)
+	if err != nil {
+		return errors.New("sing-box release signing public key is invalid")
+	}
+	publicKey, ok := parsed.(*rsa.PublicKey)
+	if !ok || publicKey.N.BitLen() < 3072 {
+		return errors.New("sing-box release signing public key is invalid")
+	}
+	digest := sha256.Sum256(manifest)
+	if err := rsa.VerifyPSS(
+		publicKey,
+		crypto.SHA256,
+		digest[:],
+		signature,
+		&rsa.PSSOptions{SaltLength: sha256.Size, Hash: crypto.SHA256},
+	); err != nil {
+		return errors.New("sing-box checksum manifest signature verification failed")
+	}
+	return nil
+}
+
+func checksumForAsset(manifest []byte, assetName string) (string, error) {
+	if len(manifest) == 0 || manifest[len(manifest)-1] != '\n' {
+		return "", errors.New("sing-box checksum manifest is invalid")
+	}
+	var selected string
+	for _, line := range strings.Split(strings.TrimSuffix(string(manifest), "\n"), "\n") {
+		fields := strings.Fields(line)
+		if len(fields) != 2 || len(fields[0]) != 64 ||
+			fields[0] != strings.ToLower(fields[0]) {
+			return "", errors.New("sing-box checksum manifest is invalid")
+		}
+		if _, err := hex.DecodeString(fields[0]); err != nil {
+			return "", errors.New("sing-box checksum manifest is invalid")
+		}
+		name := strings.TrimPrefix(fields[1], "*")
+		if name == assetName {
+			if selected != "" {
+				return "", errors.New("sing-box checksum manifest contains a duplicate archive")
+			}
+			selected = fields[0]
+		}
+	}
+	if selected == "" {
+		return "", errors.New("sing-box checksum manifest does not contain the target archive")
+	}
+	return selected, nil
 }
 
 func secureHTTPClient() *http.Client {
@@ -446,7 +610,7 @@ func installComponents(
 	if err != nil || !strings.Contains(
 		string(output),
 		"sing-box version "+strings.TrimPrefix(targetVersion, "v"),
-	) {
+	) || !versionOutputHasTag(string(output), "with_v2ray_api") {
 		return errors.New("candidate sing-box executable failed version verification")
 	}
 	activeConfigPath := filepath.Join(
@@ -487,6 +651,21 @@ func installComponents(
 		binary,
 		library,
 	)
+}
+
+func versionOutputHasTag(output, expected string) bool {
+	for _, line := range strings.Split(output, "\n") {
+		value, exists := strings.CutPrefix(strings.TrimSuffix(line, "\r"), "Tags: ")
+		if !exists {
+			continue
+		}
+		for _, tag := range strings.Split(value, ",") {
+			if strings.TrimSpace(tag) == expected {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 func stageFile(path string, contents []byte, mode os.FileMode) (string, error) {

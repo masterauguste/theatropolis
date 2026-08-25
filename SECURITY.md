@@ -8,10 +8,11 @@ Privileged updates are isolated in `/usr/local/libexec/theatropolis/theatropolis
 - is started only by root-owned, fixed-argument systemd units;
 - accepts bounded request files from the unprivileged service;
 - installs Theatropolis archives only after RSA-PSS verification of the checksum manifest and SHA-256 verification of the archive;
+- installs sing-box only from the dedicated public [`sing-box-v2ray-api-builds`](https://github.com/masterauguste/sing-box-v2ray-api-builds) repository after verifying its separate RSA-PSS checksum signature, plus an installer pin for fresh installations or GitHub's asset digest for remote updates;
 - rejects Theatropolis downgrades;
 - runs a downloaded sing-box candidate as `theatropolis-agent`, with a minimal environment and no inherited capabilities, before installing its already-verified bytes.
 
-Consequently, compromise of the agent account can control the local proxy, read or modify agent-owned state, request an available update, and cause denial of service on that node. It should not provide a path to execute attacker-chosen code as root. Kernel vulnerabilities, compromise of the host's root-owned systemd configuration, and compromise of the offline release-signing key remain outside this boundary.
+Consequently, compromise of the agent account can control the local proxy, read or modify agent-owned state, request an available update, and cause denial of service on that node. It should not provide a path to execute attacker-chosen code as root. Kernel vulnerabilities, compromise of the host's root-owned systemd configuration, and compromise of either release-signing key remain outside this boundary.
 
 Enrollment is also a configuration-authority boundary. Once a token is accepted, the Agent removes its inactive persisted profile and managed self-signed private keys before sing-box can start. The authenticated master then replays its retained deployment or sends a no-listener/reject profile. Replacement tokens keep the current public key valid only until redemption; redemption atomically installs the replacement key and disconnects the previous control session.
 

@@ -74,26 +74,35 @@ func TestGitHubReleaseCatalogOmitsTagsWithoutCompleteBinaryAssets(t *testing.T) 
 	}
 }
 
-func TestSingBoxCatalogIncludesStableBetaAlphaAndRC(t *testing.T) {
+func TestSingBoxCatalogIncludesOnlyCompleteStableAndRCBuilds(t *testing.T) {
 	t.Parallel()
 	server := httptest.NewServer(http.HandlerFunc(func(response http.ResponseWriter, _ *http.Request) {
-		fmt.Fprint(response, strings.Join([]string{
-			"001e# service=git-upload-pack\n0000",
-			"0041deadbeef refs/tags/v1.14.0-alpha.50\n",
-			"0040deadbeef refs/tags/v1.14.0-beta.2\n",
-			"0040deadbeef refs/tags/v1.14.0-rc.1\n",
-			"003cdeadbeef refs/tags/v1.14.0\n",
-			"003ddeadbeef refs/tags/v1.13.12\n",
-		}, ""))
+		fmt.Fprint(response, `[
+			{"tag_name":"v1.14.0-alpha.50","prerelease":true,"assets":[]},
+			{"tag_name":"v1.14.0-beta.2","prerelease":true,"assets":[]},
+			{"tag_name":"v1.14.0-rc.2","prerelease":true,"assets":[
+				{"name":"checksums.txt"}]},
+			{"tag_name":"v1.14.0-rc.1","prerelease":true,"assets":[
+				{"name":"checksums.txt"},
+				{"name":"checksums.txt.sig"},
+				{"name":"sing-box-1.14.0-rc.1-linux-amd64.tar.gz"},
+				{"name":"sing-box-1.14.0-rc.1-linux-arm64.tar.gz"}]},
+			{"tag_name":"v1.14.0","assets":[
+				{"name":"checksums.txt"},
+				{"name":"checksums.txt.sig"},
+				{"name":"sing-box-1.14.0-linux-amd64.tar.gz"},
+				{"name":"sing-box-1.14.0-linux-arm64.tar.gz"}]},
+			{"tag_name":"v1.13.12","assets":[]}
+		]`)
 	}))
 	defer server.Close()
 	catalog := NewSingBoxReleaseCatalog(server.Client())
-	catalog.refsURL = server.URL
+	catalog.releasesURL = server.URL
 	releases, err := catalog.Versions(context.Background())
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := []string{"v1.14.0", "v1.14.0-rc.1", "v1.14.0-beta.2", "v1.14.0-alpha.50"}
+	want := []string{"v1.14.0", "v1.14.0-rc.1"}
 	if len(releases) != len(want) {
 		t.Fatalf("releases = %+v, want %v", releases, want)
 	}

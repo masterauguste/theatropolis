@@ -23,6 +23,23 @@ openssl pkey -in release-signing-private.pem -pubout -outform DER |
 
 The workflow produces `checksums.txt.sig` with RSA-PSS/SHA-256 and refuses to replace an existing GitHub release. Rotating the key requires changing the public key in both `internal/agentupdate/update.go` and `install.sh` in a release signed by the old key. Retain the old private key until that transition release is deployed everywhere.
 
+## sing-box build signing
+
+V2Ray-API sing-box builds are published separately by
+`masterauguste/sing-box-v2ray-api-builds`. That repository uses its own
+`RELEASE_SIGNING_PRIVATE_KEY` secret rather than the Theatropolis release key,
+so compromise of one build workflow does not expose the other signing
+identity. Its public-key SHA-256 fingerprint is:
+
+```text
+3b76197b4c5e4bd3b368610d3367f1f6d5b16f0893f4f57fda878ba7de97fb13
+```
+
+The public key is embedded in `internal/singboxupdate/update.go`. Keep a
+separate recovery copy of the private key; rotating it requires a
+Theatropolis release that trusts the replacement public key before new
+sing-box artifacts are signed exclusively by that key.
+
 ## Release workflow behavior
 
 Ordinary CI runs on branch pushes and pull requests. Tag pushes do not start a
