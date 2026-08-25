@@ -133,40 +133,6 @@
 
 .proxy-tree-panel__header { align-items: center; }
 
-.proxy-map__health {
-  display: flex;
-  padding: 0.75rem 1.25rem;
-  align-items: center;
-  gap: 0.65rem;
-  background: var(--green-100);
-  border-top: 1px solid var(--green-700);
-}
-
-.proxy-map__health > span:nth-child(2) { display: grid; gap: 0.05rem; }
-.proxy-map__health strong { color: var(--green-700); }
-.proxy-map__health small { color: var(--neutral-700); }
-
-.proxy-map__health-dot {
-  width: 0.7rem;
-  height: 0.7rem;
-  flex: 0 0 auto;
-  background: var(--green-700);
-  border-radius: 999px;
-  box-shadow: 0 0 0 4px rgb(46 95 69 / 12%);
-}
-
-.proxy-map__warning {
-  margin-left: 0;
-  padding: 0.3rem 0.55rem;
-  color: var(--amber-700);
-  background: var(--amber-100);
-  border-radius: 999px;
-  font-size: 0.75rem;
-  font-weight: 750;
-}
-
-.proxy-map__health > .proxy-map__warning:nth-child(3) { margin-left: auto; }
-
 .proxy-map {
   overflow: auto;
   padding: 2rem;
@@ -444,8 +410,6 @@ dialog.proxy-inspector { width: min(60rem, calc(100vw - 2rem)); height: min(82vh
   .proxy-node-nav { grid-template-columns: 1fr; }
   .proxy-node-nav a { border-top: 1px solid var(--ink-200); border-left: 0; }
   .proxy-node-nav a:first-child { border-top: 0; }
-  .proxy-map__health { align-items: flex-start; flex-wrap: wrap; }
-  .proxy-map__warning { width: 100%; margin-left: 1.35rem; border-radius: var(--radius-sm); }
   .proxy-map { padding: 1.25rem; }
   .proxy-map__pan-hint {
     position: sticky;

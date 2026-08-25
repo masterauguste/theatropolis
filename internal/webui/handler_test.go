@@ -1083,7 +1083,6 @@ func TestProxyNodePagesUseLinkOwnedRulesAndMembershipCredentials(t *testing.T) {
 	}
 	body := response.Body.String()
 	for _, expected := range []string{
-		"Every configured path reaches an exit", "A leaf Hop implies Direct; Direct remains explicit beside other branches, and Reject is always explicit.",
 		"Left-to-right relay tree", `data-proxy-inspector-open="rule-` + firstRule.ID + `"`, `data-proxy-inspector-open="rule-` + secondRule.ID + `"`,
 		"Terminal on edge-online", `proxy-map__node--reject`, `data-proxy-inspector-view="hop-` + node.Entrance.HopID + `"`,
 		"Change Agent", "Save Agent", "Create branch", `class="proxy-inspector__editor-card-body"`, `data-dialog-open="proxy-add-link-` + node.Entrance.HopID + `"`, "ALL — fallback",
@@ -1098,10 +1097,13 @@ func TestProxyNodePagesUseLinkOwnedRulesAndMembershipCredentials(t *testing.T) {
 			t.Errorf("Proxy Node tree does not contain %q", expected)
 		}
 	}
-	for _, removed := range []string{`name="scope"`, `name="scope_type"`, `name="scope_value"`, `name="auth_user"`, `proxy-map__node--direct`, "Terminal on edge-exit", `id="proxy-hop-manager"`, `data-proxy-hop-manage`, `data-proxy-hop-manager-view`, "Ordered child Links", "Mux padding", "TCP Brutal"} {
+	for _, removed := range []string{"Every configured path reaches an exit", `class="proxy-map__health"`, "Deploy fleet", `name="scope"`, `name="scope_type"`, `name="scope_value"`, `name="auth_user"`, `proxy-map__node--direct`, "Terminal on edge-exit", `id="proxy-hop-manager"`, `data-proxy-hop-manage`, `data-proxy-hop-manager-view`, "Ordered child Links", "Mux padding", "TCP Brutal"} {
 		if strings.Contains(body, removed) {
 			t.Errorf("Proxy Node tree contains removed control or Direct terminal marker %q", removed)
 		}
+	}
+	if !strings.Contains(body, `type="submit">Save</button>`) {
+		t.Error("Proxy Node tree does not expose the Save action")
 	}
 	linkBranch := strings.Index(body, `data-proxy-inspector-open="rule-`+firstRule.ID+`"`)
 	fallbackBranch := strings.Index(body, `data-proxy-inspector-open="terminal-`+node.Entrance.HopID+`-fallback"`)
@@ -1583,6 +1585,12 @@ func TestCreateProxyNodeMakesTerminalExitExplicitAndReturnsToRelayMap(t *testing
 	fixture := newWebFixture(t)
 	enrollAgent(t, fixture.registry, "edge-online")
 	enrollAgent(t, fixture.registry, "edge-child")
+	deployer, err := proxynode.NewDeployer(fixture.proxyNodes, fixedProxyResolver{}, fixture.controller)
+	if err != nil {
+		t.Fatal(err)
+	}
+	fixture.controller.autoApply = true
+	fixture.handler.(*Handler).proxyDeployer = deployer
 	request := fixture.authenticatedRequest(http.MethodGet, "/proxy-nodes/new", "")
 	response := httptest.NewRecorder()
 	fixture.handler.ServeHTTP(response, request)
@@ -1626,6 +1634,23 @@ func TestCreateProxyNodeMakesTerminalExitExplicitAndReturnsToRelayMap(t *testing
 	wantLocation := proxyNodeURL(node.ID)
 	if got := response.Header().Get("Location"); got != wantLocation {
 		t.Fatalf("create redirect = %q, want %q", got, wantLocation)
+	}
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		deployment, exists := deployer.Current()
+		if exists && deployment.Status == proxynode.FleetDeploymentApplied {
+			if len(deployment.Agents) != 1 || deployment.Agents[0].AgentID != "edge-online" {
+				t.Fatalf("automatic entrance deployment Agents = %#v", deployment.Agents)
+			}
+			break
+		}
+		if exists && deployment.Status == proxynode.FleetDeploymentFailed {
+			t.Fatalf("automatic entrance deployment failed: %s", deployment.Error)
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("timed out waiting for automatic entrance deployment")
+		}
+		time.Sleep(10 * time.Millisecond)
 	}
 
 	request = fixture.authenticatedRequest(http.MethodGet, wantLocation, "")

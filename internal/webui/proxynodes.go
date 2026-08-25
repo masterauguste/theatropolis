@@ -270,6 +270,9 @@ func (h *Handler) createProxyNode(response http.ResponseWriter, request *http.Re
 		handleProxyMutationError(response, err)
 		return
 	}
+	if !h.queueProxyDeployment(response) {
+		return
+	}
 	http.Redirect(response, request, proxyNodeURL(node.ID), http.StatusSeeOther)
 }
 
