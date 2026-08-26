@@ -28,7 +28,9 @@ func validateMembershipPlan(plan MembershipPlan) error {
 }
 
 // RecordAccountingFailure appends one bounded, non-sensitive accounting audit
-// entry without changing either configuration-plane revision.
+// entry only when the authenticated Agent currently owns an applied entrance
+// with an enabled Membership. It never changes either configuration-plane
+// revision.
 func (s *Store) RecordAccountingFailure(agentID, reason string, occurredAt time.Time) error {
 	agentID = strings.TrimSpace(agentID)
 	reason = strings.TrimSpace(reason)
@@ -36,6 +38,9 @@ func (s *Store) RecordAccountingFailure(agentID, reason string, occurredAt time.
 		return fmt.Errorf("%w: invalid accounting failure", ErrInvalidState)
 	}
 	return s.mutateBilling(func(state *State) (bool, error) {
+		if !agentHasActiveEntranceMembership(*state, agentID) {
+			return false, nil
+		}
 		state.AccountingFailures = append(state.AccountingFailures, AccountingFailure{
 			AgentID: agentID, Reason: reason, OccurredAt: occurredAt.UTC(),
 		})
@@ -44,6 +49,31 @@ func (s *Store) RecordAccountingFailure(agentID, reason string, occurredAt time.
 		}
 		return false, nil
 	})
+}
+
+func agentHasActiveEntranceMembership(state State, agentID string) bool {
+	liveNodes := make(map[string]ProxyNode, len(state.ProxyNodes))
+	for _, node := range state.ProxyNodes {
+		liveNodes[node.ID] = node
+	}
+	for _, appliedNode := range state.AppliedProxyNodes {
+		liveNode, exists := liveNodes[appliedNode.ID]
+		if !exists {
+			continue
+		}
+		rootIndex := slices.IndexFunc(appliedNode.Hops, func(hop Hop) bool {
+			return hop.ID == appliedNode.Entrance.HopID
+		})
+		if rootIndex < 0 || appliedNode.Hops[rootIndex].AgentID != agentID {
+			continue
+		}
+		for _, membership := range liveNode.Memberships {
+			if membership.DisabledReason == MembershipEnabled {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 func validAccountingFailureReason(reason string) bool {

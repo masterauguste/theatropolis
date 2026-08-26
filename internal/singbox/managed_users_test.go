@@ -3,6 +3,7 @@ package singbox
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"net/http"
 	"reflect"
@@ -189,6 +190,50 @@ func TestCollectManagedUserTrafficSkipsChildOnlyEndpoints(t *testing.T) {
 	snapshot, err := collectManagedUserTrafficWithClient(context.Background(), config, client)
 	if err != nil || requests != 1 || snapshot.SuccessfulEndpoints != 1 || len(snapshot.Users) != 1 {
 		t.Fatalf("entrance-only snapshot=%#v requests=%d err=%v", snapshot, requests, err)
+	}
+}
+
+func TestCollectManagedUserTrafficAcceptsLegacyProfileWithoutEntranceMemberships(t *testing.T) {
+	t.Parallel()
+	config := []byte(`{
+		"inbounds":[
+			{"type":"anytls","tag":"tp-in-empty-entrance","listen":"::","listen_port":443,"users":[]},
+			{"type":"shadowsocks","tag":"tp-in-child","listen":"::","listen_port":20048,"users":[{"name":"cinema-link-l-LLLLLLLLLLLL","password":"secret"}]}
+		],
+		"outbounds":[{"type":"direct","tag":"tp-direct"}],
+		"route":{"rules":[],"final":"tp-direct"}
+	}`)
+	requests := 0
+	client := &http.Client{Transport: roundTripFunc(func(*http.Request) (*http.Response, error) {
+		requests++
+		return nil, errors.New("unexpected accounting request")
+	})}
+	snapshot, err := collectManagedUserTrafficWithClient(context.Background(), config, client)
+	if err != nil || requests != 0 || len(snapshot.Users) != 0 ||
+		snapshot.SuccessfulEndpoints != 0 || snapshot.FailedEndpoints != 0 {
+		t.Fatalf("legacy relay-only snapshot=%#v requests=%d err=%v", snapshot, requests, err)
+	}
+}
+
+func TestCollectManagedUserTrafficRejectsLegacyProfileWithEntranceMembership(t *testing.T) {
+	t.Parallel()
+	config := []byte(`{
+		"inbounds":[
+			{"type":"anytls","tag":"tp-in-entrance","listen":"::","listen_port":443,"users":[{"name":"cinema-alice-m-AAAAAAAAAAAA","password":"secret"}]}
+		],
+		"outbounds":[{"type":"direct","tag":"tp-direct"}],
+		"route":{"rules":[],"final":"tp-direct"}
+	}`)
+	requests := 0
+	client := &http.Client{Transport: roundTripFunc(func(*http.Request) (*http.Response, error) {
+		requests++
+		return nil, errors.New("unexpected accounting request")
+	})}
+	if _, err := collectManagedUserTrafficWithClient(context.Background(), config, client); err == nil {
+		t.Fatal("legacy entrance Membership was accepted without its accounting service")
+	}
+	if requests != 0 {
+		t.Fatalf("legacy entrance made %d accounting requests without a service", requests)
 	}
 }
 

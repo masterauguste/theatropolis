@@ -196,14 +196,14 @@ func TestAccountingPersistsInSQLiteWithoutRewritingTopologyJSON(t *testing.T) {
 	}
 	key, _, _ := listenerKeys("edge-a", node.Entrance.Endpoint)
 	path := "/tp-in-" + shortDigest(key)
+	if err := store.RecordAccountingFailure("edge-a", AccountingFailureCollection, now); err != nil {
+		t.Fatal(err)
+	}
 	changed, err := store.ApplyTrafficDeltaReport("edge-a", now, []UserTraffic{{
 		InboundPath: path, Username: "cinema-alice", UplinkBytes: 101,
 	}})
 	if err != nil || !changed {
 		t.Fatalf("traffic delta changed=%v err=%v", changed, err)
-	}
-	if err := store.RecordAccountingFailure("edge-a", AccountingFailureCollection, now); err != nil {
-		t.Fatal(err)
 	}
 	after, err := os.ReadFile(statePath)
 	if err != nil {
@@ -400,6 +400,16 @@ func TestAccountingFailureHistoryIsNonSensitiveAndRevisionNeutral(t *testing.T) 
 	if err != nil {
 		t.Fatal(err)
 	}
+	user, _ := store.CreateUser("alice")
+	node, _ := store.CreateProxyNode(CreateProxyNodeInput{
+		Name: "cinema", RootAgent: "edge-a", Entrance: testTLSEndpoint(ProtocolAnyTLS, 443),
+	})
+	if _, err := store.AddMembership(node.ID, user.ID); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.MarkTopologyApplied(store.Snapshot().Revision, []string{"edge-a"}); err != nil {
+		t.Fatal(err)
+	}
 	before := store.Snapshot()
 	now := time.Date(2028, time.April, 5, 0, 0, 0, 0, time.UTC)
 	if err := store.RecordAccountingFailure("edge-a", AccountingFailureCollection, now); err != nil {
@@ -416,6 +426,52 @@ func TestAccountingFailureHistoryIsNonSensitiveAndRevisionNeutral(t *testing.T) 
 	}
 	if err := store.RecordAccountingFailure("edge-a", "raw secret-bearing diagnostic", now); err == nil {
 		t.Fatal("arbitrary accounting diagnostic was persisted")
+	}
+}
+
+func TestAccountingFailureIgnoresEmptyEntrancesAndChildOnlyAgents(t *testing.T) {
+	store, err := Open(filepath.Join(t.TempDir(), "state.json"), testBuild())
+	if err != nil {
+		t.Fatal(err)
+	}
+	node, _ := store.CreateProxyNode(CreateProxyNodeInput{
+		Name: "cinema", RootAgent: "edge-a", Entrance: testTLSEndpoint(ProtocolAnyTLS, 443),
+	})
+	if _, _, err := store.AddLink(node.ID, AddLinkInput{
+		ParentHopID: node.Entrance.HopID,
+		ChildName:   "relay",
+		ChildAgent:  "edge-b",
+		Endpoint:    testTLSEndpoint(ProtocolAnyTLS, 8443),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.MarkTopologyApplied(store.Snapshot().Revision, []string{"edge-a", "edge-b"}); err != nil {
+		t.Fatal(err)
+	}
+	now := time.Date(2028, time.April, 5, 0, 0, 0, 0, time.UTC)
+	if err := store.RecordAccountingFailure("edge-a", AccountingFailureCollection, now); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.RecordAccountingFailure("edge-b", AccountingFailureCollection, now); err != nil {
+		t.Fatal(err)
+	}
+	if failures := store.Snapshot().AccountingFailures; len(failures) != 0 {
+		t.Fatalf("empty topology accounting failures = %#v", failures)
+	}
+
+	user, _ := store.CreateUser("alice")
+	if _, err := store.AddMembership(node.ID, user.ID); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.RecordAccountingFailure("edge-b", AccountingFailureCollection, now.Add(time.Minute)); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.RecordAccountingFailure("edge-a", AccountingFailureCollection, now.Add(time.Minute)); err != nil {
+		t.Fatal(err)
+	}
+	failures := store.Snapshot().AccountingFailures
+	if len(failures) != 1 || failures[0].AgentID != "edge-a" {
+		t.Fatalf("membership topology accounting failures = %#v", failures)
 	}
 }
 

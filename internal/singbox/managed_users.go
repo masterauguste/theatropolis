@@ -171,7 +171,16 @@ func collectManagedUserTrafficWithClient(
 	config []byte,
 	client *http.Client,
 ) (ManagedUserTrafficSnapshot, error) {
-	if bytes.Equal(bytes.TrimSpace(config), bytes.TrimSpace(DisabledManagedConfig())) {
+	hasMemberships, err := managedConfigHasMemberships(config)
+	if err != nil {
+		return ManagedUserTrafficSnapshot{}, err
+	}
+	// Older applied profiles and relay-only Agents may legitimately have no
+	// managed-user service. Accounting belongs exclusively to entrance
+	// Memberships, so detect that authority before requiring or contacting the
+	// loopback API. A profile that actually carries a Membership still fails
+	// closed below when its service is absent or malformed.
+	if !hasMemberships {
 		return ManagedUserTrafficSnapshot{}, nil
 	}
 	parsed, err := parseManagedUserConfig(config)
@@ -245,6 +254,19 @@ func collectManagedUserTrafficWithClient(
 		return result, errors.New("one or more entrance traffic endpoints failed")
 	}
 	return result, nil
+}
+
+func managedConfigHasMemberships(encoded []byte) (bool, error) {
+	var document map[string]any
+	if err := decodeManagedDocument(encoded, &document); err != nil {
+		return false, err
+	}
+	for _, name := range managedDocumentUserNames(document) {
+		if _, membership := managedMembershipKey(name); membership {
+			return true, nil
+		}
+	}
+	return false, nil
 }
 
 func parseManagedUserConfig(encoded []byte) (managedUserConfig, error) {

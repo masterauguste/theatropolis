@@ -926,6 +926,28 @@ func TestSettingsPageOwnsMasterSoftwareManagement(t *testing.T) {
 func TestSettingsPageShowsAccountingFailureHistory(t *testing.T) {
 	t.Parallel()
 	fixture := newWebFixture(t)
+	user, err := fixture.proxyNodes.CreateUser("Alice")
+	if err != nil {
+		t.Fatal(err)
+	}
+	node, err := fixture.proxyNodes.CreateProxyNode(proxynode.CreateProxyNodeInput{
+		Name: "Cinema", RootName: "Entrance", RootAgent: "edge-online",
+		Entrance: proxynode.Endpoint{
+			Protocol: proxynode.ProtocolAnyTLS, Listen: "::", ListenPort: 443, Family: "auto",
+			TLS: proxynode.TLSConfig{Mode: proxynode.TLSModeSelfSigned, ServerName: "cinema.example"},
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := fixture.proxyNodes.AddMembership(node.ID, user.ID); err != nil {
+		t.Fatal(err)
+	}
+	if err := fixture.proxyNodes.MarkTopologyApplied(
+		fixture.proxyNodes.Snapshot().Revision, []string{"edge-online"},
+	); err != nil {
+		t.Fatal(err)
+	}
 	if err := fixture.proxyNodes.RecordAccountingFailure(
 		"edge-online",
 		proxynode.AccountingFailureCollection,
