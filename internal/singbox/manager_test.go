@@ -327,6 +327,54 @@ func TestManagerManagedUserAuthorityRejectsStaleRevision(t *testing.T) {
 	}
 }
 
+func TestManagerKeepsControlPlaneAvailableForServiceLessAuthorityMigration(t *testing.T) {
+	factory := &fakeProcessFactory{}
+	manager := newTestManager(t, factory, nil)
+	legacy := []byte(`{
+		"inbounds":[{"type":"anytls","tag":"tp-in-legacy","listen":"::","listen_port":443,"users":[{"name":"cinema-link-LLLLLLLLLLLL","password":"link-secret"}]}],
+		"outbounds":[{"type":"direct","tag":"tp-direct"}],
+		"route":{"rules":[],"final":"tp-direct"}
+	}`)
+	writeActiveConfig(t, manager, legacy)
+	candidate := managedUserTestConfig(`[{"name":"cinema-link-l-LLLLLLLLLLLL","password":"link-secret"}]`)
+	variant, err := BuildManagedUserAuthorityVariant(candidate)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := manager.persistManagedUserAuthority(managedUserAuthorityState{
+		Version: managedUserAuthorityVersion, Revision: 2,
+		Variants: []ManagedUserAuthorityVariant{variant},
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	runContext, cancelRun := context.WithCancel(context.Background())
+	defer cancelRun()
+	startup, err := manager.Start(runContext)
+	if err != nil {
+		t.Fatalf("Start() blocked Agent control-plane recovery: %v", err)
+	}
+	defer stopTestManager(t, manager)
+	if startup.Status != StartupValidationFailed ||
+		startup.Diagnostic != "persisted configuration is incompatible with managed-user authority" {
+		t.Fatalf("migration startup = %+v", startup)
+	}
+	if processes, _ := factory.snapshot(); len(processes) != 0 {
+		t.Fatalf("migration started %d unsafe legacy sing-box processes", len(processes))
+	}
+
+	digest := sha256.Sum256(candidate)
+	result, err := manager.ApplyWithMode(
+		context.Background(), candidate, digest[:], ApplyModeProxyNodeTopology,
+	)
+	if err != nil || result.Status != ApplyStatusApplied || !result.Active {
+		t.Fatalf("authoritative recovery = %+v, %v", result, err)
+	}
+	if processes, _ := factory.snapshot(); len(processes) != 1 {
+		t.Fatalf("authoritative recovery process count = %d", len(processes))
+	}
+}
+
 func TestManagerQuarantinesLegacyConfigAndStampsGeneration(t *testing.T) {
 	factory := &fakeProcessFactory{}
 	manager := newTestManager(t, factory, nil)

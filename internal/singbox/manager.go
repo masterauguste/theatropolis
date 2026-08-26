@@ -392,13 +392,16 @@ func (m *Manager) Start(ctx context.Context) (StartupResult, error) {
 		clear(activeConfig)
 		return StartupResult{}, fmt.Errorf("load managed-user authority: %w", err)
 	}
+	var authorityOverlayErr error
 	if hasActive && hasAuthority {
 		overlaid, matched, overlayErr := applyManagedUserAuthority(activeConfig, authority.Variants)
 		if overlayErr != nil {
-			clear(activeConfig)
-			return StartupResult{}, fmt.Errorf("apply managed-user authority at startup: %w", overlayErr)
-		}
-		if matched && !bytes.Equal(activeConfig, overlaid) {
+			// A profile compiled before the managed-user service existed cannot
+			// accept the independently persisted user authority. Keep the Agent
+			// control plane alive so the master can replace it, but do not start
+			// sing-box with credentials that may have been revoked meanwhile.
+			authorityOverlayErr = overlayErr
+		} else if matched && !bytes.Equal(activeConfig, overlaid) {
 			if restoreErr := m.restoreConfig(overlaid, true); restoreErr != nil {
 				clear(activeConfig)
 				clear(overlaid)
@@ -423,7 +426,16 @@ func (m *Manager) Start(ctx context.Context) (StartupResult, error) {
 	if hasActive {
 		digest := sha256.Sum256(activeConfig)
 		startup.ConfigSHA256 = digest
-		if policyErr := ValidateManagedConfig(activeConfig); policyErr != nil {
+		if authorityOverlayErr != nil {
+			startup.ValidationStatus = ValidationInvalid
+			startup.Diagnostic = "persisted configuration is incompatible with managed-user authority"
+			startup.Status = StartupValidationFailed
+			m.emitRuntimeEvent(
+				RuntimeStatusValidationFailed,
+				activeConfig,
+				startup.Diagnostic,
+			)
+		} else if policyErr := ValidateManagedConfig(activeConfig); policyErr != nil {
 			startup.ValidationStatus = ValidationInvalid
 			startup.Diagnostic = managedPolicyDiagnostic(policyErr)
 			startup.Status = StartupValidationFailed
