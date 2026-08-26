@@ -20,9 +20,13 @@ func (s *Server) syncProfileOnConnect(ctx context.Context, agentID string) error
 		return nil
 	}
 	config := singbox.DisabledManagedConfig()
+	appliedRevision := ""
 	previous, err := s.Deployments.LatestForAgent(ctx, agentID)
 	if err == nil {
-		config = previous.ConfigJSON
+		if applied, _, exists := previous.AppliedConfiguration(); exists {
+			config = applied
+			appliedRevision = previous.AppliedRevisionID()
+		}
 		if awaitingDeploymentReport(previous.Status) {
 			if _, transitionErr := s.Deployments.Transition(
 				ctx,
@@ -45,6 +49,17 @@ func (s *Server) syncProfileOnConnect(ctx context.Context, agentID string) error
 	revisionID, err := randomOpaqueID("rev")
 	if err != nil {
 		return fmt.Errorf("create profile synchronization revision: %w", err)
+	}
+	if deployment.ClassifyRevision(appliedRevision) == deployment.RevisionPlaneProxyNodeUsers &&
+		s.Sessions.Supports(agentID, ManagedUserAuthorityCapability) {
+		// A replacement Agent has no persisted user-authority sidecar yet. Replay
+		// an older full users-plane record as topology so the Agent first strips
+		// every unproven Membership, then accepts the fresh independent authority
+		// queued by the reconnect hook. This prevents a stale retained record from
+		// briefly resurrecting a revoked user on replacement hardware.
+		revisionID = deployment.ProxyNodeTopologyRevisionPrefix + revisionID
+	} else {
+		revisionID = deployment.RevisionWithSamePlane(appliedRevision, revisionID)
 	}
 	record, err := s.QueueDeployment(
 		ctx,

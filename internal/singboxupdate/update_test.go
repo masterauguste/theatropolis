@@ -34,10 +34,10 @@ func TestReleaseSigningPublicKeyFingerprint(t *testing.T) {
 func TestValidVersionAcceptsSupportedStableAndPrerelease(t *testing.T) {
 	t.Parallel()
 	for _, value := range []string{
-		"v1.14.0",
-		"v1.14.0-rc.1",
-		"v2.0.0",
-		"v10.0.0-rc.1",
+		"v1.14.0-theatropolis.1",
+		"v1.14.0-rc.1.theatropolis.1",
+		"v2.0.0-theatropolis.12",
+		"v10.0.0-rc.1.theatropolis.2",
 	} {
 		if !ValidVersion(value) {
 			t.Errorf("ValidVersion(%q) = false", value)
@@ -46,6 +46,8 @@ func TestValidVersionAcceptsSupportedStableAndPrerelease(t *testing.T) {
 	for _, value := range []string{
 		"1.14.0",
 		"v1.13.12",
+		"v1.14.0",
+		"v1.14.0-rc.1",
 		"v1.14.0-alpha.27",
 		"v1.14.0-beta.2",
 		"v1.14.0-dev",
@@ -55,6 +57,27 @@ func TestValidVersionAcceptsSupportedStableAndPrerelease(t *testing.T) {
 		if ValidVersion(value) {
 			t.Errorf("ValidVersion(%q) = true", value)
 		}
+	}
+}
+
+func TestVerifyBuildManifestRequiresManagedUserCapabilities(t *testing.T) {
+	t.Parallel()
+	valid := []byte(`{
+		"schema_version":2,
+		"release":{"tag":"v1.14.0-rc.1.theatropolis.1","version":"1.14.0-rc.1.theatropolis.1"},
+		"patchset":{"capabilities":["managed-users-v1","anytls-live-users","hysteria2-live-users","session-revocation-v1","traffic-reset-v1"]},
+		"build":{"tags":["with_v2ray_api","with_theatropolis_managed_users"]}
+	}`)
+	if err := verifyBuildManifest(valid, "v1.14.0-rc.1.theatropolis.1"); err != nil {
+		t.Fatal(err)
+	}
+	invalid := bytes.Replace(valid, []byte("session-revocation-v1"), []byte("other-capability"), 1)
+	if err := verifyBuildManifest(invalid, "v1.14.0-rc.1.theatropolis.1"); err == nil {
+		t.Fatal("manifest without session revocation was accepted")
+	}
+	invalid = bytes.Replace(valid, []byte("traffic-reset-v1"), []byte("other-capability"), 1)
+	if err := verifyBuildManifest(invalid, "v1.14.0-rc.1.theatropolis.1"); err == nil {
+		t.Fatal("manifest without traffic reset was accepted")
 	}
 }
 
@@ -118,9 +141,12 @@ func TestChecksumForAssetRejectsMalformedAndDuplicateEntries(t *testing.T) {
 
 func TestVersionOutputHasTagRequiresExactBuildTag(t *testing.T) {
 	t.Parallel()
-	output := "sing-box version 1.14.0-rc.1\n\nEnvironment: go1.26 linux/amd64\nTags: with_quic, with_v2ray_api, with_acme\n"
+	output := "sing-box version 1.14.0-rc.1.theatropolis.1\n\nEnvironment: go1.26 linux/amd64\nTags: with_quic, with_v2ray_api, with_theatropolis_managed_users, with_acme\n"
 	if !versionOutputHasTag(output, "with_v2ray_api") {
 		t.Fatal("expected V2Ray API build tag was not detected")
+	}
+	if !versionOutputHasTag(output, "with_theatropolis_managed_users") {
+		t.Fatal("expected managed-user build tag was not detected")
 	}
 	for _, tag := range []string{"v2ray_api", "with_v2ray", "with_v2ray_api_extra"} {
 		if versionOutputHasTag(output, tag) {
@@ -138,7 +164,7 @@ func TestSchedulerUsesIndependentSecureStateFiles(t *testing.T) {
 	}
 	if err := scheduler.Schedule(
 		"singbox_0123456789abcdef",
-		"v1.14.0-rc.1",
+		"v1.14.0-rc.1.theatropolis.1",
 	); err != nil {
 		t.Fatal(err)
 	}
@@ -151,7 +177,7 @@ func TestSchedulerUsesIndependentSecureStateFiles(t *testing.T) {
 	}
 	if err := scheduler.Schedule(
 		"singbox_fedcba9876543210",
-		"v1.14.0",
+		"v1.14.0-theatropolis.1",
 	); err != ErrUpdatePending {
 		t.Fatalf("second schedule error = %v, want ErrUpdatePending", err)
 	}

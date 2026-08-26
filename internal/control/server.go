@@ -27,22 +27,26 @@ import (
 )
 
 const (
-	ProtocolVersion           = 2
-	ConfigDeployCapability    = "config-deploy-v1"
-	ProxyNodeDeployCapability = "proxy-node-config-v1"
-	AgentUpdateCapability     = "agent-update-v1"
-	SingBoxUpdateCapability   = "sing-box-update-v1"
-	HeartbeatCapability       = "heartbeat-v1"
-	CapabilityAddressReport   = "address-report-v1"
-	CapabilityAddressProbe    = "address-probe-v1"
-	DefaultChallengeTTL       = 30 * time.Second
-	DefaultHelloTimeout       = 10 * time.Second
-	DefaultCommandQueue       = 16
-	DefaultMaxConfigBytes     = 4 << 20
-	DefaultValidationLimit    = 60 * time.Second
-	DeploymentReportGrace     = 2 * time.Minute
-	MaxDiagnosticBytes        = 8 << 10
-	DefaultHeartbeatTimeout   = 75 * time.Second
+	ProtocolVersion                     = 2
+	ConfigDeployCapability              = "config-deploy-v1"
+	ProxyNodeDeployCapability           = "proxy-node-config-v1"
+	AgentUpdateCapability               = "agent-update-v1"
+	SingBoxUpdateCapability             = "sing-box-update-v1"
+	HeartbeatCapability                 = "heartbeat-v1"
+	CapabilityAddressReport             = "address-report-v1"
+	CapabilityAddressProbe              = "address-probe-v1"
+	ManagedUserTrafficCapability        = "managed-user-traffic-v1"
+	ManagedUserTrafficDeltaCapability   = "managed-user-traffic-delta-v1"
+	ManagedUserTrafficRequestCapability = "managed-user-traffic-request-v1"
+	ManagedUserAuthorityCapability      = "managed-user-authority-v1"
+	DefaultChallengeTTL                 = 30 * time.Second
+	DefaultHelloTimeout                 = 10 * time.Second
+	DefaultCommandQueue                 = 16
+	DefaultMaxConfigBytes               = 4 << 20
+	DefaultValidationLimit              = 60 * time.Second
+	DeploymentReportGrace               = 2 * time.Minute
+	MaxDiagnosticBytes                  = 8 << 10
+	DefaultHeartbeatTimeout             = 75 * time.Second
 )
 
 var (
@@ -76,10 +80,26 @@ type Server struct {
 	// check/session registration, and revocation. Without this barrier a
 	// Connect call could authenticate with a public key fetched just before
 	// that key was revoked, then register a live session afterward.
-	authorizationMu sync.Mutex
-	updateMu        sync.RWMutex
-	updates         map[string]AgentUpdateState
-	singBoxUpdates  map[string]SingBoxUpdateState
+	authorizationMu                  sync.Mutex
+	updateMu                         sync.RWMutex
+	updates                          map[string]AgentUpdateState
+	singBoxUpdates                   map[string]SingBoxUpdateState
+	managedUserTrafficHandler        func(string, string, time.Time, []ManagedUserTraffic, bool) (bool, error)
+	managedUserTrafficFailureHandler func(string, string, time.Time) error
+	managedUserTrafficMu             sync.Mutex
+	managedUserTrafficWaiters        map[string]chan error
+	proxyNodeAddressHandler          func()
+	proxyNodeUserHandler             func()
+	managedUserAuthorityMu           sync.Mutex
+	managedUserAuthorityWaiters      map[string]chan *controlv1.ManagedUserAuthorityReport
+	closeOnce                        sync.Once
+}
+
+type ManagedUserTraffic struct {
+	InboundPath   string
+	Username      string
+	UplinkBytes   uint64
+	DownlinkBytes uint64
 }
 
 func NewServer(
@@ -96,26 +116,56 @@ func NewServer(
 		logger = slog.Default()
 	}
 	server := &Server{
-		Identities:       identities,
-		Deployments:      deployments,
-		poolRegistry:     poolRegistry,
-		Notifier:         notifier,
-		Sessions:         NewSessionRegistry(),
-		Logger:           logger,
-		Now:              time.Now,
-		HeartbeatTimeout: DefaultHeartbeatTimeout,
-		HelloTimeout:     DefaultHelloTimeout,
-		probedShadow:     make(map[string]*probedAddressState),
-		updates:          make(map[string]AgentUpdateState),
-		singBoxUpdates:   make(map[string]SingBoxUpdateState),
+		Identities:                  identities,
+		Deployments:                 deployments,
+		poolRegistry:                poolRegistry,
+		Notifier:                    notifier,
+		Sessions:                    NewSessionRegistry(),
+		Logger:                      logger,
+		Now:                         time.Now,
+		HeartbeatTimeout:            DefaultHeartbeatTimeout,
+		HelloTimeout:                DefaultHelloTimeout,
+		probedShadow:                make(map[string]*probedAddressState),
+		updates:                     make(map[string]AgentUpdateState),
+		singBoxUpdates:              make(map[string]SingBoxUpdateState),
+		managedUserAuthorityWaiters: make(map[string]chan *controlv1.ManagedUserAuthorityReport),
+		managedUserTrafficWaiters:   make(map[string]chan error),
 	}
 	return server
 }
 
-// Close is an idempotent no-op kept for the tests that call it: it used to
-// stop the master-side probe scheduler goroutine, which agent-side periodic
-// probing (ProbeScheduler in internal/agent) made redundant.
-func (s *Server) Close() {}
+// Close remains idempotent for callers that share the server lifecycle.
+func (s *Server) Close() {
+	s.closeOnce.Do(func() {})
+}
+
+// SetManagedUserTrafficHandler connects authenticated agent counter reports to
+// the master-owned quota store. It must be called before serving gRPC.
+func (s *Server) SetManagedUserTrafficHandler(
+	handler func(string, string, time.Time, []ManagedUserTraffic, bool) (bool, error),
+) {
+	s.managedUserTrafficHandler = handler
+}
+
+// SetManagedUserTrafficFailureHandler persists bounded, non-sensitive
+// accounting failure history. Operational logging remains active if the
+// history store itself is unavailable.
+func (s *Server) SetManagedUserTrafficFailureHandler(handler func(string, string, time.Time) error) {
+	s.managedUserTrafficFailureHandler = handler
+}
+
+// SetProxyNodeAddressHandler connects every persisted pool/address mutation to
+// Proxy Node reconciliation. It must be installed before serving gRPC.
+func (s *Server) SetProxyNodeAddressHandler(handler func()) {
+	s.proxyNodeAddressHandler = handler
+}
+
+// SetProxyNodeUserHandler requests a fresh independent user-plane sync after
+// an Agent reconnects. The callback must return quickly; it is invoked in its
+// own goroutine after the authenticated send loop is ready.
+func (s *Server) SetProxyNodeUserHandler(handler func()) {
+	s.proxyNodeUserHandler = handler
+}
 
 // PoolRegistry exposes the outbound-pool registry so master-local callers
 // (the web interface) can manage manual entries. It may be nil.
@@ -137,6 +187,13 @@ func (s *Server) DeploymentRecords(ctx context.Context) ([]deployment.Record, er
 // reconnect is the backstop.
 func (s *Server) PropagateManualPoolChange(ctx context.Context) {
 	s.propagatePoolChange(ctx, "manual pool change", "")
+	s.notifyProxyNodeAddressChange()
+}
+
+func (s *Server) notifyProxyNodeAddressChange() {
+	if s.proxyNodeAddressHandler != nil {
+		s.proxyNodeAddressHandler()
+	}
 }
 
 func (s *Server) Enroll(
@@ -215,6 +272,7 @@ func (s *Server) RevokeAgent(ctx context.Context, agentID string) error {
 			)
 		}
 		s.propagatePoolChange(ctx, "agent revoked", agentID)
+		s.notifyProxyNodeAddressChange()
 	}
 	return nil
 }
@@ -331,6 +389,9 @@ func (s *Server) Connect(stream controlv1.AgentControlService_ConnectServer) err
 		authResult,
 	); err != nil {
 		return err
+	}
+	if s.proxyNodeUserHandler != nil && s.Sessions.Supports(agentID, ManagedUserAuthorityCapability) {
+		go s.proxyNodeUserHandler()
 	}
 	s.Logger.Info("agent connected", "agent_id", agentID)
 	defer s.Logger.Info("agent disconnected", "agent_id", agentID)
@@ -759,9 +820,98 @@ func (s *Server) handleAgentFrame(
 		)
 	case *controlv1.AgentFrame_AddressProbeReport:
 		return s.handleAddressProbeReport(ctx, agentID, payload.AddressProbeReport)
+	case *controlv1.AgentFrame_ManagedUserTrafficReport:
+		return s.handleManagedUserTrafficReport(ctx, agentID, payload.ManagedUserTrafficReport)
+	case *controlv1.AgentFrame_ManagedUserAuthorityReport:
+		if !s.Sessions.Supports(agentID, ManagedUserAuthorityCapability) {
+			return status.Error(codes.FailedPrecondition, "managed-user authority is unavailable")
+		}
+		report := payload.ManagedUserAuthorityReport
+		if report == nil || strings.TrimSpace(report.GetRequestId()) == "" || report.GetUserRevision() == 0 ||
+			report.GetCompletedAtUnix() == 0 || len(report.GetDiagnostic()) > MaxDiagnosticBytes {
+			return status.Error(codes.InvalidArgument, "invalid managed-user authority report")
+		}
+		key := managedUserAuthorityWaiterKey(agentID, report.GetRequestId())
+		s.managedUserAuthorityMu.Lock()
+		waiter := s.managedUserAuthorityWaiters[key]
+		s.managedUserAuthorityMu.Unlock()
+		if waiter != nil {
+			select {
+			case waiter <- report:
+			default:
+			}
+		}
+		return nil
 	default:
 		return status.Error(codes.InvalidArgument, "unexpected agent frame")
 	}
+}
+
+// QueueManagedUserAuthority sends a revisioned end-user authority command
+// without creating or waiting behind a topology deployment record.
+func (s *Server) QueueManagedUserAuthority(
+	ctx context.Context,
+	agentID string,
+	revision uint64,
+	variants []singbox.ManagedUserAuthorityVariant,
+) error {
+	if ctx == nil || revision == 0 || len(variants) == 0 ||
+		!s.Sessions.Supports(agentID, ManagedUserAuthorityCapability) {
+		return ErrAgentOffline
+	}
+	requestID, err := randomOpaqueID("usr")
+	if err != nil {
+		return err
+	}
+	command := &controlv1.ManagedUserAuthorityCommand{RequestId: requestID, UserRevision: revision}
+	for _, variant := range variants {
+		item := &controlv1.ManagedUserAuthorityVariant{TopologySha256: append([]byte(nil), variant.TopologySHA256[:]...)}
+		for _, endpoint := range variant.Endpoints {
+			endpointItem := &controlv1.ManagedUserAuthorityEndpoint{InboundPath: endpoint.Path}
+			for _, user := range endpoint.Users {
+				endpointItem.Users = append(endpointItem.Users, &controlv1.ManagedUserAuthorityUser{
+					Username: user.Username, Password: user.Password,
+				})
+			}
+			item.Endpoints = append(item.Endpoints, endpointItem)
+		}
+		command.Variants = append(command.Variants, item)
+	}
+	waiter := make(chan *controlv1.ManagedUserAuthorityReport, 1)
+	key := managedUserAuthorityWaiterKey(agentID, requestID)
+	s.managedUserAuthorityMu.Lock()
+	s.managedUserAuthorityWaiters[key] = waiter
+	s.managedUserAuthorityMu.Unlock()
+	defer func() {
+		s.managedUserAuthorityMu.Lock()
+		delete(s.managedUserAuthorityWaiters, key)
+		s.managedUserAuthorityMu.Unlock()
+	}()
+	if err := s.Sessions.Send(ctx, agentID, &controlv1.MasterFrame{
+		Payload: &controlv1.MasterFrame_ManagedUserAuthority{ManagedUserAuthority: command},
+	}); err != nil {
+		return err
+	}
+	select {
+	case report := <-waiter:
+		if report.GetUserRevision() != revision {
+			return errors.New("Agent reported a mismatched managed-user revision")
+		}
+		if report.GetStatus() != controlv1.ManagedUserAuthorityStatus_MANAGED_USER_AUTHORITY_STATUS_APPLIED {
+			diagnostic := strings.TrimSpace(report.GetDiagnostic())
+			if diagnostic == "" {
+				diagnostic = "Agent rejected managed-user authority"
+			}
+			return errors.New(diagnostic)
+		}
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+}
+
+func managedUserAuthorityWaiterKey(agentID, requestID string) string {
+	return agentID + "\x00" + requestID
 }
 
 type SingBoxUpdateState struct {
@@ -1096,8 +1246,14 @@ func (s *Server) handleDeploymentReport(
 	}
 	renderedDigest := record.RenderedDigest()
 	if record.AgentID != agentID ||
-		record.RevisionID != report.GetRevisionId() ||
-		!bytes.Equal(renderedDigest[:], report.GetConfigSha256()) {
+		record.RevisionID != report.GetRevisionId() {
+		return status.Error(codes.PermissionDenied, "deployment report does not match its request")
+	}
+	digestMatches := bytes.Equal(renderedDigest[:], report.GetConfigSha256())
+	materializedTopology := !digestMatches &&
+		deployment.ClassifyRevision(record.RevisionID) == deployment.RevisionPlaneProxyNodeTopology &&
+		len(report.GetConfigSha256()) == sha256.Size
+	if !digestMatches && !materializedTopology {
 		return status.Error(codes.PermissionDenied, "deployment report does not match its request")
 	}
 
@@ -1121,6 +1277,14 @@ func (s *Server) handleDeploymentReport(
 	}
 
 	diagnostic := sanitizeAgentDiagnostic(report.GetDiagnostic())
+	if next == deployment.StatusApplied && materializedTopology {
+		var effectiveDigest [sha256.Size]byte
+		copy(effectiveDigest[:], report.GetConfigSha256())
+		record, err = s.Deployments.SetRenderedDigest(ctx, record.ID, effectiveDigest)
+		if err != nil {
+			return status.Error(codes.FailedPrecondition, "effective Agent configuration could not be recorded")
+		}
+	}
 	updated, err := s.Deployments.Transition(ctx, record.ID, next, diagnostic, s.now())
 	if err != nil {
 		return status.Error(codes.FailedPrecondition, "deployment is not awaiting a report")
@@ -1155,7 +1319,7 @@ func (s *Server) handleDeploymentReport(
 		if err := s.poolRegistry.MarkRendered(
 			agentID,
 			s.poolRegistry.PoolVersion(),
-			record.RenderedDigest(),
+			updated.RenderedDigest(),
 		); err != nil {
 			s.Logger.Error(
 				"outbound pool render stamp failed",
@@ -1550,6 +1714,10 @@ func (s *Server) CanDeployConfiguration(agentID string) bool {
 
 func (s *Server) CanDeployProxyNodeConfiguration(agentID string) bool {
 	return s.Sessions.Supports(agentID, ProxyNodeDeployCapability)
+}
+
+func (s *Server) CanSyncManagedUserAuthority(agentID string) bool {
+	return s.Sessions.Supports(agentID, ManagedUserAuthorityCapability)
 }
 
 func (s *Server) CanUpdateAgent(agentID string) bool {

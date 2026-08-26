@@ -192,6 +192,38 @@ func serve(arguments []string) error {
 	if err != nil {
 		return fmt.Errorf("configure Proxy Node deployer: %w", err)
 	}
+	billingEnforcer := proxynode.NewBillingEnforcer(proxyNodes, proxyDeployer, logger)
+	billingEnforcer.Start(ctx)
+	proxyDeployer.SetTopologyAppliedHook(billingEnforcer.TriggerDeployment)
+	server.SetProxyNodeUserHandler(billingEnforcer.TriggerDeployment)
+	server.SetProxyNodeAddressHandler(billingEnforcer.TriggerAppliedRefresh)
+	billingEnforcer.TriggerDeployment()
+	server.SetManagedUserTrafficHandler(func(
+		agentID, epoch string,
+		observedAt time.Time,
+		usage []control.ManagedUserTraffic,
+		deltaReport bool,
+	) (bool, error) {
+		users := make([]proxynode.UserTraffic, 0, len(usage))
+		for _, entry := range usage {
+			users = append(users, proxynode.UserTraffic{
+				InboundPath: entry.InboundPath, Username: entry.Username,
+				UplinkBytes: entry.UplinkBytes, DownlinkBytes: entry.DownlinkBytes,
+			})
+		}
+		var changed bool
+		var err error
+		if deltaReport {
+			changed, err = proxyNodes.ApplyTrafficDeltaReport(agentID, observedAt, users)
+		} else {
+			changed, err = proxyNodes.ApplyTrafficReport(agentID, epoch, observedAt, users)
+		}
+		if changed && err == nil {
+			billingEnforcer.TriggerDeployment()
+		}
+		return changed, err
+	})
+	server.SetManagedUserTrafficFailureHandler(proxyNodes.RecordAccountingFailure)
 	accessPath := strings.TrimSpace(*webAuthFile)
 	if accessPath == "" {
 		accessPath = filepath.Join(*stateDirectory, "web-auth.json")
@@ -233,6 +265,7 @@ func serve(arguments []string) error {
 		Logger:          logger,
 		ProxyNodes:      proxyNodes,
 		ProxyDeployer:   proxyDeployer,
+		ProxyUserSync:   billingEnforcer,
 	})
 	if err != nil {
 		return fmt.Errorf("configure web interface: %w", err)

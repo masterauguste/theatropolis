@@ -6,7 +6,7 @@ import "time"
 
 const (
 	SchemaID      = "theatropolis/proxy-node-state"
-	SchemaVersion = 4
+	SchemaVersion = 8
 )
 
 type Protocol string
@@ -57,10 +57,15 @@ type BuildInfo struct {
 }
 
 type State struct {
-	Revision      uint64      `json:"revision"`
-	Users         []User      `json:"users"`
-	ProxyNodes    []ProxyNode `json:"proxy_nodes"`
-	ManagedAgents []string    `json:"managed_agents,omitempty"`
+	Revision            uint64               `json:"revision"`
+	UserRevision        uint64               `json:"user_revision"`
+	AppliedRevision     uint64               `json:"applied_revision"`
+	Users               []User               `json:"users"`
+	ProxyNodes          []ProxyNode          `json:"proxy_nodes"`
+	AppliedProxyNodes   []ProxyNode          `json:"applied_proxy_nodes,omitempty"`
+	ManagedAgents       []string             `json:"managed_agents,omitempty"`
+	TrafficObservations []TrafficObservation `json:"traffic_observations,omitempty"`
+	AccountingFailures  []AccountingFailure  `json:"accounting_failures,omitempty"`
 }
 
 type User struct {
@@ -163,10 +168,63 @@ type Target struct {
 }
 
 type Membership struct {
-	ID         string     `json:"id"`
-	UserID     string     `json:"user_id"`
-	Credential Credential `json:"credential"`
-	CreatedAt  time.Time  `json:"created_at"`
+	ID                    string           `json:"id"`
+	UserID                string           `json:"user_id"`
+	Credential            Credential       `json:"credential"`
+	PendingCredential     *Credential      `json:"pending_credential,omitempty"`
+	MonthlyQuotaBytes     uint64           `json:"monthly_quota_bytes,omitempty"`
+	UsedBytes             uint64           `json:"used_bytes,omitempty"`
+	QuotaAnchorDay        int              `json:"quota_anchor_day"`
+	QuotaPeriodStartedOn  time.Time        `json:"quota_period_started_on"`
+	QuotaResetsAfter      time.Time        `json:"quota_resets_after"`
+	SubscriptionEndsAfter time.Time        `json:"subscription_ends_after,omitempty"`
+	SubscriptionMonths    int              `json:"subscription_months,omitempty"`
+	DisabledReason        MembershipStatus `json:"disabled_reason,omitempty"`
+	CreatedAt             time.Time        `json:"created_at"`
+}
+
+type MembershipStatus string
+
+const (
+	MembershipEnabled      MembershipStatus = ""
+	MembershipQuotaReached MembershipStatus = "quota_reached"
+	MembershipExpired      MembershipStatus = "expired"
+)
+
+// MembershipPlan is the administrator-selected allowance for one user on one
+// Proxy Node. A zero quota is unlimited; a zero subscription length never
+// expires.
+type MembershipPlan struct {
+	MonthlyQuotaBytes  uint64
+	SubscriptionMonths int
+}
+
+// TrafficObservation is a rolling-upgrade baseline for a legacy Agent's
+// cumulative counter. Reset-delta Agents do not create observations.
+type TrafficObservation struct {
+	AgentID       string    `json:"agent_id"`
+	InboundPath   string    `json:"inbound_path"`
+	Username      string    `json:"username"`
+	Epoch         string    `json:"epoch"`
+	UplinkBytes   uint64    `json:"uplink_bytes"`
+	DownlinkBytes uint64    `json:"downlink_bytes"`
+	ObservedAt    time.Time `json:"observed_at"`
+}
+
+// AccountingFailure is a bounded, non-sensitive master-side audit entry. It
+// records that a sample could not be collected or persisted, never user names,
+// traffic values, credentials, or raw Agent diagnostics.
+type AccountingFailure struct {
+	AgentID    string    `json:"agent_id"`
+	Reason     string    `json:"reason"`
+	OccurredAt time.Time `json:"occurred_at"`
+}
+
+type UserTraffic struct {
+	InboundPath   string
+	Username      string
+	UplinkBytes   uint64
+	DownlinkBytes uint64
 }
 
 type Credential struct {

@@ -22,24 +22,28 @@ const (
 	diskRecordVersion           = 1
 	deploymentFilenameSuffix    = ".json"
 	deploymentTemporaryPattern  = ".deployment-*.tmp"
-	maxPersistedDeploymentBytes = ((MaxConfigBytes + 2) / 3 * 4) + (128 << 10)
+	maxPersistedDeploymentBytes = 2*((MaxConfigBytes+2)/3*4) + (256 << 10)
 )
 
 type diskRecord struct {
-	Version      int       `json:"version"`
-	ID           string    `json:"id"`
-	AgentID      string    `json:"agent_id"`
-	RevisionID   string    `json:"revision_id"`
-	ConfigJSON   []byte    `json:"config"`
-	ConfigSHA256 string    `json:"config_sha256"`
-	// RenderedSHA256 is omitted for records written before the
-	// outbound-pool feature; they predate refs, so their rendered
-	// configuration is the logical one (see Record.RenderedDigest).
-	RenderedSHA256 string    `json:"rendered_sha256,omitempty"`
-	Status         Status    `json:"status"`
-	Diagnostic     string    `json:"diagnostic,omitempty"`
-	CreatedAt      time.Time `json:"created_at"`
-	UpdatedAt      time.Time `json:"updated_at"`
+	Version      int    `json:"version"`
+	ID           string `json:"id"`
+	AgentID      string `json:"agent_id"`
+	RevisionID   string `json:"revision_id"`
+	ConfigJSON   []byte `json:"config"`
+	ConfigSHA256 string `json:"config_sha256"`
+	// RenderedSHA256 is omitted for records written before the outbound-pool
+	// feature. It may later be replaced by an Agent-materialized topology
+	// digest after stale Memberships are filtered locally.
+	RenderedSHA256            string    `json:"rendered_sha256,omitempty"`
+	Status                    Status    `json:"status"`
+	Diagnostic                string    `json:"diagnostic,omitempty"`
+	CreatedAt                 time.Time `json:"created_at"`
+	UpdatedAt                 time.Time `json:"updated_at"`
+	LastAppliedConfigJSON     []byte    `json:"last_applied_config,omitempty"`
+	LastAppliedRenderedSHA256 string    `json:"last_applied_rendered_sha256,omitempty"`
+	LastAppliedRevisionID     string    `json:"last_applied_revision_id,omitempty"`
+	LastAppliedAt             time.Time `json:"last_applied_at,omitempty"`
 }
 
 // DiskStore keeps the latest deployment and its exact configuration for each
@@ -99,6 +103,9 @@ func (s *DiskStore) Create(_ context.Context, record Record) error {
 		deploymentInProgress(s.records[previousID].Status) {
 		return ErrDeploymentInProgress
 	}
+	if previousID, exists := s.latest[record.AgentID]; exists {
+		inheritLastApplied(&record, s.records[previousID])
+	}
 	if err := s.persist(record); err != nil {
 		return err
 	}
@@ -149,6 +156,27 @@ func (s *DiskStore) List(_ context.Context) ([]Record, error) {
 	return records, nil
 }
 
+func (s *DiskStore) SetRenderedDigest(_ context.Context, id string, digest [sha256.Size]byte) (Record, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	record, exists := s.records[id]
+	if !exists {
+		return Record{}, ErrNotFound
+	}
+	if record.Status != StatusDeploying || digest == ([sha256.Size]byte{}) {
+		return Record{}, ErrInvalidRecord
+	}
+	record.RenderedSHA256 = digest
+	if err := validateRecord(record); err != nil {
+		return Record{}, err
+	}
+	if err := s.persist(record); err != nil {
+		return Record{}, err
+	}
+	s.records[id] = record
+	return cloneRecord(record), nil
+}
+
 func (s *DiskStore) Transition(
 	_ context.Context,
 	id string,
@@ -173,6 +201,9 @@ func (s *DiskStore) Transition(
 	record.Status = next
 	record.Diagnostic = diagnostic
 	record.UpdatedAt = now.UTC()
+	if next == StatusApplied {
+		setLastApplied(&record)
+	}
 	if err := validateRecord(record); err != nil {
 		return Record{}, err
 	}
@@ -306,19 +337,25 @@ func encodeDiskRecord(record Record) ([]byte, error) {
 		return nil, err
 	}
 	stored := diskRecord{
-		Version:      diskRecordVersion,
-		ID:           record.ID,
-		AgentID:      record.AgentID,
-		RevisionID:   record.RevisionID,
-		ConfigJSON:   append([]byte(nil), record.ConfigJSON...),
-		ConfigSHA256: hex.EncodeToString(record.ConfigSHA256[:]),
-		Status:       record.Status,
-		Diagnostic:   record.Diagnostic,
-		CreatedAt:    record.CreatedAt.UTC(),
-		UpdatedAt:    record.UpdatedAt.UTC(),
+		Version:               diskRecordVersion,
+		ID:                    record.ID,
+		AgentID:               record.AgentID,
+		RevisionID:            record.RevisionID,
+		ConfigJSON:            append([]byte(nil), record.ConfigJSON...),
+		ConfigSHA256:          hex.EncodeToString(record.ConfigSHA256[:]),
+		Status:                record.Status,
+		Diagnostic:            record.Diagnostic,
+		CreatedAt:             record.CreatedAt.UTC(),
+		UpdatedAt:             record.UpdatedAt.UTC(),
+		LastAppliedConfigJSON: append([]byte(nil), record.LastAppliedConfigJSON...),
+		LastAppliedRevisionID: record.LastAppliedRevisionID,
+		LastAppliedAt:         record.LastAppliedAt.UTC(),
 	}
 	if record.RenderedSHA256 != ([sha256.Size]byte{}) {
 		stored.RenderedSHA256 = hex.EncodeToString(record.RenderedSHA256[:])
+	}
+	if record.LastAppliedRenderedSHA256 != ([sha256.Size]byte{}) {
+		stored.LastAppliedRenderedSHA256 = hex.EncodeToString(record.LastAppliedRenderedSHA256[:])
 	}
 	encoded, err := json.Marshal(stored)
 	if err != nil {
@@ -395,17 +432,29 @@ func decodeDiskRecord(contents []byte) (Record, error) {
 		}
 		copy(renderedSHA256[:], renderedDigest)
 	}
+	var lastAppliedRenderedSHA256 [sha256.Size]byte
+	if stored.LastAppliedRenderedSHA256 != "" {
+		lastDigest, err := hex.DecodeString(stored.LastAppliedRenderedSHA256)
+		if err != nil || len(lastDigest) != sha256.Size {
+			return Record{}, ErrInvalidStoredData
+		}
+		copy(lastAppliedRenderedSHA256[:], lastDigest)
+	}
 	record := Record{
-		ID:             stored.ID,
-		AgentID:        stored.AgentID,
-		RevisionID:     stored.RevisionID,
-		ConfigJSON:     append([]byte(nil), stored.ConfigJSON...),
-		ConfigSHA256:   configSHA256,
-		RenderedSHA256: renderedSHA256,
-		Status:         stored.Status,
-		Diagnostic:     stored.Diagnostic,
-		CreatedAt:      stored.CreatedAt.UTC(),
-		UpdatedAt:      stored.UpdatedAt.UTC(),
+		ID:                        stored.ID,
+		AgentID:                   stored.AgentID,
+		RevisionID:                stored.RevisionID,
+		ConfigJSON:                append([]byte(nil), stored.ConfigJSON...),
+		ConfigSHA256:              configSHA256,
+		RenderedSHA256:            renderedSHA256,
+		Status:                    stored.Status,
+		Diagnostic:                stored.Diagnostic,
+		CreatedAt:                 stored.CreatedAt.UTC(),
+		UpdatedAt:                 stored.UpdatedAt.UTC(),
+		LastAppliedConfigJSON:     append([]byte(nil), stored.LastAppliedConfigJSON...),
+		LastAppliedRenderedSHA256: lastAppliedRenderedSHA256,
+		LastAppliedRevisionID:     stored.LastAppliedRevisionID,
+		LastAppliedAt:             stored.LastAppliedAt.UTC(),
 	}
 	if err := validateRecord(record); err != nil {
 		return Record{}, ErrInvalidStoredData

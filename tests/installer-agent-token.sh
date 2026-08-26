@@ -13,7 +13,7 @@ TEST_ROOT="$TEST_DIRECTORY/root"
 MOCK_BIN="$TEST_DIRECTORY/bin"
 RELEASE_DIRECTORY="$TEST_DIRECTORY/release"
 RELEASE_STAGE="$TEST_DIRECTORY/release-stage"
-SING_BOX_VERSION="1.14.0-rc.1"
+SING_BOX_VERSION="1.14.0-rc.1.theatropolis.2"
 SING_BOX_PACKAGE="sing-box-${SING_BOX_VERSION}-linux-amd64"
 SING_BOX_ARCHIVE="${SING_BOX_PACKAGE}.tar.gz"
 SING_BOX_STAGE="$TEST_DIRECTORY/sing-box-stage"
@@ -83,7 +83,7 @@ chmod +x \
 
 cat >"$SING_BOX_STAGE/$SING_BOX_PACKAGE/sing-box" <<'EOF'
 #!/bin/sh
-exit 0
+printf '%s\n' 'sing-box version 1.14.0-rc.1.theatropolis.2' 'Tags: with_v2ray_api, with_theatropolis_managed_users'
 EOF
 printf '%s\n' 'mock cronet library' \
 	>"$SING_BOX_STAGE/$SING_BOX_PACKAGE/libcronet.so"
@@ -100,7 +100,7 @@ tar -czf "$RELEASE_DIRECTORY/$SING_BOX_ARCHIVE" \
 	-C "$SING_BOX_STAGE" \
 	"$SING_BOX_PACKAGE"
 printf '%s  %s\n' \
-	'f45605ba0b022c2383815eb7522741dfb930cc04f08262f9a4e4f8ea0b4441b9' \
+	'5d1ebf727af665dd433f7661583b6087eee9b162b5be1df0795a3ab0686f2122' \
 	"$SING_BOX_ARCHIVE" \
 	>"$RELEASE_DIRECTORY/sing-box-checksums.txt"
 : >"$RELEASE_DIRECTORY/sing-box-checksums.txt.sig"
@@ -167,10 +167,10 @@ case "$SOURCE" in
 */theatropolis_linux_amd64.tar.gz)
 	cp "$TEST_RELEASE_DIRECTORY/theatropolis_linux_amd64.tar.gz" "$OUTPUT"
 	;;
-*/sing-box-v2ray-api-builds/releases/download/v1.14.0-rc.1/checksums.txt)
+*/sing-box-v2ray-api-builds/releases/download/v1.14.0-rc.1.theatropolis.2/checksums.txt)
 	cp "$TEST_RELEASE_DIRECTORY/sing-box-checksums.txt" "$OUTPUT"
 	;;
-*/sing-box-v2ray-api-builds/releases/download/v1.14.0-rc.1/checksums.txt.sig)
+*/sing-box-v2ray-api-builds/releases/download/v1.14.0-rc.1.theatropolis.2/checksums.txt.sig)
 	cp "$TEST_RELEASE_DIRECTORY/sing-box-checksums.txt.sig" "$OUTPUT"
 	;;
 */checksums.txt)
@@ -179,8 +179,8 @@ case "$SOURCE" in
 */checksums.txt.sig)
 	cp "$TEST_RELEASE_DIRECTORY/checksums.txt.sig" "$OUTPUT"
 	;;
-*/sing-box-1.14.0-rc.1-linux-amd64.tar.gz)
-	cp "$TEST_RELEASE_DIRECTORY/sing-box-1.14.0-rc.1-linux-amd64.tar.gz" "$OUTPUT"
+*/sing-box-1.14.0-rc.1.theatropolis.2-linux-amd64.tar.gz)
+	cp "$TEST_RELEASE_DIRECTORY/sing-box-1.14.0-rc.1.theatropolis.2-linux-amd64.tar.gz" "$OUTPUT"
 	;;
 *)
 	printf 'unexpected mock curl source: %s\n' "$SOURCE" >&2
@@ -202,9 +202,9 @@ EOF
 cat >"$MOCK_BIN/sha256sum" <<'EOF'
 #!/bin/sh
 case "${1:-}" in
-*"/sing-box-1.14.0-rc.1-linux-amd64.tar.gz")
+*"/sing-box-1.14.0-rc.1.theatropolis.2-linux-amd64.tar.gz")
 	printf '%s  %s\n' \
-		'f45605ba0b022c2383815eb7522741dfb930cc04f08262f9a4e4f8ea0b4441b9' \
+		'5d1ebf727af665dd433f7661583b6087eee9b162b5be1df0795a3ab0686f2122' \
 		"$1"
 	;;
 *) exec /usr/bin/sha256sum "$@" ;;

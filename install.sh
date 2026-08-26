@@ -8,7 +8,7 @@ REPOSITORY="masterauguste/theatropolis"
 INSTALL_DIRECTORY="/usr/local/bin"
 UPDATE_HELPER_DIRECTORY="/usr/local/libexec/theatropolis"
 UPDATE_HELPER_PATH="${UPDATE_HELPER_DIRECTORY}/theatropolis-update-helper"
-SING_BOX_VERSION="1.14.0-rc.1"
+SING_BOX_VERSION="1.14.0-rc.1.theatropolis.2"
 SING_BOX_REPOSITORY="masterauguste/sing-box-v2ray-api-builds"
 SING_BOX_LIBRARY_DIRECTORY="/usr/local/lib/theatropolis/sing-box"
 MASTER_USER="theatropolis-master"
@@ -438,11 +438,11 @@ flock -n 9 ||
 case "$(uname -m)" in
 x86_64 | amd64)
 	ARCHITECTURE="amd64"
-	SING_BOX_SHA256="f45605ba0b022c2383815eb7522741dfb930cc04f08262f9a4e4f8ea0b4441b9"
+	SING_BOX_SHA256="5d1ebf727af665dd433f7661583b6087eee9b162b5be1df0795a3ab0686f2122"
 	;;
 aarch64 | arm64)
 	ARCHITECTURE="arm64"
-	SING_BOX_SHA256="3276fe082f46675c52f11fb3a9cf3b9d5e846d2a464ae7c7e216af4195ff03cf"
+	SING_BOX_SHA256="849adddda2f0d64439ce99447d89051e30c79df94febc639c0924ae31fff03d4"
 	;;
 *) fail "only amd64 and arm64 are supported" ;;
 esac
@@ -693,6 +693,17 @@ EOF
 			fail "sing-box archive did not extract a regular $SING_BOX_COMPONENT file"
 		fi
 	done
+	SING_BOX_VERSION_OUTPUT="$("$SING_BOX_EXTRACT_DIRECTORY/$SING_BOX_PACKAGE/sing-box" version 2>/dev/null)" ||
+		fail "sing-box candidate version could not be verified"
+	printf '%s\n' "$SING_BOX_VERSION_OUTPUT" |
+		grep -Fqx "sing-box version $SING_BOX_VERSION" ||
+		fail "sing-box candidate reported an unexpected version"
+	printf '%s\n' "$SING_BOX_VERSION_OUTPUT" |
+		grep -Eq '^Tags: (.*, )?with_v2ray_api(, .*)?$' ||
+		fail "sing-box candidate lacks V2Ray API support"
+	printf '%s\n' "$SING_BOX_VERSION_OUTPUT" |
+		grep -Eq '^Tags: (.*, )?with_theatropolis_managed_users(, .*)?$' ||
+		fail "sing-box candidate lacks Theatropolis managed-user support"
 }
 
 case "$ROLE" in

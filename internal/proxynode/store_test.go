@@ -5,12 +5,15 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"reflect"
 	"slices"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/masterauguste/theatropolis/internal/pool"
+	"github.com/masterauguste/theatropolis/internal/singbox"
 )
 
 func testBuild() BuildInfo {
@@ -443,8 +446,8 @@ func TestOpenMigratesSchemaV3MultiRuleLinksIntoIndependentBranches(t *testing.T)
 		t.Fatal(err)
 	}
 	persisted, _ := os.ReadFile(path)
-	if !strings.Contains(string(persisted), `"schema_version": 4`) {
-		t.Fatalf("migrated state was not persisted as schema v4: %s", persisted)
+	if !strings.Contains(string(persisted), `"schema_version": `+strconv.Itoa(SchemaVersion)) {
+		t.Fatalf("migrated state was not persisted as schema v%d: %s", SchemaVersion, persisted)
 	}
 }
 
@@ -474,6 +477,122 @@ func (r testResolver) AgentAddressForFamily(agentID string, _ pool.Family) (stri
 }
 
 func (testResolver) DefaultTLSAddress(string) string { return "" }
+
+func TestCompileKeepsEmptyEntranceReadyForLiveUserManagement(t *testing.T) {
+	store, err := Open(filepath.Join(t.TempDir(), "state.json"), testBuild())
+	if err != nil {
+		t.Fatal(err)
+	}
+	node, err := store.CreateProxyNode(CreateProxyNodeInput{
+		Name: "cinema", RootName: "Entrance", RootAgent: "edge-a",
+		Entrance: testTLSEndpoint(ProtocolAnyTLS, 443),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	compiled, err := Compile(store.Snapshot(), testResolver{"edge-a": "192.0.2.10"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var config struct {
+		Inbounds []struct {
+			Tag   string           `json:"tag"`
+			Users []map[string]any `json:"users"`
+		} `json:"inbounds"`
+		Services []struct {
+			Type       string            `json:"type"`
+			Tag        string            `json:"tag"`
+			Listen     string            `json:"listen"`
+			ListenPort int               `json:"listen_port"`
+			Servers    map[string]string `json:"servers"`
+		} `json:"services"`
+		Route struct {
+			Rules []map[string]any `json:"rules"`
+		} `json:"route"`
+	}
+	if err := json.Unmarshal(compiled.Configs["edge-a"], &config); err != nil {
+		t.Fatal(err)
+	}
+	if len(config.Inbounds) != 1 || len(config.Inbounds[0].Users) != 0 {
+		t.Fatalf("empty entrance inbounds = %#v", config.Inbounds)
+	}
+	if len(config.Services) != 1 || config.Services[0].Type != "ssm-api" ||
+		config.Services[0].Tag != singbox.ManagedUserAPIServiceTag ||
+		config.Services[0].Listen != "127.0.0.1" ||
+		config.Services[0].ListenPort != singbox.ManagedUserAPIListenPort ||
+		config.Services[0].Servers["/"+config.Inbounds[0].Tag] != config.Inbounds[0].Tag {
+		t.Fatalf("managed-user service = %#v", config.Services)
+	}
+	if len(config.Route.Rules) != 1 {
+		t.Fatalf("empty entrance route rules = %#v", config.Route.Rules)
+	}
+	if _, exists := config.Route.Rules[0]["auth_user"]; exists {
+		t.Fatalf("dedicated entrance route unnecessarily depends on mutable users: %#v", config.Route.Rules)
+	}
+	if node.Entrance.HopID == "" {
+		t.Fatal("created entrance has no Hop ID")
+	}
+	user, err := store.CreateUser("alice")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.AddMembership(node.ID, user.ID); err != nil {
+		t.Fatal(err)
+	}
+	withUser, err := Compile(store.Snapshot(), testResolver{"edge-a": "192.0.2.10"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	withoutUsers := func(encoded []byte) map[string]any {
+		t.Helper()
+		var document map[string]any
+		if err := json.Unmarshal(encoded, &document); err != nil {
+			t.Fatal(err)
+		}
+		for _, raw := range document["inbounds"].([]any) {
+			delete(raw.(map[string]any), "users")
+		}
+		return document
+	}
+	if !reflect.DeepEqual(
+		withoutUsers(compiled.Configs["edge-a"]),
+		withoutUsers(withUser.Configs["edge-a"]),
+	) {
+		t.Fatal("granting a user changed dedicated-listener routing or topology")
+	}
+}
+
+func TestCompileUsesManagedModeForEmptyShadowsocksListener(t *testing.T) {
+	store, err := Open(filepath.Join(t.TempDir(), "state.json"), testBuild())
+	if err != nil {
+		t.Fatal(err)
+	}
+	endpoint := Endpoint{
+		Protocol: ProtocolShadowsocks, Listen: "::", ListenPort: 20048,
+		Family: "ipv4", Method: "2022-blake3-aes-256-gcm",
+	}
+	if _, err := store.CreateProxyNode(CreateProxyNodeInput{
+		Name: "cinema", RootName: "Entrance", RootAgent: "edge-a", Entrance: endpoint,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	compiled, err := Compile(store.Snapshot(), testResolver{"edge-a": "192.0.2.10"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var config struct {
+		Inbounds []struct {
+			Managed bool             `json:"managed"`
+			Users   []map[string]any `json:"users"`
+		} `json:"inbounds"`
+	}
+	if err := json.Unmarshal(compiled.Configs["edge-a"], &config); err != nil {
+		t.Fatal(err)
+	}
+	if len(config.Inbounds) != 1 || !config.Inbounds[0].Managed || len(config.Inbounds[0].Users) != 0 {
+		t.Fatalf("empty Shadowsocks inbound = %#v", config.Inbounds)
+	}
+}
 
 func TestCompileCombinesCompatibleEntrancesAndRoutesByMembership(t *testing.T) {
 	store, err := Open(filepath.Join(t.TempDir(), "state.json"), testBuild())
@@ -517,7 +636,8 @@ func TestCompileCombinesCompatibleEntrancesAndRoutesByMembership(t *testing.T) {
 	if len(config.Inbounds) != 1 || len(config.Inbounds[0].Users) != 2 {
 		t.Fatalf("combined inbounds = %#v", config.Inbounds)
 	}
-	if config.Inbounds[0].Users[0].Name != "archive-bob" || config.Inbounds[0].Users[1].Name != "cinema-alice" {
+	if config.Inbounds[0].Users[0].Name != AuthenticatedUserLabel("archive", "bob", secondMembership.ID) ||
+		config.Inbounds[0].Users[1].Name != AuthenticatedUserLabel("cinema", "alice", firstMembership.ID) {
 		t.Fatalf("compiled users = %#v", config.Inbounds[0].Users)
 	}
 	if len(config.Route.Rules) != 2 {
@@ -833,8 +953,8 @@ func TestSharedShadowsocksListenerEnablesMuxForOnlyRequestingLinks(t *testing.T)
 
 	padded := muxEndpoint
 	padded.Multiplex = &MultiplexConfig{Enabled: true, Padding: true}
-	if err := store.UpdateLink(muxNode.ID, muxLink.ID, padded); err == nil || !strings.Contains(err.Error(), "incompatible logical inbounds") {
-		t.Fatalf("mixed hidden listener-wide mux policy error = %v", err)
+	if err := store.UpdateLink(muxNode.ID, muxLink.ID, padded); err != nil {
+		t.Fatalf("atomic shared listener update: %v", err)
 	}
 	if err := store.DeleteLink(muxNode.ID, muxLink.ID); err != nil {
 		t.Fatal(err)
@@ -849,8 +969,8 @@ func TestSharedShadowsocksListenerEnablesMuxForOnlyRequestingLinks(t *testing.T)
 	if err := json.Unmarshal(compiled.Configs["edge-shared"], &sharedAfterDelete); err != nil {
 		t.Fatal(err)
 	}
-	if len(sharedAfterDelete.Inbounds) != 1 || sharedAfterDelete.Inbounds[0].Multiplex != nil {
-		t.Fatalf("listener retained mux after its final requesting Link was removed: %#v", sharedAfterDelete.Inbounds)
+	if len(sharedAfterDelete.Inbounds) != 1 || sharedAfterDelete.Inbounds[0].Multiplex["padding"] != true {
+		t.Fatalf("listener-wide padding did not propagate to the remaining ref: %#v", sharedAfterDelete.Inbounds)
 	}
 }
 
@@ -958,6 +1078,92 @@ func TestCompileCombinesCompatibleRelayListenersAcrossProxyNodes(t *testing.T) {
 	}
 }
 
+func TestSharedListenerProtocolEditRotatesEveryReferenceAtomically(t *testing.T) {
+	store, err := Open(filepath.Join(t.TempDir(), "state.json"), testBuild())
+	if err != nil {
+		t.Fatal(err)
+	}
+	shadowsocks := Endpoint{
+		Protocol: ProtocolShadowsocks, Listen: "::", ListenPort: 20048,
+		Method: "2022-blake3-aes-256-gcm",
+	}
+	firstNode, err := store.CreateProxyNode(CreateProxyNodeInput{
+		Name: "first", RootAgent: "parent-a", Entrance: testTLSEndpoint(ProtocolAnyTLS, 443),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	firstLink, _, err := store.AddLink(firstNode.ID, AddLinkInput{
+		ParentHopID: firstNode.Entrance.HopID, ChildName: "shared-a", ChildAgent: "shared",
+		Endpoint: shadowsocks,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	secondNode, err := store.CreateProxyNode(CreateProxyNodeInput{
+		Name: "second", RootAgent: "parent-b", Entrance: testTLSEndpoint(ProtocolAnyTLS, 444),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	secondLink, _, err := store.AddLink(secondNode.ID, AddLinkInput{
+		ParentHopID: secondNode.Entrance.HopID, ChildName: "shared-b", ChildAgent: "shared",
+		Endpoint: shadowsocks,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	replacement := testTLSEndpoint(ProtocolAnyTLS, 20048)
+	if err := store.UpdateLink(firstNode.ID, firstLink.ID, replacement); err != nil {
+		t.Fatal(err)
+	}
+	state := store.Snapshot()
+	findLink := func(nodeID, linkID string) Link {
+		t.Helper()
+		for _, node := range state.ProxyNodes {
+			if node.ID != nodeID {
+				continue
+			}
+			for _, link := range node.Links {
+				if link.ID == linkID {
+					return link
+				}
+			}
+		}
+		t.Fatal("Link not found")
+		return Link{}
+	}
+	updatedFirst := findLink(firstNode.ID, firstLink.ID)
+	updatedSecond := findLink(secondNode.ID, secondLink.ID)
+	if updatedFirst.Endpoint.Protocol != ProtocolAnyTLS || updatedSecond.Endpoint.Protocol != ProtocolAnyTLS ||
+		updatedFirst.Endpoint.TLS != replacement.TLS || updatedSecond.Endpoint.TLS != replacement.TLS {
+		t.Fatalf("shared listener was only partially changed: %#v %#v", updatedFirst.Endpoint, updatedSecond.Endpoint)
+	}
+	if updatedFirst.Credential == firstLink.Credential || updatedSecond.Credential == secondLink.Credential ||
+		updatedFirst.Credential == updatedSecond.Credential {
+		t.Fatal("shared protocol edit did not rotate distinct Link credentials")
+	}
+	compiled, err := Compile(state, testResolver{
+		"parent-a": "192.0.2.10", "parent-b": "192.0.2.11", "shared": "192.0.2.12",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var sharedConfig struct {
+		Inbounds []struct {
+			Type  string       `json:"type"`
+			Users []renderUser `json:"users"`
+		} `json:"inbounds"`
+	}
+	if err := json.Unmarshal(compiled.Configs["shared"], &sharedConfig); err != nil {
+		t.Fatal(err)
+	}
+	if len(sharedConfig.Inbounds) != 1 || sharedConfig.Inbounds[0].Type != string(ProtocolAnyTLS) ||
+		len(sharedConfig.Inbounds[0].Users) != 2 {
+		t.Fatalf("compiled shared replacement = %#v", sharedConfig.Inbounds)
+	}
+}
+
 func TestDeletingSharedLinkRemovesOnlyItsUserUntilLastReference(t *testing.T) {
 	for _, protocol := range []Protocol{ProtocolShadowsocks, ProtocolAnyTLS, ProtocolHysteria2} {
 		t.Run(string(protocol), func(t *testing.T) {
@@ -1024,7 +1230,7 @@ func TestDeletingSharedLinkRemovesOnlyItsUserUntilLastReference(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			cleanup, _, err := deployer.compileCompleteFleet()
+			cleanup, _, err := deployer.compileCompleteFleet(deploymentTopology)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -1105,6 +1311,62 @@ func TestOpenReconcilesExistingSharedListenerSecrets(t *testing.T) {
 	}
 	if strings.Contains(string(persisted), legacyKey) {
 		t.Fatal("MarkReady persisted the superseded per-Link listener key")
+	}
+}
+
+func TestRestoreTopologyPreservesConcurrentUserPlaneChanges(t *testing.T) {
+	store, err := Open(filepath.Join(t.TempDir(), "state.json"), testBuild())
+	if err != nil {
+		t.Fatal(err)
+	}
+	alice, err := store.CreateUser("alice")
+	if err != nil {
+		t.Fatal(err)
+	}
+	node, err := store.CreateProxyNode(CreateProxyNodeInput{
+		Name: "cinema", RootAgent: "edge-a", Entrance: testTLSEndpoint(ProtocolAnyTLS, 443),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.AddMembership(node.ID, alice.ID); err != nil {
+		t.Fatal(err)
+	}
+	previous := store.Snapshot()
+	if err := store.RenameProxyNode(node.ID, "candidate"); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.UpdateMembershipPlan(node.ID, alice.ID, MembershipPlan{MonthlyQuotaBytes: 12345}); err != nil {
+		t.Fatal(err)
+	}
+	bob, err := store.CreateUser("bob")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.AddMembership(node.ID, bob.ID); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.RestoreTopology(store.Snapshot().Revision, previous); err != nil {
+		t.Fatal(err)
+	}
+	restored, exists := store.ProxyNode(node.ID)
+	if !exists || restored.Name != "cinema" {
+		t.Fatalf("restored Proxy Node = %#v, exists %v", restored, exists)
+	}
+	if len(restored.Memberships) != 2 {
+		t.Fatalf("restored memberships = %#v", restored.Memberships)
+	}
+	aliceIndex := slices.IndexFunc(restored.Memberships, func(membership Membership) bool {
+		return membership.UserID == alice.ID
+	})
+	bobIndex := slices.IndexFunc(restored.Memberships, func(membership Membership) bool {
+		return membership.UserID == bob.ID
+	})
+	if aliceIndex < 0 || restored.Memberships[aliceIndex].MonthlyQuotaBytes != 12345 {
+		t.Fatalf("Alice's concurrent plan was lost: %#v", restored.Memberships)
+	}
+	if bobIndex < 0 || restored.Memberships[bobIndex].PendingCredential != nil {
+		t.Fatalf("Bob's concurrent membership was lost or retained a candidate credential: %#v", restored.Memberships)
 	}
 }
 
@@ -1312,8 +1574,8 @@ func TestOpenMigratesSchemaV1HopRulesOntoLinks(t *testing.T) {
 		t.Fatal(err)
 	}
 	contents, _ := os.ReadFile(path)
-	if !strings.Contains(string(contents), `"schema_version": 4`) || strings.Contains(string(contents), `"target"`) || strings.Contains(string(contents), `"rules": null`) {
-		t.Fatalf("migrated state was not persisted as schema v4: %s", contents)
+	if !strings.Contains(string(contents), `"schema_version": `+strconv.Itoa(SchemaVersion)) || strings.Contains(string(contents), `"target"`) || strings.Contains(string(contents), `"rules": null`) {
+		t.Fatalf("migrated state was not persisted as schema v%d: %s", SchemaVersion, contents)
 	}
 }
 

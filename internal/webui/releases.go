@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"regexp"
 	"sort"
 	"strconv"
@@ -37,11 +38,12 @@ type ReleaseCatalog interface {
 // manifest exist. The sing-box catalog applies the same rule to the dedicated,
 // signed V2Ray-API build repository.
 type GitHubReleaseCatalog struct {
-	client         *http.Client
-	refsURL        string
-	releasesURL    string
-	requiredAssets []string
-	validVersion   func(string) bool
+	client                  *http.Client
+	refsURL                 string
+	releasesURL             string
+	requiredAssets          []string
+	validVersion            func(string) bool
+	validateSingBoxManifest bool
 }
 
 func NewGitHubReleaseCatalog(client *http.Client) *GitHubReleaseCatalog {
@@ -75,12 +77,14 @@ func NewSingBoxReleaseCatalog(client *http.Client) *GitHubReleaseCatalog {
 	catalog := NewGitHubReleaseCatalog(client)
 	catalog.releasesURL = "https://api.github.com/repos/" + singboxupdate.ReleaseRepository + "/releases?per_page=100"
 	catalog.requiredAssets = []string{
+		"build-manifest.json",
 		"checksums.txt",
 		"checksums.txt.sig",
 		"sing-box-{version}-linux-amd64.tar.gz",
 		"sing-box-{version}-linux-arm64.tar.gz",
 	}
 	catalog.validVersion = singboxupdate.ValidVersion
+	catalog.validateSingBoxManifest = true
 	return catalog
 }
 
@@ -101,7 +105,8 @@ type githubRelease struct {
 	PublishedAt time.Time `json:"published_at"`
 	Draft       bool      `json:"draft"`
 	Assets      []struct {
-		Name string `json:"name"`
+		Name               string `json:"name"`
+		BrowserDownloadURL string `json:"browser_download_url"`
 	} `json:"assets"`
 }
 
@@ -142,6 +147,15 @@ func (c *GitHubReleaseCatalog) fetchPublishedReleases(
 			!hasReleaseAssets(release, c.requiredAssets) {
 			continue
 		}
+		if c.validateSingBoxManifest {
+			supported, manifestErr := c.releaseHasSupportedSingBoxManifest(ctx, release)
+			if manifestErr != nil {
+				return nil, manifestErr
+			}
+			if !supported {
+				continue
+			}
+		}
 		releases = append(releases, AgentRelease{
 			Tag:         release.TagName,
 			Prerelease:  release.Prerelease,
@@ -155,6 +169,58 @@ func (c *GitHubReleaseCatalog) fetchPublishedReleases(
 		return compareVersionTags(releases[left].Tag, releases[right].Tag) > 0
 	})
 	return releases, nil
+}
+
+func (c *GitHubReleaseCatalog) releaseHasSupportedSingBoxManifest(
+	ctx context.Context,
+	release githubRelease,
+) (bool, error) {
+	manifestURL := ""
+	for _, asset := range release.Assets {
+		if asset.Name == "build-manifest.json" {
+			manifestURL = asset.BrowserDownloadURL
+			break
+		}
+	}
+	if !trustedReleaseAssetURL(c.releasesURL, manifestURL) {
+		return false, errors.New("sing-box release returned an untrusted build manifest URL")
+	}
+	request, err := http.NewRequestWithContext(ctx, http.MethodGet, manifestURL, nil)
+	if err != nil {
+		return false, fmt.Errorf("prepare sing-box build manifest request: %w", err)
+	}
+	response, err := c.client.Do(request)
+	if err != nil {
+		return false, fmt.Errorf("request sing-box build manifest: %w", err)
+	}
+	defer response.Body.Close()
+	if response.StatusCode != http.StatusOK {
+		return false, fmt.Errorf("sing-box build manifest returned status %d", response.StatusCode)
+	}
+	const manifestLimit = 128 << 10
+	encoded, err := io.ReadAll(io.LimitReader(response.Body, manifestLimit+1))
+	if err != nil {
+		return false, fmt.Errorf("read sing-box build manifest: %w", err)
+	}
+	if len(encoded) > manifestLimit {
+		return false, errors.New("sing-box build manifest exceeds the size limit")
+	}
+	if err := singboxupdate.ValidateBuildManifest(encoded, release.TagName); err != nil {
+		return false, nil
+	}
+	return true, nil
+}
+
+func trustedReleaseAssetURL(releasesURL, assetURL string) bool {
+	asset, err := url.Parse(assetURL)
+	if err != nil || asset.Host == "" {
+		return false
+	}
+	if asset.Scheme == "https" && (asset.Hostname() == "github.com" || asset.Hostname() == "api.github.com") {
+		return true
+	}
+	releases, err := url.Parse(releasesURL)
+	return err == nil && asset.Scheme == releases.Scheme && asset.Host == releases.Host
 }
 
 func hasReleaseAssets(release githubRelease, required []string) bool {
@@ -227,6 +293,7 @@ type parsedVersion struct {
 	minor      int
 	patch      int
 	prerelease string
+	build      int
 }
 
 func compareVersionTags(left, right string) int {
@@ -249,11 +316,29 @@ func compareVersionTags(left, right string) int {
 	if l.prerelease != "" && r.prerelease == "" {
 		return -1
 	}
-	return comparePrerelease(l.prerelease, r.prerelease)
+	if compared := comparePrerelease(l.prerelease, r.prerelease); compared != 0 {
+		return compared
+	}
+	return l.build - r.build
 }
 
 func parseVersionTag(value string) (parsedVersion, bool) {
 	value = strings.TrimPrefix(value, "v")
+	build := 0
+	marker := strings.LastIndex(value, ".theatropolis.")
+	markerLength := len(".theatropolis.")
+	if marker < 0 {
+		marker = strings.LastIndex(value, "-theatropolis.")
+		markerLength = len("-theatropolis.")
+	}
+	if marker >= 0 {
+		parsedBuild, err := strconv.Atoi(value[marker+markerLength:])
+		if err != nil || parsedBuild < 1 {
+			return parsedVersion{}, false
+		}
+		build = parsedBuild
+		value = value[:marker]
+	}
 	base, prerelease, _ := strings.Cut(value, "-")
 	parts := strings.Split(base, ".")
 	if len(parts) != 3 {
@@ -269,6 +354,7 @@ func parseVersionTag(value string) (parsedVersion, bool) {
 	}
 	return parsedVersion{
 		major: numbers[0], minor: numbers[1], patch: numbers[2], prerelease: prerelease,
+		build: build,
 	}, true
 }
 

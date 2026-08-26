@@ -4,13 +4,72 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"sort"
+	"time"
 )
+
+type ListenerPreset struct {
+	ID             string
+	AgentID        string
+	Endpoint       Endpoint
+	ReferenceCount int
+}
+
+// ListenerPresets returns secret-free physical-listener choices for guided UI
+// reuse. Logical refs with the same compatibility key collapse into one item.
+func ListenerPresets(state State) []ListenerPreset {
+	state = cloneState(state)
+	byKey := make(map[string]*ListenerPreset)
+	for _, ref := range stateListenerRefs(&state) {
+		key, _, err := listenerKeys(ref.agentID, *ref.endpoint)
+		if err != nil {
+			continue
+		}
+		preset := byKey[key]
+		if preset == nil {
+			endpoint := *ref.endpoint
+			endpoint.TLS = normalizeTLSConfig(endpoint.TLS)
+			endpoint.ServerKey = ""
+			endpoint.ObfsSecret = ""
+			preset = &ListenerPreset{
+				ID: "listener-" + shortDigest(key), AgentID: ref.agentID, Endpoint: endpoint,
+			}
+			byKey[key] = preset
+		}
+		preset.ReferenceCount++
+	}
+	result := make([]ListenerPreset, 0, len(byKey))
+	for _, preset := range byKey {
+		result = append(result, *preset)
+	}
+	sort.Slice(result, func(left, right int) bool {
+		if result[left].AgentID != result[right].AgentID {
+			return result[left].AgentID < result[right].AgentID
+		}
+		if result[left].Endpoint.ListenPort != result[right].Endpoint.ListenPort {
+			return result[left].Endpoint.ListenPort < result[right].Endpoint.ListenPort
+		}
+		return result[left].ID < result[right].ID
+	})
+	return result
+}
+
+func ListenerPresetID(agentID string, endpoint Endpoint) string {
+	key, _, err := listenerKeys(agentID, endpoint)
+	if err != nil {
+		return ""
+	}
+	return "listener-" + shortDigest(key)
+}
 
 // listenerRef identifies one logical inbound. Several refs may intentionally
 // share one physical listener when their user-selected options are compatible.
 type listenerRef struct {
 	agentID  string
 	endpoint *Endpoint
+	node     *ProxyNode
+	link     *Link
+	entrance bool
 }
 
 type listenerSecrets struct {
@@ -32,6 +91,7 @@ type listenerMultiplexPolicy struct {
 // unique. Listener-wide options remain part of the compatibility key; the
 // per-Link mux usage toggle is aggregated separately by the compiler.
 func listenerKeys(agentID string, endpoint Endpoint) (string, string, error) {
+	endpoint.TLS = normalizeTLSConfig(endpoint.TLS)
 	compatible := struct {
 		Protocol   Protocol                `json:"protocol"`
 		Listen     string                  `json:"listen"`
@@ -95,16 +155,110 @@ func stateListenerRefs(state *State) []listenerRef {
 			agents[hop.ID] = hop.AgentID
 		}
 		if agentID := agents[node.Entrance.HopID]; agentID != "" {
-			refs = append(refs, listenerRef{agentID: agentID, endpoint: &node.Entrance.Endpoint})
+			refs = append(refs, listenerRef{
+				agentID: agentID, endpoint: &node.Entrance.Endpoint, node: node, entrance: true,
+			})
 		}
 		for linkIndex := range node.Links {
 			link := &node.Links[linkIndex]
 			if agentID := agents[link.ChildHopID]; agentID != "" {
-				refs = append(refs, listenerRef{agentID: agentID, endpoint: &link.Endpoint})
+				refs = append(refs, listenerRef{agentID: agentID, endpoint: &link.Endpoint, node: node, link: link})
 			}
 		}
 	}
 	return refs
+}
+
+// applySharedListenerEdit updates one physical listener as an indivisible
+// operation across every logical reference. Family and the basic outbound mux
+// choice are per Link; every other endpoint field describes the child-side
+// listener and therefore propagates to the whole compatible group.
+func applySharedListenerEdit(state *State, target *Endpoint, replacement Endpoint, now time.Time) error {
+	refs := stateListenerRefs(state)
+	var targetRef *listenerRef
+	for index := range refs {
+		if refs[index].endpoint == target {
+			targetRef = &refs[index]
+			break
+		}
+	}
+	if targetRef == nil {
+		return ErrNotFound
+	}
+	oldKey, _, err := listenerKeys(targetRef.agentID, *targetRef.endpoint)
+	if err != nil {
+		return err
+	}
+	preserveEndpointSecrets(*targetRef.endpoint, &replacement)
+	if err := generateEndpointSecrets(&replacement); err != nil {
+		return err
+	}
+	for index := range refs {
+		ref := &refs[index]
+		key, _, keyErr := listenerKeys(ref.agentID, *ref.endpoint)
+		if keyErr != nil {
+			return keyErr
+		}
+		if key != oldKey {
+			continue
+		}
+		old := *ref.endpoint
+		next := replacement
+		if ref.endpoint != target {
+			next.Family = old.Family
+			next.Multiplex = mergeListenerMultiplex(replacement.Multiplex, old.Multiplex)
+		}
+		if ref.link != nil && credentialShapeChanged(old, next) {
+			credential, credentialErr := generateCredential(next)
+			if credentialErr != nil {
+				return credentialErr
+			}
+			ref.link.Credential = credential
+			ref.link.UpdatedAt = now
+		}
+		if ref.entrance {
+			activeEndpoint, applied := appliedEntranceEndpoint(*state, ref.node.ID)
+			for membershipIndex := range ref.node.Memberships {
+				membership := &ref.node.Memberships[membershipIndex]
+				if !applied {
+					if credentialShapeChanged(old, next) {
+						credential, credentialErr := generateCredential(next)
+						if credentialErr != nil {
+							return credentialErr
+						}
+						membership.Credential = credential
+					}
+					membership.PendingCredential = nil
+					continue
+				}
+				if credentialShapeChanged(activeEndpoint, next) {
+					credential, credentialErr := generateCredential(next)
+					if credentialErr != nil {
+						return credentialErr
+					}
+					membership.PendingCredential = &credential
+				} else {
+					membership.PendingCredential = nil
+				}
+			}
+		}
+		*ref.endpoint = next
+	}
+	return validateListenerLayout(state)
+}
+
+func mergeListenerMultiplex(listenerWide, perLink *MultiplexConfig) *MultiplexConfig {
+	enabled := perLink != nil && perLink.Enabled
+	padding := listenerWide != nil && listenerWide.Padding
+	var brutal *TCPBrutalConfig
+	if listenerWide != nil && listenerWide.Brutal != nil {
+		copy := *listenerWide.Brutal
+		brutal = &copy
+	}
+	if !enabled && !padding && brutal == nil {
+		return nil
+	}
+	return &MultiplexConfig{Enabled: enabled, Padding: padding, Brutal: brutal}
 }
 
 func endpointListenerSecrets(endpoint Endpoint) listenerSecrets {

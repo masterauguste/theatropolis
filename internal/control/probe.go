@@ -145,6 +145,7 @@ func (s *Server) handleAddressProbeReport(
 	}
 	if changed {
 		s.propagatePoolChange(ctx, "probed address changed", agentID)
+		s.notifyProxyNodeAddressChange()
 	}
 	return nil
 }

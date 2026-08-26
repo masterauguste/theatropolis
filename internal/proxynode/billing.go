@@ -1,0 +1,433 @@
+package proxynode
+
+import (
+	"errors"
+	"fmt"
+	"math"
+	"slices"
+	"strings"
+	"time"
+)
+
+const (
+	maxSubscriptionMonths = 1200
+	maxTrafficReportUsers = 100000
+	maxAccountingFailures = 256
+)
+
+const (
+	AccountingFailureCollection  = "collection_failed"
+	AccountingFailurePersistence = "persistence_failed"
+)
+
+func validateMembershipPlan(plan MembershipPlan) error {
+	if plan.SubscriptionMonths < 0 || plan.SubscriptionMonths > maxSubscriptionMonths {
+		return fmt.Errorf("%w: subscription length must be between 0 and %d months", ErrInvalidState, maxSubscriptionMonths)
+	}
+	return nil
+}
+
+// RecordAccountingFailure appends one bounded, non-sensitive accounting audit
+// entry without changing either configuration-plane revision.
+func (s *Store) RecordAccountingFailure(agentID, reason string, occurredAt time.Time) error {
+	agentID = strings.TrimSpace(agentID)
+	reason = strings.TrimSpace(reason)
+	if !validAgentID(agentID) || !validAccountingFailureReason(reason) || occurredAt.IsZero() {
+		return fmt.Errorf("%w: invalid accounting failure", ErrInvalidState)
+	}
+	return s.mutateBilling(func(state *State) (bool, error) {
+		state.AccountingFailures = append(state.AccountingFailures, AccountingFailure{
+			AgentID: agentID, Reason: reason, OccurredAt: occurredAt.UTC(),
+		})
+		if len(state.AccountingFailures) > maxAccountingFailures {
+			state.AccountingFailures = slices.Clone(state.AccountingFailures[len(state.AccountingFailures)-maxAccountingFailures:])
+		}
+		return false, nil
+	})
+}
+
+func validAccountingFailureReason(reason string) bool {
+	return reason == AccountingFailureCollection || reason == AccountingFailurePersistence
+}
+
+// UpdateMembershipPlan replaces a grant's monthly allowance and remaining
+// subscription term. A finite term starts on the current UTC date. Existing
+// period usage is retained, so reducing a quota can disable access immediately.
+func (s *Store) UpdateMembershipPlan(nodeID, userID string, plan MembershipPlan) error {
+	if err := validateMembershipPlan(plan); err != nil {
+		return err
+	}
+	return s.mutateUserProxyNode(nodeID, func(_ *State, node *ProxyNode) error {
+		membership := membershipForUser(node, userID)
+		if membership == nil {
+			return ErrNotFound
+		}
+		today := utcDate(s.now())
+		membership.MonthlyQuotaBytes = plan.MonthlyQuotaBytes
+		membership.SubscriptionEndsAfter = time.Time{}
+		membership.SubscriptionMonths = plan.SubscriptionMonths
+		if plan.SubscriptionMonths > 0 {
+			membership.SubscriptionEndsAfter = addCalendarMonths(today, plan.SubscriptionMonths)
+		}
+		membership.DisabledReason = MembershipEnabled
+		if membership.MonthlyQuotaBytes > 0 && membership.UsedBytes >= membership.MonthlyQuotaBytes {
+			membership.DisabledReason = MembershipQuotaReached
+		}
+		return nil
+	})
+}
+
+func membershipForUser(node *ProxyNode, userID string) *Membership {
+	for index := range node.Memberships {
+		if node.Memberships[index].UserID == userID {
+			return &node.Memberships[index]
+		}
+	}
+	return nil
+}
+
+// ApplyTrafficDeltaReport adds one destructive-read sing-box interval directly
+// to the master-owned Membership totals. Delta Agents retain no local ledger;
+// a successfully handled control frame is therefore applied exactly once.
+func (s *Store) ApplyTrafficDeltaReport(agentID string, observedAt time.Time, users []UserTraffic) (bool, error) {
+	agentID = strings.TrimSpace(agentID)
+	if !validAgentID(agentID) || observedAt.IsZero() || len(users) > maxTrafficReportUsers {
+		return false, fmt.Errorf("%w: invalid traffic delta report", ErrInvalidState)
+	}
+	for _, usage := range users {
+		if !validManagedTrafficPath(usage.InboundPath) || strings.TrimSpace(usage.Username) == "" ||
+			len(usage.Username) > 128 || strings.ContainsRune(usage.Username, '\x00') {
+			return false, fmt.Errorf("%w: invalid traffic delta report user", ErrInvalidState)
+		}
+	}
+
+	configurationChanged := false
+	err := s.mutateBilling(func(state *State) (bool, error) {
+		targets, aliases, err := trafficMemberships(state, agentID)
+		if err != nil {
+			return false, err
+		}
+		// Once an Agent advertises reset deltas, its former cumulative
+		// observations are obsolete and must not influence a later report.
+		observations := state.TrafficObservations[:0]
+		for _, observation := range state.TrafficObservations {
+			if observation.AgentID != agentID {
+				observations = append(observations, observation)
+			}
+		}
+		state.TrafficObservations = observations
+		for _, usage := range users {
+			membership := targets[trafficKey(usage.InboundPath, usage.Username)]
+			if membership == nil {
+				membership = aliases[trafficAliasKey(usage.InboundPath, usage.Username)]
+			}
+			if membership == nil {
+				continue
+			}
+			delta := saturatingAdd(usage.UplinkBytes, usage.DownlinkBytes)
+			membership.UsedBytes = saturatingAdd(membership.UsedBytes, delta)
+			if membership.DisabledReason == MembershipEnabled && membership.MonthlyQuotaBytes > 0 &&
+				membership.UsedBytes >= membership.MonthlyQuotaBytes {
+				membership.DisabledReason = MembershipQuotaReached
+				configurationChanged = true
+			}
+		}
+		return configurationChanged, nil
+	})
+	return configurationChanged, err
+}
+
+// ApplyTrafficReport folds a legacy Agent's cumulative counters into
+// per-membership usage during the rolling transition to reset deltas. It
+// returns true only when quota enforcement requires user synchronization.
+func (s *Store) ApplyTrafficReport(agentID, epoch string, observedAt time.Time, users []UserTraffic) (bool, error) {
+	agentID = strings.TrimSpace(agentID)
+	epoch = strings.TrimSpace(epoch)
+	if !validAgentID(agentID) || epoch == "" || len(epoch) > 128 || strings.ContainsRune(epoch, '\x00') ||
+		observedAt.IsZero() || len(users) > maxTrafficReportUsers {
+		return false, fmt.Errorf("%w: invalid traffic report", ErrInvalidState)
+	}
+	for _, usage := range users {
+		if !validManagedTrafficPath(usage.InboundPath) || strings.TrimSpace(usage.Username) == "" ||
+			len(usage.Username) > 128 || strings.ContainsRune(usage.Username, '\x00') {
+			return false, fmt.Errorf("%w: invalid traffic report user", ErrInvalidState)
+		}
+	}
+
+	configurationChanged := false
+	err := s.mutateBilling(func(state *State) (bool, error) {
+		targets, aliases, err := trafficMemberships(state, agentID)
+		if err != nil {
+			return false, err
+		}
+		reported := make(map[string]struct{}, len(users))
+		for _, usage := range users {
+			reported[trafficKey(usage.InboundPath, usage.Username)] = struct{}{}
+		}
+		// An identity that no longer maps to a current membership can never become
+		// authoritative again: re-granting creates a new Membership ID and thus a
+		// new generated auth_user. Prune its baseline before folding this report so
+		// the state cannot grow forever as users and listeners are retired.
+		observations := state.TrafficObservations[:0]
+		for _, observation := range state.TrafficObservations {
+			_, stillReported := reported[trafficKey(observation.InboundPath, observation.Username)]
+			if observation.AgentID != agentID || stillReported ||
+				trafficObservationMembership(targets, aliases, observation) != nil {
+				observations = append(observations, observation)
+			}
+		}
+		state.TrafficObservations = observations
+		for _, usage := range users {
+			key := trafficKey(usage.InboundPath, usage.Username)
+			membership := targets[key]
+			if membership == nil {
+				membership = aliases[trafficAliasKey(usage.InboundPath, usage.Username)]
+			}
+			if membership == nil {
+				continue
+			}
+			observation := observationFor(state, agentID, usage.InboundPath, usage.Username)
+			delta := saturatingAdd(usage.UplinkBytes, usage.DownlinkBytes)
+			if observation != nil && observation.Epoch == epoch {
+				uplink := counterDelta(observation.UplinkBytes, usage.UplinkBytes)
+				downlink := counterDelta(observation.DownlinkBytes, usage.DownlinkBytes)
+				delta = saturatingAdd(uplink, downlink)
+				delta = trafficInsideCurrentPeriod(
+					delta, observation.ObservedAt, observedAt, membership.QuotaPeriodStartedOn,
+				)
+			}
+			if observation == nil {
+				state.TrafficObservations = append(state.TrafficObservations, TrafficObservation{
+					AgentID: agentID, InboundPath: usage.InboundPath, Username: usage.Username,
+				})
+				observation = &state.TrafficObservations[len(state.TrafficObservations)-1]
+			}
+			observation.Epoch = epoch
+			observation.UplinkBytes = usage.UplinkBytes
+			observation.DownlinkBytes = usage.DownlinkBytes
+			observation.ObservedAt = observedAt.UTC()
+			membership.UsedBytes = saturatingAdd(membership.UsedBytes, delta)
+			if membership.DisabledReason == MembershipEnabled && membership.MonthlyQuotaBytes > 0 &&
+				membership.UsedBytes >= membership.MonthlyQuotaBytes {
+				membership.DisabledReason = MembershipQuotaReached
+				configurationChanged = true
+			}
+		}
+		return configurationChanged, nil
+	})
+	return configurationChanged, err
+}
+
+func trafficObservationMembership(
+	targets, aliases map[string]*Membership,
+	observation TrafficObservation,
+) *Membership {
+	if membership := targets[trafficKey(observation.InboundPath, observation.Username)]; membership != nil {
+		return membership
+	}
+	return aliases[trafficAliasKey(observation.InboundPath, observation.Username)]
+}
+
+// AdvanceBilling applies end-of-day transitions in UTC. A date stored in an
+// "After" field is inclusive: an April 4 subscription is disabled when this
+// method first runs on April 5.
+func (s *Store) AdvanceBilling(now time.Time) (bool, error) {
+	return s.advanceBilling(now, true, true)
+}
+
+func (s *Store) advanceTrafficPeriods(now time.Time) (bool, error) {
+	return s.advanceBilling(now, true, false)
+}
+
+func (s *Store) advanceSubscriptions(now time.Time) (bool, error) {
+	return s.advanceBilling(now, false, true)
+}
+
+func (s *Store) advanceBilling(now time.Time, resetTraffic, expireSubscriptions bool) (bool, error) {
+	today := utcDate(now)
+	configurationChanged := false
+	err := s.mutateBilling(func(state *State) (bool, error) {
+		for nodeIndex := range state.ProxyNodes {
+			for membershipIndex := range state.ProxyNodes[nodeIndex].Memberships {
+				membership := &state.ProxyNodes[nodeIndex].Memberships[membershipIndex]
+				for resetTraffic && today.After(membership.QuotaResetsAfter) {
+					membership.UsedBytes = 0
+					membership.QuotaPeriodStartedOn = membership.QuotaResetsAfter.AddDate(0, 0, 1)
+					membership.QuotaResetsAfter = addCalendarMonthsAnchored(
+						membership.QuotaResetsAfter, 1, membership.QuotaAnchorDay,
+					)
+					if membership.DisabledReason == MembershipQuotaReached {
+						membership.DisabledReason = MembershipEnabled
+						configurationChanged = true
+					}
+				}
+				if expireSubscriptions && !membership.SubscriptionEndsAfter.IsZero() && today.After(membership.SubscriptionEndsAfter) &&
+					membership.DisabledReason != MembershipExpired {
+					membership.DisabledReason = MembershipExpired
+					configurationChanged = true
+				}
+			}
+		}
+		return configurationChanged, nil
+	})
+	return configurationChanged, err
+}
+
+func (s *Store) mutateBilling(mutation func(*State) (bool, error)) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	next := cloneState(s.state)
+	configurationChanged, err := mutation(&next)
+	if err != nil {
+		return err
+	}
+	if configurationChanged {
+		next.UserRevision++
+	}
+	if err := validateState(next); err != nil {
+		return err
+	}
+	if s.accounting == nil {
+		return errors.New("accounting database is unavailable")
+	}
+	if err := s.accounting.persistChanges(s.state, next); err != nil {
+		return err
+	}
+	s.state = next
+	return nil
+}
+
+func trafficMemberships(state *State, agentID string) (map[string]*Membership, map[string]*Membership, error) {
+	users := make(map[string]string, len(state.Users))
+	for _, user := range state.Users {
+		users[user.ID] = user.Name
+	}
+	targets := make(map[string]*Membership)
+	aliases := make(map[string]*Membership)
+	liveNodes := make(map[string]*ProxyNode, len(state.ProxyNodes))
+	for nodeIndex := range state.ProxyNodes {
+		liveNodes[state.ProxyNodes[nodeIndex].ID] = &state.ProxyNodes[nodeIndex]
+	}
+	for appliedIndex := range state.AppliedProxyNodes {
+		appliedNode := &state.AppliedProxyNodes[appliedIndex]
+		node := liveNodes[appliedNode.ID]
+		if node == nil {
+			continue
+		}
+		rootIndex := slices.IndexFunc(appliedNode.Hops, func(hop Hop) bool { return hop.ID == appliedNode.Entrance.HopID })
+		if rootIndex < 0 || appliedNode.Hops[rootIndex].AgentID != agentID {
+			continue
+		}
+		listenerKey, _, err := listenerKeys(agentID, appliedNode.Entrance.Endpoint)
+		if err != nil {
+			return nil, nil, err
+		}
+		path := "/tp-in-" + shortDigest(listenerKey)
+		for membershipIndex := range node.Memberships {
+			membership := &node.Memberships[membershipIndex]
+			userName := users[membership.UserID]
+			label := AuthenticatedUserLabel(appliedNode.Name, userName, membership.ID)
+			key := trafficKey(path, label)
+			if targets[key] != nil {
+				return nil, nil, errors.New("ambiguous managed-user traffic identity")
+			}
+			targets[key] = membership
+			aliases[trafficAliasKey(path, label)] = membership
+			// Accept the pre-stable-membership-suffix label until every existing Agent has
+			// received its first user synchronization after upgrade.
+			legacyKey := trafficKey(path, appliedNode.Name+"-"+userName)
+			if existing := targets[legacyKey]; existing == nil || existing == membership {
+				targets[legacyKey] = membership
+			}
+		}
+	}
+	return targets, aliases, nil
+}
+
+func trafficAliasKey(path, username string) string {
+	separator := strings.LastIndexByte(username, '-')
+	if separator < 0 {
+		return ""
+	}
+	return path + "\x00" + username[separator+1:]
+}
+
+func observationFor(state *State, agentID, path, username string) *TrafficObservation {
+	for index := range state.TrafficObservations {
+		observation := &state.TrafficObservations[index]
+		if observation.AgentID == agentID && observation.InboundPath == path && observation.Username == username {
+			return observation
+		}
+	}
+	return nil
+}
+
+func trafficKey(path, username string) string { return path + "\x00" + username }
+
+func counterDelta(previous, current uint64) uint64 {
+	if current >= previous {
+		return current - previous
+	}
+	// A counter can reset without the agent process restarting (for example,
+	// after a sing-box crash). Treat the new cumulative value as fresh usage.
+	return current
+}
+
+func saturatingAdd(left, right uint64) uint64 {
+	if math.MaxUint64-left < right {
+		return math.MaxUint64
+	}
+	return left + right
+}
+
+func trafficInsideCurrentPeriod(value uint64, previous, current, periodStart time.Time) uint64 {
+	previous = previous.UTC()
+	current = current.UTC()
+	periodStart = periodStart.UTC()
+	if value == 0 || periodStart.IsZero() || !previous.Before(periodStart) || !current.After(periodStart) {
+		if !current.After(periodStart) && previous.Before(periodStart) {
+			return 0
+		}
+		return value
+	}
+	whole := current.Sub(previous)
+	inside := current.Sub(periodStart)
+	if whole <= 0 || inside <= 0 || inside >= whole {
+		return value
+	}
+	// Counters do not include packet timestamps. Pro-rate the interval at the
+	// period boundary instead of charging the entire offline/polling interval
+	// to the new month. float64 is sufficiently precise at byte-scale quotas
+	// and avoids overflowing a value*duration integer multiplication.
+	return uint64(float64(value) * float64(inside) / float64(whole))
+}
+
+func validManagedTrafficPath(path string) bool {
+	if !strings.HasPrefix(path, "/tp-in-") || len(path) > 80 {
+		return false
+	}
+	for _, character := range path[1:] {
+		if character >= 'a' && character <= 'z' || character >= '0' && character <= '9' || character == '-' {
+			continue
+		}
+		return false
+	}
+	return true
+}
+
+func utcDate(value time.Time) time.Time {
+	value = value.UTC()
+	return time.Date(value.Year(), value.Month(), value.Day(), 0, 0, 0, 0, time.UTC)
+}
+
+func addCalendarMonths(date time.Time, months int) time.Time {
+	return addCalendarMonthsAnchored(date, months, date.UTC().Day())
+}
+
+func addCalendarMonthsAnchored(date time.Time, months, anchorDay int) time.Time {
+	date = utcDate(date)
+	first := time.Date(date.Year(), date.Month(), 1, 0, 0, 0, 0, time.UTC).AddDate(0, months, 0)
+	lastDay := first.AddDate(0, 1, -1).Day()
+	day := min(anchorDay, lastDay)
+	return time.Date(first.Year(), first.Month(), day, 0, 0, 0, 0, time.UTC)
+}

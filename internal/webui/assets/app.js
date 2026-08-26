@@ -27,6 +27,224 @@ for (const select of document.querySelectorAll("[data-proxy-protocol]")) {
   );
 }
 
+const proxyListenerCatalog = [...document.querySelectorAll(
+  "[data-proxy-listener-catalog] [data-listener-id]",
+)].map((element) => ({
+  ...element.dataset,
+  port: Number(element.dataset.port || 0),
+  upMbps: Number(element.dataset.upMbps || 0),
+  downMbps: Number(element.dataset.downMbps || 0),
+  muxBrutalUp: Number(element.dataset.muxBrutalUp || 0),
+  muxBrutalDown: Number(element.dataset.muxBrutalDown || 0),
+  referenceCount: Number(element.dataset.referenceCount || 0),
+}));
+
+const proxyListenerAgent = (editor) => {
+  const form = editor.closest("form");
+  return form?.querySelector('[name="child_agent"]')?.value ||
+    form?.querySelector('[name="agent_id"]')?.value || editor.dataset.agent || "";
+};
+
+const proxyListenerValue = (editor, name) => editor.querySelector(`[name="${name}"]`)?.value.trim() || "";
+
+const proxyListenerModel = (editor) => {
+  const model = {
+    protocol: proxyListenerValue(editor, "protocol"),
+    listen: proxyListenerValue(editor, "listen"),
+    port: Number(proxyListenerValue(editor, "listen_port") || 0),
+    method: proxyListenerValue(editor, "method"),
+    muxPadding: proxyListenerValue(editor, "mux_padding"),
+    muxBrutal: proxyListenerValue(editor, "mux_brutal"),
+    muxBrutalUp: Number(proxyListenerValue(editor, "mux_brutal_up_mbps") || 0),
+    muxBrutalDown: Number(proxyListenerValue(editor, "mux_brutal_down_mbps") || 0),
+    tlsMode: proxyListenerValue(editor, "tls_mode"),
+    serverName: proxyListenerValue(editor, "server_name"),
+    email: proxyListenerValue(editor, "email"),
+    certificatePath: proxyListenerValue(editor, "certificate_path"),
+    keyPath: proxyListenerValue(editor, "key_path"),
+    upMbps: Number(proxyListenerValue(editor, "up_mbps") || 0),
+    downMbps: Number(proxyListenerValue(editor, "down_mbps") || 0),
+    obfsType: proxyListenerValue(editor, "obfs_type"),
+  };
+  if (model.tlsMode === "acme") {
+    model.certificatePath = "";
+    model.keyPath = "";
+  } else if (model.tlsMode === "self_signed") {
+    model.email = "";
+    model.certificatePath = "";
+    model.keyPath = "";
+  } else if (model.tlsMode === "files") {
+    model.email = "";
+  }
+  return model;
+};
+
+const proxyListenerCompatibilityFields = (protocol) => {
+  const fields = ["protocol", "listen", "port"];
+  if (protocol === "shadowsocks") {
+    return fields.concat("method", "muxPadding", "muxBrutal", "muxBrutalUp", "muxBrutalDown");
+  }
+  fields.push("tlsMode", "serverName", "email", "certificatePath", "keyPath");
+  if (protocol === "hysteria2") fields.push("upMbps", "downMbps", "obfsType");
+  return fields;
+};
+
+const proxyListenersMatch = (left, right) => {
+  if (left.protocol !== right.protocol) return false;
+  return proxyListenerCompatibilityFields(left.protocol).every((field) => String(left[field] ?? "") === String(right[field] ?? ""));
+};
+
+const proxyListenerFieldLabels = {
+  protocol: "protocol",
+  method: "Shadowsocks method",
+  muxPadding: "multiplex padding",
+  muxBrutal: "TCP Brutal",
+  muxBrutalUp: "TCP Brutal upload rate",
+  muxBrutalDown: "TCP Brutal download rate",
+  tlsMode: "certificate mode",
+  serverName: "domain or certificate identity",
+  email: "ACME email",
+  certificatePath: "certificate path",
+  keyPath: "private-key path",
+  upMbps: "Hysteria2 upload rate",
+  downMbps: "Hysteria2 download rate",
+  obfsType: "Hysteria2 obfuscation",
+};
+
+const proxyListenerClaims = (agent, listener) => {
+  const networks = listener.protocol === "shadowsocks" ? ["TCP", "UDP"] :
+    listener.protocol === "hysteria2" ? ["UDP"] : ["TCP"];
+  return networks.map((network) => `${agent}/${network}/${listener.listen}:${listener.port}`);
+};
+
+const setProxyListenerStatus = (editor, message, kind = "") => {
+  const status = editor.querySelector("[data-proxy-listener-status]");
+  if (!status) return;
+  status.textContent = message;
+  status.className = `proxy-listener-status${kind ? ` is-${kind}` : ""}`;
+};
+
+const setProxyListenerField = (editor, name, value) => {
+  const input = editor.querySelector(`[name="${name}"]`);
+  if (!input) return;
+  input.value = value ?? "";
+  if (input instanceof HTMLSelectElement) input.dispatchEvent(new Event("change", { bubbles: true }));
+};
+
+const applyProxyListenerPreset = (editor, preset) => {
+  for (const field of proxyListenerCompatibilityFields(preset.protocol)) {
+    if (field === "port") setProxyListenerField(editor, "listen_port", preset.port);
+    else if (field === "muxPadding") setProxyListenerField(editor, "mux_padding", preset.muxPadding);
+    else if (field === "muxBrutal") setProxyListenerField(editor, "mux_brutal", preset.muxBrutal);
+    else if (field === "muxBrutalUp") setProxyListenerField(editor, "mux_brutal_up_mbps", preset.muxBrutalUp);
+    else if (field === "muxBrutalDown") setProxyListenerField(editor, "mux_brutal_down_mbps", preset.muxBrutalDown);
+    else setProxyListenerField(editor, field.replace(/[A-Z]/g, (letter) => `_${letter.toLowerCase()}`), preset[field]);
+  }
+  const protocol = editor.querySelector("[data-proxy-protocol]");
+  if (protocol) updateProxyEndpointForm(protocol);
+};
+
+const showProxyListenerSummary = (editor, preset) => {
+  const summary = editor.querySelector("[data-proxy-listener-summary]");
+  if (!summary) return;
+  const identity = preset.protocol === "shadowsocks" ? preset.method.replace("2022-blake3-", "") :
+    `${preset.tlsMode.replace("_", "-")} · ${preset.serverName || "certificate identity pending"}`;
+  summary.replaceChildren();
+  const title = document.createElement("strong");
+  title.textContent = `${preset.protocolLabel} on ${preset.listen}:${preset.port}`;
+  const detail = document.createElement("span");
+  detail.textContent = `${identity} · shared by ${preset.referenceCount} logical reference${preset.referenceCount === 1 ? "" : "s"}`;
+  summary.append(title, detail);
+  summary.hidden = false;
+};
+
+const validateProxyListener = (editor) => {
+  const port = editor.querySelector('[name="listen_port"]');
+  if (!(port instanceof HTMLInputElement)) return;
+  port.setCustomValidity("");
+  const agent = proxyListenerAgent(editor);
+  const candidate = proxyListenerModel(editor);
+  if (!agent || !candidate.listen || !candidate.port) {
+    setProxyListenerStatus(editor, "Select an Agent and complete the socket to check availability.");
+    return;
+  }
+  const claims = new Set(proxyListenerClaims(agent, candidate));
+  const currentID = editor.dataset.currentListener || "";
+  const others = proxyListenerCatalog.filter((preset) => preset.agent === agent && preset.listenerId !== currentID);
+  const compatible = others.find((preset) => proxyListenersMatch(candidate, preset));
+  if (compatible) {
+    setProxyListenerStatus(editor, `Compatible with “${compatible.label}”. You can select it above to reuse its settings.`, "compatible");
+    return;
+  }
+  const conflict = others.find((preset) => proxyListenerClaims(agent, preset).some((claim) => claims.has(claim)));
+  if (conflict) {
+    const differences = candidate.protocol === conflict.protocol ?
+      proxyListenerCompatibilityFields(candidate.protocol)
+        .filter((field) => !["listen", "port"].includes(field) && String(candidate[field] ?? "") !== String(conflict[field] ?? ""))
+        .map((field) => proxyListenerFieldLabels[field] || field) : ["protocol"];
+    const detail = differences.length ? ` The conflicting fields are: ${differences.join(", ")}.` : "";
+    const message = `This socket overlaps “${conflict.label}”, but its listener-wide settings differ.${detail}`;
+    port.setCustomValidity(message);
+    setProxyListenerStatus(editor, `${message} Reuse that listener or choose another address or port.`, "conflict");
+    return;
+  }
+  const current = proxyListenerCatalog.find((preset) => preset.listenerId === currentID && preset.agent === agent);
+  if (current?.referenceCount > 1) {
+    setProxyListenerStatus(editor, `This physical listener is shared by ${current.referenceCount} logical references. Saving changes updates all of them atomically.`, "warning");
+    return;
+  }
+  if (current) {
+    setProxyListenerStatus(editor, "Saving will update this physical listener atomically.", "compatible");
+    return;
+  }
+  setProxyListenerStatus(editor, "This socket is available for a new physical listener.", "compatible");
+};
+
+const updateProxyListenerChoices = (editor) => {
+  const select = editor.querySelector("[data-proxy-listener-select]");
+  if (!(select instanceof HTMLSelectElement)) return;
+  const previous = select.value;
+  const agent = proxyListenerAgent(editor);
+  select.replaceChildren(new Option("Configure manually", "manual"));
+  for (const preset of proxyListenerCatalog.filter((item) => item.agent === agent)) {
+    select.add(new Option(preset.label, preset.listenerId));
+  }
+  const currentID = editor.dataset.currentListener || "";
+  select.value = [...select.options].some((option) => option.value === previous) ? previous :
+    [...select.options].some((option) => option.value === currentID) ? currentID : "manual";
+  select.dispatchEvent(new Event("change", { bubbles: true }));
+};
+
+for (const editor of document.querySelectorAll("[data-proxy-listener-editor]")) {
+  const form = editor.closest("form");
+  const select = editor.querySelector("[data-proxy-listener-select]");
+  const fields = editor.querySelector("[data-proxy-listener-fields]");
+  const summary = editor.querySelector("[data-proxy-listener-summary]");
+  const updateSelection = () => {
+    const preset = proxyListenerCatalog.find((item) => item.listenerId === select?.value);
+    if (preset) {
+      applyProxyListenerPreset(editor, preset);
+      if (fields) fields.hidden = true;
+      showProxyListenerSummary(editor, preset);
+      editor.querySelector('[name="listen_port"]')?.setCustomValidity("");
+      setProxyListenerStatus(editor, "Using the existing physical listener keeps all shared settings consistent.", "compatible");
+    } else {
+      if (fields) fields.hidden = false;
+      if (summary) summary.hidden = true;
+      validateProxyListener(editor);
+    }
+  };
+  select?.addEventListener("change", updateSelection);
+  for (const input of editor.querySelectorAll("[data-proxy-listener-fields] input, [data-proxy-listener-fields] select")) {
+    input.addEventListener("input", () => validateProxyListener(editor));
+    input.addEventListener("change", () => validateProxyListener(editor));
+  }
+  for (const agentSelect of form?.querySelectorAll('[name="child_agent"], [name="agent_id"]') || []) {
+    agentSelect.addEventListener("change", () => updateProxyListenerChoices(editor));
+  }
+  updateProxyListenerChoices(editor);
+}
+
 for (const select of document.querySelectorAll("[data-proxy-match]")) {
   const update = () => {
     const values = select.closest("form")?.querySelector("[data-proxy-match-values]");
@@ -60,6 +278,121 @@ let draggedProxyBranchOrder = "";
 let draggedProxyBranchElements = [];
 let proxyBranchDropAccepted = false;
 
+const topologyWorkflow = document.querySelector("[data-topology-workflow]");
+const proxyDeployment = document.querySelector("[data-proxy-deployment][data-status-url]");
+let topologyPolling = false;
+
+const topologyMutationForms = () => [...(topologyWorkflow?.querySelectorAll("form") || [])]
+  .filter((form) => {
+    let path = "";
+    try { path = new URL(form.action, window.location.href).pathname; } catch (_) { return false; }
+    return path.startsWith("/proxy-nodes")
+      && !path.includes("/users")
+      && !path.endsWith("/deploy")
+      && path !== "/proxy-nodes/deploy";
+  });
+
+const topologyActionControls = () => [
+  ...(topologyWorkflow?.querySelectorAll(
+    ".proxy-tree-panel button, #proxy-tree-inspector button, dialog[id^='proxy-add-link-'] button, dialog[id^='proxy-add-rule-'] button, dialog[id^='proxy-edit-link-'] button, .proxy-node-settings button",
+  ) || []),
+];
+
+const setTopologyLocked = (locked) => {
+  if (!topologyWorkflow) return;
+  if (locked) {
+    topologyWorkflow.dataset.topologyLocked = "true";
+    topologyWorkflow.setAttribute("aria-busy", "true");
+  } else {
+    delete topologyWorkflow.dataset.topologyLocked;
+    topologyWorkflow.removeAttribute("aria-busy");
+  }
+  const controls = [
+    ...topologyMutationForms().flatMap((form) => [...form.elements]),
+    ...topologyActionControls(),
+  ];
+  for (const control of new Set(controls)) {
+    if (!(control instanceof HTMLButtonElement || control instanceof HTMLInputElement || control instanceof HTMLSelectElement || control instanceof HTMLTextAreaElement)) continue;
+    if (locked) {
+      if (!control.disabled) control.dataset.topologyEnabled = "true";
+      control.disabled = true;
+    } else if (control.dataset.topologyEnabled === "true") {
+      control.disabled = false;
+      delete control.dataset.topologyEnabled;
+    }
+  }
+  const createLink = topologyWorkflow.querySelector("[data-topology-create]");
+  if (createLink) createLink.setAttribute("aria-disabled", locked ? "true" : "false");
+  for (const branch of topologyWorkflow.querySelectorAll("[data-proxy-rule-branch]")) {
+    if (locked) {
+      branch.dataset.topologyDraggable = branch.getAttribute("draggable") || "false";
+      branch.setAttribute("draggable", "false");
+    } else if (branch.dataset.topologyDraggable) {
+      branch.setAttribute("draggable", branch.dataset.topologyDraggable);
+      delete branch.dataset.topologyDraggable;
+    }
+  }
+};
+
+const renderTopologyStatus = (status) => {
+  if (!proxyDeployment) return;
+  proxyDeployment.hidden = false;
+  proxyDeployment.classList.toggle("notice--error", status.status === "failed");
+  const heading = proxyDeployment.querySelector("strong");
+  if (heading) heading.textContent = `Topology change: ${status.label || status.status || "Applying"}`;
+  let error = proxyDeployment.querySelector("p");
+  if (status.error) {
+    if (!error) {
+      error = document.createElement("p");
+      proxyDeployment.append(error);
+    }
+    error.textContent = status.error;
+  } else if (error) {
+    error.remove();
+  }
+};
+
+const pollTopologyDeployment = async (reloadOnComplete) => {
+  try {
+    const response = await fetch(proxyDeployment?.dataset.statusUrl || "/proxy-nodes/deployment-status", {
+      credentials: "same-origin",
+      headers: { Accept: "application/json" },
+    });
+    if (!response.ok) throw new Error("status unavailable");
+    const status = await response.json();
+    renderTopologyStatus(status);
+    if (!status.active) {
+      topologyPolling = false;
+      setTopologyLocked(false);
+      document.dispatchEvent(new CustomEvent("topologyapplycomplete", { detail: status }));
+      if (reloadOnComplete) window.location.reload();
+      return;
+    }
+  } catch (_) {
+    // Keep the current status visible and retry transient failures.
+  }
+  window.setTimeout(() => pollTopologyDeployment(reloadOnComplete), 2000);
+};
+
+const beginTopologyApply = (reloadOnComplete) => {
+  setTopologyLocked(true);
+  if (proxyDeployment) {
+    proxyDeployment.hidden = false;
+    const heading = proxyDeployment.querySelector("strong");
+    if (heading) heading.textContent = "Applying topology change…";
+  }
+  if (topologyPolling) return;
+  topologyPolling = true;
+  window.setTimeout(() => pollTopologyDeployment(reloadOnComplete), 500);
+};
+
+if (topologyWorkflow?.dataset.topologyLocked === "true") beginTopologyApply(true);
+
+document.addEventListener("click", (event) => {
+  const createLink = event.target instanceof Element ? event.target.closest("[data-topology-create]") : null;
+  if (createLink && topologyWorkflow?.dataset.topologyLocked === "true") event.preventDefault();
+}, true);
+
 const directProxyBranch = (target, list) => {
   const branch = target instanceof Element ? target.closest("[data-proxy-rule-branch]") : null;
   return branch?.parentElement === list ? branch : null;
@@ -90,7 +423,7 @@ document.addEventListener("dragstart", (event) => {
     ? event.target.closest("[data-proxy-rule-branch]")
     : null;
   const list = branch?.parentElement;
-  if (!branch || !list?.matches("[data-proxy-branch-list]") || list.dataset.reorderPending === "true") return;
+  if (!branch || !list?.matches("[data-proxy-branch-list]") || list.dataset.reorderPending === "true" || topologyWorkflow?.dataset.topologyLocked === "true") return;
   draggedProxyBranch = branch;
   draggedProxyBranchOrder = proxyBranchOrder(list);
   draggedProxyBranchElements = [...list.children]
@@ -163,7 +496,7 @@ document.addEventListener("dragend", () => {
     },
     body,
     credentials: "same-origin",
-  }).then((response) => {
+  }).then(async (response) => {
     if (!response.ok || response.redirected) throw new Error("reorder rejected");
     list.dataset.proxyAllRuleIds = persistedOrder;
     const priorities = new Map(persistedOrder.split(",").map((ruleID, index) => [ruleID, index + 1]));
@@ -171,35 +504,26 @@ document.addEventListener("dragend", () => {
       const priority = branch.querySelector(".proxy-map__priority");
       if (priority) priority.textContent = priorities.get(branch.dataset.proxyRuleBranch) || "";
     }
+    if (response.status === 202) {
+      const status = await response.json();
+      renderTopologyStatus(status);
+      document.addEventListener("topologyapplycomplete", (completion) => {
+        if (completion.detail?.status === "failed") {
+          restoreOrder();
+          window.alert(completion.detail.error || "The topology change failed and the previous branch order was restored.");
+        }
+        delete list.dataset.reorderPending;
+      }, { once: true });
+      beginTopologyApply(false);
+    } else {
+      delete list.dataset.reorderPending;
+    }
   }).catch(() => {
     restoreOrder();
-    window.alert("The new branch order could not be saved. The previous order was restored.");
-  }).finally(() => {
     delete list.dataset.reorderPending;
+    window.alert("The new branch order could not be saved. The previous order was restored.");
   });
 });
-
-const proxyDeployment = document.querySelector("[data-proxy-deployment][data-status-url]");
-if (proxyDeployment) {
-  const pollProxyDeployment = async () => {
-    try {
-      const response = await fetch(proxyDeployment.dataset.statusUrl, {
-        credentials: "same-origin",
-        headers: { Accept: "application/json" },
-      });
-      if (!response.ok) throw new Error("status unavailable");
-      const status = await response.json();
-      if (!status.active) {
-        window.location.reload();
-        return;
-      }
-    } catch (_) {
-      // Keep the current status visible and retry transient failures.
-    }
-    window.setTimeout(pollProxyDeployment, 2000);
-  };
-  window.setTimeout(pollProxyDeployment, 1000);
-}
 
 const dialogTriggers = new WeakMap();
 

@@ -40,6 +40,8 @@ message AgentFrame {
     AgentUpdateReport agent_update_report = 16;
     SingBoxUpdateReport sing_box_update_report = 17;
     AddressProbeReport address_probe_report = 18;
+    ManagedUserTrafficReport managed_user_traffic_report = 19;
+    ManagedUserAuthorityReport managed_user_authority_report = 20;
   }
 }
 
@@ -54,6 +56,9 @@ message MasterFrame {
     AgentUpdateCommand update_agent = 14;
     SingBoxUpdateCommand update_sing_box = 15;
     ProbeAddresses probe_addresses = 16;
+    ManagedUserAuthorityCommand managed_user_authority = 17;
+    ManagedUserTrafficAck managed_user_traffic_ack = 18;
+    ManagedUserTrafficRequest managed_user_traffic_request = 19;
   }
 }
 
@@ -222,4 +227,78 @@ message AddressProbeReport {
   string address = 2;
   // Failure reason; empty on success.
   string error = 3;
+}
+
+message ManagedUserTrafficReport {
+  // Reset-delta Agents generate a fresh identifier for every destructive-read
+  // batch. Legacy cumulative Agents use their stable ledger epoch.
+  string epoch = 1;
+  int64 observed_at_unix = 2;
+  repeated ManagedUserTraffic users = 3;
+  // Echoes an on-demand master request. An empty request ID denotes a
+  // periodic Agent push.
+  string request_id = 4;
+  // A bounded, non-sensitive collection failure. Failure reports carry no
+  // epoch or users and let the master retry without dropping the stream.
+  string diagnostic = 5;
+}
+
+message ManagedUserTraffic {
+  // SSM API path identifying the physical inbound listener.
+  string inbound_path = 1;
+  string username = 2;
+  uint64 uplink_bytes = 3;
+  uint64 downlink_bytes = 4;
+}
+
+// Legacy-only acknowledgement for cumulative-ledger Agents. Reset-delta
+// Agents keep no local accounting state and ignore this frame.
+message ManagedUserTrafficAck {
+  string epoch = 1;
+  repeated ManagedUserTraffic users = 2;
+}
+
+// ManagedUserTrafficRequest asks an authenticated Agent to atomically read and
+// clear its current traffic interval instead of waiting for the next push.
+message ManagedUserTrafficRequest {
+  string request_id = 1;
+}
+
+// ManagedUserAuthorityCommand is independent from topology deployment. Each
+// variant contains the full membership authority for one possible topology
+// shape, allowing revocations to remain authoritative during fleet rollback.
+message ManagedUserAuthorityCommand {
+  string request_id = 1;
+  uint64 user_revision = 2;
+  repeated ManagedUserAuthorityVariant variants = 3;
+}
+
+message ManagedUserAuthorityVariant {
+  bytes topology_sha256 = 1;
+  repeated ManagedUserAuthorityEndpoint endpoints = 2;
+}
+
+message ManagedUserAuthorityEndpoint {
+  string inbound_path = 1;
+  repeated ManagedUserAuthorityUser users = 2;
+}
+
+message ManagedUserAuthorityUser {
+  string username = 1;
+  string password = 2;
+}
+
+enum ManagedUserAuthorityStatus {
+  MANAGED_USER_AUTHORITY_STATUS_UNSPECIFIED = 0;
+  MANAGED_USER_AUTHORITY_STATUS_APPLIED = 1;
+  MANAGED_USER_AUTHORITY_STATUS_INVALID = 2;
+  MANAGED_USER_AUTHORITY_STATUS_INTERNAL_ERROR = 3;
+}
+
+message ManagedUserAuthorityReport {
+  string request_id = 1;
+  uint64 user_revision = 2;
+  ManagedUserAuthorityStatus status = 3;
+  string diagnostic = 4;
+  int64 completed_at_unix = 5;
 }

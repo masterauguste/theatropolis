@@ -66,6 +66,10 @@ type SessionRegistry interface {
 	AgentInfo(agentID string) (control.AgentInfo, bool)
 }
 
+type ProxyUserSynchronizer interface {
+	TriggerDeployment()
+}
+
 type AgentController interface {
 	CanDeployConfiguration(agentID string) bool
 	CanDeployProxyNodeConfiguration(agentID string) bool
@@ -115,6 +119,7 @@ type Options struct {
 	Now             func() time.Time
 	ProxyNodes      *proxynode.Store
 	ProxyDeployer   *proxynode.Deployer
+	ProxyUserSync   ProxyUserSynchronizer
 }
 
 type Handler struct {
@@ -138,6 +143,7 @@ type Handler struct {
 	now             func() time.Time
 	proxyNodes      *proxynode.Store
 	proxyDeployer   *proxynode.Deployer
+	proxyUserSync   ProxyUserSynchronizer
 	templates       *template.Template
 	mux             *http.ServeMux
 
@@ -159,46 +165,54 @@ type Handler struct {
 }
 
 type pageData struct {
-	Title                 string
-	ActiveNav             string
-	AssetVersion          string
-	PublicURL             string
-	MasterAddress         string
-	CSRFToken             string
-	Error                 string
-	ErrorField            string
-	Notice                string
-	Username              string
-	LegacyLogin           bool
-	AgentID               string
-	DefaultTLSAddress     string
-	TTLSeconds            int64
-	Stats                 fleetStats
-	Agents                []agentView
-	Agent                 *agentDetailView
-	Created               *createdServerView
-	AgentVersions         []agentVersionView
-	ReleaseCatalogWarning string
-	LatestVersion         string
-	SingBoxVersions       []agentVersionView
-	SingBoxCatalogWarning string
-	LatestSingBoxVersion  string
-	MasterVersion         string
-	MasterUpdateEnabled   bool
-	MasterUpdate          *agentUpdateView
-	MasterUpdateRequestID string
-	Pool                  *poolView
-	PoolFormName          string
-	PoolFormRemark        string
-	PoolFormJSON          string
-	ProxyNodes            []proxyNodeListView
-	ProxyNode             *proxyNodeDetailView
-	EndUsers              []endUserListView
-	EndUser               *endUserDetailView
-	AgentOptions          []agentOptionView
-	Endpoint              endpointView
-	ProxyDeployment       *proxyDeploymentView
-	ProxyDeployEnabled    bool
+	Title                  string
+	ActiveNav              string
+	AssetVersion           string
+	PublicURL              string
+	MasterAddress          string
+	CSRFToken              string
+	Error                  string
+	ErrorField             string
+	Notice                 string
+	Username               string
+	LegacyLogin            bool
+	AgentID                string
+	DefaultTLSAddress      string
+	TTLSeconds             int64
+	Stats                  fleetStats
+	Agents                 []agentView
+	Agent                  *agentDetailView
+	Created                *createdServerView
+	AgentVersions          []agentVersionView
+	ReleaseCatalogWarning  string
+	LatestVersion          string
+	SingBoxVersions        []agentVersionView
+	SingBoxCatalogWarning  string
+	LatestSingBoxVersion   string
+	MasterVersion          string
+	MasterUpdateEnabled    bool
+	MasterUpdate           *agentUpdateView
+	MasterUpdateRequestID  string
+	Pool                   *poolView
+	PoolFormName           string
+	PoolFormRemark         string
+	PoolFormJSON           string
+	ProxyNodes             []proxyNodeListView
+	ProxyNode              *proxyNodeDetailView
+	EndUsers               []endUserListView
+	EndUser                *endUserDetailView
+	AgentOptions           []agentOptionView
+	Endpoint               endpointView
+	ListenerOptions        []listenerOptionView
+	ProxyDeployment        *proxyDeploymentView
+	AccountingFailures     []accountingFailureView
+	AccountingFailureTotal int
+}
+
+type accountingFailureView struct {
+	AgentID    string
+	Reason     string
+	OccurredAt string
 }
 
 type fleetStats struct {
@@ -348,6 +362,7 @@ func New(options Options) (http.Handler, error) {
 		now:             now,
 		proxyNodes:      options.ProxyNodes,
 		proxyDeployer:   options.ProxyDeployer,
+		proxyUserSync:   options.ProxyUserSync,
 		templates:       templates,
 		mux:             http.NewServeMux(),
 		results:         make(map[string]enrollmentResult),
@@ -378,11 +393,15 @@ func (h *Handler) routes() {
 	h.mux.HandleFunc("GET /proxy-nodes", h.proxyNodesPage)
 	h.mux.HandleFunc("GET /proxy-nodes/new", h.newProxyNodePage)
 	h.mux.HandleFunc("POST /proxy-nodes", h.createProxyNode)
+	h.mux.HandleFunc("POST /proxy-nodes/deploy", h.deployProxyNodes)
 	h.mux.HandleFunc("GET /proxy-nodes/deployment-status", h.proxyDeploymentStatus)
 	h.mux.HandleFunc("GET /proxy-nodes/{proxy_id}/manage", h.proxyNodePage)
 	h.mux.HandleFunc("POST /proxy-nodes/{proxy_id}/rename", h.renameProxyNode)
 	h.mux.HandleFunc("POST /proxy-nodes/{proxy_id}/delete", h.deleteProxyNode)
 	h.mux.HandleFunc("POST /proxy-nodes/{proxy_id}/deploy", h.deployProxyNodes)
+	h.mux.HandleFunc("POST /proxy-nodes/{proxy_id}/users", h.addProxyNodeUser)
+	h.mux.HandleFunc("POST /proxy-nodes/{proxy_id}/users/{user_id}/plan", h.updateProxyNodeUser)
+	h.mux.HandleFunc("POST /proxy-nodes/{proxy_id}/users/{user_id}/remove", h.removeProxyNodeUser)
 	h.mux.HandleFunc("GET /proxy-nodes/{proxy_id}/entrance", h.proxyEntrancePage)
 	h.mux.HandleFunc("POST /proxy-nodes/{proxy_id}/entrance", h.updateProxyEntrance)
 	h.mux.HandleFunc("GET /proxy-nodes/{proxy_id}/rule-sets", h.proxyRuleSetsPage)
@@ -407,7 +426,7 @@ func (h *Handler) routes() {
 	h.mux.HandleFunc("GET /users/{user_id}", h.endUserPage)
 	h.mux.HandleFunc("POST /users/{user_id}/access", h.addUserProxyAccess)
 	h.mux.HandleFunc("POST /users/{user_id}/access/remove", h.removeUserProxyAccess)
-	h.mux.HandleFunc("POST /users/{user_id}/deploy", h.deployUserProxyAccess)
+	h.mux.HandleFunc("POST /users/{user_id}/access/update", h.updateUserProxyAccess)
 	h.mux.HandleFunc("POST /users/{user_id}/rename", h.renameEndUser)
 	h.mux.HandleFunc("POST /users/{user_id}/delete", h.deleteEndUser)
 	h.mux.HandleFunc("GET /servers/content", h.serversContent)
@@ -709,12 +728,40 @@ func (h *Handler) settingsPageData(session Session) pageData {
 			}
 		}
 	}
+	failures := []accountingFailureView{}
+	failureTotal := 0
+	if h.proxyNodes != nil {
+		recorded := h.proxyNodes.Snapshot().AccountingFailures
+		failureTotal = len(recorded)
+		const visibleFailureLimit = 50
+		for index := len(recorded) - 1; index >= 0 && len(failures) < visibleFailureLimit; index-- {
+			failure := recorded[index]
+			failures = append(failures, accountingFailureView{
+				AgentID:    failure.AgentID,
+				Reason:     accountingFailureLabel(failure.Reason),
+				OccurredAt: failure.OccurredAt.UTC().Format("2 Jan 2006, 15:04:05 UTC"),
+			})
+		}
+	}
 	return pageData{
-		Title:         "Settings",
-		ActiveNav:     "settings",
-		CSRFToken:     session.CSRFToken,
-		MasterVersion: h.version,
-		MasterUpdate:  masterUpdate,
+		Title:                  "Settings",
+		ActiveNav:              "settings",
+		CSRFToken:              session.CSRFToken,
+		MasterVersion:          h.version,
+		MasterUpdate:           masterUpdate,
+		AccountingFailures:     failures,
+		AccountingFailureTotal: failureTotal,
+	}
+}
+
+func accountingFailureLabel(reason string) string {
+	switch reason {
+	case proxynode.AccountingFailureCollection:
+		return "Entrance sample collection failed"
+	case proxynode.AccountingFailurePersistence:
+		return "Master could not persist usage"
+	default:
+		return "Accounting failure"
 	}
 }
 
@@ -1467,7 +1514,7 @@ func (h *Handler) updateAllSingBox(response http.ResponseWriter, request *http.R
 	if !singboxupdate.ValidVersion(targetVersion) {
 		renderError(
 			http.StatusBadRequest,
-			"Choose an exact sing-box 1.14+ stable or release-candidate build.",
+			"Choose an exact signed Theatropolis managed-user sing-box build.",
 		)
 		return
 	}
@@ -1595,7 +1642,7 @@ func (h *Handler) updateSingBox(
 	message := ""
 	statusCode := http.StatusBadRequest
 	if !singboxupdate.ValidVersion(targetVersion) {
-		message = "Choose an exact sing-box 1.14+ stable or release-candidate build."
+		message = "Choose an exact signed Theatropolis managed-user sing-box build."
 	} else if snapshot.State != identity.AgentStateEnrolled ||
 		!h.controller.CanUpdateSingBox(snapshot.ID) {
 		message = "sing-box update control is unavailable until this server is online with a compatible agent."
@@ -1817,7 +1864,7 @@ func (h *Handler) serverPageData(
 		}
 		if h.controller.CanUpdateSingBox(snapshot.ID) {
 			detail.SingBoxUpdateEnabled = true
-			detail.SingBoxUpdateHint = "Choose a published sing-box 1.14+ stable or release-candidate build with V2Ray API. Its signed checksum manifest and GitHub asset digest are verified before installation."
+			detail.SingBoxUpdateHint = "Choose a signed sing-box build with live AnyTLS, Hysteria2, and Shadowsocks user management. Its capability manifest, checksums, and GitHub asset digest are verified before installation."
 		} else if online {
 			detail.SingBoxUpdateHint = "Rerun the current agent installer once to enable secure sing-box installation and updates."
 		} else {

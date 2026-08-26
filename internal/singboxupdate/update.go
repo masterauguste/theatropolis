@@ -27,14 +27,15 @@ import (
 )
 
 const (
-	requestFileName    = "sing-box-update-request.json"
-	processingFileName = ".sing-box-update-request.processing.json"
-	resultFileName     = "sing-box-update-result.json"
-	maxMetadataBytes   = 4 << 20
-	maxManifestBytes   = 128 << 10
-	maxSignatureBytes  = 8 << 10
-	maxArchiveBytes    = 96 << 20
-	maxComponentBytes  = 80 << 20
+	requestFileName       = "sing-box-update-request.json"
+	processingFileName    = ".sing-box-update-request.processing.json"
+	resultFileName        = "sing-box-update-result.json"
+	maxMetadataBytes      = 4 << 20
+	maxManifestBytes      = 128 << 10
+	maxBuildManifestBytes = 128 << 10
+	maxSignatureBytes     = 8 << 10
+	maxArchiveBytes       = 96 << 20
+	maxComponentBytes     = 80 << 20
 	// ReleaseRepository publishes signed, upstream-source sing-box builds with
 	// the V2Ray API tag required by Theatropolis traffic accounting.
 	ReleaseRepository = "masterauguste/sing-box-v2ray-api-builds"
@@ -43,7 +44,7 @@ const (
 var (
 	ErrUpdatePending = errors.New("a sing-box update is already pending")
 	versionPattern   = regexp.MustCompile(
-		`\Av(?:1\.(?:1[4-9]|[2-9][0-9])|(?:[2-9]|[1-9][0-9]+)\.[0-9]+)\.[0-9]+(?:-rc\.[0-9]+)?\z`,
+		`\Av(?:1\.(?:1[4-9]|[2-9][0-9])|(?:[2-9]|[1-9][0-9]+)\.[0-9]+)\.[0-9]+(?:-rc\.[0-9]+\.theatropolis\.[1-9][0-9]*|-theatropolis\.[1-9][0-9]*)\z`,
 	)
 	requestIDPattern = regexp.MustCompile(`\A[A-Za-z0-9_-]{16,128}\z`)
 	digestPattern    = regexp.MustCompile(`\Asha256:([0-9a-f]{64})\z`)
@@ -253,6 +254,20 @@ type githubAsset struct {
 	BrowserDownloadURL string `json:"browser_download_url"`
 }
 
+type buildManifest struct {
+	Schema  int `json:"schema_version"`
+	Release struct {
+		Tag     string `json:"tag"`
+		Version string `json:"version"`
+	} `json:"release"`
+	Patchset struct {
+		Capabilities []string `json:"capabilities"`
+	} `json:"patchset"`
+	Build struct {
+		Tags []string `json:"tags"`
+	} `json:"build"`
+}
+
 const releaseSigningPublicKeyPEM = `-----BEGIN PUBLIC KEY-----
 MIIBojANBgkqhkiG9w0BAQEFAAOCAY8AMIIBigKCAYEAyfM82BiyFd5HnGrCDVWz
 cbNsmNVt4gRudcg+aF4rtZeHQ6a0+NA18MjwWqAxGDyjd1Zbh1RSV/SneSMoQs7r
@@ -316,6 +331,17 @@ func applyRelease(
 	if manifestAsset == nil || signatureAsset == nil {
 		return errors.New("sing-box release is missing its signed checksum manifest")
 	}
+	buildManifestAsset, err := selectReleaseAsset(
+		release.Assets,
+		"build-manifest.json",
+		maxBuildManifestBytes,
+	)
+	if err != nil {
+		return err
+	}
+	if buildManifestAsset == nil {
+		return errors.New("sing-box release is missing its build manifest")
+	}
 	manifest, err := downloadVerifiedAsset(
 		ctx, client, manifestAsset, request.TargetVersion, maxManifestBytes,
 	)
@@ -334,6 +360,30 @@ func applyRelease(
 		[]byte(releaseSigningPublicKeyPEM),
 	); err != nil {
 		return err
+	}
+	buildMetadata, err := downloadVerifiedAsset(
+		ctx,
+		client,
+		buildManifestAsset,
+		request.TargetVersion,
+		maxBuildManifestBytes,
+	)
+	if err != nil {
+		return fmt.Errorf("download sing-box build manifest: %w", err)
+	}
+	if err := verifyBuildManifest(buildMetadata, request.TargetVersion); err != nil {
+		return err
+	}
+	expectedBuildManifestDigest, err := checksumForAsset(manifest, "build-manifest.json")
+	if err != nil {
+		return err
+	}
+	actualBuildManifestDigest := sha256.Sum256(buildMetadata)
+	if !strings.EqualFold(
+		hex.EncodeToString(actualBuildManifestDigest[:]),
+		expectedBuildManifestDigest,
+	) {
+		return errors.New("sing-box build manifest checksum verification failed")
 	}
 	expectedArchiveDigest, err := checksumForAsset(manifest, assetName)
 	if err != nil {
@@ -610,7 +660,8 @@ func installComponents(
 	if err != nil || !strings.Contains(
 		string(output),
 		"sing-box version "+strings.TrimPrefix(targetVersion, "v"),
-	) || !versionOutputHasTag(string(output), "with_v2ray_api") {
+	) || !versionOutputHasTag(string(output), "with_v2ray_api") ||
+		!versionOutputHasTag(string(output), "with_theatropolis_managed_users") {
 		return errors.New("candidate sing-box executable failed version verification")
 	}
 	activeConfigPath := filepath.Join(
@@ -663,6 +714,45 @@ func versionOutputHasTag(output, expected string) bool {
 			if strings.TrimSpace(tag) == expected {
 				return true
 			}
+		}
+	}
+	return false
+}
+
+func verifyBuildManifest(encoded []byte, targetVersion string) error {
+	decoder := json.NewDecoder(bytes.NewReader(encoded))
+	var manifest buildManifest
+	if err := decoder.Decode(&manifest); err != nil {
+		return errors.New("sing-box build manifest is invalid")
+	}
+	var trailing any
+	if err := decoder.Decode(&trailing); !errors.Is(err, io.EOF) {
+		return errors.New("sing-box build manifest contains trailing data")
+	}
+	if manifest.Schema != 2 || manifest.Release.Tag != targetVersion ||
+		manifest.Release.Version != strings.TrimPrefix(targetVersion, "v") ||
+		!containsExact(manifest.Patchset.Capabilities, "managed-users-v1") ||
+		!containsExact(manifest.Patchset.Capabilities, "anytls-live-users") ||
+		!containsExact(manifest.Patchset.Capabilities, "hysteria2-live-users") ||
+		!containsExact(manifest.Patchset.Capabilities, "session-revocation-v1") ||
+		!containsExact(manifest.Patchset.Capabilities, "traffic-reset-v1") ||
+		!containsExact(manifest.Build.Tags, "with_v2ray_api") ||
+		!containsExact(manifest.Build.Tags, "with_theatropolis_managed_users") {
+		return errors.New("sing-box build manifest lacks required managed-user capabilities")
+	}
+	return nil
+}
+
+// ValidateBuildManifest exposes the same capability gate to release discovery
+// so the UI never offers a version that the privileged updater will reject.
+func ValidateBuildManifest(encoded []byte, targetVersion string) error {
+	return verifyBuildManifest(encoded, targetVersion)
+}
+
+func containsExact(values []string, expected string) bool {
+	for _, value := range values {
+		if value == expected {
+			return true
 		}
 	}
 	return false

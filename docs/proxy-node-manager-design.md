@@ -177,9 +177,10 @@ server is represented by a Link to another Hop.
 A Membership assigns one global End User to one Proxy Node. The pair
 `(end_user_id, proxy_node_id)` is unique.
 
-Proxy Node access is granted and revoked from the End User's settings rather
-than by adding users from a Proxy Node page. Creating a Membership
-automatically generates fresh credentials compatible with the Proxy Node's
+Proxy Node access can be granted and revoked from either the End User's settings
+or the Proxy Node's user list. Both surfaces mutate the same Membership and
+queue the same immediate user synchronization. Creating a Membership
+automatically generates fresh credentials compatible with the currently active
 entrance protocol. Administrators cannot choose or reuse the secret.
 Credentials are unique per Membership even when the same End User belongs to
 several Proxy Nodes or the Proxy Nodes currently have distinct entrances.
@@ -187,14 +188,14 @@ several Proxy Nodes or the Proxy Nodes currently have distinct entrances.
 The generated authenticated-user label follows:
 
 ```text
-<proxy-node-name>-<end-user-name>
+<proxy-node-name>-<end-user-name>-m-<stable-membership-suffix>
 ```
 
 For example, global End User `alice` can have:
 
 ```text
-cinema-alice  -> generated membership secret A
-archive-alice -> generated membership secret B
+cinema-alice-m-AbCdEf012345  -> generated membership secret A
+archive-alice-m-ZyXwVu987654 -> generated membership secret B
 ```
 
 Membership-specific credentials are required when compatible logical
@@ -211,6 +212,80 @@ protocol.
 Secrets are displayed only through an explicit administrator action and are
 handled as sensitive state. Diagnostics, logs, topology exports, and ordinary
 list views must not contain them.
+
+Membership state and topology state are independent configuration planes.
+Creating, renaming, deleting, granting, revoking, expiring, quota-disabling, or
+changing the allowance of an End User is persisted immediately and
+automatically synchronized onto the last successfully applied topology. There
+is no separate user Apply action. Routing Rules, Links, Hop placement, listener
+settings, and Link credentials are changed as one completed operation at a
+time. Each operation validates the complete topology and immediately starts an
+atomic fleet deployment; there is no separate topology Apply action. Further
+topology edits are locked until that transaction applies or rolls back.
+
+Topology comparison is compiled without end-user credentials. User authority
+has its own revisioned control command and does not create, overwrite, or wait
+behind a topology deployment record. Each command carries complete user sets
+for the applied, desired, and (when present) in-flight topology shapes. The
+Agent persists the newest authority in a private sidecar and serializes it with
+local sing-box activation. Every topology candidate is overlaid with the newest
+matching authority before validation; an unknown older shape can only retain
+Membership IDs already active on that Agent. Consequently, delayed deployment
+or rollback cannot resurrect a revoked credential. Once topology commits, the
+master sends the latest user revision again so label renames and staged entrance
+credentials follow the newly applied shape. If an entrance protocol change
+requires a different credential shape, the replacement credential remains
+pending until the new listener topology is active.
+
+Topology deployment is a fleet transaction. Before the first Agent is touched,
+the master writes a private atomic journal containing every affected Agent's
+exact last-applied profile. Each Agent is marked before delivery. Any validation,
+activation, revision, or persistence failure rolls every touched Agent back in
+the previous topology's receiver-before-sender order; an interrupted master
+resumes that same recorded order after restart. A committing marker plus
+the persisted applied topology revision distinguishes a completed transaction
+from one requiring recovery. When a protocol replacement reuses a socket, the
+old conflicting listener is removed in a separate first deployment while
+unrelated listeners remain present, and only then is the new listener bound.
+
+### Traffic accounting ownership
+
+sing-box exposes process-local counters through an atomic read-and-clear
+operation. A connected Agent samples every 15 seconds and sends that interval's
+deltas directly to the master. Only SSM endpoints containing entrance
+Membership identities are queried; Link credentials and child-only listeners
+are excluded. Successful endpoint results are retained even if another
+entrance endpoint fails, then sent before the bounded failure report. Immediately
+before topology deployment replaces a changed Agent that
+currently hosts an applied entrance, the master requests and persists a final
+sample; changed child-only Agents are not sampled. The Agent creates no traffic
+ledger and performs no accounting file write, `fsync`, or acknowledgement
+pruning. The master adds each authenticated control frame exactly once to the
+matching Membership's current-period usage in a private SQLite/WAL database,
+keeps a bounded non-sensitive accounting-failure history there, and remains the
+sole durable accounting authority. Topology and user policy remain in the
+schema-v8 JSON store; SQL is authoritative for high-frequency totals and reset
+boundaries. Schema-v7 JSON accounting values are imported once during upgrade,
+and a corrupt accounting database fails closed instead of becoming an empty
+ledger.
+
+This intentionally follows an at-most-once polling model: a sing-box/Agent
+crash before sampling, a response lost after counters were cleared, or a master
+persistence failure can lose that interval. The system does not claim
+audit-grade billing. Rolling quota resets clear master-owned Membership usage
+in a serialized SQL transaction at 00:10 UTC; subscription expiration remains
+a separate 00:00 UTC user-plane transition. During rolling upgrades, legacy cumulative Agents retain their baseline
+handling; reset-delta Agents advertise `managed-user-traffic-delta-v1` and use a
+fresh compatibility epoch for each batch so an older master also adds it once.
+
+Agents push a sample on connection and every 15 seconds. An Agent that cannot
+collect a sample sends a bounded non-sensitive failure report. Agents
+advertising `managed-user-traffic-request-v1` also accept a correlated
+master-initiated sample request before an entrance-changing topology operation.
+A failed destructive sample is recorded, but is not retried as though its
+already-cleared counters still existed; the next periodic poll is the next
+attempt. A requested report succeeds only after the master has persisted the
+delta.
 
 ## Routing and rendering
 
@@ -302,13 +377,17 @@ not literally simultaneous, so operations that change both sides of a Link
 must use a staged deployment which never exposes an unauthenticated or
 unintended route.
 
-Before preflight and queueing, fleet deployment compares each compiled Agent
-configuration's SHA-256 digest with that Agent's latest successfully applied
-rendered digest. Agents whose digest is already current are skipped: they do
-not need to be online and their sing-box process is not restarted. Availability
-checks and receiver-before-sender ordering apply to the remaining changed
-Agents. A Membership-only change therefore normally restarts only the Proxy
-Node's entrance Agent; an entirely unchanged deployment is a successful no-op.
+Topology deployment compares user-agnostic candidate and applied views and skips
+unchanged Agents. Availability checks and receiver-before-sender ordering apply
+to the remaining changed Agents. Immediately before deployment, the restart
+document is assembled from the selected topology and the current live
+memberships; staged credentials are used for an entrance whose protocol shape
+is changing. After it succeeds, automatic user synchronization sends the newest
+revisioned authority independently. If only managed user arrays differ, the
+Agent applies it through the loopback API without restarting sing-box. An
+entirely unchanged operation is a successful no-op. Address-source changes use
+a separate retrying refresh of the last applied topology and never publish a
+candidate topology.
 
 ## Renames
 
@@ -569,8 +648,11 @@ leave application state untouched.
 
 ## Implemented first-release decisions
 
-- `proxy-node-state.json` is the authoritative strict versioned master store;
-  its mutations are atomic and revisioned.
+- `proxy-node-state.json` is the authoritative strict versioned topology and
+  policy store; its mutations are atomic and revisioned. High-frequency traffic
+  totals, reset boundaries, rolling-upgrade observations, and accounting errors
+  are authoritative in the sibling private `proxy-node-accounting.sqlite` WAL
+  database.
 - Shadowsocks 2022, AnyTLS, and Hysteria2 are supported on entrances and Links.
 - Link-owned clauses support protocol, domain, domain suffix, domain keyword,
   domain regex, IP/CIDR, geosite, geoip, custom Rule Set, and network matches.

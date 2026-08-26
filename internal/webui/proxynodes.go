@@ -19,6 +19,10 @@ import (
 
 const maxProxyFormBytes = 128 << 10
 
+var membershipPlanFormFields = []string{
+	"quota_mode", "monthly_quota_gib", "expiration_mode", "subscription_months",
+}
+
 type proxyNodeListView struct {
 	ID            string
 	Name          string
@@ -46,6 +50,34 @@ type proxyNodeDetailView struct {
 	MemberCount      int
 	TerminalCount    int
 	UnusedLinkCount  int
+	UserAccess       []nodeUserAccessView
+	AvailableUsers   []nodeUserOptionView
+	DefaultPlan      membershipPlanView
+}
+
+type membershipPlanView struct {
+	QuotaMode          string
+	QuotaGiB           string
+	ExpirationMode     string
+	SubscriptionMonths string
+	QuotaLabel         string
+	UsageLabel         string
+	ResetLabel         string
+	ExpirationLabel    string
+	StatusLabel        string
+	StatusClass        string
+}
+
+type nodeUserAccessView struct {
+	UserID string
+	Name   string
+	URL    string
+	Plan   membershipPlanView
+}
+
+type nodeUserOptionView struct {
+	UserID string
+	Label  string
 }
 
 type proxyTreeHopView struct {
@@ -136,6 +168,7 @@ type endUserDetailView struct {
 	ProxyNodeCount  int
 	AssignedAccess  []userProxyAccessView
 	AvailableAccess []userProxyOptionView
+	DefaultPlan     membershipPlanView
 }
 
 type userProxyAccessView struct {
@@ -148,6 +181,7 @@ type userProxyAccessView struct {
 	EntranceAgent string
 	AuthUser      string
 	URIs          []credentialURIView
+	Plan          membershipPlanView
 }
 
 type userProxyOptionView struct {
@@ -167,6 +201,8 @@ type agentOptionView struct {
 }
 
 type endpointView struct {
+	AgentID           string
+	ListenerID        string
 	Protocol          string
 	Listen            string
 	ListenPort        int
@@ -185,6 +221,30 @@ type endpointView struct {
 	UpMbps            int
 	DownMbps          int
 	ObfsType          string
+}
+
+type listenerOptionView struct {
+	ID              string
+	AgentID         string
+	Label           string
+	Protocol        string
+	ProtocolLabel   string
+	Listen          string
+	ListenPort      int
+	Method          string
+	MuxPadding      bool
+	MuxBrutal       bool
+	MuxBrutalUp     int
+	MuxBrutalDown   int
+	TLSMode         string
+	ServerName      string
+	Email           string
+	CertificatePath string
+	KeyPath         string
+	UpMbps          int
+	DownMbps        int
+	ObfsType        string
+	ReferenceCount  int
 }
 
 type proxyRuleView struct {
@@ -245,6 +305,7 @@ func (h *Handler) newProxyNodePage(response http.ResponseWriter, request *http.R
 	h.render(response, http.StatusOK, "proxy-node-new.html", pageData{
 		Title: "New Proxy Node", ActiveNav: "proxy-nodes", CSRFToken: session.CSRFToken,
 		AgentOptions: h.proxyAgentOptions(""), Endpoint: defaultEndpointView(),
+		ListenerOptions: h.proxyListenerOptions(), ProxyDeployment: h.proxyDeploymentView(),
 	})
 }
 
@@ -263,14 +324,14 @@ func (h *Handler) createProxyNode(response http.ResponseWriter, request *http.Re
 		http.Error(response, "terminal exit must be Direct or Reject", http.StatusBadRequest)
 		return
 	}
-	node, err := h.proxyNodes.CreateProxyNode(proxynode.CreateProxyNodeInput{
-		Name: form.Get("name"), RootAgent: form.Get("agent_id"), Entrance: endpoint, Final: terminal,
-	})
-	if err != nil {
-		handleProxyMutationError(response, err)
-		return
-	}
-	if !h.queueProxyDeployment(response) {
+	var node proxynode.ProxyNode
+	if !h.applyProxyTopologyMutation(response, func() error {
+		var err error
+		node, err = h.proxyNodes.CreateProxyNode(proxynode.CreateProxyNodeInput{
+			Name: form.Get("name"), RootAgent: form.Get("agent_id"), Entrance: endpoint, Final: terminal,
+		})
+		return err
+	}) {
 		return
 	}
 	http.Redirect(response, request, proxyNodeURL(node.ID), http.StatusSeeOther)
@@ -286,10 +347,12 @@ func (h *Handler) proxyNodePage(response http.ResponseWriter, request *http.Requ
 		return
 	}
 	detail := h.proxyNodeDetail(node)
+	h.attachProxyNodeUsers(detail, node, h.proxyNodes.Snapshot().Users)
 	setProxyTreeCSRF(detail.Tree, session.CSRFToken)
 	h.render(response, http.StatusOK, "proxy-node.html", pageData{
 		Title: node.Name, ActiveNav: "proxy-nodes", CSRFToken: session.CSRFToken,
 		ProxyNode: detail, ProxyDeployment: h.proxyDeploymentView(),
+		ListenerOptions: h.proxyListenerOptions(),
 	})
 }
 
@@ -313,8 +376,9 @@ func (h *Handler) renameProxyNode(response http.ResponseWriter, request *http.Re
 		return
 	}
 	id := request.PathValue("proxy_id")
-	if err := h.proxyNodes.RenameProxyNode(id, form.Get("name")); err != nil {
-		handleProxyMutationError(response, err)
+	if !h.applyProxyTopologyMutation(response, func() error {
+		return h.proxyNodes.RenameProxyNode(id, form.Get("name"))
+	}) {
 		return
 	}
 	http.Redirect(response, request, proxyNodeURL(id), http.StatusSeeOther)
@@ -329,9 +393,13 @@ func (h *Handler) deleteProxyNode(response http.ResponseWriter, request *http.Re
 		http.Error(response, "deletion was not confirmed", http.StatusBadRequest)
 		return
 	}
-	if err := h.proxyNodes.DeleteProxyNode(request.PathValue("proxy_id")); err != nil {
-		handleProxyMutationError(response, err)
+	if !h.applyProxyTopologyMutation(response, func() error {
+		return h.proxyNodes.DeleteProxyNode(request.PathValue("proxy_id"))
+	}) {
 		return
+	}
+	if h.proxyDeployer == nil {
+		h.triggerProxyUserSync()
 	}
 	http.Redirect(response, request, "/proxy-nodes", http.StatusSeeOther)
 }
@@ -373,6 +441,28 @@ func (h *Handler) queueProxyDeployment(response http.ResponseWriter) bool {
 	return true
 }
 
+func (h *Handler) applyProxyTopologyMutation(response http.ResponseWriter, mutation func() error) bool {
+	if h.proxyDeployer == nil {
+		// Keep the Store independently usable by embedded/test consumers. The
+		// production master always supplies a Deployer and therefore always uses
+		// the reserved immediate-apply path.
+		if err := mutation(); err != nil {
+			handleProxyMutationError(response, err)
+			return false
+		}
+		return true
+	}
+	if _, err := h.proxyDeployer.MutateAndStart(mutation); err != nil {
+		status := http.StatusBadRequest
+		if errors.Is(err, proxynode.ErrDeploymentActive) {
+			status = http.StatusConflict
+		}
+		http.Error(response, err.Error(), status)
+		return false
+	}
+	return true
+}
+
 func (h *Handler) proxyDeploymentStatus(response http.ResponseWriter, request *http.Request) {
 	if _, ok := h.requireAuthentication(response, request); !ok {
 		return
@@ -394,8 +484,10 @@ func (h *Handler) proxyEntrancePage(response http.ResponseWriter, request *http.
 	root, _ := proxyHop(node, node.Entrance.HopID)
 	h.render(response, http.StatusOK, "proxy-node-entrance.html", pageData{
 		Title: node.Name + " entrance", ActiveNav: "proxy-nodes", CSRFToken: session.CSRFToken,
-		ProxyNode: h.proxyNodeDetail(node), Endpoint: endpointViewFor(node.Entrance.Endpoint),
-		AgentOptions: h.proxyAgentOptions(root.AgentID),
+		ProxyNode: h.proxyNodeDetail(node), Endpoint: endpointViewForAgent(node.Entrance.Endpoint, root.AgentID),
+		AgentOptions:    h.proxyAgentOptions(root.AgentID),
+		ListenerOptions: h.proxyListenerOptions(),
+		ProxyDeployment: h.proxyDeploymentView(),
 	})
 }
 
@@ -410,8 +502,9 @@ func (h *Handler) updateProxyEntrance(response http.ResponseWriter, request *htt
 		return
 	}
 	id := request.PathValue("proxy_id")
-	if err := h.proxyNodes.UpdateEntrance(id, endpoint); err != nil {
-		handleProxyMutationError(response, err)
+	if !h.applyProxyTopologyMutation(response, func() error {
+		return h.proxyNodes.UpdateEntrance(id, endpoint)
+	}) {
 		return
 	}
 	http.Redirect(response, request, proxyNodeURL(id), http.StatusSeeOther)
@@ -428,7 +521,7 @@ func (h *Handler) proxyRuleSetsPage(response http.ResponseWriter, request *http.
 	}
 	h.render(response, http.StatusOK, "proxy-node-rule-sets.html", pageData{
 		Title: node.Name + " Rule Sets", ActiveNav: "proxy-nodes", CSRFToken: session.CSRFToken,
-		ProxyNode: h.proxyNodeDetail(node),
+		ProxyNode: h.proxyNodeDetail(node), ProxyDeployment: h.proxyDeploymentView(),
 	})
 }
 
@@ -438,8 +531,9 @@ func (h *Handler) upsertProxyRuleSet(response http.ResponseWriter, request *http
 		return
 	}
 	id := request.PathValue("proxy_id")
-	if err := h.proxyNodes.UpsertRuleSet(id, proxynode.CustomRuleSet{Tag: form.Get("tag"), URL: form.Get("url"), Format: "binary", UpdateInterval: form.Get("update_interval")}); err != nil {
-		handleProxyMutationError(response, err)
+	if !h.applyProxyTopologyMutation(response, func() error {
+		return h.proxyNodes.UpsertRuleSet(id, proxynode.CustomRuleSet{Tag: form.Get("tag"), URL: form.Get("url"), Format: "binary", UpdateInterval: form.Get("update_interval")})
+	}) {
 		return
 	}
 	http.Redirect(response, request, proxyRuleSetsURL(id), http.StatusSeeOther)
@@ -451,8 +545,9 @@ func (h *Handler) deleteProxyRuleSet(response http.ResponseWriter, request *http
 		return
 	}
 	id := request.PathValue("proxy_id")
-	if err := h.proxyNodes.DeleteRuleSet(id, form.Get("tag")); err != nil {
-		handleProxyMutationError(response, err)
+	if !h.applyProxyTopologyMutation(response, func() error {
+		return h.proxyNodes.DeleteRuleSet(id, form.Get("tag"))
+	}) {
 		return
 	}
 	http.Redirect(response, request, proxyRuleSetsURL(id), http.StatusSeeOther)
@@ -491,8 +586,9 @@ func (h *Handler) updateProxyHop(response http.ResponseWriter, request *http.Req
 		http.NotFound(response, request)
 		return
 	}
-	if err := h.proxyNodes.UpdateHop(nodeID, hopID, hop.Name, form.Get("agent_id")); err != nil {
-		handleProxyMutationError(response, err)
+	if !h.applyProxyTopologyMutation(response, func() error {
+		return h.proxyNodes.UpdateHop(nodeID, hopID, hop.Name, form.Get("agent_id"))
+	}) {
 		return
 	}
 	http.Redirect(response, request, proxyInspectorURL(nodeID, "hop-"+hopID), http.StatusSeeOther)
@@ -515,14 +611,15 @@ func (h *Handler) addProxyLink(response http.ResponseWriter, request *http.Reque
 		return
 	}
 	nodeID, hopID := request.PathValue("proxy_id"), request.PathValue("hop_id")
-	_, _, _, err = h.proxyNodes.AddBranch(nodeID, proxynode.AddBranchInput{
-		AddLinkInput: proxynode.AddLinkInput{
-			ParentHopID: hopID, ChildName: form.Get("child_name"), ChildAgent: form.Get("child_agent"), Endpoint: endpoint, Final: terminal,
-		},
-		Match: proxynode.MatchType(form.Get("match")), Values: splitProxyValues(form.Get("values")),
-	})
-	if err != nil {
-		handleProxyMutationError(response, err)
+	if !h.applyProxyTopologyMutation(response, func() error {
+		_, _, _, err = h.proxyNodes.AddBranch(nodeID, proxynode.AddBranchInput{
+			AddLinkInput: proxynode.AddLinkInput{
+				ParentHopID: hopID, ChildName: form.Get("child_name"), ChildAgent: form.Get("child_agent"), Endpoint: endpoint, Final: terminal,
+			},
+			Match: proxynode.MatchType(form.Get("match")), Values: splitProxyValues(form.Get("values")),
+		})
+		return err
+	}) {
 		return
 	}
 	http.Redirect(response, request, proxyNodeURL(nodeID), http.StatusSeeOther)
@@ -538,8 +635,9 @@ func (h *Handler) deleteProxyLink(response http.ResponseWriter, request *http.Re
 		return
 	}
 	nodeID, hopID := request.PathValue("proxy_id"), request.PathValue("hop_id")
-	if err := h.proxyNodes.DeleteLink(nodeID, form.Get("link_id")); err != nil {
-		handleProxyMutationError(response, err)
+	if !h.applyProxyTopologyMutation(response, func() error {
+		return h.proxyNodes.DeleteLink(nodeID, form.Get("link_id"))
+	}) {
 		return
 	}
 	http.Redirect(response, request, proxyInspectorURL(nodeID, "hop-"+hopID), http.StatusSeeOther)
@@ -584,8 +682,9 @@ func (h *Handler) updateProxyLink(response http.ResponseWriter, request *http.Re
 		http.NotFound(response, request)
 		return
 	}
-	if err := h.proxyNodes.UpdateLink(nodeID, linkID, endpoint); err != nil {
-		handleProxyMutationError(response, err)
+	if !h.applyProxyTopologyMutation(response, func() error {
+		return h.proxyNodes.UpdateLink(nodeID, linkID, endpoint)
+	}) {
 		return
 	}
 	http.Redirect(response, request, proxyInspectorURL(nodeID, "link-"+linkID), http.StatusSeeOther)
@@ -597,9 +696,10 @@ func (h *Handler) addProxyRule(response http.ResponseWriter, request *http.Reque
 		return
 	}
 	nodeID, linkID := request.PathValue("proxy_id"), request.PathValue("link_id")
-	_, err := h.proxyNodes.AddRule(nodeID, proxynode.AddRuleInput{LinkID: linkID, Match: proxynode.MatchType(form.Get("match")), Values: splitProxyValues(form.Get("values"))})
-	if err != nil {
-		handleProxyMutationError(response, err)
+	if !h.applyProxyTopologyMutation(response, func() error {
+		_, err := h.proxyNodes.AddRule(nodeID, proxynode.AddRuleInput{LinkID: linkID, Match: proxynode.MatchType(form.Get("match")), Values: splitProxyValues(form.Get("values"))})
+		return err
+	}) {
 		return
 	}
 	http.Redirect(response, request, proxyNodeURL(nodeID), http.StatusSeeOther)
@@ -611,11 +711,12 @@ func (h *Handler) updateProxyRule(response http.ResponseWriter, request *http.Re
 		return
 	}
 	nodeID, linkID, ruleID := request.PathValue("proxy_id"), request.PathValue("link_id"), request.PathValue("rule_id")
-	if err := h.proxyNodes.UpdateRule(nodeID, ruleID, proxynode.UpdateRuleInput{
-		LinkID: linkID,
-		Match:  proxynode.MatchType(form.Get("match")), Values: splitProxyValues(form.Get("values")),
-	}); err != nil {
-		handleProxyMutationError(response, err)
+	if !h.applyProxyTopologyMutation(response, func() error {
+		return h.proxyNodes.UpdateRule(nodeID, ruleID, proxynode.UpdateRuleInput{
+			LinkID: linkID,
+			Match:  proxynode.MatchType(form.Get("match")), Values: splitProxyValues(form.Get("values")),
+		})
+	}) {
 		return
 	}
 	http.Redirect(response, request, proxyNodeURL(nodeID), http.StatusSeeOther)
@@ -637,8 +738,9 @@ func (h *Handler) deleteProxyRule(response http.ResponseWriter, request *http.Re
 		http.NotFound(response, request)
 		return
 	}
-	if err := h.proxyNodes.DeleteLink(nodeID, linkID); err != nil {
-		handleProxyMutationError(response, err)
+	if !h.applyProxyTopologyMutation(response, func() error {
+		return h.proxyNodes.DeleteLink(nodeID, linkID)
+	}) {
 		return
 	}
 	http.Redirect(response, request, proxyInspectorURL(nodeID, "hop-"+link.ParentHopID), http.StatusSeeOther)
@@ -657,8 +759,9 @@ func (h *Handler) moveProxyRule(response http.ResponseWriter, request *http.Requ
 		return
 	}
 	nodeID, linkID := request.PathValue("proxy_id"), request.PathValue("link_id")
-	if err := h.proxyNodes.MoveRule(nodeID, linkID, form.Get("rule_id"), delta); err != nil {
-		handleProxyMutationError(response, err)
+	if !h.applyProxyTopologyMutation(response, func() error {
+		return h.proxyNodes.MoveRule(nodeID, linkID, form.Get("rule_id"), delta)
+	}) {
 		return
 	}
 	http.Redirect(response, request, proxyInspectorURL(nodeID, "rule-"+form.Get("rule_id")), http.StatusSeeOther)
@@ -670,12 +773,19 @@ func (h *Handler) reorderProxyRules(response http.ResponseWriter, request *http.
 		return
 	}
 	nodeID, hopID := request.PathValue("proxy_id"), request.PathValue("hop_id")
-	if err := h.proxyNodes.ReorderRules(nodeID, hopID, splitProxyValues(form.Get("rule_ids"))); err != nil {
-		handleProxyMutationError(response, err)
+	if !h.applyProxyTopologyMutation(response, func() error {
+		return h.proxyNodes.ReorderRules(nodeID, hopID, splitProxyValues(form.Get("rule_ids")))
+	}) {
 		return
 	}
 	if strings.Contains(request.Header.Get("Accept"), "application/json") {
-		response.WriteHeader(http.StatusNoContent)
+		if h.proxyDeployer == nil {
+			response.WriteHeader(http.StatusNoContent)
+			return
+		}
+		response.Header().Set("Content-Type", "application/json")
+		response.WriteHeader(http.StatusAccepted)
+		_ = json.NewEncoder(response).Encode(h.proxyDeploymentView())
 		return
 	}
 	http.Redirect(response, request, proxyNodeURL(nodeID), http.StatusSeeOther)
@@ -692,8 +802,9 @@ func (h *Handler) updateProxyLinkFallback(response http.ResponseWriter, request 
 		return
 	}
 	nodeID, linkID := request.PathValue("proxy_id"), request.PathValue("link_id")
-	if err := h.proxyNodes.SetLinkFallback(nodeID, linkID, fallback); err != nil {
-		handleProxyMutationError(response, err)
+	if !h.applyProxyTopologyMutation(response, func() error {
+		return h.proxyNodes.SetLinkFallback(nodeID, linkID, fallback)
+	}) {
 		return
 	}
 	http.Redirect(response, request, proxyInspectorURL(nodeID, "link-"+linkID), http.StatusSeeOther)
@@ -712,8 +823,9 @@ func (h *Handler) moveProxyLink(response http.ResponseWriter, request *http.Requ
 		return
 	}
 	nodeID, linkID := request.PathValue("proxy_id"), request.PathValue("link_id")
-	if err := h.proxyNodes.MoveLink(nodeID, linkID, delta); err != nil {
-		handleProxyMutationError(response, err)
+	if !h.applyProxyTopologyMutation(response, func() error {
+		return h.proxyNodes.MoveLink(nodeID, linkID, delta)
+	}) {
 		return
 	}
 	http.Redirect(response, request, proxyInspectorURL(nodeID, "link-"+linkID), http.StatusSeeOther)
@@ -739,8 +851,9 @@ func (h *Handler) updateProxyFinal(response http.ResponseWriter, request *http.R
 		http.NotFound(response, request)
 		return
 	}
-	if err := h.proxyNodes.SetFinal(nodeID, hopID, target); err != nil {
-		handleProxyMutationError(response, err)
+	if !h.applyProxyTopologyMutation(response, func() error {
+		return h.proxyNodes.SetFinal(nodeID, hopID, target)
+	}) {
 		return
 	}
 	if form.Get("return_to") == "fallback" {
@@ -810,13 +923,17 @@ func (h *Handler) endUserPage(response http.ResponseWriter, request *http.Reques
 		return
 	}
 	state := h.proxyNodes.Snapshot()
-	detail := &endUserDetailView{ID: user.ID, Name: user.Name, ProxyNodeCount: len(state.ProxyNodes)}
+	detail := &endUserDetailView{ID: user.ID, Name: user.Name, ProxyNodeCount: len(state.ProxyNodes), DefaultPlan: defaultMembershipPlanView()}
 	for _, node := range state.ProxyNodes {
-		root, _ := proxyHop(node, node.Entrance.HopID)
+		activeNode, active := h.proxyNodes.AppliedProxyNode(node.ID)
+		if !active {
+			activeNode = node
+		}
+		root, _ := proxyHop(activeNode, activeNode.Entrance.HopID)
 		access := userProxyAccessView{
 			ProxyID: node.ID, ProxyName: node.Name, ProxyURL: proxyNodeURL(node.ID),
 			DialogID: "user-proxy-access-" + node.ID, Initial: strings.ToUpper(node.Name[:1]),
-			EntranceLabel: protocolLabel(node.Entrance.Endpoint.Protocol), EntranceAgent: root.AgentID,
+			EntranceLabel: protocolLabel(activeNode.Entrance.Endpoint.Protocol), EntranceAgent: root.AgentID,
 		}
 		assigned := false
 		for _, membership := range node.Memberships {
@@ -824,8 +941,11 @@ func (h *Handler) endUserPage(response http.ResponseWriter, request *http.Reques
 				continue
 			}
 			assigned = true
-			access.AuthUser = node.Name + "-" + user.Name
-			access.URIs = h.membershipURIs(node, user, membership)
+			access.AuthUser = proxynode.AuthenticatedUserLabel(activeNode.Name, user.Name, membership.ID)
+			if active {
+				access.URIs = h.membershipURIs(activeNode, user, membership)
+			}
+			access.Plan = membershipPlanViewFor(membership)
 			break
 		}
 		if assigned {
@@ -845,12 +965,11 @@ func (h *Handler) endUserPage(response http.ResponseWriter, request *http.Reques
 	})
 	h.render(response, http.StatusOK, "user.html", pageData{
 		Title: user.Name, ActiveNav: "users", CSRFToken: session.CSRFToken, EndUser: detail,
-		ProxyDeployment: h.proxyDeploymentView(), ProxyDeployEnabled: h.proxyDeployer != nil,
 	})
 }
 
 func (h *Handler) addUserProxyAccess(response http.ResponseWriter, request *http.Request) {
-	_, form, ok := h.authorizeProxyMutation(response, request, "proxy_id")
+	_, form, ok := h.authorizeProxyMutation(response, request, append([]string{"proxy_id"}, membershipPlanFormFields...)...)
 	if !ok {
 		return
 	}
@@ -859,11 +978,88 @@ func (h *Handler) addUserProxyAccess(response http.ResponseWriter, request *http
 		http.NotFound(response, request)
 		return
 	}
-	if _, err := h.proxyNodes.AddMembership(form.Get("proxy_id"), userID); err != nil {
+	plan, err := parseMembershipPlan(form)
+	if err != nil {
+		http.Error(response, err.Error(), http.StatusBadRequest)
+		return
+	}
+	if _, err := h.proxyNodes.AddMembershipWithPlan(form.Get("proxy_id"), userID, plan); err != nil {
 		handleProxyMutationError(response, err)
 		return
 	}
+	h.triggerProxyUserSync()
 	http.Redirect(response, request, "/users/"+url.PathEscape(userID), http.StatusSeeOther)
+}
+
+func (h *Handler) updateUserProxyAccess(response http.ResponseWriter, request *http.Request) {
+	_, form, ok := h.authorizeProxyMutation(response, request, append([]string{"proxy_id"}, membershipPlanFormFields...)...)
+	if !ok {
+		return
+	}
+	plan, err := parseMembershipPlan(form)
+	if err != nil {
+		http.Error(response, err.Error(), http.StatusBadRequest)
+		return
+	}
+	userID := request.PathValue("user_id")
+	if err := h.proxyNodes.UpdateMembershipPlan(form.Get("proxy_id"), userID, plan); err != nil {
+		handleProxyMutationError(response, err)
+		return
+	}
+	h.triggerProxyUserSync()
+	http.Redirect(response, request, "/users/"+url.PathEscape(userID), http.StatusSeeOther)
+}
+
+func (h *Handler) addProxyNodeUser(response http.ResponseWriter, request *http.Request) {
+	_, form, ok := h.authorizeProxyMutation(response, request, append([]string{"user_id"}, membershipPlanFormFields...)...)
+	if !ok {
+		return
+	}
+	plan, err := parseMembershipPlan(form)
+	if err != nil {
+		http.Error(response, err.Error(), http.StatusBadRequest)
+		return
+	}
+	nodeID := request.PathValue("proxy_id")
+	if _, err := h.proxyNodes.AddMembershipWithPlan(nodeID, form.Get("user_id"), plan); err != nil {
+		handleProxyMutationError(response, err)
+		return
+	}
+	h.triggerProxyUserSync()
+	http.Redirect(response, request, proxyNodeURL(nodeID), http.StatusSeeOther)
+}
+
+func (h *Handler) updateProxyNodeUser(response http.ResponseWriter, request *http.Request) {
+	_, form, ok := h.authorizeProxyMutation(response, request, membershipPlanFormFields...)
+	if !ok {
+		return
+	}
+	plan, err := parseMembershipPlan(form)
+	if err != nil {
+		http.Error(response, err.Error(), http.StatusBadRequest)
+		return
+	}
+	nodeID := request.PathValue("proxy_id")
+	if err := h.proxyNodes.UpdateMembershipPlan(nodeID, request.PathValue("user_id"), plan); err != nil {
+		handleProxyMutationError(response, err)
+		return
+	}
+	h.triggerProxyUserSync()
+	http.Redirect(response, request, proxyNodeURL(nodeID), http.StatusSeeOther)
+}
+
+func (h *Handler) removeProxyNodeUser(response http.ResponseWriter, request *http.Request) {
+	_, _, ok := h.authorizeProxyMutation(response, request)
+	if !ok {
+		return
+	}
+	nodeID := request.PathValue("proxy_id")
+	if err := h.proxyNodes.RemoveMembership(nodeID, request.PathValue("user_id")); err != nil {
+		handleProxyMutationError(response, err)
+		return
+	}
+	h.triggerProxyUserSync()
+	http.Redirect(response, request, proxyNodeURL(nodeID), http.StatusSeeOther)
 }
 
 func (h *Handler) removeUserProxyAccess(response http.ResponseWriter, request *http.Request) {
@@ -876,22 +1072,7 @@ func (h *Handler) removeUserProxyAccess(response http.ResponseWriter, request *h
 		handleProxyMutationError(response, err)
 		return
 	}
-	http.Redirect(response, request, "/users/"+url.PathEscape(userID), http.StatusSeeOther)
-}
-
-func (h *Handler) deployUserProxyAccess(response http.ResponseWriter, request *http.Request) {
-	_, _, ok := h.authorizeProxyMutation(response, request)
-	if !ok {
-		return
-	}
-	userID := request.PathValue("user_id")
-	if _, exists := h.proxyNodes.User(userID); !exists {
-		http.NotFound(response, request)
-		return
-	}
-	if !h.queueProxyDeployment(response) {
-		return
-	}
+	h.triggerProxyUserSync()
 	http.Redirect(response, request, "/users/"+url.PathEscape(userID), http.StatusSeeOther)
 }
 
@@ -905,6 +1086,7 @@ func (h *Handler) renameEndUser(response http.ResponseWriter, request *http.Requ
 		handleProxyMutationError(response, err)
 		return
 	}
+	h.triggerProxyUserSync()
 	http.Redirect(response, request, "/users/"+url.PathEscape(id), http.StatusSeeOther)
 }
 
@@ -921,7 +1103,14 @@ func (h *Handler) deleteEndUser(response http.ResponseWriter, request *http.Requ
 		handleProxyMutationError(response, err)
 		return
 	}
+	h.triggerProxyUserSync()
 	http.Redirect(response, request, "/users", http.StatusSeeOther)
+}
+
+func (h *Handler) triggerProxyUserSync() {
+	if h.proxyUserSync != nil {
+		h.proxyUserSync.TriggerDeployment()
+	}
 }
 
 func (h *Handler) proxyNodeDetail(node proxynode.ProxyNode) *proxyNodeDetailView {
@@ -929,15 +1118,122 @@ func (h *Handler) proxyNodeDetail(node proxynode.ProxyNode) *proxyNodeDetailView
 		ID: node.ID, Name: node.Name, URL: proxyNodeURL(node.ID),
 		EntranceURL: proxyNodeURL(node.ID) + "/entrance", RuleSetsURL: proxyRuleSetsURL(node.ID),
 		Entrance: endpointViewFor(node.Entrance.Endpoint), HopCount: len(node.Hops), LinkCount: len(node.Links), MemberCount: len(node.Memberships),
-		RuleSets: append([]proxynode.CustomRuleSet(nil), node.RuleSets...),
+		RuleSets:    append([]proxynode.CustomRuleSet(nil), node.RuleSets...),
+		DefaultPlan: defaultMembershipPlanView(),
 	}
 	if entrance, ok := proxyHop(node, node.Entrance.HopID); ok {
+		detail.Entrance = endpointViewForAgent(node.Entrance.Endpoint, entrance.AgentID)
 		detail.EntranceHopURL = proxyHopURL(node.ID, entrance.ID)
 		detail.EntranceFallback = targetLabel(node, entrance.Final)
 	}
 	detail.Tree, detail.TerminalCount, detail.UnusedLinkCount = buildProxyTree(node)
 	h.attachProxyTreeControls(node, detail.Tree)
 	return detail
+}
+
+func defaultMembershipPlanView() membershipPlanView {
+	return membershipPlanView{QuotaMode: "unlimited", ExpirationMode: "none", SubscriptionMonths: "1"}
+}
+
+func (h *Handler) attachProxyNodeUsers(detail *proxyNodeDetailView, node proxynode.ProxyNode, users []proxynode.User) {
+	assigned := make(map[string]proxynode.Membership, len(node.Memberships))
+	for _, membership := range node.Memberships {
+		assigned[membership.UserID] = membership
+	}
+	for _, user := range users {
+		membership, exists := assigned[user.ID]
+		if !exists {
+			detail.AvailableUsers = append(detail.AvailableUsers, nodeUserOptionView{UserID: user.ID, Label: user.Name})
+			continue
+		}
+		detail.UserAccess = append(detail.UserAccess, nodeUserAccessView{
+			UserID: user.ID, Name: user.Name, URL: "/users/" + url.PathEscape(user.ID),
+			Plan: membershipPlanViewFor(membership),
+		})
+	}
+	sort.Slice(detail.UserAccess, func(left, right int) bool {
+		return strings.ToLower(detail.UserAccess[left].Name) < strings.ToLower(detail.UserAccess[right].Name)
+	})
+	sort.Slice(detail.AvailableUsers, func(left, right int) bool {
+		return strings.ToLower(detail.AvailableUsers[left].Label) < strings.ToLower(detail.AvailableUsers[right].Label)
+	})
+}
+
+func membershipPlanViewFor(membership proxynode.Membership) membershipPlanView {
+	view := membershipPlanView{
+		QuotaMode: "unlimited", QuotaLabel: "Unlimited", UsageLabel: formatByteCount(membership.UsedBytes),
+		ExpirationMode: "none", SubscriptionMonths: "1",
+		ResetLabel:      membership.QuotaResetsAfter.Format("Jan 2, 2006") + " (UTC)",
+		ExpirationLabel: "No expiration", StatusLabel: "Active", StatusClass: "active",
+	}
+	if membership.MonthlyQuotaBytes > 0 {
+		view.QuotaMode = "limited"
+		view.QuotaGiB = strconv.FormatUint(membership.MonthlyQuotaBytes/(1<<30), 10)
+		if view.QuotaGiB == "0" {
+			view.QuotaGiB = "1"
+		}
+		view.QuotaLabel = formatByteCount(membership.MonthlyQuotaBytes) + " / month"
+	}
+	if !membership.SubscriptionEndsAfter.IsZero() {
+		view.ExpirationMode = "months"
+		view.SubscriptionMonths = strconv.Itoa(membership.SubscriptionMonths)
+		view.ExpirationLabel = "After " + membership.SubscriptionEndsAfter.Format("Jan 2, 2006") + " (UTC)"
+	}
+	switch membership.DisabledReason {
+	case proxynode.MembershipQuotaReached:
+		view.StatusLabel, view.StatusClass = "Quota reached", "warning"
+	case proxynode.MembershipExpired:
+		view.StatusLabel, view.StatusClass = "Expired", "disabled"
+	}
+	return view
+}
+
+func parseMembershipPlan(form url.Values) (proxynode.MembershipPlan, error) {
+	var plan proxynode.MembershipPlan
+	switch form.Get("quota_mode") {
+	case "unlimited":
+	case "limited":
+		gib, err := strconv.ParseUint(strings.TrimSpace(form.Get("monthly_quota_gib")), 10, 32)
+		if err != nil || gib == 0 || gib > 1_000_000 {
+			return plan, errors.New("monthly quota must be between 1 and 1,000,000 GiB")
+		}
+		plan.MonthlyQuotaBytes = gib << 30
+	default:
+		return plan, errors.New("quota mode is invalid")
+	}
+	switch form.Get("expiration_mode") {
+	case "none":
+	case "months":
+		months, err := strconv.Atoi(strings.TrimSpace(form.Get("subscription_months")))
+		if err != nil || months < 1 || months > 1200 {
+			return plan, errors.New("subscription must be between 1 and 1200 months")
+		}
+		plan.SubscriptionMonths = months
+	default:
+		return plan, errors.New("expiration mode is invalid")
+	}
+	return plan, nil
+}
+
+func formatByteCount(value uint64) string {
+	const (
+		kib = uint64(1 << 10)
+		mib = uint64(1 << 20)
+		gib = uint64(1 << 30)
+		tib = uint64(1 << 40)
+	)
+	switch {
+	case value >= tib:
+		return fmt.Sprintf("%.2f TiB", float64(value)/float64(tib))
+	case value >= gib:
+		return fmt.Sprintf("%.2f GiB", float64(value)/float64(gib))
+	case value >= mib:
+		return fmt.Sprintf("%.2f MiB", float64(value)/float64(mib))
+	case value >= kib:
+		return fmt.Sprintf("%.2f KiB", float64(value)/float64(kib))
+	default:
+		return fmt.Sprintf("%d B", value)
+	}
 }
 
 func (h *Handler) attachProxyTreeControls(node proxynode.ProxyNode, tree *proxyTreeHopView) {
@@ -1012,11 +1308,12 @@ func buildProxyTree(node proxynode.ProxyNode) (*proxyTreeHopView, int, int) {
 			}
 			if includeDetails {
 				child := visit(link.ChildHopID, &link, proxyTreeConstraint{}, true)
+				childAgent := hops[link.ChildHopID].AgentID
 				ruleViews := proxyRuleViews(link.Rules, totalRules)
 				view.Children = append(view.Children, proxyTreeLinkView{
 					ID: link.ID, ParentHopID: link.ParentHopID, EditURL: proxyLinkURL(node.ID, link.ID), Protocol: protocolLabel(link.Endpoint.Protocol),
 					ListenPort: link.Endpoint.ListenPort, Listener: listenEndpointLabel(link.Endpoint.Listen, link.Endpoint.ListenPort),
-					Family: relayFamilyLabel(link.Endpoint.Family), Order: index + 1, Endpoint: endpointViewFor(link.Endpoint),
+					Family: relayFamilyLabel(link.Endpoint.Family), Order: index + 1, Endpoint: endpointViewForAgent(link.Endpoint, childAgent),
 					Rules: ruleViews, NewRule: proxyRuleView{Match: string(proxynode.MatchProtocol)}, Used: used,
 					Fallback: link.Fallback, CanMoveUp: index > 0 && !link.Fallback,
 					CanMoveDown: index+1 < len(children[hopID]) && !children[hopID][index+1].Fallback, Child: child,
@@ -1320,16 +1617,57 @@ func endpointViewFor(endpoint proxynode.Endpoint) endpointView {
 	return view
 }
 
+func endpointViewForAgent(endpoint proxynode.Endpoint, agentID string) endpointView {
+	view := endpointViewFor(endpoint)
+	view.AgentID = agentID
+	view.ListenerID = proxynode.ListenerPresetID(agentID, endpoint)
+	return view
+}
+
+func (h *Handler) proxyListenerOptions() []listenerOptionView {
+	if h.proxyNodes == nil {
+		return nil
+	}
+	presets := proxynode.ListenerPresets(h.proxyNodes.Snapshot())
+	options := make([]listenerOptionView, 0, len(presets))
+	for _, preset := range presets {
+		endpoint := preset.Endpoint
+		view := listenerOptionView{
+			ID: preset.ID, AgentID: preset.AgentID, Protocol: string(endpoint.Protocol),
+			ProtocolLabel: protocolLabel(endpoint.Protocol), Listen: endpoint.Listen,
+			ListenPort: endpoint.ListenPort, Method: endpoint.Method,
+			TLSMode: string(endpoint.TLS.Mode), ServerName: endpoint.TLS.ServerName,
+			Email: endpoint.TLS.Email, CertificatePath: endpoint.TLS.CertificatePath,
+			KeyPath: endpoint.TLS.KeyPath, UpMbps: endpoint.UpMbps, DownMbps: endpoint.DownMbps,
+			ObfsType: endpoint.ObfsType, ReferenceCount: preset.ReferenceCount,
+		}
+		if endpoint.Multiplex != nil {
+			view.MuxPadding = endpoint.Multiplex.Padding
+			if endpoint.Multiplex.Brutal != nil {
+				view.MuxBrutal = endpoint.Multiplex.Brutal.Enabled
+				view.MuxBrutalUp = endpoint.Multiplex.Brutal.UpMbps
+				view.MuxBrutalDown = endpoint.Multiplex.Brutal.DownMbps
+			}
+		}
+		view.Label = fmt.Sprintf("%s · %s:%d · %d reference", view.ProtocolLabel, endpoint.Listen, endpoint.ListenPort, preset.ReferenceCount)
+		if preset.ReferenceCount != 1 {
+			view.Label += "s"
+		}
+		options = append(options, view)
+	}
+	return options
+}
+
 func defaultEndpointView() endpointView {
 	return endpointView{Protocol: string(proxynode.ProtocolAnyTLS), Listen: "::", ListenPort: 443, Family: "auto", Method: "2022-blake3-aes-128-gcm", TLSMode: string(proxynode.TLSModeSelfSigned)}
 }
 
 func parseMultiplexForm(form url.Values) (*proxynode.MultiplexConfig, error) {
 	enabled, err := parseBinaryChoice(form.Get("mux_enabled"), "multiplex")
-	if err != nil || !enabled {
+	if err != nil {
 		return nil, err
 	}
-	config := &proxynode.MultiplexConfig{Enabled: true}
+	config := &proxynode.MultiplexConfig{Enabled: enabled}
 	config.Padding, err = parseBinaryChoice(form.Get("mux_padding"), "multiplex padding")
 	if err != nil {
 		return nil, err
@@ -1339,6 +1677,9 @@ func parseMultiplexForm(form url.Values) (*proxynode.MultiplexConfig, error) {
 		return nil, err
 	}
 	if !brutal {
+		if !config.Enabled && !config.Padding {
+			return nil, nil
+		}
 		return config, nil
 	}
 	up, err := optionalPositiveInt(form.Get("mux_brutal_up_mbps"))

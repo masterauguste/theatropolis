@@ -5,6 +5,7 @@ import (
 	"context"
 	"crypto/ed25519"
 	"crypto/rand"
+	"crypto/sha256"
 	"errors"
 	"io"
 	"log/slog"
@@ -15,6 +16,7 @@ import (
 	controlv1 "github.com/masterauguste/theatropolis/api/gen/theatropolis/control/v1"
 	"github.com/masterauguste/theatropolis/internal/deployment"
 	"github.com/masterauguste/theatropolis/internal/identity"
+	"github.com/masterauguste/theatropolis/internal/singbox"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 )
@@ -335,6 +337,99 @@ func TestMasterBoundsAgentDiagnostic(t *testing.T) {
 	}
 }
 
+func TestManagedUserTrafficReportRequiresCapabilityAndMapsAuthenticatedAgent(t *testing.T) {
+	t.Parallel()
+	server := newTestServer(deployment.NewMemoryStore(), nil)
+	const agentID = "edge-traffic"
+	session := newSession(agentID)
+	session.capabilities[ManagedUserTrafficCapability] = struct{}{}
+	if err := server.Sessions.Register(session); err != nil {
+		t.Fatal(err)
+	}
+	defer server.Sessions.Unregister(session)
+
+	called := false
+	server.SetManagedUserTrafficHandler(func(gotAgent, epoch string, _ time.Time, users []ManagedUserTraffic, delta bool) (bool, error) {
+		called = true
+		if gotAgent != agentID || epoch != "process-1" || delta || len(users) != 1 ||
+			users[0].InboundPath != "/tp-in-0123456789abcdef" || users[0].Username != "cinema-alice" ||
+			users[0].UplinkBytes != 10 || users[0].DownlinkBytes != 20 {
+			t.Fatalf("mapped traffic = agent=%q epoch=%q users=%#v", gotAgent, epoch, users)
+		}
+		return false, nil
+	})
+	err := server.handleAgentFrame(context.Background(), agentID, &controlv1.AgentFrame{
+		Payload: &controlv1.AgentFrame_ManagedUserTrafficReport{ManagedUserTrafficReport: &controlv1.ManagedUserTrafficReport{
+			Epoch: "process-1", ObservedAtUnix: time.Now().Unix(),
+			Users: []*controlv1.ManagedUserTraffic{{
+				InboundPath: "/tp-in-0123456789abcdef", Username: "cinema-alice",
+				UplinkBytes: 10, DownlinkBytes: 20,
+			}},
+		}},
+	})
+	if err != nil || !called {
+		t.Fatalf("handleAgentFrame() error=%v called=%v", err, called)
+	}
+	select {
+	case frame := <-session.commands:
+		ack := frame.GetManagedUserTrafficAck()
+		if ack.GetEpoch() != "process-1" || len(ack.GetUsers()) != 1 || ack.GetUsers()[0].GetUplinkBytes() != 10 {
+			t.Fatalf("traffic acknowledgement = %#v", ack)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("master did not acknowledge persisted traffic")
+	}
+}
+
+func TestManagedUserAuthorityUsesIndependentRequestReportPath(t *testing.T) {
+	t.Parallel()
+	server := newTestServer(deployment.NewMemoryStore(), nil)
+	const agentID = "edge-users"
+	session := newSession(agentID)
+	session.capabilities[ManagedUserAuthorityCapability] = struct{}{}
+	if err := server.Sessions.Register(session); err != nil {
+		t.Fatal(err)
+	}
+	defer server.Sessions.Unregister(session)
+	digest := sha256.Sum256([]byte("topology"))
+	result := make(chan error, 1)
+	go func() {
+		result <- server.QueueManagedUserAuthority(context.Background(), agentID, 7, []singbox.ManagedUserAuthorityVariant{{
+			TopologySHA256: digest,
+		}})
+	}()
+	var request *controlv1.ManagedUserAuthorityCommand
+	select {
+	case frame := <-session.commands:
+		request = frame.GetManagedUserAuthority()
+		if request.GetUserRevision() != 7 || len(request.GetVariants()) != 1 ||
+			!bytes.Equal(request.GetVariants()[0].GetTopologySha256(), digest[:]) {
+			t.Fatalf("managed-user authority command = %#v", request)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("managed-user authority command was not queued")
+	}
+	if err := server.handleAgentFrame(context.Background(), agentID, &controlv1.AgentFrame{
+		Payload: &controlv1.AgentFrame_ManagedUserAuthorityReport{
+			ManagedUserAuthorityReport: &controlv1.ManagedUserAuthorityReport{
+				RequestId: request.GetRequestId(), UserRevision: 7,
+				Status:          controlv1.ManagedUserAuthorityStatus_MANAGED_USER_AUTHORITY_STATUS_APPLIED,
+				CompletedAtUnix: time.Now().Unix(),
+			},
+		},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case err := <-result:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("managed-user authority request did not accept its report")
+	}
+}
+
 func TestQueueDeploymentRequiresCapabilityAndAppliesMatchingReport(t *testing.T) {
 	t.Parallel()
 
@@ -400,6 +495,44 @@ func TestQueueDeploymentRequiresCapabilityAndAppliesMatchingReport(t *testing.T)
 	if len(notifier.events) != 1 ||
 		notifier.events[0].Deployment.Status != deployment.StatusApplied {
 		t.Fatalf("deployment notifications = %+v", notifier.events)
+	}
+}
+
+func TestTopologyDeploymentRecordsAgentMaterializedDigest(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	store := deployment.NewMemoryStore()
+	server := newTestServer(store, nil)
+	const agentID = "edge-materialized"
+	enrollTestIdentity(t, server.Identities, agentID)
+	session := newSession(agentID)
+	session.capabilities[ProxyNodeDeployCapability] = struct{}{}
+	if err := server.Sessions.Register(session); err != nil {
+		t.Fatal(err)
+	}
+	defer server.Sessions.Unregister(session)
+	record, err := server.QueueDeployment(
+		ctx, agentID, "deployment-materialized",
+		deployment.ProxyNodeTopologyRevisionPrefix+"revision", []byte(`{"inbounds":[]}`), time.Second,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	<-session.commands
+	effective := sha256.Sum256([]byte(`{"inbounds":[],"filtered":true}`))
+	if err := server.handleDeploymentReport(ctx, agentID, &controlv1.ConfigDeploymentReport{
+		DeploymentId: record.ID, RevisionId: record.RevisionID, ConfigSha256: effective[:],
+		Status: controlv1.ConfigDeploymentStatus_CONFIG_DEPLOYMENT_STATUS_APPLIED,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	stored, err := store.Get(ctx, record.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stored.Status != deployment.StatusApplied || stored.RenderedDigest() != effective ||
+		stored.LastAppliedRenderedSHA256 != effective {
+		t.Fatalf("materialized deployment = %#v", stored)
 	}
 }
 
@@ -476,7 +609,7 @@ func TestQueueSingBoxUpdateSupportsExactPrerelease(t *testing.T) {
 	server := newTestServer(deployment.NewMemoryStore(), nil)
 	const agentID = "edge-sing-box-update"
 	const requestID = "singbox_0123456789abcdef"
-	const targetVersion = "v1.14.0-rc.1"
+	const targetVersion = "v1.14.0-rc.1.theatropolis.1"
 	enrollTestIdentity(t, server.Identities, agentID)
 	session := newSession(agentID)
 	session.capabilities[SingBoxUpdateCapability] = struct{}{}

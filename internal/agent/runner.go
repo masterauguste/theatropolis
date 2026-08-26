@@ -3,19 +3,23 @@ package agent
 import (
 	"context"
 	"crypto/ed25519"
+	"crypto/rand"
 	"crypto/sha256"
+	"encoding/base64"
 	"errors"
 	"fmt"
 	"io"
 	"log/slog"
 	"net/netip"
 	"runtime"
+	"slices"
 	"strings"
 	"time"
 
 	controlv1 "github.com/masterauguste/theatropolis/api/gen/theatropolis/control/v1"
 	"github.com/masterauguste/theatropolis/internal/agentupdate"
 	"github.com/masterauguste/theatropolis/internal/control"
+	"github.com/masterauguste/theatropolis/internal/deployment"
 	"github.com/masterauguste/theatropolis/internal/identity"
 	"github.com/masterauguste/theatropolis/internal/singbox"
 	"github.com/masterauguste/theatropolis/internal/singboxupdate"
@@ -29,6 +33,7 @@ const (
 	reconnectMinBackoff    = time.Second
 	reconnectMaxBackoff    = 30 * time.Second
 	defaultHeartbeatPeriod = 20 * time.Second
+	defaultTrafficPeriod   = 15 * time.Second
 )
 
 type ConfigurationManager interface {
@@ -37,6 +42,18 @@ type ConfigurationManager interface {
 	Apply(context.Context, []byte, []byte) (singbox.ApplyResult, error)
 	Stop(context.Context) error
 	Events() <-chan singbox.RuntimeEvent
+}
+
+type managedUserTrafficCollector interface {
+	ManagedUserTraffic(context.Context) (singbox.ManagedUserTrafficSnapshot, error)
+}
+
+type managedUserAuthorityManager interface {
+	ApplyManagedUserAuthority(context.Context, uint64, []singbox.ManagedUserAuthorityVariant) (singbox.ApplyResult, error)
+}
+
+type classifiedConfigurationManager interface {
+	ApplyWithMode(context.Context, []byte, []byte, singbox.ApplyMode) (singbox.ApplyResult, error)
 }
 
 type Runner struct {
@@ -178,6 +195,21 @@ func (r *Runner) runControlSession(
 			control.ProxyNodeDeployCapability,
 		)
 	}
+	trafficCollector, reportsTraffic := r.Manager.(managedUserTrafficCollector)
+	if reportsTraffic {
+		hello.Capabilities = append(
+			hello.Capabilities,
+			// Retain the cumulative capability during the rolling transition so
+			// an older master can consume uniquely-epoched reset batches safely.
+			control.ManagedUserTrafficCapability,
+			control.ManagedUserTrafficDeltaCapability,
+			control.ManagedUserTrafficRequestCapability,
+		)
+	}
+	_, managesUserAuthority := r.Manager.(managedUserAuthorityManager)
+	if managesUserAuthority {
+		hello.Capabilities = append(hello.Capabilities, control.ManagedUserAuthorityCapability)
+	}
 	if r.Updater != nil {
 		hello.Capabilities = append(
 			hello.Capabilities,
@@ -278,6 +310,18 @@ func (r *Runner) runControlSession(
 	if prober == nil {
 		prober = &ProbeScheduler{}
 	}
+	var trafficTicker *time.Ticker
+	var trafficTicks <-chan time.Time
+	trafficReports := make(chan trafficCollectionResult, 1)
+	trafficCollecting := false
+	trafficRequestIDs := make([]string, 0, 1)
+	if reportsTraffic {
+		trafficTicker = time.NewTicker(defaultTrafficPeriod)
+		defer trafficTicker.Stop()
+		trafficTicks = trafficTicker.C
+		trafficCollecting = true
+		go collectManagedUserTraffic(sessionContext, trafficCollector, trafficReports)
+	}
 	for {
 		select {
 		case <-ctx.Done():
@@ -344,6 +388,41 @@ func (r *Runner) runControlSession(
 						},
 					}
 				}
+			case *controlv1.MasterFrame_ManagedUserAuthority:
+				manager, ok := r.Manager.(managedUserAuthorityManager)
+				if !ok {
+					return errors.New("master sent managed-user authority to an incompatible agent")
+				}
+				response.Payload = &controlv1.AgentFrame_ManagedUserAuthorityReport{
+					ManagedUserAuthorityReport: r.applyManagedUserAuthority(
+						ctx, manager, command.ManagedUserAuthority,
+					),
+				}
+			case *controlv1.MasterFrame_ManagedUserTrafficAck:
+				// Older masters acknowledge cumulative reports. Reset-delta Agents
+				// have no local accounting state to prune, so this is intentionally
+				// a compatibility no-op.
+			case *controlv1.MasterFrame_ManagedUserTrafficRequest:
+				if !reportsTraffic {
+					return errors.New("master requested managed-user traffic from an incompatible agent")
+				}
+				requestID := strings.TrimSpace(command.ManagedUserTrafficRequest.GetRequestId())
+				if requestID == "" || len(requestID) > 128 || strings.ContainsRune(requestID, '\x00') {
+					return errors.New("master sent an invalid managed-user traffic request")
+				}
+				if !slices.Contains(trafficRequestIDs, requestID) {
+					if len(trafficRequestIDs) >= control.DefaultCommandQueue {
+						// A slow fleet-wide sample can outlive a master's request
+						// timeout. Retain the newest bounded set instead of letting
+						// stale correlation IDs tear down the control stream.
+						trafficRequestIDs = trafficRequestIDs[1:]
+					}
+					trafficRequestIDs = append(trafficRequestIDs, requestID)
+				}
+				if !trafficCollecting {
+					trafficCollecting = true
+					go collectManagedUserTraffic(sessionContext, trafficCollector, trafficReports)
+				}
 			default:
 				return errors.New("master sent an unsupported command")
 			}
@@ -362,6 +441,90 @@ func (r *Runner) runControlSession(
 				},
 			}); err != nil {
 				return fmt.Errorf("send address probe report: %w", err)
+			}
+		case <-trafficTicks:
+			if !trafficCollecting {
+				trafficCollecting = true
+				go collectManagedUserTraffic(sessionContext, trafficCollector, trafficReports)
+			}
+		case report := <-trafficReports:
+			trafficCollecting = false
+			requestIDs := trafficRequestIDs
+			trafficRequestIDs = make([]string, 0, 1)
+			users := make([]*controlv1.ManagedUserTraffic, 0, len(report.snapshot.Users))
+			for _, usage := range report.snapshot.Users {
+				users = append(users, &controlv1.ManagedUserTraffic{
+					InboundPath: usage.InboundPath, Username: usage.Username,
+					UplinkBytes: usage.UplinkBytes, DownlinkBytes: usage.DownlinkBytes,
+				})
+			}
+			successfulEndpoints := report.snapshot.SuccessfulEndpoints
+			if successfulEndpoints == 0 && report.err == nil && len(users) > 0 {
+				// Compatibility for traffic collectors compiled against the earlier
+				// snapshot shape and for small test doubles.
+				successfulEndpoints = 1
+			}
+			partial := report.err != nil && successfulEndpoints > 0
+			dataReady := partial || (report.err == nil && (successfulEndpoints > 0 || len(requestIDs) > 0))
+			batchID := ""
+			if dataReady {
+				var batchErr error
+				batchID, batchErr = newTrafficBatchID()
+				if batchErr != nil {
+					slog.Warn("identify managed-user traffic batch", "error", batchErr)
+					report.err = batchErr
+					dataReady = false
+				}
+			}
+			sendTrafficReport := func(trafficReport *controlv1.ManagedUserTrafficReport) error {
+				agentSequence++
+				if err := stream.Send(&controlv1.AgentFrame{
+					Sequence: agentSequence,
+					Payload: &controlv1.AgentFrame_ManagedUserTrafficReport{
+						ManagedUserTrafficReport: trafficReport,
+					},
+				}); err != nil {
+					return err
+				}
+				return nil
+			}
+			if dataReady {
+				dataRequestIDs := requestIDs
+				if partial {
+					// Persist every successfully reset entrance before reporting the
+					// partial failure to the correlated request.
+					dataRequestIDs = []string{""}
+				} else if len(dataRequestIDs) == 0 {
+					dataRequestIDs = []string{""}
+				}
+				for index, requestID := range dataRequestIDs {
+					trafficReport := &controlv1.ManagedUserTrafficReport{
+						Epoch: batchID, ObservedAtUnix: r.now().Unix(), RequestId: requestID,
+					}
+					// A collection may satisfy several coalesced master requests. Send
+					// its deltas exactly once; later reports only complete their waiters.
+					if index == 0 {
+						trafficReport.Users = users
+					}
+					if err := sendTrafficReport(trafficReport); err != nil {
+						return fmt.Errorf("send managed-user traffic report: %w", err)
+					}
+				}
+			}
+			if report.err != nil {
+				slog.Warn("collect managed-user traffic", "error", report.err)
+				failureRequestIDs := requestIDs
+				if len(failureRequestIDs) == 0 {
+					failureRequestIDs = []string{""}
+				}
+				for _, requestID := range failureRequestIDs {
+					if err := sendTrafficReport(&controlv1.ManagedUserTrafficReport{
+						ObservedAtUnix: r.now().Unix(), RequestId: requestID,
+						Diagnostic: "managed-user traffic collection failed",
+					}); err != nil {
+						return fmt.Errorf("send managed-user traffic failure: %w", err)
+					}
+				}
 			}
 		case <-updateTicks:
 			if err := r.sendPendingUpdateResult(
@@ -416,6 +579,101 @@ func (r *Runner) runControlSession(
 				return fmt.Errorf("send sing-box runtime report: %w", err)
 			}
 		}
+	}
+}
+
+func (r *Runner) applyManagedUserAuthority(
+	ctx context.Context,
+	manager managedUserAuthorityManager,
+	command *controlv1.ManagedUserAuthorityCommand,
+) *controlv1.ManagedUserAuthorityReport {
+	report := &controlv1.ManagedUserAuthorityReport{
+		Status:          controlv1.ManagedUserAuthorityStatus_MANAGED_USER_AUTHORITY_STATUS_INTERNAL_ERROR,
+		CompletedAtUnix: r.now().Unix(),
+	}
+	if command == nil {
+		report.Diagnostic = "master sent an invalid managed-user authority command"
+		return report
+	}
+	report.RequestId = command.GetRequestId()
+	report.UserRevision = command.GetUserRevision()
+	if strings.TrimSpace(report.RequestId) == "" || report.UserRevision == 0 || len(command.GetVariants()) == 0 {
+		report.Status = controlv1.ManagedUserAuthorityStatus_MANAGED_USER_AUTHORITY_STATUS_INVALID
+		report.Diagnostic = "master sent an invalid managed-user authority command"
+		return report
+	}
+	variants := make([]singbox.ManagedUserAuthorityVariant, 0, len(command.GetVariants()))
+	for _, rawVariant := range command.GetVariants() {
+		if rawVariant == nil || len(rawVariant.GetTopologySha256()) != sha256.Size {
+			report.Status = controlv1.ManagedUserAuthorityStatus_MANAGED_USER_AUTHORITY_STATUS_INVALID
+			report.Diagnostic = "master sent an invalid managed-user authority variant"
+			return report
+		}
+		variant := singbox.ManagedUserAuthorityVariant{}
+		copy(variant.TopologySHA256[:], rawVariant.GetTopologySha256())
+		for _, rawEndpoint := range rawVariant.GetEndpoints() {
+			if rawEndpoint == nil {
+				report.Status = controlv1.ManagedUserAuthorityStatus_MANAGED_USER_AUTHORITY_STATUS_INVALID
+				report.Diagnostic = "master sent an invalid managed-user authority endpoint"
+				return report
+			}
+			endpoint := singbox.ManagedUserAuthorityEndpoint{Path: rawEndpoint.GetInboundPath()}
+			for _, rawUser := range rawEndpoint.GetUsers() {
+				if rawUser == nil {
+					report.Status = controlv1.ManagedUserAuthorityStatus_MANAGED_USER_AUTHORITY_STATUS_INVALID
+					report.Diagnostic = "master sent an invalid managed-user authority user"
+					return report
+				}
+				endpoint.Users = append(endpoint.Users, singbox.ManagedUserAuthorityUser{
+					Username: rawUser.GetUsername(), Password: rawUser.GetPassword(),
+				})
+			}
+			variant.Endpoints = append(variant.Endpoints, endpoint)
+		}
+		variants = append(variants, variant)
+	}
+	applyContext, cancel := context.WithTimeout(ctx, MaxValidationPeriod)
+	defer cancel()
+	result, err := manager.ApplyManagedUserAuthority(applyContext, report.UserRevision, variants)
+	report.CompletedAtUnix = r.now().Unix()
+	if err != nil {
+		report.Diagnostic = "agent could not apply managed-user authority"
+		return report
+	}
+	report.Diagnostic = result.Diagnostic
+	switch result.Status {
+	case singbox.ApplyStatusApplied:
+		report.Status = controlv1.ManagedUserAuthorityStatus_MANAGED_USER_AUTHORITY_STATUS_APPLIED
+	case singbox.ApplyStatusValidationFailed:
+		report.Status = controlv1.ManagedUserAuthorityStatus_MANAGED_USER_AUTHORITY_STATUS_INVALID
+	default:
+		report.Status = controlv1.ManagedUserAuthorityStatus_MANAGED_USER_AUTHORITY_STATUS_INTERNAL_ERROR
+	}
+	return report
+}
+
+type trafficCollectionResult struct {
+	snapshot singbox.ManagedUserTrafficSnapshot
+	err      error
+}
+
+func newTrafficBatchID() (string, error) {
+	var value [18]byte
+	if _, err := rand.Read(value[:]); err != nil {
+		return "", fmt.Errorf("generate traffic batch identity: %w", err)
+	}
+	return base64.RawURLEncoding.EncodeToString(value[:]), nil
+}
+
+func collectManagedUserTraffic(
+	ctx context.Context,
+	collector managedUserTrafficCollector,
+	out chan<- trafficCollectionResult,
+) {
+	snapshot, err := collector.ManagedUserTraffic(ctx)
+	select {
+	case out <- trafficCollectionResult{snapshot: snapshot, err: err}:
+	case <-ctx.Done():
 	}
 }
 
@@ -723,14 +981,30 @@ func (r *Runner) deployConfiguration(
 	}
 	applyContext, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
-	result, err := r.Manager.Apply(
-		applyContext,
-		command.GetConfigJson(),
-		command.GetConfigSha256(),
-	)
+	var result singbox.ApplyResult
+	var err error
+	if manager, ok := r.Manager.(classifiedConfigurationManager); ok {
+		mode := singbox.ApplyModeGeneric
+		switch deployment.ClassifyRevision(command.GetRevisionId()) {
+		case deployment.RevisionPlaneProxyNodeTopology:
+			mode = singbox.ApplyModeProxyNodeTopology
+		case deployment.RevisionPlaneProxyNodeUsers:
+			mode = singbox.ApplyModeProxyNodeUsers
+		}
+		result, err = manager.ApplyWithMode(
+			applyContext, command.GetConfigJson(), command.GetConfigSha256(), mode,
+		)
+	} else {
+		result, err = r.Manager.Apply(
+			applyContext, command.GetConfigJson(), command.GetConfigSha256(),
+		)
+	}
 	completed := r.now()
 	report.CompletedAtUnix = completed.Unix()
 	report.DurationMilliseconds = uint64(max(0, completed.Sub(started).Milliseconds()))
+	if result.ConfigSHA256 != ([sha256.Size]byte{}) {
+		report.ConfigSha256 = append(report.ConfigSha256[:0], result.ConfigSHA256[:]...)
+	}
 	if err != nil {
 		report.Diagnostic = "agent could not complete the configuration deployment"
 		return report

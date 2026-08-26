@@ -64,5 +64,6 @@ func (s *Server) syncObservedAddress(ctx context.Context, agentID, addr string) 
 	}
 	if changed {
 		s.propagatePoolChange(ctx, "observed address changed", agentID)
+		s.notifyProxyNodeAddressChange()
 	}
 }

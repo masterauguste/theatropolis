@@ -74,26 +74,42 @@ func TestGitHubReleaseCatalogOmitsTagsWithoutCompleteBinaryAssets(t *testing.T) 
 	}
 }
 
-func TestSingBoxCatalogIncludesOnlyCompleteStableAndRCBuilds(t *testing.T) {
+func TestSingBoxCatalogIncludesOnlyCompleteManagedUserBuilds(t *testing.T) {
 	t.Parallel()
-	server := httptest.NewServer(http.HandlerFunc(func(response http.ResponseWriter, _ *http.Request) {
-		fmt.Fprint(response, `[
+	var server *httptest.Server
+	server = httptest.NewServer(http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {
+		switch request.URL.Path {
+		case "/manifest-rc":
+			fmt.Fprint(response, `{"schema_version":2,"release":{"tag":"v1.14.0-rc.1.theatropolis.1","version":"1.14.0-rc.1.theatropolis.1"},"patchset":{"capabilities":["managed-users-v1","anytls-live-users","hysteria2-live-users","session-revocation-v1"]},"build":{"tags":["with_v2ray_api","with_theatropolis_managed_users"]}}`)
+			return
+		case "/manifest-stable":
+			fmt.Fprint(response, `{"schema_version":2,"release":{"tag":"v1.14.0-theatropolis.2","version":"1.14.0-theatropolis.2"},"patchset":{"capabilities":["managed-users-v1","anytls-live-users","hysteria2-live-users","session-revocation-v1","traffic-reset-v1"]},"build":{"tags":["with_v2ray_api","with_theatropolis_managed_users"]}}`)
+			return
+		}
+		fmt.Fprintf(response, `[
 			{"tag_name":"v1.14.0-alpha.50","prerelease":true,"assets":[]},
 			{"tag_name":"v1.14.0-beta.2","prerelease":true,"assets":[]},
-			{"tag_name":"v1.14.0-rc.2","prerelease":true,"assets":[
+			{"tag_name":"v1.14.0-rc.2.theatropolis.1","prerelease":true,"assets":[
 				{"name":"checksums.txt"}]},
-			{"tag_name":"v1.14.0-rc.1","prerelease":true,"assets":[
+			{"tag_name":"v1.14.0-rc.1.theatropolis.1","prerelease":true,"assets":[
+				{"name":"build-manifest.json","browser_download_url":%q},
 				{"name":"checksums.txt"},
 				{"name":"checksums.txt.sig"},
-				{"name":"sing-box-1.14.0-rc.1-linux-amd64.tar.gz"},
-				{"name":"sing-box-1.14.0-rc.1-linux-arm64.tar.gz"}]},
+				{"name":"sing-box-1.14.0-rc.1.theatropolis.1-linux-amd64.tar.gz"},
+				{"name":"sing-box-1.14.0-rc.1.theatropolis.1-linux-arm64.tar.gz"}]},
+			{"tag_name":"v1.14.0-theatropolis.2","assets":[
+				{"name":"build-manifest.json","browser_download_url":%q},
+				{"name":"checksums.txt"},
+				{"name":"checksums.txt.sig"},
+				{"name":"sing-box-1.14.0-theatropolis.2-linux-amd64.tar.gz"},
+				{"name":"sing-box-1.14.0-theatropolis.2-linux-arm64.tar.gz"}]},
 			{"tag_name":"v1.14.0","assets":[
 				{"name":"checksums.txt"},
 				{"name":"checksums.txt.sig"},
 				{"name":"sing-box-1.14.0-linux-amd64.tar.gz"},
 				{"name":"sing-box-1.14.0-linux-arm64.tar.gz"}]},
 			{"tag_name":"v1.13.12","assets":[]}
-		]`)
+		]`, server.URL+"/manifest-rc", server.URL+"/manifest-stable")
 	}))
 	defer server.Close()
 	catalog := NewSingBoxReleaseCatalog(server.Client())
@@ -102,13 +118,29 @@ func TestSingBoxCatalogIncludesOnlyCompleteStableAndRCBuilds(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := []string{"v1.14.0", "v1.14.0-rc.1"}
+	want := []string{"v1.14.0-theatropolis.2"}
 	if len(releases) != len(want) {
 		t.Fatalf("releases = %+v, want %v", releases, want)
 	}
 	for index, tag := range want {
 		if releases[index].Tag != tag {
 			t.Fatalf("release %d = %q, want %q", index, releases[index].Tag, tag)
+		}
+	}
+}
+
+func TestManagedSingBoxVersionsSortByUpstreamThenPatchRevision(t *testing.T) {
+	t.Parallel()
+	for _, test := range []struct {
+		left  string
+		right string
+	}{
+		{"v1.14.0-rc.1.theatropolis.10", "v1.14.0-rc.1.theatropolis.2"},
+		{"v1.14.0-theatropolis.1", "v1.14.0-rc.9.theatropolis.99"},
+		{"v1.14.1-rc.1.theatropolis.1", "v1.14.0-theatropolis.99"},
+	} {
+		if compareVersionTags(test.left, test.right) <= 0 {
+			t.Errorf("compareVersionTags(%q, %q) did not rank left newer", test.left, test.right)
 		}
 	}
 }

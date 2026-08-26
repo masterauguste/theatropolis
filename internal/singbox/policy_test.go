@@ -28,6 +28,20 @@ func TestValidateManagedConfigReservesHTTP01Port(t *testing.T) {
 			config: `{"inbounds":[{"type":"anytls","listen_port":443}]}`,
 		},
 		{
+			name:   "managed user API port is reserved",
+			config: `{"inbounds":[{"type":"anytls","listen_port":19090}]}`,
+			want:   ErrManagedUserAPIListenPort,
+		},
+		{
+			name:   "managed user API stays on loopback",
+			config: `{"services":[{"type":"ssm-api","tag":"tp-managed-users","listen":"127.0.0.1","listen_port":19090}]}`,
+		},
+		{
+			name:   "public managed user API is rejected",
+			config: `{"services":[{"type":"ssm-api","tag":"tp-managed-users","listen":"0.0.0.0","listen_port":19090}]}`,
+			want:   ErrUnsafeManagedUserAPI,
+		},
+		{
 			name:   "no inbounds",
 			config: `{}`,
 		},

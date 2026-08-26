@@ -446,26 +446,6 @@ dialog.proxy-inspector { width: min(60rem, calc(100vw - 2rem)); height: min(82vh
 .inline-form { display: flex; gap: .75rem; padding: 1.25rem; }
 .inline-form input { flex: 1; }
 
-.fleet-runtime-panel {
-  margin-bottom: 1.25rem;
-}
-
-.fleet-runtime-form {
-  display: grid;
-  padding: 1.25rem;
-  align-items: end;
-  gap: 1rem;
-  grid-template-columns: minmax(260px, 1fr) auto;
-}
-
-.fleet-runtime-form .field {
-  margin: 0;
-}
-
-.fleet-runtime-form .button {
-  min-height: 46px;
-}
-
 .membership-list { display: grid; }
 .membership-list > article,
 .membership-list > a {
@@ -2038,6 +2018,50 @@ body:has(dialog[open]) {
   height: 100%;
 }
 
+dialog.fleet-settings-dialog {
+  width: min(100% - 2rem, 780px);
+}
+
+.fleet-settings-actions {
+  display: grid;
+  gap: 1rem;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.fleet-settings-action {
+  display: flex;
+  min-width: 0;
+  padding: 1.1rem;
+  flex-direction: column;
+  gap: 1rem;
+  background: var(--surface-sunken);
+  border: 1px solid var(--ink-200);
+  border-radius: var(--radius-md);
+}
+
+.fleet-settings-action__copy {
+  min-height: 7.4rem;
+}
+
+.fleet-settings-action h3 {
+  margin-top: 0.2rem;
+  font-size: 1.05rem;
+}
+
+.fleet-settings-action__copy > p:last-child {
+  margin-top: 0.35rem;
+  color: var(--ink-500);
+  font-size: 0.86rem;
+}
+
+.fleet-settings-action form {
+  margin-top: auto;
+}
+
+.fleet-settings-action .field {
+  margin: 0;
+}
+
 /* ---------- Action sections (details/summary) ---------- */
 
 .actions-list {
@@ -2436,6 +2460,70 @@ body:has(dialog[open]) {
 .builder-fields--three {
   grid-template-columns: repeat(3, 1fr);
 }
+
+.proxy-listener-editor {
+  display: grid;
+  gap: 1rem;
+  padding: 1rem;
+  background: var(--surface-sunken);
+  border: 1px solid var(--ink-200);
+  border-radius: var(--radius-lg);
+}
+
+.proxy-listener-picker {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(14rem, 0.8fr);
+  gap: 0.75rem;
+  align-items: end;
+}
+
+.proxy-listener-status {
+  min-height: 2.9rem;
+  padding: 0.7rem 0.8rem;
+  color: var(--neutral-700);
+  background: var(--neutral-100);
+  border: 1px solid var(--ink-200);
+  border-radius: var(--radius-md);
+  font-size: 0.8rem;
+}
+
+.proxy-listener-status.is-compatible {
+  color: var(--green-700);
+  background: var(--green-100);
+  border-color: color-mix(in srgb, var(--green-700) 28%, transparent);
+}
+
+.proxy-listener-status.is-warning {
+  color: var(--amber-700);
+  background: var(--amber-100);
+  border-color: color-mix(in srgb, var(--amber-700) 28%, transparent);
+}
+
+.proxy-listener-status.is-conflict {
+  color: var(--red-700);
+  background: var(--red-100);
+  border-color: color-mix(in srgb, var(--red-700) 28%, transparent);
+}
+
+.proxy-listener-summary {
+  display: grid;
+  gap: 0.2rem;
+  padding: 0.85rem 1rem;
+  background: var(--surface);
+  border: 1px solid var(--ink-300);
+  border-radius: var(--radius-md);
+}
+
+.proxy-listener-summary[hidden] { display: none; }
+.proxy-listener-summary span { color: var(--ink-500); font-size: 0.82rem; }
+
+.proxy-listener-editor [data-proxy-listener-fields] {
+  padding-top: 0.25rem;
+  border-top: 1px solid var(--ink-200);
+}
+
+.proxy-link-options { margin-top: 0.75rem; align-items: start; }
+.proxy-link-options__mux { margin: 0; }
 
 .builder-subsection {
   margin: 0.75rem 0 0;
@@ -3019,18 +3107,14 @@ body:has(dialog[open]) {
     flex-direction: column;
   }
 
-  .fleet-runtime-form {
-    grid-template-columns: 1fr;
-  }
-
-  .fleet-runtime-form .button {
-    width: 100%;
-  }
+  .fleet-settings-actions { grid-template-columns: 1fr; }
+  .fleet-settings-action__copy { min-height: 0; }
 
   .metric-grid,
   .server-summary,
   .builder-fields,
   .builder-fields--three,
+  .proxy-listener-picker,
   .field-grid--two {
     grid-template-columns: 1fr;
   }
@@ -3141,6 +3225,79 @@ body:has(dialog[open]) {
 }
 
 /* ---------- Reduced motion ---------- */
+
+.membership-plan-fields {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 1rem;
+}
+
+.membership-facts {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  margin: 0;
+  overflow: hidden;
+  border: 1px solid var(--ink-200);
+  border-radius: var(--radius-md);
+}
+
+.membership-facts div {
+  padding: 0.85rem 1rem;
+  border-right: 1px solid var(--ink-200);
+  border-bottom: 1px solid var(--ink-200);
+}
+
+.membership-facts div:nth-child(2n) { border-right: 0; }
+.membership-facts div:nth-last-child(-n + 2) { border-bottom: 0; }
+.membership-facts dt { color: var(--ink-500); font-size: 0.72rem; font-weight: 750; letter-spacing: 0.06em; text-transform: uppercase; }
+.membership-facts dd { margin: 0.25rem 0 0; font-weight: 700; }
+
+.membership-status {
+  display: inline-flex;
+  align-items: center;
+  width: fit-content;
+  padding: 0.28rem 0.58rem;
+  border-radius: 999px;
+  background: var(--green-100);
+  color: var(--green-700);
+  font-size: 0.75rem;
+  font-weight: 750;
+}
+
+.membership-status--warning { background: var(--amber-100); color: var(--amber-700); }
+.membership-status--disabled { background: var(--red-100); color: var(--red-700); }
+
+.proxy-node-user-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(17rem, 1fr));
+  gap: 0.75rem;
+}
+
+.proxy-node-user-card {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+  padding: 1rem;
+  border: 1px solid var(--ink-200);
+  border-radius: var(--radius-md);
+  background: var(--surface);
+  color: var(--ink-900);
+  text-align: left;
+  cursor: pointer;
+}
+
+.proxy-node-user-card:hover { border-color: var(--accent-600); box-shadow: var(--shadow-sm); }
+.proxy-node-user-card span:first-child { display: grid; gap: 0.2rem; min-width: 0; }
+.proxy-node-user-card small { color: var(--ink-500); }
+
+@media (max-width: 640px) {
+  .membership-plan-fields,
+  .membership-facts { grid-template-columns: 1fr; }
+  .membership-facts div { border-right: 0; border-bottom: 1px solid var(--ink-200); }
+  .membership-facts div:nth-last-child(-n + 2) { border-bottom: 1px solid var(--ink-200); }
+  .membership-facts div:last-child { border-bottom: 0; }
+}
 
 @media (prefers-reduced-motion: reduce) {
   *,

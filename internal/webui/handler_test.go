@@ -26,6 +26,7 @@ import (
 	"github.com/masterauguste/theatropolis/internal/identity"
 	"github.com/masterauguste/theatropolis/internal/pool"
 	"github.com/masterauguste/theatropolis/internal/proxynode"
+	"github.com/masterauguste/theatropolis/internal/singbox"
 )
 
 const testPublicURL = "https://master.example.com:8443"
@@ -91,6 +92,32 @@ type testAgentController struct {
 	probeErr            error
 	probeRequests       []probeRequest
 	autoApply           bool
+}
+
+type testProxyUserSync struct {
+	deployer *proxynode.Deployer
+}
+
+func (s testProxyUserSync) TriggerDeployment() {
+	_, _ = s.deployer.StartUserSync()
+}
+
+func waitForProxyDeployment(t *testing.T, deployer *proxynode.Deployer) {
+	t.Helper()
+	deadline := time.Now().Add(3 * time.Second)
+	for {
+		job, exists := deployer.Current()
+		if exists && job.Status == proxynode.FleetDeploymentApplied {
+			return
+		}
+		if exists && job.Status == proxynode.FleetDeploymentFailed {
+			t.Fatalf("Proxy Node deployment failed: %s", job.Error)
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("Proxy Node deployment did not finish")
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
 }
 
 type fixedProxyResolver struct{}
@@ -202,6 +229,23 @@ func (c *testAgentController) CanDeployConfiguration(agentID string) bool {
 
 func (c *testAgentController) CanDeployProxyNodeConfiguration(agentID string) bool {
 	return c.CanDeployConfiguration(agentID)
+}
+
+func (c *testAgentController) CanSyncManagedUserAuthority(agentID string) bool {
+	return c.CanDeployConfiguration(agentID)
+}
+
+func (c *testAgentController) RequestManagedUserTraffic(context.Context, string) error {
+	return nil
+}
+
+func (c *testAgentController) QueueManagedUserAuthority(
+	context.Context,
+	string,
+	uint64,
+	[]singbox.ManagedUserAuthorityVariant,
+) error {
+	return c.queueErr
 }
 
 func (c *testAgentController) LatestDeployment(
@@ -761,9 +805,15 @@ func TestServersPageUsesRealEnrollmentAndConnectionState(t *testing.T) {
 	if response.Code != http.StatusOK ||
 		!strings.Contains(response.Body.String(), `data-async-url="/servers/content"`) ||
 		!strings.Contains(response.Body.String(), `data-version-catalog-url="/servers/versions"`) ||
+		!strings.Contains(response.Body.String(), `data-dialog-open="fleet-settings-dialog"`) ||
+		!strings.Contains(response.Body.String(), `id="fleet-settings-dialog"`) ||
+		!strings.Contains(response.Body.String(), `action="/servers/agent-update-all"`) ||
 		!strings.Contains(response.Body.String(), `action="/servers/sing-box-update-all"`) ||
 		!strings.Contains(response.Body.String(), "Loading servers…") {
 		t.Fatalf("GET /servers did not render the loading shell: %d %s", response.Code, response.Body.String())
+	}
+	if strings.Contains(response.Body.String(), "fleet-runtime-panel") {
+		t.Fatal("GET /servers still rendered sing-box management as a page-level panel")
 	}
 	if strings.Contains(response.Body.String(), "edge-online") {
 		t.Fatal("GET /servers blocked on and embedded fleet data instead of rendering its shell")
@@ -870,6 +920,47 @@ func TestSettingsPageOwnsMasterSoftwareManagement(t *testing.T) {
 		if !strings.Contains(body, expected) {
 			t.Errorf("settings page does not contain %q", expected)
 		}
+	}
+}
+
+func TestSettingsPageShowsAccountingFailureHistory(t *testing.T) {
+	t.Parallel()
+	fixture := newWebFixture(t)
+	if err := fixture.proxyNodes.RecordAccountingFailure(
+		"edge-online",
+		proxynode.AccountingFailureCollection,
+		fixture.now.Add(-time.Minute),
+	); err != nil {
+		t.Fatal(err)
+	}
+	if err := fixture.proxyNodes.RecordAccountingFailure(
+		"edge-online",
+		proxynode.AccountingFailurePersistence,
+		fixture.now,
+	); err != nil {
+		t.Fatal(err)
+	}
+
+	request := fixture.authenticatedRequest(http.MethodGet, "/settings", "")
+	response := httptest.NewRecorder()
+	fixture.handler.ServeHTTP(response, request)
+	if response.Code != http.StatusOK {
+		t.Fatalf("GET /settings status = %d, body = %s", response.Code, response.Body.String())
+	}
+	body := response.Body.String()
+	for _, expected := range []string{
+		"Accounting errors",
+		"2 recorded",
+		"Entrance sample collection failed",
+		"Master could not persist usage",
+		`href="/servers/edge-online/manage"`,
+	} {
+		if !strings.Contains(body, expected) {
+			t.Errorf("settings accounting history does not contain %q", expected)
+		}
+	}
+	if strings.Index(body, "Master could not persist usage") > strings.Index(body, "Entrance sample collection failed") {
+		t.Fatal("settings accounting history is not newest-first")
 	}
 }
 
@@ -1104,8 +1195,8 @@ func TestProxyNodePagesUseLinkOwnedRulesAndMembershipCredentials(t *testing.T) {
 			t.Errorf("Proxy Node tree contains removed control or Direct terminal marker %q", removed)
 		}
 	}
-	if !strings.Contains(body, `type="submit">Save</button>`) {
-		t.Error("Proxy Node tree does not expose the Save action")
+	if strings.Contains(body, `/deploy"`) || !strings.Contains(body, "topology changes apply automatically") {
+		t.Error("Proxy Node tree still exposes a manual topology Save workflow")
 	}
 	linkBranch := strings.Index(body, `data-proxy-inspector-open="rule-`+firstRule.ID+`"`)
 	fallbackBranch := strings.Index(body, `data-proxy-inspector-open="terminal-`+node.Entrance.HopID+`-fallback"`)
@@ -1238,6 +1329,9 @@ func TestProxyNodePagesUseLinkOwnedRulesAndMembershipCredentials(t *testing.T) {
 	if response.Code != http.StatusNoContent || response.Header().Get("Location") != "" {
 		t.Fatalf("async Rule reorder = %d location %q body %q", response.Code, response.Header().Get("Location"), response.Body.String())
 	}
+	if err := fixture.proxyNodes.MarkTopologyApplied(fixture.proxyNodes.Snapshot().Revision, []string{"edge-online", "edge-b"}); err != nil {
+		t.Fatal(err)
+	}
 
 	request = fixture.authenticatedRequest(http.MethodGet, "/users/"+url.PathEscape(user.ID), "")
 	response = httptest.NewRecorder()
@@ -1342,6 +1436,99 @@ func TestProxyNodeMutationsRequireExactForms(t *testing.T) {
 	}
 }
 
+func TestProxyNodeTopologyMutationAppliesImmediately(t *testing.T) {
+	fixture := newWebFixture(t)
+	enrollAgent(t, fixture.registry, "edge-online")
+	node, err := fixture.proxyNodes.CreateProxyNode(proxynode.CreateProxyNodeInput{
+		Name: "Cinema", RootAgent: "edge-online",
+		Entrance: proxynode.Endpoint{
+			Protocol: proxynode.ProtocolAnyTLS, Listen: "::", ListenPort: 443, Family: "auto",
+			TLS: proxynode.TLSConfig{Mode: proxynode.TLSModeSelfSigned, ServerName: "cinema.example"},
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	user, err := fixture.proxyNodes.CreateUser("Alice")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := fixture.proxyNodes.AddMembership(node.ID, user.ID); err != nil {
+		t.Fatal(err)
+	}
+	fixture.controller.autoApply = true
+	deployer, err := proxynode.NewDeployer(fixture.proxyNodes, fixedProxyResolver{}, fixture.controller)
+	if err != nil {
+		t.Fatal(err)
+	}
+	fixture.handler.(*Handler).proxyDeployer = deployer
+	if _, err := deployer.Start(); err != nil {
+		t.Fatal(err)
+	}
+	waitForProxyDeployment(t, deployer)
+
+	renameURL := "/proxy-nodes/" + url.PathEscape(node.ID) + "/rename"
+	request := fixture.authenticatedMutationRequest(http.MethodPost, renameURL, url.Values{
+		"csrf_token": {fixture.session.CSRFToken}, "name": {"Cinema-Live"},
+	}.Encode())
+	response := httptest.NewRecorder()
+	fixture.handler.ServeHTTP(response, request)
+	if response.Code != http.StatusSeeOther {
+		t.Fatalf("immediate rename = %d %q", response.Code, response.Body.String())
+	}
+	waitForProxyDeployment(t, deployer)
+	state := fixture.proxyNodes.Snapshot()
+	if len(state.AppliedProxyNodes) != 1 || state.AppliedProxyNodes[0].Name != "Cinema-Live" {
+		t.Fatalf("applied topology after rename = %#v", state.AppliedProxyNodes)
+	}
+
+	request = fixture.authenticatedRequest(http.MethodGet, proxyNodeURL(node.ID), "")
+	response = httptest.NewRecorder()
+	fixture.handler.ServeHTTP(response, request)
+	if body := response.Body.String(); strings.Contains(body, `/deploy"`) || !strings.Contains(body, "topology changes apply automatically") {
+		t.Fatalf("immediate topology UI still exposes manual deployment: %q", body)
+	}
+
+	fixture.controller.autoApply = false
+	request = fixture.authenticatedMutationRequest(http.MethodPost, renameURL, url.Values{
+		"csrf_token": {fixture.session.CSRFToken}, "name": {"Cinema-Busy"},
+	}.Encode())
+	response = httptest.NewRecorder()
+	fixture.handler.ServeHTTP(response, request)
+	if response.Code != http.StatusSeeOther {
+		t.Fatalf("queued immediate rename = %d %q", response.Code, response.Body.String())
+	}
+	request = fixture.authenticatedMutationRequest(http.MethodPost, renameURL, url.Values{
+		"csrf_token": {fixture.session.CSRFToken}, "name": {"Must-Be-Rejected"},
+	}.Encode())
+	response = httptest.NewRecorder()
+	fixture.handler.ServeHTTP(response, request)
+	if response.Code != http.StatusConflict {
+		t.Fatalf("overlapping topology mutation = %d, want 409", response.Code)
+	}
+	request = fixture.authenticatedRequest(http.MethodGet, proxyNodeURL(node.ID), "")
+	response = httptest.NewRecorder()
+	fixture.handler.ServeHTTP(response, request)
+	if !strings.Contains(response.Body.String(), `data-topology-locked="true"`) {
+		t.Fatal("active topology transaction did not lock topology controls")
+	}
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		record, latestErr := fixture.controller.store.LatestForAgent(context.Background(), "edge-online")
+		if latestErr == nil && record.Status == deployment.StatusDeploying {
+			if _, err := fixture.controller.store.Transition(context.Background(), record.ID, deployment.StatusApplied, "", time.Now().UTC()); err != nil {
+				t.Fatal(err)
+			}
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("queued topology deployment did not reach the Agent")
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	waitForProxyDeployment(t, deployer)
+}
+
 func TestHopTerminalRejectsLinkTargets(t *testing.T) {
 	t.Parallel()
 
@@ -1411,6 +1598,11 @@ func TestUserSettingsOwnProxyNodeAccessAssignments(t *testing.T) {
 	}
 	fixture.controller.autoApply = true
 	fixture.handler.(*Handler).proxyDeployer = deployer
+	if _, err := deployer.Start(); err != nil {
+		t.Fatal(err)
+	}
+	waitForProxyDeployment(t, deployer)
+	fixture.handler.(*Handler).proxyUserSync = testProxyUserSync{deployer: deployer}
 
 	request := fixture.authenticatedRequest(http.MethodGet, "/users/"+url.PathEscape(user.ID), "")
 	response := httptest.NewRecorder()
@@ -1422,12 +1614,15 @@ func TestUserSettingsOwnProxyNodeAccessAssignments(t *testing.T) {
 		!strings.Contains(body, `Search Proxy Nodes`) ||
 		!strings.Contains(body, `<option value="`+node.ID+`">Cinema — AnyTLS · edge-online</option>`) ||
 		!strings.Contains(body, `<option value="`+archive.ID+`">Archive — AnyTLS · edge-online</option>`) ||
-		!strings.Contains(body, `action="/users/`+user.ID+`/deploy"`) {
+		!strings.Contains(body, `User and allowance changes synchronize automatically.`) ||
+		strings.Contains(body, `action="/users/`+user.ID+`/deploy"`) {
 		t.Fatalf("user settings omitted Proxy Node grant control: %d %q", response.Code, response.Body.String())
 	}
 
 	request = fixture.authenticatedMutationRequest(http.MethodPost, "/users/"+url.PathEscape(user.ID)+"/access", url.Values{
 		"csrf_token": {fixture.session.CSRFToken}, "proxy_id": {node.ID},
+		"quota_mode": {"limited"}, "monthly_quota_gib": {"100"},
+		"expiration_mode": {"months"}, "subscription_months": {"2"},
 	}.Encode())
 	response = httptest.NewRecorder()
 	fixture.handler.ServeHTTP(response, request)
@@ -1452,14 +1647,6 @@ func TestUserSettingsOwnProxyNodeAccessAssignments(t *testing.T) {
 		t.Fatalf("user settings did not separate assigned tags from searchable options: %d %q", response.Code, body)
 	}
 
-	request = fixture.authenticatedMutationRequest(http.MethodPost, "/users/"+url.PathEscape(user.ID)+"/deploy", url.Values{
-		"csrf_token": {fixture.session.CSRFToken},
-	}.Encode())
-	response = httptest.NewRecorder()
-	fixture.handler.ServeHTTP(response, request)
-	if response.Code != http.StatusSeeOther || response.Header().Get("Location") != "/users/"+url.PathEscape(user.ID) {
-		t.Fatalf("deploy user access = %d %q", response.Code, response.Header().Get("Location"))
-	}
 	deadline := time.Now().Add(3 * time.Second)
 	for {
 		job, exists := deployer.Current()
@@ -1478,8 +1665,9 @@ func TestUserSettingsOwnProxyNodeAccessAssignments(t *testing.T) {
 	request = fixture.authenticatedRequest(http.MethodGet, proxyNodeURL(node.ID), "")
 	response = httptest.NewRecorder()
 	fixture.handler.ServeHTTP(response, request)
-	if response.Code != http.StatusOK || !strings.Contains(response.Body.String(), "Managed per user · 1 assigned") || strings.Contains(response.Body.String(), "/members") {
-		t.Fatalf("Proxy Node page still owns membership assignment: %d %q", response.Code, response.Body.String())
+	if response.Code != http.StatusOK || !strings.Contains(response.Body.String(), "Quota and subscription · 1 assigned") ||
+		!strings.Contains(response.Body.String(), "100.00 GiB / month") || strings.Contains(response.Body.String(), "/members") {
+		t.Fatalf("Proxy Node page omitted membership management: %d %q", response.Code, response.Body.String())
 	}
 
 	request = fixture.authenticatedMutationRequest(http.MethodPost, "/users/"+url.PathEscape(user.ID)+"/access/remove", url.Values{
@@ -1493,6 +1681,22 @@ func TestUserSettingsOwnProxyNodeAccessAssignments(t *testing.T) {
 	updated, _ = fixture.proxyNodes.ProxyNode(node.ID)
 	if len(updated.Memberships) != 0 {
 		t.Fatalf("revoked membership remains: %#v", updated.Memberships)
+	}
+
+	request = fixture.authenticatedMutationRequest(http.MethodPost, "/proxy-nodes/"+url.PathEscape(node.ID)+"/users", url.Values{
+		"csrf_token": {fixture.session.CSRFToken}, "user_id": {user.ID},
+		"quota_mode": {"unlimited"}, "monthly_quota_gib": {""},
+		"expiration_mode": {"none"}, "subscription_months": {"1"},
+	}.Encode())
+	response = httptest.NewRecorder()
+	fixture.handler.ServeHTTP(response, request)
+	if response.Code != http.StatusSeeOther {
+		t.Fatalf("Proxy Node grant user access = %d %q", response.Code, response.Body.String())
+	}
+	updated, _ = fixture.proxyNodes.ProxyNode(node.ID)
+	if len(updated.Memberships) != 1 || updated.Memberships[0].MonthlyQuotaBytes != 0 ||
+		!updated.Memberships[0].SubscriptionEndsAfter.IsZero() {
+		t.Fatalf("Proxy Node grant membership = %#v", updated.Memberships)
 	}
 }
 
@@ -1510,6 +1714,16 @@ func TestParseEndpointFormIgnoresProtocolForeignFields(t *testing.T) {
 	}
 	if shadowsocks.Method != "2022-blake3-aes-256-gcm" || shadowsocks.TLS != (proxynode.TLSConfig{}) || shadowsocks.UpMbps != 0 || shadowsocks.DownMbps != 0 || shadowsocks.ObfsType != "" || shadowsocks.Multiplex == nil || !shadowsocks.Multiplex.Enabled || !shadowsocks.Multiplex.Padding || shadowsocks.Multiplex.Brutal == nil || shadowsocks.Multiplex.Brutal.UpMbps != 100 || shadowsocks.Multiplex.Brutal.DownMbps != 200 {
 		t.Fatalf("Shadowsocks endpoint retained protocol-foreign fields: %#v", shadowsocks)
+	}
+	listenerOnlyMux, err := parseEndpointForm(url.Values{
+		"protocol": {"shadowsocks"}, "listen": {"::"}, "listen_port": {"443"}, "family": {"auto"},
+		"method": {"2022-blake3-aes-256-gcm"}, "mux_enabled": {"0"}, "mux_padding": {"1"}, "mux_brutal": {"0"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if listenerOnlyMux.Multiplex == nil || listenerOnlyMux.Multiplex.Enabled || !listenerOnlyMux.Multiplex.Padding {
+		t.Fatalf("disabled per-Link mux lost the shared listener policy: %#v", listenerOnlyMux.Multiplex)
 	}
 
 	anyTLS, err := parseEndpointForm(url.Values{
@@ -1587,6 +1801,7 @@ func TestCreateProxyNodeMakesTerminalExitExplicitAndReturnsToRelayMap(t *testing
 	fixture := newWebFixture(t)
 	enrollAgent(t, fixture.registry, "edge-online")
 	enrollAgent(t, fixture.registry, "edge-child")
+	fixture.controller.sessions["edge-child"] = true
 	deployer, err := proxynode.NewDeployer(fixture.proxyNodes, fixedProxyResolver{}, fixture.controller)
 	if err != nil {
 		t.Fatal(err)
@@ -1691,6 +1906,7 @@ func TestCreateProxyNodeMakesTerminalExitExplicitAndReturnsToRelayMap(t *testing
 	if response.Code != http.StatusSeeOther || response.Header().Get("Location") != proxyNodeURL(node.ID) {
 		t.Fatalf("POST branch = %d location %q body %q", response.Code, response.Header().Get("Location"), response.Body.String())
 	}
+	waitForProxyDeployment(t, deployer)
 	updated, ok := fixture.proxyNodes.ProxyNode(node.ID)
 	if !ok || len(updated.Hops) != 2 || len(updated.Links) != 1 || len(updated.Links[0].Rules) != 1 || updated.Links[0].ChildHopID != updated.Hops[1].ID {
 		t.Fatalf("atomic branch creation produced %#v, exists %v", updated, ok)
@@ -1717,6 +1933,7 @@ func TestCreateProxyNodeMakesTerminalExitExplicitAndReturnsToRelayMap(t *testing
 	if response.Code != http.StatusSeeOther || response.Header().Get("Location") != proxyInspectorURL(node.ID, "hop-"+entrance.ID) {
 		t.Fatalf("DELETE branch = %d location %q body %q", response.Code, response.Header().Get("Location"), response.Body.String())
 	}
+	waitForProxyDeployment(t, deployer)
 	updated, _ = fixture.proxyNodes.ProxyNode(node.ID)
 	if len(updated.Hops) != 1 || len(updated.Links) != 0 {
 		t.Fatalf("deleting branch did not remove its child subtree: %#v", updated)
@@ -1730,9 +1947,51 @@ func TestCreateProxyNodeMakesTerminalExitExplicitAndReturnsToRelayMap(t *testing
 	if response.Code != http.StatusSeeOther || response.Header().Get("Location") != proxyNodeURL(node.ID) {
 		t.Fatalf("POST ALL branch = %d location %q body %q", response.Code, response.Header().Get("Location"), response.Body.String())
 	}
+	waitForProxyDeployment(t, deployer)
 	updated, _ = fixture.proxyNodes.ProxyNode(node.ID)
 	if len(updated.Hops) != 2 || len(updated.Links) != 1 || !updated.Links[0].Fallback || len(updated.Links[0].Rules) != 0 {
 		t.Fatalf("ALL branch creation produced %#v", updated)
+	}
+}
+
+func TestProxyNodeEditorOffersSecretFreePhysicalListenerReuse(t *testing.T) {
+	t.Parallel()
+
+	fixture := newWebFixture(t)
+	enrollAgent(t, fixture.registry, "edge-listener")
+	node, err := fixture.proxyNodes.CreateProxyNode(proxynode.CreateProxyNodeInput{
+		Name: "shared-edge", RootAgent: "edge-listener",
+		Entrance: proxynode.Endpoint{
+			Protocol: proxynode.ProtocolShadowsocks, Listen: "::", ListenPort: 20048,
+			Family: "auto", Method: "2022-blake3-aes-256-gcm",
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if node.Entrance.Endpoint.ServerKey == "" {
+		t.Fatal("test listener did not receive its generated server key")
+	}
+
+	request := fixture.authenticatedRequest(http.MethodGet, "/proxy-nodes/new", "")
+	response := httptest.NewRecorder()
+	fixture.handler.ServeHTTP(response, request)
+	if response.Code != http.StatusOK {
+		t.Fatalf("GET new Proxy Node = %d %q", response.Code, response.Body.String())
+	}
+	body := response.Body.String()
+	for _, expected := range []string{
+		"Physical listener", "Configure manually", "data-proxy-listener-status",
+		"data-proxy-listener-catalog", `data-agent="edge-listener"`,
+		`data-listener-id="` + proxynode.ListenerPresetID("edge-listener", node.Entrance.Endpoint) + `"`,
+		`data-reference-count="1"`, "SS2022 · :::20048 · 1 reference",
+	} {
+		if !strings.Contains(body, expected) {
+			t.Errorf("listener reuse editor does not contain %q", expected)
+		}
+	}
+	if strings.Contains(body, node.Entrance.Endpoint.ServerKey) {
+		t.Fatal("physical-listener catalog exposed a generated server key")
 	}
 }
 
@@ -2043,13 +2302,13 @@ func TestSingBoxUpdateAllQueuesSelectedReleaseForConnectedAgents(t *testing.T) {
 	fixture.controller.sessions["edge-second"] = true
 	fixture.handler.(*Handler).singBoxReleases = testReleaseCatalog{
 		releases: []AgentRelease{
-			{Tag: "v1.14.0"},
-			{Tag: "v1.14.0-rc.1", Prerelease: true},
+			{Tag: "v1.14.0-theatropolis.1"},
+			{Tag: "v1.14.0-rc.1.theatropolis.1", Prerelease: true},
 		},
 	}
 	form := url.Values{
 		"csrf_token":     {fixture.session.CSRFToken},
-		"target_version": {"v1.14.0-rc.1"},
+		"target_version": {"v1.14.0-rc.1.theatropolis.1"},
 	}.Encode()
 	request := fixture.authenticatedMutationRequest(
 		http.MethodPost,
@@ -2063,13 +2322,13 @@ func TestSingBoxUpdateAllQueuesSelectedReleaseForConnectedAgents(t *testing.T) {
 	}
 	if !strings.Contains(
 		response.Body.String(),
-		"Queued sing-box v1.14.0-rc.1 for 2 connected server(s).",
+		"Queued sing-box v1.14.0-rc.1.theatropolis.1 for 2 connected server(s).",
 	) || !strings.Contains(response.Body.String(), "1 enrolled server(s) skipped") {
 		t.Fatalf("sing-box update-all notice missing from %q", response.Body.String())
 	}
 	for _, agentID := range []string{"edge-online", "edge-second"} {
 		state, exists := fixture.controller.singBoxUpdates[agentID]
-		if !exists || state.TargetVersion != "v1.14.0-rc.1" {
+		if !exists || state.TargetVersion != "v1.14.0-rc.1.theatropolis.1" {
 			t.Fatalf("queued sing-box update for %s = %+v, exists=%v", agentID, state, exists)
 		}
 	}
@@ -2084,7 +2343,7 @@ func TestSingBoxUpdateAllRejectsUnpublishedReleaseAndBadCSRF(t *testing.T) {
 	fixture := newWebFixture(t)
 	enrollAgent(t, fixture.registry, "edge-online")
 	fixture.handler.(*Handler).singBoxReleases = testReleaseCatalog{
-		releases: []AgentRelease{{Tag: "v1.14.0-rc.1", Prerelease: true}},
+		releases: []AgentRelease{{Tag: "v1.14.0-rc.1.theatropolis.1", Prerelease: true}},
 	}
 	tests := []struct {
 		name   string
@@ -2094,11 +2353,11 @@ func TestSingBoxUpdateAllRejectsUnpublishedReleaseAndBadCSRF(t *testing.T) {
 	}{
 		{
 			name: "unpublished release", csrf: fixture.session.CSRFToken,
-			target: "v1.14.0-rc.2", status: http.StatusBadRequest,
+			target: "v1.14.0-rc.2.theatropolis.1", status: http.StatusBadRequest,
 		},
 		{
 			name: "bad CSRF", csrf: "bogus",
-			target: "v1.14.0-rc.1", status: http.StatusForbidden,
+			target: "v1.14.0-rc.1.theatropolis.1", status: http.StatusForbidden,
 		},
 	}
 	for _, test := range tests {
@@ -2130,7 +2389,7 @@ func TestSingBoxUpdateQueuesExactReleaseCandidate(t *testing.T) {
 	enrollAgent(t, fixture.registry, "edge-online")
 	form := url.Values{
 		"csrf_token":     {fixture.session.CSRFToken},
-		"target_version": {"v1.14.0-rc.1"},
+		"target_version": {"v1.14.0-rc.1.theatropolis.1"},
 	}.Encode()
 	request := fixture.authenticatedMutationRequest(
 		http.MethodPost,
@@ -2147,7 +2406,7 @@ func TestSingBoxUpdateQueuesExactReleaseCandidate(t *testing.T) {
 		)
 	}
 	state, exists := fixture.controller.singBoxUpdates["edge-online"]
-	if !exists || state.TargetVersion != "v1.14.0-rc.1" {
+	if !exists || state.TargetVersion != "v1.14.0-rc.1.theatropolis.1" {
 		t.Fatalf("queued sing-box update = %+v, exists=%v", state, exists)
 	}
 }
@@ -2158,8 +2417,8 @@ func TestServerPageRendersSingBoxUpdateForm(t *testing.T) {
 	enrollAgent(t, fixture.registry, "edge-online")
 	fixture.handler.(*Handler).singBoxReleases = testReleaseCatalog{
 		releases: []AgentRelease{
-			{Tag: "v1.14.0-rc.1", Prerelease: true},
-			{Tag: "v1.14.0", Prerelease: false},
+			{Tag: "v1.14.0-rc.1.theatropolis.1", Prerelease: true},
+			{Tag: "v1.14.0-theatropolis.1", Prerelease: false},
 		},
 	}
 	request := fixture.authenticatedRequest(
@@ -2194,8 +2453,8 @@ func TestServerVersionsEndpointReturnsIndependentCatalogs(t *testing.T) {
 	}}
 	fixture.handler.(*Handler).singBoxReleases = testReleaseCatalog{
 		releases: []AgentRelease{
-			{Tag: "v1.14.0-rc.1", Prerelease: true},
-			{Tag: "v1.14.0", Prerelease: false},
+			{Tag: "v1.14.0-rc.1.theatropolis.1", Prerelease: true},
+			{Tag: "v1.14.0-theatropolis.1", Prerelease: false},
 		},
 	}
 	for _, test := range []struct {
@@ -2203,8 +2462,8 @@ func TestServerVersionsEndpointReturnsIndependentCatalogs(t *testing.T) {
 		want    []string
 		reject  string
 	}{
-		{catalog: "agent", want: []string{"v1.14.0-beta.7", "v1.13.2"}, reject: "v1.14.0-rc.1"},
-		{catalog: "sing-box", want: []string{"v1.14.0-rc.1", "v1.14.0"}, reject: "v1.13.2"},
+		{catalog: "agent", want: []string{"v1.14.0-beta.7", "v1.13.2"}, reject: "v1.14.0-rc.1.theatropolis.1"},
+		{catalog: "sing-box", want: []string{"v1.14.0-rc.1.theatropolis.1", "v1.14.0-theatropolis.1"}, reject: "v1.13.2"},
 	} {
 		request := fixture.authenticatedRequest(
 			http.MethodGet,
@@ -2233,8 +2492,8 @@ func TestFleetVersionsEndpointReturnsSingBoxCatalogWithoutAgentContext(t *testin
 	fixture := newWebFixture(t)
 	fixture.handler.(*Handler).singBoxReleases = testReleaseCatalog{
 		releases: []AgentRelease{
-			{Tag: "v1.14.0"},
-			{Tag: "v1.14.0-rc.1", Prerelease: true},
+			{Tag: "v1.14.0-theatropolis.1"},
+			{Tag: "v1.14.0-rc.1.theatropolis.1", Prerelease: true},
 		},
 	}
 	request := fixture.authenticatedRequest(
@@ -2247,7 +2506,7 @@ func TestFleetVersionsEndpointReturnsSingBoxCatalogWithoutAgentContext(t *testin
 	if response.Code != http.StatusOK {
 		t.Fatalf("fleet versions response = %d %q", response.Code, response.Body.String())
 	}
-	for _, version := range []string{"v1.14.0", "v1.14.0-rc.1"} {
+	for _, version := range []string{"v1.14.0-theatropolis.1", "v1.14.0-rc.1.theatropolis.1"} {
 		if !strings.Contains(response.Body.String(), version) {
 			t.Fatalf("fleet versions response missing %q: %q", version, response.Body.String())
 		}

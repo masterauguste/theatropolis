@@ -30,6 +30,20 @@ type testConfigurationManager struct {
 	resets int
 }
 
+type trafficConfigurationManager struct {
+	*testConfigurationManager
+	calls atomic.Int32
+}
+
+func (m *trafficConfigurationManager) ManagedUserTraffic(context.Context) (singbox.ManagedUserTrafficSnapshot, error) {
+	m.calls.Add(1)
+	return singbox.ManagedUserTrafficSnapshot{
+		Users: []singbox.ManagedUserTraffic{{
+			InboundPath: "inbound/1", Username: "member-1", UplinkBytes: 10, DownlinkBytes: 20,
+		}},
+	}, nil
+}
+
 func (m *testConfigurationManager) ResetForEnrollment() error {
 	m.resets++
 	return m.reset
@@ -262,9 +276,10 @@ func TestRuntimeReportMapsEveryManagerStatus(t *testing.T) {
 type probeCommandServer struct {
 	controlv1.UnimplementedAgentControlServiceServer
 
-	hello       chan *controlv1.AgentHello
-	agentFrames chan *controlv1.AgentFrame
-	commands    chan *controlv1.ProbeAddresses
+	hello           chan *controlv1.AgentHello
+	agentFrames     chan *controlv1.AgentFrame
+	commands        chan *controlv1.ProbeAddresses
+	trafficCommands chan *controlv1.ManagedUserTrafficRequest
 }
 
 func (s *probeCommandServer) Connect(
@@ -334,6 +349,16 @@ func (s *probeCommandServer) Connect(
 				Sequence: masterSequence,
 				Payload: &controlv1.MasterFrame_ProbeAddresses{
 					ProbeAddresses: command,
+				},
+			}); err != nil {
+				return err
+			}
+		case command := <-s.trafficCommands:
+			masterSequence++
+			if err := stream.Send(&controlv1.MasterFrame{
+				Sequence: masterSequence,
+				Payload: &controlv1.MasterFrame_ManagedUserTrafficRequest{
+					ManagedUserTrafficRequest: command,
 				},
 			}); err != nil {
 				return err
@@ -462,6 +487,95 @@ func TestRunnerAnswersAddressProbeCommand(t *testing.T) {
 		report.GetError() != "unsupported family" ||
 		report.GetAddress() != "" {
 		t.Fatalf("unsupported-family report = %+v", report)
+	}
+
+	cancel()
+	if err := <-runnerResult; !errors.Is(err, context.Canceled) {
+		t.Fatalf("runner.Run returned %v, want context.Canceled", err)
+	}
+}
+
+func TestRunnerAnswersManagedUserTrafficRequest(t *testing.T) {
+	t.Parallel()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+
+	listener := bufconn.Listen(1 << 20)
+	fake := &probeCommandServer{
+		hello:           make(chan *controlv1.AgentHello, 1),
+		agentFrames:     make(chan *controlv1.AgentFrame, 64),
+		trafficCommands: make(chan *controlv1.ManagedUserTrafficRequest),
+	}
+	grpcServer := grpc.NewServer()
+	controlv1.RegisterAgentControlServiceServer(grpcServer, fake)
+	go func() { _ = grpcServer.Serve(listener) }()
+	defer grpcServer.Stop()
+
+	connection, err := grpc.NewClient(
+		"passthrough:///theatropolis-traffic-test",
+		grpc.WithContextDialer(func(context.Context, string) (net.Conn, error) {
+			return listener.Dial()
+		}),
+		grpc.WithTransportCredentials(insecure.NewCredentials()),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer connection.Close()
+
+	_, privateKey, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	manager := &trafficConfigurationManager{testConfigurationManager: &testConfigurationManager{}}
+	runner := &Runner{
+		AgentVersion: "test", PrivateKey: privateKey, Manager: manager,
+		HeartbeatPeriod: time.Hour, Prober: &ProbeScheduler{Interval: -1},
+	}
+	runnerResult := make(chan error, 1)
+	go func() { runnerResult <- runner.Run(ctx, controlv1.NewAgentControlServiceClient(connection)) }()
+
+	var hello *controlv1.AgentHello
+	select {
+	case hello = <-fake.hello:
+	case <-ctx.Done():
+		t.Fatal("agent did not send its hello")
+	}
+	if !slices.Contains(hello.GetCapabilities(), control.ManagedUserTrafficRequestCapability) {
+		t.Fatalf("hello capabilities %v lack %q", hello.GetCapabilities(), control.ManagedUserTrafficRequestCapability)
+	}
+	if !slices.Contains(hello.GetCapabilities(), control.ManagedUserTrafficDeltaCapability) {
+		t.Fatalf("hello capabilities %v lack %q", hello.GetCapabilities(), control.ManagedUserTrafficDeltaCapability)
+	}
+
+	nextTrafficReport := func() *controlv1.ManagedUserTrafficReport {
+		t.Helper()
+		for {
+			select {
+			case frame := <-fake.agentFrames:
+				if report := frame.GetManagedUserTrafficReport(); report != nil {
+					return report
+				}
+			case <-ctx.Done():
+				t.Fatal("timed out waiting for managed-user traffic")
+				return nil
+			}
+		}
+	}
+	initial := nextTrafficReport()
+	if initial.GetRequestId() != "" || strings.TrimSpace(initial.GetEpoch()) == "" {
+		t.Fatalf("initial traffic report = %+v", initial)
+	}
+
+	fake.trafficCommands <- &controlv1.ManagedUserTrafficRequest{RequestId: "traffic-request-1"}
+	requested := nextTrafficReport()
+	if requested.GetRequestId() != "traffic-request-1" || strings.TrimSpace(requested.GetEpoch()) == "" ||
+		len(requested.GetUsers()) != 1 || requested.GetDiagnostic() != "" {
+		t.Fatalf("requested traffic report = %+v", requested)
+	}
+	if manager.calls.Load() < 2 {
+		t.Fatalf("traffic collection calls = %d, want at least 2", manager.calls.Load())
 	}
 
 	cancel()

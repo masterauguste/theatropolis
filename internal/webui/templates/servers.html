@@ -92,10 +92,7 @@
             <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M20 11a8 8 0 1 0-2.3 5.7M20 5v6h-6"/></svg>
             Refresh
           </button>
-          <form action="/servers/agent-update-all" method="post">
-            <input type="hidden" name="csrf_token" value="{{.CSRFToken}}">
-            <button class="button button--secondary" type="submit" data-submit-button data-submit-label="Queuing…">Update all agents</button>
-          </form>
+          <button class="button button--secondary" type="button" data-dialog-open="fleet-settings-dialog" aria-haspopup="dialog">Server settings</button>
           <a class="button button--primary" href="/servers/new">
             <span aria-hidden="true">+</span>
             Add server
@@ -110,34 +107,62 @@
       <div class="notice notice--error" role="alert">{{.Error}}</div>
       {{end}}
 
-      <section class="panel fleet-runtime-panel" aria-labelledby="fleet-runtime-heading">
-        <div class="panel__header">
-          <div>
-            <h2 id="fleet-runtime-heading">Fleet sing-box runtime</h2>
-            <p>Choose one signed V2Ray-API build for every connected compatible Agent.</p>
-          </div>
-        </div>
-        <form action="/servers/sing-box-update-all" method="post" class="fleet-runtime-form">
-          <input type="hidden" name="csrf_token" value="{{.CSRFToken}}">
-          <label class="field">
-            <span>Target sing-box version</span>
-            <select name="target_version" data-sing-box-version-select data-fleet-sing-box-select required disabled>
-              <option value="" disabled selected>loading available versions…</option>
-            </select>
-            <small class="inline-loading" data-sing-box-catalog-loading><span class="loading-spinner loading-spinner--small" aria-hidden="true"></span><span>Loading signed releases…</span></small>
-            <small data-sing-box-catalog-warning hidden class="field-warning"></small>
-            <small data-sing-box-catalog-info>Offline, incompatible, busy, and already-matching Agents are skipped.</small>
-          </label>
-          <button class="button button--primary" type="submit" data-submit-button data-submit-label="Queuing…" data-fleet-sing-box-submit disabled>Change connected Agents</button>
-        </form>
-      </section>
-
       <div id="servers-content" class="async-region" data-async-region data-async-url="/servers/content" data-async-loading-label="Loading servers…" aria-live="polite" aria-busy="true">
         <div class="loading-state" role="status">
           <span class="loading-spinner" aria-hidden="true"></span>
           <span>Loading servers…</span>
         </div>
       </div>
+
+      <dialog class="modal fleet-settings-dialog" id="fleet-settings-dialog" aria-labelledby="fleet-settings-title">
+        <div class="modal__surface">
+          <header class="modal__header">
+            <div>
+              <p class="eyebrow">Fleet maintenance</p>
+              <h2 id="fleet-settings-title">Server settings</h2>
+              <p>Manage software versions across connected servers.</p>
+            </div>
+            <button class="button button--secondary button--icon-only" type="button" data-dialog-close aria-label="Close server settings">×</button>
+          </header>
+          <div class="modal__body fleet-settings-actions">
+            <section class="fleet-settings-action" aria-labelledby="fleet-agent-update-heading">
+              <div class="fleet-settings-action__copy">
+                <p class="eyebrow">Theatropolis</p>
+                <h3 id="fleet-agent-update-heading">Update Agent software</h3>
+                <p>Install the latest published Theatropolis Agent on every connected eligible server.</p>
+              </div>
+              <form action="/servers/agent-update-all" method="post">
+                <input type="hidden" name="csrf_token" value="{{.CSRFToken}}">
+                <button class="button button--secondary button--full" type="submit" data-submit-button data-submit-label="Queuing…">Update all Agents</button>
+              </form>
+            </section>
+
+            <section class="fleet-settings-action" aria-labelledby="fleet-sing-box-heading">
+              <div class="fleet-settings-action__copy">
+                <p class="eyebrow">Proxy runtime</p>
+                <h3 id="fleet-sing-box-heading">Change sing-box version</h3>
+                <p>Choose one signed managed-user build for every connected compatible Agent.</p>
+              </div>
+              <form action="/servers/sing-box-update-all" method="post" class="stack stack--compact">
+                <input type="hidden" name="csrf_token" value="{{.CSRFToken}}">
+                <label class="field">
+                  <span>Target version</span>
+                  <select name="target_version" data-sing-box-version-select data-fleet-sing-box-select required disabled>
+                    <option value="" disabled selected>loading available versions…</option>
+                  </select>
+                  <small class="inline-loading" data-sing-box-catalog-loading><span class="loading-spinner loading-spinner--small" aria-hidden="true"></span><span>Loading signed releases…</span></small>
+                  <small data-sing-box-catalog-warning hidden class="field-warning"></small>
+                  <small data-sing-box-catalog-info>Offline, incompatible, busy, and already-matching Agents are skipped.</small>
+                </label>
+                <button class="button button--primary button--full" type="submit" data-submit-button data-submit-label="Queuing…" data-fleet-sing-box-submit disabled>Change sing-box version</button>
+              </form>
+            </section>
+          </div>
+          <footer class="modal__footer">
+            <button class="button button--secondary" type="button" data-dialog-close>Close</button>
+          </footer>
+        </div>
+      </dialog>
   </main>
   <script src="/assets/app.js?v={{.AssetVersion}}" defer></script>
 </body>

@@ -35,6 +35,29 @@ var (
 )
 
 func validateState(state State) error {
+	if state.UserRevision == 0 || state.AppliedRevision > state.Revision {
+		return fmt.Errorf("%w: invalid configuration-plane revisions", ErrInvalidState)
+	}
+	if err := validateStateCore(state); err != nil {
+		return err
+	}
+	applied := State{
+		Revision: state.AppliedRevision, UserRevision: state.UserRevision,
+		AppliedRevision: state.AppliedRevision, Users: state.Users,
+		ProxyNodes: state.AppliedProxyNodes,
+	}
+	if err := validateStateCore(applied); err != nil {
+		return fmt.Errorf("%w: invalid applied topology: %v", ErrInvalidState, err)
+	}
+	for _, node := range state.AppliedProxyNodes {
+		if len(node.Memberships) != 0 {
+			return fmt.Errorf("%w: applied topology contains memberships", ErrInvalidState)
+		}
+	}
+	return nil
+}
+
+func validateStateCore(state State) error {
 	userIDs := make(map[string]User, len(state.Users))
 	userNames := make(map[string]struct{}, len(state.Users))
 	for _, user := range state.Users {
@@ -108,6 +131,12 @@ func validateState(state State) error {
 				return fmt.Errorf("%w: generated credential is reused", ErrInvalidState)
 			}
 			globalCredentials[membership.Credential.Secret] = struct{}{}
+			if membership.PendingCredential != nil {
+				if _, exists := globalCredentials[membership.PendingCredential.Secret]; exists {
+					return fmt.Errorf("%w: generated pending credential is reused", ErrInvalidState)
+				}
+				globalCredentials[membership.PendingCredential.Secret] = struct{}{}
+			}
 		}
 	}
 	seenManaged := make(map[string]struct{}, len(state.ManagedAgents))
@@ -119,6 +148,32 @@ func validateState(state State) error {
 			return fmt.Errorf("%w: duplicate managed Agent ID", ErrInvalidState)
 		}
 		seenManaged[agentID] = struct{}{}
+	}
+	if len(state.TrafficObservations) > maxTrafficReportUsers {
+		return fmt.Errorf("%w: too many traffic observations", ErrInvalidState)
+	}
+	seenObservations := make(map[string]struct{}, len(state.TrafficObservations))
+	for _, observation := range state.TrafficObservations {
+		key := observation.AgentID + "\x00" + observation.InboundPath + "\x00" + observation.Username
+		if !validAgentID(observation.AgentID) || !validManagedTrafficPath(observation.InboundPath) ||
+			strings.TrimSpace(observation.Username) == "" || len(observation.Username) > 128 ||
+			strings.TrimSpace(observation.Epoch) == "" || len(observation.Epoch) > 128 ||
+			observation.ObservedAt.IsZero() || strings.ContainsRune(observation.Username, '\x00') ||
+			strings.ContainsRune(observation.Epoch, '\x00') {
+			return fmt.Errorf("%w: invalid traffic observation", ErrInvalidState)
+		}
+		if _, exists := seenObservations[key]; exists {
+			return fmt.Errorf("%w: duplicate traffic observation", ErrInvalidState)
+		}
+		seenObservations[key] = struct{}{}
+	}
+	if len(state.AccountingFailures) > maxAccountingFailures {
+		return fmt.Errorf("%w: too many accounting failures", ErrInvalidState)
+	}
+	for _, failure := range state.AccountingFailures {
+		if !validAgentID(failure.AgentID) || !validAccountingFailureReason(failure.Reason) || failure.OccurredAt.IsZero() {
+			return fmt.Errorf("%w: invalid accounting failure", ErrInvalidState)
+		}
 	}
 	return nil
 }
@@ -243,8 +298,27 @@ func validateProxyNode(node ProxyNode, users map[string]User) error {
 	membershipUsers := make(map[string]struct{}, len(node.Memberships))
 	credentials := make(map[string]struct{}, len(node.Memberships)+len(node.Links))
 	for _, membership := range node.Memberships {
-		if !validID(membership.ID, "mem_") || membership.CreatedAt.IsZero() {
+		if !validID(membership.ID, "mem_") || membership.CreatedAt.IsZero() ||
+			membership.QuotaAnchorDay < 1 || membership.QuotaAnchorDay > 31 ||
+			membership.QuotaPeriodStartedOn.IsZero() || membership.QuotaResetsAfter.IsZero() ||
+			!membership.QuotaPeriodStartedOn.Equal(utcDate(membership.QuotaPeriodStartedOn)) ||
+			!membership.QuotaResetsAfter.Equal(utcDate(membership.QuotaResetsAfter)) ||
+			!membership.QuotaResetsAfter.After(membership.QuotaPeriodStartedOn) {
 			return errors.New("invalid Membership")
+		}
+		if !membership.SubscriptionEndsAfter.IsZero() &&
+			(!membership.SubscriptionEndsAfter.Equal(utcDate(membership.SubscriptionEndsAfter)) ||
+				membership.SubscriptionEndsAfter.Before(utcDate(membership.CreatedAt))) {
+			return errors.New("invalid Membership subscription")
+		}
+		if membership.SubscriptionMonths < 0 || membership.SubscriptionMonths > maxSubscriptionMonths ||
+			(membership.SubscriptionMonths == 0) != membership.SubscriptionEndsAfter.IsZero() {
+			return errors.New("invalid Membership subscription length")
+		}
+		if membership.DisabledReason != MembershipEnabled &&
+			membership.DisabledReason != MembershipQuotaReached &&
+			membership.DisabledReason != MembershipExpired {
+			return errors.New("invalid Membership status")
 		}
 		if _, exists := memberships[membership.ID]; exists {
 			return errors.New("duplicate Membership ID")
@@ -255,7 +329,11 @@ func validateProxyNode(node ProxyNode, users map[string]User) error {
 		if _, exists := membershipUsers[membership.UserID]; exists {
 			return errors.New("End User has two Memberships in one Proxy Node")
 		}
-		if err := validateCredential(node.Entrance.Endpoint, membership.Credential); err != nil {
+		credential := membership.Credential
+		if membership.PendingCredential != nil {
+			credential = *membership.PendingCredential
+		}
+		if err := validateCredential(node.Entrance.Endpoint, credential); err != nil {
 			return fmt.Errorf("invalid Membership credential: %w", err)
 		}
 		if _, exists := credentials[membership.Credential.Secret]; exists {
@@ -264,6 +342,15 @@ func validateProxyNode(node ProxyNode, users map[string]User) error {
 		memberships[membership.ID] = membership
 		membershipUsers[membership.UserID] = struct{}{}
 		credentials[membership.Credential.Secret] = struct{}{}
+		if membership.PendingCredential != nil {
+			if membership.PendingCredential.Secret == membership.Credential.Secret {
+				return errors.New("pending Membership credential is unchanged")
+			}
+			if _, exists := credentials[membership.PendingCredential.Secret]; exists {
+				return errors.New("pending Membership credential is reused")
+			}
+			credentials[membership.PendingCredential.Secret] = struct{}{}
+		}
 	}
 	for _, link := range node.Links {
 		if _, exists := credentials[link.Credential.Secret]; exists {
@@ -391,7 +478,7 @@ func validateMultiplex(config *MultiplexConfig) error {
 	if config == nil {
 		return nil
 	}
-	if !config.Enabled {
+	if !config.Enabled && !config.Padding && config.Brutal == nil {
 		return errors.New("multiplex configuration must be enabled or omitted")
 	}
 	if config.Brutal == nil {
@@ -525,12 +612,31 @@ func normalizeEndpoint(endpoint Endpoint) Endpoint {
 	if endpoint.Protocol == ProtocolShadowsocks && endpoint.Method == "" {
 		endpoint.Method = "2022-blake3-aes-128-gcm"
 	}
-	endpoint.TLS.ServerName = strings.TrimSpace(endpoint.TLS.ServerName)
-	endpoint.TLS.Email = strings.TrimSpace(endpoint.TLS.Email)
-	endpoint.TLS.CertificatePath = strings.TrimSpace(endpoint.TLS.CertificatePath)
-	endpoint.TLS.KeyPath = strings.TrimSpace(endpoint.TLS.KeyPath)
+	endpoint.TLS = normalizeTLSConfig(endpoint.TLS)
 	endpoint.ObfsType = strings.TrimSpace(endpoint.ObfsType)
 	return endpoint
+}
+
+// normalizeTLSConfig removes values belonging to an inactive certificate mode.
+// Hidden form fields and older clients may still submit those values; retaining
+// them would make otherwise identical physical listeners appear incompatible.
+func normalizeTLSConfig(config TLSConfig) TLSConfig {
+	config.ServerName = strings.TrimSpace(config.ServerName)
+	config.Email = strings.TrimSpace(config.Email)
+	config.CertificatePath = strings.TrimSpace(config.CertificatePath)
+	config.KeyPath = strings.TrimSpace(config.KeyPath)
+	switch config.Mode {
+	case TLSModeACME:
+		config.CertificatePath = ""
+		config.KeyPath = ""
+	case TLSModeSelfSigned:
+		config.Email = ""
+		config.CertificatePath = ""
+		config.KeyPath = ""
+	case TLSModeFiles:
+		config.Email = ""
+	}
+	return config
 }
 
 func normalizeBuild(build BuildInfo, now time.Time) BuildInfo {

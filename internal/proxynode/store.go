@@ -23,11 +23,12 @@ type envelope struct {
 }
 
 type Store struct {
-	mu    sync.RWMutex
-	path  string
-	state State
-	build BuildInfo
-	now   func() time.Time
+	mu         sync.RWMutex
+	path       string
+	state      State
+	build      BuildInfo
+	now        func() time.Time
+	accounting *accountingDB
 }
 
 func Open(path string, build BuildInfo) (*Store, error) {
@@ -38,11 +39,16 @@ func Open(path string, build BuildInfo) (*Store, error) {
 	store := &Store{path: clean, build: build, now: time.Now}
 	info, err := os.Lstat(clean)
 	if errors.Is(err, os.ErrNotExist) {
-		store.state = State{Users: []User{}, ProxyNodes: []ProxyNode{}}
+		store.state = State{UserRevision: 1, Users: []User{}, ProxyNodes: []ProxyNode{}, AppliedProxyNodes: []ProxyNode{}}
 		store.build = normalizeBuild(build, store.now())
 		if err := store.persistLocked(store.state, store.build); err != nil {
 			return nil, err
 		}
+		accounting, err := openAccountingDB(clean, &store.state)
+		if err != nil {
+			return nil, err
+		}
+		store.accounting = accounting
 		return store, nil
 	}
 	if err != nil {
@@ -102,8 +108,23 @@ func Open(path string, build BuildInfo) (*Store, error) {
 		if err := migrateSchemaV3(&stored.Data); err != nil {
 			return nil, fmt.Errorf("%w: migrate schema version 3: %v", ErrInvalidState, err)
 		}
-		stored.SchemaVersion = SchemaVersion
-	} else if stored.SchemaVersion != SchemaVersion {
+		stored.SchemaVersion = 4
+	}
+	if stored.SchemaVersion == 4 {
+		migrateSchemaV4(&stored.Data)
+		stored.SchemaVersion = 5
+	}
+	if stored.SchemaVersion == 5 {
+		migrateSchemaV5(&stored.Data)
+		stored.SchemaVersion = 6
+	}
+	if stored.SchemaVersion == 6 {
+		stored.SchemaVersion = 7
+	}
+	if stored.SchemaVersion == 7 {
+		stored.SchemaVersion = 8
+	}
+	if stored.SchemaVersion != SchemaVersion {
 		return nil, fmt.Errorf("%w: unsupported schema version %d", ErrInvalidState, stored.SchemaVersion)
 	}
 	if err := validateBuildInfo(stored.LastUsedBy); err != nil {
@@ -122,6 +143,15 @@ func Open(path string, build BuildInfo) (*Store, error) {
 	}
 	store.state = stored.Data
 	store.build = build
+	accounting, err := openAccountingDB(clean, &store.state)
+	if err != nil {
+		return nil, err
+	}
+	store.accounting = accounting
+	if err := validateState(store.state); err != nil {
+		_ = accounting.db.Close()
+		return nil, err
+	}
 	return store, nil
 }
 
@@ -164,6 +194,17 @@ func (s *Store) ProxyNode(id string) (ProxyNode, bool) {
 	return ProxyNode{}, false
 }
 
+func (s *Store) AppliedProxyNode(id string) (ProxyNode, bool) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	for _, node := range s.state.AppliedProxyNodes {
+		if node.ID == id {
+			return cloneProxyNode(node), true
+		}
+	}
+	return ProxyNode{}, false
+}
+
 func (s *Store) CreateUser(name string) (User, error) {
 	name = strings.TrimSpace(name)
 	if !validName(name) {
@@ -175,7 +216,7 @@ func (s *Store) CreateUser(name string) (User, error) {
 	}
 	now := s.now().UTC()
 	created := User{ID: id, Name: name, CreatedAt: now, UpdatedAt: now}
-	err = s.mutate(func(state *State) error {
+	err = s.mutateUser(func(state *State) error {
 		for _, user := range state.Users {
 			if strings.EqualFold(user.Name, name) {
 				return ErrConflict
@@ -192,7 +233,7 @@ func (s *Store) RenameUser(id, name string) error {
 	if !validName(name) {
 		return fmt.Errorf("%w: invalid end user name", ErrInvalidState)
 	}
-	return s.mutate(func(state *State) error {
+	return s.mutateUser(func(state *State) error {
 		for _, user := range state.Users {
 			if user.ID != id && strings.EqualFold(user.Name, name) {
 				return ErrConflict
@@ -210,7 +251,7 @@ func (s *Store) RenameUser(id, name string) error {
 }
 
 func (s *Store) DeleteUser(id string) error {
-	return s.mutate(func(state *State) error {
+	return s.mutateUser(func(state *State) error {
 		index := slices.IndexFunc(state.Users, func(user User) bool { return user.ID == id })
 		if index < 0 {
 			return ErrNotFound
@@ -302,6 +343,7 @@ func (s *Store) DeleteProxyNode(id string) error {
 			return ErrNotFound
 		}
 		state.ProxyNodes = append(state.ProxyNodes[:index], state.ProxyNodes[index+1:]...)
+		state.UserRevision++
 		return nil
 	})
 }
@@ -309,53 +351,85 @@ func (s *Store) DeleteProxyNode(id string) error {
 func (s *Store) UpdateEntrance(nodeID string, endpoint Endpoint) error {
 	endpoint = normalizeEndpoint(endpoint)
 	return s.mutateProxyNode(nodeID, func(state *State, node *ProxyNode) error {
-		old := node.Entrance.Endpoint
-		preserveEndpointSecrets(old, &endpoint)
-		if err := generateEndpointSecrets(&endpoint); err != nil {
-			return err
-		}
-		credentialShapeChanged := old.Protocol != endpoint.Protocol ||
-			(old.Protocol == ProtocolShadowsocks && old.Method != endpoint.Method)
-		if credentialShapeChanged {
-			for index := range node.Memberships {
-				credential, err := generateCredential(endpoint)
-				if err != nil {
-					return err
-				}
-				node.Memberships[index].Credential = credential
-			}
-		}
-		node.Entrance.Endpoint = endpoint
-		return validateListenerLayout(state)
+		return applySharedListenerEdit(state, &node.Entrance.Endpoint, endpoint, s.now().UTC())
 	})
 }
 
 func (s *Store) AddMembership(nodeID, userID string) (Membership, error) {
+	return s.AddMembershipWithPlan(nodeID, userID, MembershipPlan{})
+}
+
+func (s *Store) AddMembershipWithPlan(nodeID, userID string, plan MembershipPlan) (Membership, error) {
+	if err := validateMembershipPlan(plan); err != nil {
+		return Membership{}, err
+	}
 	membershipID, err := randomID("mem")
 	if err != nil {
 		return Membership{}, err
 	}
 	var created Membership
-	err = s.mutateProxyNode(nodeID, func(state *State, node *ProxyNode) error {
+	err = s.mutateUserProxyNode(nodeID, func(state *State, node *ProxyNode) error {
 		if !slices.ContainsFunc(state.Users, func(user User) bool { return user.ID == userID }) {
 			return ErrNotFound
 		}
 		if slices.ContainsFunc(node.Memberships, func(membership Membership) bool { return membership.UserID == userID }) {
 			return ErrConflict
 		}
-		credential, err := generateCredential(node.Entrance.Endpoint)
+		activeEndpoint := node.Entrance.Endpoint
+		if appliedEndpoint, exists := appliedEntranceEndpoint(*state, node.ID); exists {
+			activeEndpoint = appliedEndpoint
+		}
+		credential, err := generateCredential(activeEndpoint)
 		if err != nil {
 			return err
 		}
-		created = Membership{ID: membershipID, UserID: userID, Credential: credential, CreatedAt: s.now().UTC()}
+		now := s.now().UTC()
+		today := utcDate(now)
+		created = Membership{
+			ID: membershipID, UserID: userID, Credential: credential,
+			MonthlyQuotaBytes:    plan.MonthlyQuotaBytes,
+			QuotaAnchorDay:       today.Day(),
+			QuotaPeriodStartedOn: today,
+			QuotaResetsAfter:     addCalendarMonths(today, 1),
+			CreatedAt:            now,
+		}
+		if credentialShapeChanged(activeEndpoint, node.Entrance.Endpoint) {
+			pending, pendingErr := generateCredential(node.Entrance.Endpoint)
+			if pendingErr != nil {
+				return pendingErr
+			}
+			created.PendingCredential = &pending
+		}
+		if plan.SubscriptionMonths > 0 {
+			created.SubscriptionEndsAfter = addCalendarMonths(today, plan.SubscriptionMonths)
+			created.SubscriptionMonths = plan.SubscriptionMonths
+		}
 		node.Memberships = append(node.Memberships, created)
 		return nil
 	})
 	return created, err
 }
 
+func migrateSchemaV4(state *State) {
+	for nodeIndex := range state.ProxyNodes {
+		for membershipIndex := range state.ProxyNodes[nodeIndex].Memberships {
+			membership := &state.ProxyNodes[nodeIndex].Memberships[membershipIndex]
+			start := utcDate(membership.CreatedAt)
+			membership.QuotaAnchorDay = start.Day()
+			membership.QuotaPeriodStartedOn = start
+			membership.QuotaResetsAfter = addCalendarMonths(start, 1)
+		}
+	}
+}
+
+func migrateSchemaV5(state *State) {
+	state.UserRevision = 1
+	state.AppliedRevision = state.Revision
+	state.AppliedProxyNodes = topologySnapshot(state.ProxyNodes)
+}
+
 func (s *Store) RemoveMembership(nodeID, userID string) error {
-	return s.mutateProxyNode(nodeID, func(_ *State, node *ProxyNode) error {
+	return s.mutateUserProxyNode(nodeID, func(_ *State, node *ProxyNode) error {
 		before := len(node.Memberships)
 		node.Memberships = slices.DeleteFunc(node.Memberships, func(membership Membership) bool {
 			return membership.UserID == userID
@@ -463,21 +537,7 @@ func (s *Store) UpdateLink(nodeID, linkID string, endpoint Endpoint) error {
 			if node.Links[index].ID != linkID {
 				continue
 			}
-			old := node.Links[index].Endpoint
-			preserveEndpointSecrets(old, &endpoint)
-			if err := generateEndpointSecrets(&endpoint); err != nil {
-				return err
-			}
-			if old.Protocol != endpoint.Protocol || (old.Protocol == ProtocolShadowsocks && old.Method != endpoint.Method) {
-				credential, err := generateCredential(endpoint)
-				if err != nil {
-					return err
-				}
-				node.Links[index].Credential = credential
-			}
-			node.Links[index].Endpoint = endpoint
-			node.Links[index].UpdatedAt = s.now().UTC()
-			return validateListenerLayout(state)
+			return applySharedListenerEdit(state, &node.Links[index].Endpoint, endpoint, s.now().UTC())
 		}
 		return ErrNotFound
 	})
@@ -831,6 +891,143 @@ func (s *Store) SetManagedAgents(agentIDs []string) error {
 	})
 }
 
+// MarkTopologyApplied atomically records the topology that is actually active
+// on the fleet. Memberships are deliberately excluded: they form an
+// independently revisioned live plane. Pending entrance credentials become
+// active only after the matching listener shape has been deployed.
+func (s *Store) MarkTopologyApplied(expectedRevision uint64, agentIDs []string) error {
+	agentIDs = append([]string(nil), agentIDs...)
+	sort.Strings(agentIDs)
+	agentIDs = slices.Compact(agentIDs)
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.state.Revision != expectedRevision {
+		return ErrConflict
+	}
+	next := cloneState(s.state)
+	credentialsChanged := false
+	for nodeIndex := range next.ProxyNodes {
+		for membershipIndex := range next.ProxyNodes[nodeIndex].Memberships {
+			membership := &next.ProxyNodes[nodeIndex].Memberships[membershipIndex]
+			if membership.PendingCredential == nil {
+				continue
+			}
+			membership.Credential = *membership.PendingCredential
+			membership.PendingCredential = nil
+			credentialsChanged = true
+		}
+	}
+	next.AppliedProxyNodes = topologySnapshot(next.ProxyNodes)
+	next.AppliedRevision = next.Revision
+	next.ManagedAgents = agentIDs
+	if credentialsChanged {
+		next.UserRevision++
+	}
+	if err := validateState(next); err != nil {
+		return err
+	}
+	build := normalizeBuild(s.build, s.now())
+	if err := s.persistLocked(next, build); err != nil {
+		return err
+	}
+	s.state = next
+	s.build = build
+	return s.reconcileAccountingMembershipsLocked()
+}
+
+// RestoreTopology rolls the desired topology back to the snapshot captured
+// before an immediate topology operation. User-plane mutations are allowed to
+// continue while the fleet transaction is running, so their membership plan,
+// usage, subscription, and add/remove decisions are merged into the restored
+// topology instead of being overwritten.
+func (s *Store) RestoreTopology(expectedRevision uint64, previous State) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.state.Revision != expectedRevision {
+		return ErrConflict
+	}
+	next := cloneState(s.state)
+	currentByNode := make(map[string]ProxyNode, len(next.ProxyNodes))
+	for _, node := range next.ProxyNodes {
+		currentByNode[node.ID] = node
+	}
+	restored := make([]ProxyNode, 0, len(previous.ProxyNodes))
+	liveUsers := make(map[string]struct{}, len(next.Users))
+	for _, user := range next.Users {
+		liveUsers[user.ID] = struct{}{}
+	}
+	for _, oldNode := range previous.ProxyNodes {
+		node := cloneProxyNode(oldNode)
+		if current, exists := currentByNode[node.ID]; exists {
+			node.Memberships = mergeRestoredMemberships(oldNode.Memberships, current.Memberships)
+		}
+		node.Memberships = slices.DeleteFunc(node.Memberships, func(membership Membership) bool {
+			_, exists := liveUsers[membership.UserID]
+			return !exists
+		})
+		restored = append(restored, node)
+	}
+	next.ProxyNodes = restored
+	next.Revision++
+	// A failed create/delete or credential-shape edit can change the user
+	// authority projection. Force a fresh reconciliation of the restored view.
+	next.UserRevision++
+	if err := validateState(next); err != nil {
+		return err
+	}
+	build := normalizeBuild(s.build, s.now())
+	if err := s.persistLocked(next, build); err != nil {
+		return err
+	}
+	s.state = next
+	s.build = build
+	return s.reconcileAccountingMembershipsLocked()
+}
+
+func mergeRestoredMemberships(previous, current []Membership) []Membership {
+	previousByID := make(map[string]Membership, len(previous))
+	for _, membership := range previous {
+		previousByID[membership.ID] = membership
+	}
+	result := make([]Membership, 0, len(current))
+	for _, live := range current {
+		old, existed := previousByID[live.ID]
+		if !existed {
+			// This membership was added while the topology operation was in
+			// flight. Its active credential was generated from the applied
+			// entrance, while any candidate-only credential must be discarded.
+			live.PendingCredential = nil
+			result = append(result, live)
+			continue
+		}
+		old.MonthlyQuotaBytes = live.MonthlyQuotaBytes
+		old.UsedBytes = live.UsedBytes
+		old.QuotaAnchorDay = live.QuotaAnchorDay
+		old.QuotaPeriodStartedOn = live.QuotaPeriodStartedOn
+		old.QuotaResetsAfter = live.QuotaResetsAfter
+		old.SubscriptionEndsAfter = live.SubscriptionEndsAfter
+		old.SubscriptionMonths = live.SubscriptionMonths
+		old.DisabledReason = live.DisabledReason
+		result = append(result, old)
+	}
+	return result
+}
+
+func (s *Store) mutateUserProxyNode(id string, mutation func(*State, *ProxyNode) error) error {
+	return s.mutateUser(func(state *State) error {
+		for index := range state.ProxyNodes {
+			if state.ProxyNodes[index].ID == id {
+				if err := mutation(state, &state.ProxyNodes[index]); err != nil {
+					return err
+				}
+				state.ProxyNodes[index].UpdatedAt = s.now().UTC()
+				return nil
+			}
+		}
+		return ErrNotFound
+	})
+}
+
 func (s *Store) mutateProxyNode(id string, mutation func(*State, *ProxyNode) error) error {
 	return s.mutate(func(state *State) error {
 		for index := range state.ProxyNodes {
@@ -866,7 +1063,34 @@ func (s *Store) mutate(mutation func(*State) error) error {
 	}
 	s.state = next
 	s.build = build
-	return nil
+	return s.reconcileAccountingMembershipsLocked()
+}
+
+func (s *Store) mutateUser(mutation func(*State) error) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	next := cloneState(s.state)
+	if err := mutation(&next); err != nil {
+		return err
+	}
+	next.UserRevision++
+	if err := validateState(next); err != nil {
+		return err
+	}
+	build := normalizeBuild(s.build, s.now())
+	if err := s.persistLocked(next, build); err != nil {
+		return err
+	}
+	s.state = next
+	s.build = build
+	return s.reconcileAccountingMembershipsLocked()
+}
+
+func (s *Store) reconcileAccountingMembershipsLocked() error {
+	if s.accounting == nil {
+		return errors.New("accounting database is unavailable")
+	}
+	return s.accounting.reconcileMemberships(s.state)
 }
 
 func (s *Store) persistLocked(state State, build BuildInfo) error {
@@ -928,6 +1152,29 @@ func cloneState(state State) State {
 
 func cloneProxyNode(node ProxyNode) ProxyNode {
 	return cloneState(State{ProxyNodes: []ProxyNode{node}}).ProxyNodes[0]
+}
+
+func topologySnapshot(nodes []ProxyNode) []ProxyNode {
+	result := make([]ProxyNode, len(nodes))
+	for index, node := range nodes {
+		result[index] = cloneProxyNode(node)
+		result[index].Memberships = []Membership{}
+	}
+	return result
+}
+
+func appliedEntranceEndpoint(state State, nodeID string) (Endpoint, bool) {
+	for _, node := range state.AppliedProxyNodes {
+		if node.ID == nodeID {
+			return node.Entrance.Endpoint, true
+		}
+	}
+	return Endpoint{}, false
+}
+
+func credentialShapeChanged(left, right Endpoint) bool {
+	return left.Protocol != right.Protocol ||
+		(left.Protocol == ProtocolShadowsocks && left.Method != right.Method)
 }
 
 func validateBuildInfo(build BuildInfo) error {

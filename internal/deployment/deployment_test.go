@@ -475,6 +475,55 @@ func TestDiskStorePersistsLatestRecordAcrossRestart(t *testing.T) {
 	}
 }
 
+func TestDiskStoreRetainsLastAppliedConfigurationBehindFailedCandidate(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	directory := t.TempDir()
+	now := time.Now().UTC()
+	store, err := NewDiskStore(directory)
+	if err != nil {
+		t.Fatal(err)
+	}
+	appliedConfig := []byte(`{"inbounds":[],"outbounds":[{"type":"direct"}]}`)
+	applied, err := New("deployment-applied", "edge-a", ProxyNodeUsersRevisionPrefix+"one", appliedConfig, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.Create(ctx, applied); err != nil {
+		t.Fatal(err)
+	}
+	for _, status := range []Status{StatusDeploying, StatusApplied} {
+		if _, err := store.Transition(ctx, applied.ID, status, "", now.Add(time.Second)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	failed, err := New("deployment-failed", "edge-a", "revision-failed", []byte(`{"inbounds":[]}`), now.Add(time.Minute))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.Create(ctx, failed); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.Transition(ctx, failed.ID, StatusDeploying, "", now.Add(time.Minute+time.Second)); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.Transition(ctx, failed.ID, StatusActivationFailed, "failed", now.Add(time.Minute+2*time.Second)); err != nil {
+		t.Fatal(err)
+	}
+	reopened, err := NewDiskStore(directory)
+	if err != nil {
+		t.Fatal(err)
+	}
+	latest, err := reopened.LatestForAgent(ctx, "edge-a")
+	if err != nil {
+		t.Fatal(err)
+	}
+	config, _, exists := latest.AppliedConfiguration()
+	if !exists || !bytes.Equal(config, appliedConfig) || latest.AppliedRevisionID() != applied.RevisionID {
+		t.Fatalf("retained applied configuration = %q, %q, %v", config, latest.AppliedRevisionID(), exists)
+	}
+}
+
 func TestDiskStoreRejectsMalformedAndUnsafeEntriesWithoutLeakingConfig(t *testing.T) {
 	t.Parallel()
 

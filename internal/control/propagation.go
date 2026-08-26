@@ -44,6 +44,14 @@ func (s *Server) deriveSource() pool.DeriveSource {
 		if err != nil {
 			return nil
 		}
+		if applied, digest, exists := record.AppliedConfiguration(); exists {
+			record.ConfigJSON = applied
+			record.ConfigSHA256 = sha256.Sum256(applied)
+			record.RenderedSHA256 = digest
+			record.Status = deployment.StatusApplied
+		} else {
+			return nil
+		}
 		return &record
 	}
 }
@@ -76,7 +84,11 @@ func (s *Server) poolDependents(exceptAgentID string) map[string][]string {
 		if record.AgentID == exceptAgentID {
 			continue
 		}
-		if refs := pool.Refs(record.ConfigJSON); len(refs) > 0 {
+		applied, _, exists := record.AppliedConfiguration()
+		if !exists {
+			continue
+		}
+		if refs := pool.Refs(applied); len(refs) > 0 {
 			dependents[record.AgentID] = refs
 		}
 	}
@@ -113,7 +125,11 @@ func (s *Server) propagateToAgent(ctx context.Context, reason, agentID string) {
 		}
 		return
 	}
-	_, renderedSHA, err := s.renderLogicalConfig(record.ConfigJSON)
+	applied, appliedDigest, exists := record.AppliedConfiguration()
+	if !exists {
+		return
+	}
+	_, renderedSHA, err := s.renderLogicalConfig(applied)
 	if err != nil {
 		s.Logger.Error(
 			"outbound pool propagation could not render",
@@ -128,7 +144,7 @@ func (s *Server) propagateToAgent(ctx context.Context, reason, agentID string) {
 	// sent (which covers agents that have no stamp yet, e.g. after a master
 	// restart with a legacy record). Only the stamp needs refreshing.
 	_, stampedSHA, stamped := s.poolRegistry.RenderedVersion(agentID)
-	if (stamped && stampedSHA == renderedSHA) || renderedSHA == record.RenderedDigest() {
+	if (stamped && stampedSHA == renderedSHA) || renderedSHA == appliedDigest {
 		if err := s.poolRegistry.MarkRendered(agentID, poolVersion, renderedSHA); err != nil {
 			s.Logger.Error(
 				"outbound pool render stamp failed",
@@ -154,6 +170,7 @@ func (s *Server) propagateToAgent(ctx context.Context, reason, agentID string) {
 		)
 		return
 	}
+	revisionID = deployment.RevisionWithSamePlane(record.AppliedRevisionID(), revisionID)
 	// QueueDeployment re-renders the same logical config at the boundary, so
 	// the agent receives identical bytes to the ones digested above unless
 	// the pool changed in between; the next trigger reconciles that.
@@ -162,7 +179,7 @@ func (s *Server) propagateToAgent(ctx context.Context, reason, agentID string) {
 		agentID,
 		deploymentID,
 		revisionID,
-		record.ConfigJSON,
+		applied,
 		0,
 	); err != nil {
 		// ErrDeploymentInProgress and ErrAgentOffline are expected races with
@@ -203,6 +220,7 @@ func (s *Server) syncPoolAddresses(ctx context.Context, agentID string, v4, v6 [
 	}
 	if changed {
 		s.propagatePoolChange(ctx, "reported addresses changed", agentID)
+		s.notifyProxyNodeAddressChange()
 	}
 }
 

@@ -22,6 +22,7 @@ import (
 const (
 	activeConfigDirectory = "sing-box"
 	activeConfigFilename  = "active.json"
+	legacyTrafficLedger   = "traffic-ledger.json"
 
 	defaultStartupGracePeriod = 750 * time.Millisecond
 	defaultProcessStopTimeout = 5 * time.Second
@@ -138,6 +139,7 @@ type Manager struct {
 	newProcess      func(string, string) managedProcess
 	replaceFile     func(string, string) error
 	checkExecutable func(context.Context, string) error
+	reconcileUsers  func(context.Context, []byte, []byte) (bool, error)
 	now             func() time.Time
 
 	lifecycleMu sync.Mutex
@@ -155,8 +157,18 @@ type applyRequest struct {
 	ctx            context.Context
 	config         []byte
 	expectedDigest []byte
+	mode           ApplyMode
+	authority      *managedUserAuthorityState
 	result         chan applyResponse
 }
+
+type ApplyMode uint8
+
+const (
+	ApplyModeGeneric ApplyMode = iota
+	ApplyModeProxyNodeTopology
+	ApplyModeProxyNodeUsers
+)
 
 type applyResponse struct {
 	result ApplyResult
@@ -166,6 +178,7 @@ type applyResponse struct {
 type supervisorState struct {
 	activeConfig  []byte
 	hasActive     bool
+	authority     *managedUserAuthorityState
 	child         *runningProcess
 	restart       bool
 	restartFailed int
@@ -259,6 +272,7 @@ func NewManager(options ManagerOptions) (*Manager, error) {
 		agentCommit:        strings.TrimSpace(options.AgentCommit),
 		replaceFile:        replaceConfigFile,
 		checkExecutable:    CheckSupportedExecutable,
+		reconcileUsers:     reconcileManagedUsers,
 		now:                time.Now,
 		events:             make(chan RuntimeEvent, 16),
 	}
@@ -309,6 +323,20 @@ func (m *Manager) ResetForEnrollment() error {
 	if err := m.restoreConfig(nil, false); err != nil {
 		return fmt.Errorf("remove previous active configuration: %w", err)
 	}
+	if err := m.removeLegacyTrafficLedger(); err != nil {
+		return err
+	}
+	authorityPath := filepath.Join(m.configDirectory, managedUserAuthorityFilename)
+	if _, err := os.Lstat(authorityPath); err == nil {
+		if err := os.Remove(authorityPath); err != nil {
+			return fmt.Errorf("remove previous user authority: %w", err)
+		}
+		if err := syncDirectory(m.configDirectory); err != nil {
+			return fmt.Errorf("flush user authority reset: %w", err)
+		}
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return fmt.Errorf("inspect previous user authority: %w", err)
+	}
 	certificates := filepath.Join(m.stateDirectory, managedSelfSignedDirectory)
 	certificatesExist, err := safeDirectoryExists(certificates)
 	if err != nil {
@@ -347,6 +375,9 @@ func (m *Manager) Start(ctx context.Context) (StartupResult, error) {
 	if err := m.prepareDirectories(); err != nil {
 		return StartupResult{}, err
 	}
+	if err := m.removeLegacyTrafficLedger(); err != nil {
+		return StartupResult{}, err
+	}
 	quarantine, err := m.prepareConfigGeneration()
 	if err != nil {
 		return StartupResult{}, err
@@ -356,10 +387,36 @@ func (m *Manager) Start(ctx context.Context) (StartupResult, error) {
 	if err != nil {
 		return StartupResult{}, err
 	}
+	authority, hasAuthority, err := m.loadManagedUserAuthority()
+	if err != nil {
+		clear(activeConfig)
+		return StartupResult{}, fmt.Errorf("load managed-user authority: %w", err)
+	}
+	if hasActive && hasAuthority {
+		overlaid, matched, overlayErr := applyManagedUserAuthority(activeConfig, authority.Variants)
+		if overlayErr != nil {
+			clear(activeConfig)
+			return StartupResult{}, fmt.Errorf("apply managed-user authority at startup: %w", overlayErr)
+		}
+		if matched && !bytes.Equal(activeConfig, overlaid) {
+			if restoreErr := m.restoreConfig(overlaid, true); restoreErr != nil {
+				clear(activeConfig)
+				clear(overlaid)
+				return StartupResult{}, fmt.Errorf("persist managed-user authority at startup: %w", restoreErr)
+			}
+			clear(activeConfig)
+			activeConfig = overlaid
+		} else {
+			clear(overlaid)
+		}
+	}
 	runContext, cancel := context.WithCancel(ctx)
 	state := supervisorState{
 		activeConfig: activeConfig,
 		hasActive:    hasActive,
+	}
+	if hasAuthority {
+		state.authority = &authority
 	}
 	startup := StartupResult{Status: StartupNoConfig, LegacyQuarantine: quarantine}
 	var startErr error
@@ -445,6 +502,19 @@ func (m *Manager) Apply(
 	config []byte,
 	expectedDigest []byte,
 ) (ApplyResult, error) {
+	return m.ApplyWithMode(ctx, config, expectedDigest, ApplyModeGeneric)
+}
+
+// ApplyWithMode lets Proxy Node topology changes preserve the Agent's current
+// membership authority. Only a users-plane deployment may add or remove an
+// end-user membership; a delayed topology payload may rotate the credential
+// or move the listener for memberships that are still locally authorized.
+func (m *Manager) ApplyWithMode(
+	ctx context.Context,
+	config []byte,
+	expectedDigest []byte,
+	mode ApplyMode,
+) (ApplyResult, error) {
 	if ctx == nil {
 		return ApplyResult{}, errors.New("sing-box apply context is required")
 	}
@@ -499,6 +569,7 @@ func (m *Manager) Apply(
 		ctx:            ctx,
 		config:         append([]byte(nil), config...),
 		expectedDigest: append([]byte(nil), expectedDigest...),
+		mode:           mode,
 		result:         make(chan applyResponse, 1),
 	}
 	select {
@@ -519,6 +590,57 @@ func (m *Manager) Apply(
 	case <-done:
 		// Once the supervisor accepts a request it always publishes the
 		// terminal apply result before completing shutdown.
+		select {
+		case response := <-request.result:
+			return response.result, response.err
+		default:
+			return ApplyResult{}, ErrManagerNotRunning
+		}
+	}
+}
+
+// ApplyManagedUserAuthority installs the complete end-user authority for one
+// user revision. It is serialized with topology activation, persisted before
+// runtime reconciliation, and may describe several topology shapes so a user
+// change remains enforceable while a fleet topology transaction is in flight.
+func (m *Manager) ApplyManagedUserAuthority(
+	ctx context.Context,
+	revision uint64,
+	variants []ManagedUserAuthorityVariant,
+) (ApplyResult, error) {
+	if ctx == nil {
+		return ApplyResult{}, errors.New("managed-user authority context is required")
+	}
+	state := managedUserAuthorityState{
+		Version:  managedUserAuthorityVersion,
+		Revision: revision,
+		Variants: cloneManagedUserAuthorityVariants(variants),
+	}
+	if err := validateManagedUserAuthorityState(state); err != nil {
+		return ApplyResult{
+			Status: ApplyStatusValidationFailed, ValidationStatus: ValidationInvalid,
+			CheckedAt: m.now().UTC(), Diagnostic: err.Error(),
+		}, nil
+	}
+	m.lifecycleMu.Lock()
+	if !m.running {
+		m.lifecycleMu.Unlock()
+		return ApplyResult{}, ErrManagerNotRunning
+	}
+	requests, done := m.apply, m.done
+	m.lifecycleMu.Unlock()
+	request := applyRequest{ctx: ctx, authority: &state, result: make(chan applyResponse, 1)}
+	select {
+	case requests <- request:
+	case <-ctx.Done():
+		return ApplyResult{}, ctx.Err()
+	case <-done:
+		return ApplyResult{}, ErrManagerNotRunning
+	}
+	select {
+	case response := <-request.result:
+		return response.result, response.err
+	case <-done:
 		select {
 		case response := <-request.result:
 			return response.result, response.err
@@ -666,6 +788,112 @@ func (m *Manager) applyCandidate(
 	state *supervisorState,
 	request applyRequest,
 ) (ApplyResult, error) {
+	if request.authority != nil {
+		incoming := *request.authority
+		if state.authority != nil && incoming.Revision < state.authority.Revision {
+			return ApplyResult{
+				Status: ApplyStatusApplied, ValidationStatus: ValidationValid,
+				CheckedAt: m.now().UTC(), Active: state.child != nil,
+			}, nil
+		}
+		if state.authority != nil && incoming.Revision == state.authority.Revision &&
+			!managedUserAuthoritiesEqual(incoming, *state.authority) {
+			return ApplyResult{
+				Status: ApplyStatusValidationFailed, ValidationStatus: ValidationInvalid,
+				CheckedAt: m.now().UTC(), Active: state.child != nil,
+				Diagnostic: "managed-user authority revision conflicts with persisted authority",
+			}, nil
+		}
+		if err := m.persistManagedUserAuthority(incoming); err != nil {
+			return ApplyResult{
+				Status: ApplyStatusInternalError, ValidationStatus: ValidationInternalError,
+				CheckedAt: m.now().UTC(), Active: state.child != nil,
+				Diagnostic: "managed-user authority could not be persisted",
+			}, nil
+		}
+		state.authority = &incoming
+		if !state.hasActive {
+			return ApplyResult{
+				Status: ApplyStatusApplied, ValidationStatus: ValidationValid,
+				CheckedAt: m.now().UTC(), Active: false,
+			}, nil
+		}
+		overlaid, matched, err := applyManagedUserAuthority(state.activeConfig, incoming.Variants)
+		if err != nil {
+			return ApplyResult{
+				Status: ApplyStatusInternalError, ValidationStatus: ValidationInternalError,
+				CheckedAt: m.now().UTC(), Active: state.child != nil,
+				Diagnostic: "managed-user authority could not be applied safely",
+			}, nil
+		}
+		if !matched || bytes.Equal(overlaid, state.activeConfig) {
+			clear(overlaid)
+			return ApplyResult{
+				Status: ApplyStatusApplied, ValidationStatus: ValidationValid,
+				CheckedAt: m.now().UTC(), Active: state.child != nil,
+				ConfigSHA256: sha256.Sum256(state.activeConfig),
+			}, nil
+		}
+		request.config = overlaid
+		digest := sha256.Sum256(overlaid)
+		request.expectedDigest = append(request.expectedDigest[:0], digest[:]...)
+		request.mode = ApplyModeProxyNodeUsers
+	}
+	if request.mode == ApplyModeProxyNodeTopology {
+		filtered := []byte(nil)
+		matched := false
+		var err error
+		if state.authority != nil {
+			filtered, matched, err = applyManagedUserAuthority(request.config, state.authority.Variants)
+		}
+		if err == nil && !matched {
+			filtered, err = retainAuthorizedMemberships(state.activeConfig, request.config)
+		}
+		if err != nil {
+			return ApplyResult{
+				Status: ApplyStatusInternalError, ValidationStatus: ValidationInternalError,
+				Diagnostic: "Proxy Node membership authority could not be applied safely",
+				Active:     state.child != nil,
+			}, nil
+		}
+		clear(request.config)
+		request.config = filtered
+		digest := sha256.Sum256(filtered)
+		clear(request.expectedDigest)
+		request.expectedDigest = append(request.expectedDigest[:0], digest[:]...)
+	}
+	if request.mode == ApplyModeProxyNodeUsers && request.authority == nil && state.authority != nil {
+		filtered, matched, err := applyManagedUserAuthority(request.config, state.authority.Variants)
+		if err != nil {
+			return ApplyResult{
+				Status: ApplyStatusInternalError, ValidationStatus: ValidationInternalError,
+				Diagnostic: "managed-user authority could not be applied to the configuration refresh",
+				Active:     state.child != nil,
+			}, nil
+		}
+		if matched {
+			clear(request.config)
+			request.config = filtered
+			digest := sha256.Sum256(filtered)
+			clear(request.expectedDigest)
+			request.expectedDigest = append(request.expectedDigest[:0], digest[:]...)
+		} else {
+			clear(filtered)
+			filtered, err = retainAuthorizedMemberships(state.activeConfig, request.config)
+			if err != nil {
+				return ApplyResult{
+					Status: ApplyStatusInternalError, ValidationStatus: ValidationInternalError,
+					Diagnostic: "current membership authority could not be retained during configuration refresh",
+					Active:     state.child != nil,
+				}, nil
+			}
+			clear(request.config)
+			request.config = filtered
+			digest := sha256.Sum256(filtered)
+			clear(request.expectedDigest)
+			request.expectedDigest = append(request.expectedDigest[:0], digest[:]...)
+		}
+	}
 	validationContext, cancelValidation := context.WithCancel(request.ctx)
 	stopCancellation := context.AfterFunc(managerContext, cancelValidation)
 	validation := m.validator.Check(
@@ -703,6 +931,36 @@ func (m *Manager) applyCandidate(
 		result.Diagnostic = "configuration deployment timed out before activation"
 		return result, err
 	}
+	forceRestartRepair := false
+	if state.hasActive && state.child != nil {
+		usersOnly, reconcileErr := m.reconcileUsers(
+			managerContext,
+			state.activeConfig,
+			request.config,
+		)
+		forceRestartRepair = usersOnly
+		if usersOnly && reconcileErr == nil {
+			stagedPath, stageErr := m.stageConfig(request.config)
+			if stageErr == nil {
+				installed, installErr := m.installStagedConfig(stagedPath)
+				if !installed {
+					_ = os.Remove(stagedPath)
+				}
+				if installErr == nil {
+					clear(state.activeConfig)
+					state.activeConfig = append([]byte(nil), request.config...)
+					state.hasActive = true
+					result.Status = ApplyStatusApplied
+					result.Diagnostic = ""
+					result.Active = true
+					return result, nil
+				}
+			}
+			// Persistence failure falls through to the restart path. Restarting
+			// from the candidate is the authoritative repair for any users that
+			// were already changed through the runtime API.
+		}
+	}
 
 	stagedPath, err := m.stageConfig(request.config)
 	if err != nil {
@@ -710,7 +968,7 @@ func (m *Manager) applyCandidate(
 		result.Diagnostic = "candidate configuration could not be staged"
 		return result, nil
 	}
-	if err := request.ctx.Err(); err != nil {
+	if err := request.ctx.Err(); err != nil && !forceRestartRepair {
 		_ = os.Remove(stagedPath)
 		result.Status = ApplyStatusInternalError
 		result.Diagnostic = "configuration deployment timed out before activation"
@@ -897,6 +1155,22 @@ func (m *Manager) prepareDirectories() error {
 		filepath.Join(m.stateDirectory, "validation"),
 	); err != nil {
 		return fmt.Errorf("secure validation directory: %w", err)
+	}
+	return nil
+}
+
+// removeLegacyTrafficLedger completes the one-time transition from the former
+// Agent-durable cumulative accounting model. Reset deltas are now handed to
+// the master directly and no accounting file is created on the Agent.
+func (m *Manager) removeLegacyTrafficLedger() error {
+	path := filepath.Join(m.configDirectory, legacyTrafficLedger)
+	if _, err := os.Lstat(path); errors.Is(err, os.ErrNotExist) {
+		return nil
+	} else if err != nil {
+		return fmt.Errorf("inspect legacy traffic ledger: %w", err)
+	}
+	if err := os.Remove(path); err != nil {
+		return fmt.Errorf("remove legacy traffic ledger: %w", err)
 	}
 	return nil
 }

@@ -236,6 +236,13 @@ func TestManagerResetForEnrollmentRemovesPreviousActiveConfig(t *testing.T) {
 	); err != nil {
 		t.Fatal(err)
 	}
+	if err := os.WriteFile(
+		filepath.Join(filepath.Dir(manager.ActiveConfigPath()), legacyTrafficLedger),
+		[]byte(`{"version":1,"epoch":"old-accounting-state"}`),
+		0o600,
+	); err != nil {
+		t.Fatal(err)
+	}
 	certificateDirectory := filepath.Join(manager.stateDirectory, managedSelfSignedDirectory, "old-profile")
 	if err := os.MkdirAll(certificateDirectory, 0o700); err != nil {
 		t.Fatal(err)
@@ -253,8 +260,70 @@ func TestManagerResetForEnrollmentRemovesPreviousActiveConfig(t *testing.T) {
 	if _, err := os.Lstat(manager.ActiveConfigPath()); !errors.Is(err, os.ErrNotExist) {
 		t.Fatalf("active config after enrollment reset: %v", err)
 	}
+	if _, err := os.Lstat(filepath.Join(filepath.Dir(manager.ActiveConfigPath()), legacyTrafficLedger)); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("traffic ledger after enrollment reset: %v", err)
+	}
 	if _, err := os.Lstat(filepath.Join(manager.stateDirectory, managedSelfSignedDirectory)); !errors.Is(err, os.ErrNotExist) {
 		t.Fatalf("managed certificates after enrollment reset: %v", err)
+	}
+}
+
+func TestManagerStartRemovesLegacyTrafficLedger(t *testing.T) {
+	t.Parallel()
+	manager := newTestManager(t, &fakeProcessFactory{}, nil)
+	ledgerPath := filepath.Join(filepath.Dir(manager.ActiveConfigPath()), legacyTrafficLedger)
+	if err := os.MkdirAll(filepath.Dir(ledgerPath), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(ledgerPath, []byte(`{"obsolete":true}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	if _, err := manager.Start(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Lstat(ledgerPath); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("legacy traffic ledger after startup: %v", err)
+	}
+	stopContext, stopCancel := context.WithTimeout(context.Background(), time.Second)
+	defer stopCancel()
+	if err := manager.Stop(stopContext); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestManagerManagedUserAuthorityRejectsStaleRevision(t *testing.T) {
+	manager := newTestManager(t, &fakeProcessFactory{}, nil)
+	runContext, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	if _, err := manager.Start(runContext); err != nil {
+		t.Fatal(err)
+	}
+	variant, err := BuildManagedUserAuthorityVariant(managedUserTestConfig(`[
+		{"name":"cinema-alice-m-AAAAAAAAAAAA","password":"alice"}
+	]`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result, err := manager.ApplyManagedUserAuthority(context.Background(), 2, []ManagedUserAuthorityVariant{variant}); err != nil || result.Status != ApplyStatusApplied {
+		t.Fatalf("apply revision 2 = %+v, %v", result, err)
+	}
+	variant.Endpoints[0].Users[0].Password = "stale"
+	if result, err := manager.ApplyManagedUserAuthority(context.Background(), 1, []ManagedUserAuthorityVariant{variant}); err != nil || result.Status != ApplyStatusApplied {
+		t.Fatalf("apply stale revision = %+v, %v", result, err)
+	}
+	persisted, exists, err := manager.loadManagedUserAuthority()
+	if err != nil || !exists {
+		t.Fatalf("load authority = %+v, %v, exists=%v", persisted, err, exists)
+	}
+	if persisted.Revision != 2 || persisted.Variants[0].Endpoints[0].Users[0].Password != "alice" {
+		t.Fatalf("stale revision replaced authority: %#v", persisted)
+	}
+	stopContext, stopCancel := context.WithTimeout(context.Background(), time.Second)
+	defer stopCancel()
+	if err := manager.Stop(stopContext); err != nil {
+		t.Fatal(err)
 	}
 }
 
@@ -428,6 +497,69 @@ func TestManagerAppliesConfigAtomicallyAndStopsChild(t *testing.T) {
 		t.Fatalf("Apply() after Stop error = %v, want ErrManagerNotRunning", err)
 	}
 	for range manager.Events() {
+	}
+}
+
+func TestManagerAppliesUsersOnlyChangeWithoutRestartingChild(t *testing.T) {
+	factory := &fakeProcessFactory{}
+	manager := newTestManager(t, factory, nil)
+	previous := []byte(`{"inbounds":[],"marker":"previous"}`)
+	writeActiveConfig(t, manager, previous)
+	manager.reconcileUsers = func(_ context.Context, oldConfig, newConfig []byte) (bool, error) {
+		if string(oldConfig) != string(previous) || !strings.Contains(string(newConfig), `"candidate"`) {
+			t.Fatalf("unexpected reconciliation inputs %q %q", oldConfig, newConfig)
+		}
+		return true, nil
+	}
+
+	runContext, cancelRun := context.WithCancel(context.Background())
+	defer cancelRun()
+	startup, err := manager.Start(runContext)
+	if err != nil || startup.Status != StartupRunning {
+		t.Fatalf("Start() = %+v, %v", startup, err)
+	}
+	defer stopTestManager(t, manager)
+
+	candidate := []byte(`{"inbounds":[],"marker":"candidate"}`)
+	digest := sha256.Sum256(candidate)
+	result, err := manager.Apply(context.Background(), candidate, digest[:])
+	if err != nil || result.Status != ApplyStatusApplied || !result.Active {
+		t.Fatalf("Apply() = %+v, %v", result, err)
+	}
+	processes, _ := factory.snapshot()
+	if len(processes) != 1 || processes[0].signalCount() != 0 {
+		t.Fatalf("users-only apply restarted the child: processes=%d signals=%d", len(processes), processes[0].signalCount())
+	}
+	stored, err := os.ReadFile(manager.ActiveConfigPath())
+	if err != nil || string(stored) != string(candidate) {
+		t.Fatalf("persisted candidate = %q, %v", stored, err)
+	}
+}
+
+func TestManagerRestartsWhenManagedUserAPIIsUnavailable(t *testing.T) {
+	factory := &fakeProcessFactory{}
+	manager := newTestManager(t, factory, nil)
+	previous := []byte(`{"inbounds":[],"marker":"previous"}`)
+	writeActiveConfig(t, manager, previous)
+	manager.reconcileUsers = func(context.Context, []byte, []byte) (bool, error) {
+		return true, errors.New("unavailable")
+	}
+	runContext, cancelRun := context.WithCancel(context.Background())
+	defer cancelRun()
+	if startup, err := manager.Start(runContext); err != nil || startup.Status != StartupRunning {
+		t.Fatalf("Start() = %+v, %v", startup, err)
+	}
+	defer stopTestManager(t, manager)
+
+	candidate := []byte(`{"inbounds":[],"marker":"candidate"}`)
+	digest := sha256.Sum256(candidate)
+	result, err := manager.Apply(context.Background(), candidate, digest[:])
+	if err != nil || result.Status != ApplyStatusApplied {
+		t.Fatalf("Apply() = %+v, %v", result, err)
+	}
+	processes, _ := factory.snapshot()
+	if len(processes) != 2 || processes[0].signalCount() == 0 {
+		t.Fatalf("API failure did not use restart fallback: processes=%d first-signals=%d", len(processes), processes[0].signalCount())
 	}
 }
 

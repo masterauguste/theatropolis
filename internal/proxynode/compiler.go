@@ -10,6 +10,7 @@ import (
 	"strings"
 
 	"github.com/masterauguste/theatropolis/internal/pool"
+	"github.com/masterauguste/theatropolis/internal/singbox"
 )
 
 type AddressResolver interface {
@@ -28,12 +29,13 @@ type renderUser struct {
 }
 
 type ingressCandidate struct {
-	node       *ProxyNode
-	hop        *Hop
-	endpoint   Endpoint
-	users      []renderUser
-	link       *Link
-	inboundTag string
+	node           *ProxyNode
+	hop            *Hop
+	endpoint       Endpoint
+	users          []renderUser
+	link           *Link
+	inboundTag     string
+	routeByInbound bool
 }
 
 type listenerGroup struct {
@@ -92,16 +94,17 @@ func Compile(state State, resolver AddressResolver) (CompileResult, error) {
 		root := hops[node.Entrance.HopID]
 		rootUsers := make([]renderUser, 0, len(node.Memberships))
 		for _, membership := range node.Memberships {
+			if membership.DisabledReason != MembershipEnabled {
+				continue
+			}
 			user := users[membership.UserID]
-			label := endUserLabel(node.Name, user.Name)
+			label := AuthenticatedUserLabel(node.Name, user.Name, membership.ID)
 			rootUsers = append(rootUsers, renderUser{Name: label, Secret: membership.Credential.Secret})
 		}
-		if len(rootUsers) > 0 {
-			allCandidates = append(allCandidates, &ingressCandidate{
-				node: node, hop: root, endpoint: node.Entrance.Endpoint,
-				users: rootUsers,
-			})
-		}
+		allCandidates = append(allCandidates, &ingressCandidate{
+			node: node, hop: root, endpoint: node.Entrance.Endpoint,
+			users: rootUsers,
+		})
 		for linkIndex := range node.Links {
 			link := &node.Links[linkIndex]
 			child := hops[link.ChildHopID]
@@ -153,6 +156,70 @@ func Compile(state State, resolver AddressResolver) (CompileResult, error) {
 		result.Configs[agentID] = config
 	}
 	return result, nil
+}
+
+// CompileTopology renders the draft routing/listener plane without any end
+// users. Link credentials remain because they belong to topology. This view is
+// used for previews and topology comparison; compileTopologyDeployment adds a
+// fresh live-user snapshot when constructing a restart payload.
+func CompileTopology(state State, resolver AddressResolver) (CompileResult, error) {
+	state = cloneState(state)
+	for index := range state.ProxyNodes {
+		state.ProxyNodes[index].Memberships = []Membership{}
+	}
+	return Compile(state, resolver)
+}
+
+// compileTopologyDeployment renders the draft topology with a fresh snapshot
+// of the live user plane. A topology change may require a sing-box restart, so
+// omitting users from the actual payload would temporarily revoke every user.
+// Pending credentials are used only when the draft changes the entrance's
+// credential shape; MarkTopologyApplied promotes them after every Agent has
+// accepted the topology.
+func compileTopologyDeployment(state State, resolver AddressResolver) (CompileResult, error) {
+	state = cloneState(state)
+	for nodeIndex := range state.ProxyNodes {
+		for membershipIndex := range state.ProxyNodes[nodeIndex].Memberships {
+			membership := &state.ProxyNodes[nodeIndex].Memberships[membershipIndex]
+			if membership.PendingCredential != nil {
+				membership.Credential = *membership.PendingCredential
+				membership.PendingCredential = nil
+			}
+		}
+	}
+	return Compile(state, resolver)
+}
+
+// CompileAppliedUsers renders the latest live memberships onto only the last
+// successfully applied topology. Draft Links, routing Rules, listener fields,
+// and Link credentials can therefore never leak into an automatic user sync.
+func CompileAppliedUsers(state State, resolver AddressResolver) (CompileResult, error) {
+	liveNodes := make(map[string]ProxyNode, len(state.ProxyNodes))
+	for _, node := range state.ProxyNodes {
+		liveNodes[node.ID] = node
+	}
+	applied := topologySnapshot(state.AppliedProxyNodes)
+	for index := range applied {
+		live, exists := liveNodes[applied[index].ID]
+		if !exists {
+			continue
+		}
+		applied[index].Memberships = make([]Membership, len(live.Memberships))
+		for membershipIndex, membership := range live.Memberships {
+			membership.PendingCredential = nil
+			applied[index].Memberships[membershipIndex] = membership
+		}
+	}
+	compiledState := State{
+		Revision: state.AppliedRevision, UserRevision: max(state.UserRevision, 1),
+		AppliedRevision: state.AppliedRevision, Users: cloneState(state).Users,
+		ProxyNodes: applied, AppliedProxyNodes: topologySnapshot(applied),
+	}
+	return Compile(compiledState, resolver)
+}
+
+func compileAppliedTopology(state State, resolver AddressResolver) (CompileResult, error) {
+	return CompileAppliedUsers(state, resolver)
 }
 
 func ensureAgentRender(rendered map[string]*agentRender, agentID string) *agentRender {
@@ -213,6 +280,11 @@ func groupListeners(byAgent map[string]*agentRender, candidates []*ingressCandid
 	}
 	for _, render := range byAgent {
 		sort.Slice(render.groups, func(left, right int) bool { return render.groups[left].key < render.groups[right].key })
+		for _, group := range render.groups {
+			if len(group.candidates) == 1 {
+				group.candidates[0].routeByInbound = true
+			}
+		}
 	}
 	return nil
 }
@@ -248,6 +320,17 @@ func renderAgentConfig(render *agentRender) ([]byte, error) {
 		"outbounds": render.outbounds,
 		"route":     route,
 	}
+	if len(render.groups) > 0 {
+		servers := make(map[string]string, len(render.groups))
+		for _, group := range render.groups {
+			servers["/"+group.tag] = group.tag
+		}
+		config["services"] = []map[string]any{{
+			"type": "ssm-api", "tag": singbox.ManagedUserAPIServiceTag,
+			"listen": "127.0.0.1", "listen_port": singbox.ManagedUserAPIListenPort,
+			"servers": servers,
+		}}
+	}
 	if len(render.certificateProviders) > 0 {
 		config["certificate_providers"] = render.certificateProviders
 	}
@@ -279,6 +362,13 @@ func renderListener(group *listenerGroup) (map[string]any, map[string]any, error
 	case ProtocolShadowsocks:
 		inbound["method"] = endpoint.Method
 		inbound["password"] = endpoint.ServerKey
+		if len(users) == 0 {
+			// Upstream selects its API-capable multi-user implementation for an
+			// empty Shadowsocks listener only when managed mode is explicit.
+			// Once the first desired user exists the users array selects the same
+			// implementation and this flag must be omitted.
+			inbound["managed"] = true
+		}
 		if multiplex := renderInboundMultiplex(listenerMultiplex(group)); multiplex != nil {
 			inbound["multiplex"] = multiplex
 		}
@@ -369,10 +459,13 @@ func renderHopRules(render *agentRender, candidate *ingressCandidate) error {
 	}
 	sort.SliceStable(rules, func(left, right int) bool { return rules[left].rule.Order < rules[right].rule.Order })
 	for _, route := range rules {
-		if len(allLabels) == 0 {
+		if len(allLabels) == 0 && !candidate.routeByInbound {
 			continue
 		}
-		rendered := map[string]any{"inbound": []string{candidate.inboundTag}, "auth_user": allLabels}
+		rendered := map[string]any{"inbound": []string{candidate.inboundTag}}
+		if !candidate.routeByInbound {
+			rendered["auth_user"] = allLabels
+		}
 		if err := renderRuleMatch(render, candidate.node, route.rule, rendered); err != nil {
 			return err
 		}
@@ -381,16 +474,23 @@ func renderHopRules(render *agentRender, candidate *ingressCandidate) error {
 		render.rules = append(render.rules, rendered)
 	}
 	for _, link := range links {
-		if link.Fallback && len(allLabels) > 0 {
-			render.rules = append(render.rules, map[string]any{
-				"inbound": []string{candidate.inboundTag}, "auth_user": allLabels,
-				"action": "route", "outbound": linkOutboundTag(link.ID),
-			})
+		if link.Fallback && (len(allLabels) > 0 || candidate.routeByInbound) {
+			fallback := map[string]any{
+				"inbound": []string{candidate.inboundTag},
+				"action":  "route", "outbound": linkOutboundTag(link.ID),
+			}
+			if !candidate.routeByInbound {
+				fallback["auth_user"] = allLabels
+			}
+			render.rules = append(render.rules, fallback)
 			break
 		}
 	}
-	if len(allLabels) > 0 {
-		final := map[string]any{"inbound": []string{candidate.inboundTag}, "auth_user": allLabels}
+	if len(allLabels) > 0 || candidate.routeByInbound {
+		final := map[string]any{"inbound": []string{candidate.inboundTag}}
+		if !candidate.routeByInbound {
+			final["auth_user"] = allLabels
+		}
 		applyTarget(final, candidate.hop.Final)
 		render.rules = append(render.rules, final)
 	}
@@ -569,6 +669,9 @@ func renderInboundMultiplex(config *MultiplexConfig) map[string]any {
 }
 
 func renderOutboundMultiplex(config *MultiplexConfig) map[string]any {
+	if config == nil || !config.Enabled {
+		return nil
+	}
 	multiplex := renderInboundMultiplex(config)
 	if multiplex != nil {
 		// The protocol is selected by the dialing side. Set it explicitly so a
@@ -604,12 +707,21 @@ func customRuleSet(node ProxyNode, tag string) (CustomRuleSet, bool) {
 	return CustomRuleSet{}, false
 }
 
-func endUserLabel(proxyName, userName string) string {
-	return proxyName + "-" + userName
+// AuthenticatedUserLabel keeps the requested human-readable names while the
+// membership suffix makes delimiter ambiguities collision-free. The bounded
+// length is accepted by both sing-box's managed-user API and traffic reports.
+func AuthenticatedUserLabel(proxyName, userName, membershipID string) string {
+	const maxAuthenticatedUserBytes = 128
+	suffix := "-m-" + shortID(membershipID)
+	prefix := proxyName + "-" + userName
+	if len(prefix)+len(suffix) > maxAuthenticatedUserBytes {
+		prefix = prefix[:maxAuthenticatedUserBytes-len(suffix)]
+	}
+	return prefix + suffix
 }
 
 func linkUserLabel(proxyName, linkID string) string {
-	return proxyName + "-link-" + shortID(linkID)
+	return proxyName + "-link-l-" + shortID(linkID)
 }
 
 func linkOutboundTag(linkID string) string {
