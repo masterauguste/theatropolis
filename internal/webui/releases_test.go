@@ -5,10 +5,44 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"strings"
 	"sync/atomic"
 	"testing"
 )
+
+func TestDefaultReleaseCatalogAllowsOnlyTrustedGitHubRedirects(t *testing.T) {
+	t.Parallel()
+	policy := NewGitHubReleaseCatalog(nil).client.CheckRedirect
+	for _, rawURL := range []string{
+		"https://github.com/owner/repository/releases/download/v1/asset",
+		"https://api.github.com/repos/owner/repository/releases",
+		"https://release-assets.githubusercontent.com/github-production-release-asset/1/asset?sig=opaque",
+	} {
+		target, err := url.Parse(rawURL)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !trustedGitHubRedirectURL(target) || policy(&http.Request{URL: target}, nil) != nil {
+			t.Errorf("trusted GitHub redirect rejected: %s", rawURL)
+		}
+	}
+	for _, rawURL := range []string{
+		"http://release-assets.githubusercontent.com/asset",
+		"https://release-assets.githubusercontent.com.evil.example/asset",
+		"https://user@release-assets.githubusercontent.com/asset",
+		"https://objects.githubusercontent.com/asset",
+		"https://example.com/asset",
+	} {
+		target, err := url.Parse(rawURL)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if trustedGitHubRedirectURL(target) || policy(&http.Request{URL: target}, nil) == nil {
+			t.Errorf("untrusted GitHub redirect accepted: %s", rawURL)
+		}
+	}
+}
 
 func TestGitHubReleaseCatalogDiscoversAndSortsTags(t *testing.T) {
 	t.Parallel()

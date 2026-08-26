@@ -51,9 +51,7 @@ func NewGitHubReleaseCatalog(client *http.Client) *GitHubReleaseCatalog {
 		client = &http.Client{
 			Timeout: 12 * time.Second,
 			CheckRedirect: func(request *http.Request, _ []*http.Request) error {
-				host := request.URL.Hostname()
-				if request.URL.Scheme != "https" ||
-					(host != "github.com" && host != "api.github.com") {
+				if !trustedGitHubRedirectURL(request.URL) {
 					return errors.New("version catalog redirected to an untrusted host")
 				}
 				return nil
@@ -70,6 +68,18 @@ func NewGitHubReleaseCatalog(client *http.Client) *GitHubReleaseCatalog {
 			"theatropolis_linux_arm64.tar.gz",
 		},
 		validVersion: agentupdate.ValidVersion,
+	}
+}
+
+func trustedGitHubRedirectURL(target *url.URL) bool {
+	if target == nil || target.Scheme != "https" || target.User != nil {
+		return false
+	}
+	switch target.Hostname() {
+	case "github.com", "api.github.com", "release-assets.githubusercontent.com":
+		return true
+	default:
+		return false
 	}
 }
 
