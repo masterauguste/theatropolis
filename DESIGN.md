@@ -66,10 +66,13 @@ used as a literal translation of “Active.”
 
 ## Layout
 
-Desktop uses a 14rem persistent route rail and a fluid work area. The work area
-has generous outer padding and readable content widths; topology views may use
-the wider canvas. At narrow widths the rail becomes a compact sticky top bar
-with horizontal navigation and document scrolling.
+Desktop uses a 14rem persistent route rail and a fluid work area. Standard
+pages are centered within the space beside the rail and grow to a 120rem
+maximum, so wide displays gain useful room without leaving the application
+visually pinned to one edge. Focused form and settings pages use a centered
+72rem maximum; topology views may use the entire remaining canvas. All three
+variants share responsive outer padding. At narrow widths the rail becomes a
+compact sticky top bar with horizontal navigation and document scrolling.
 
 ```text
 ┌ route rail ──────┬──────────────── work area ────────────────┐

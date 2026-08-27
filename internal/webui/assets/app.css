@@ -68,6 +68,8 @@
 
   --ease: 140ms ease;
   --rail-width: 14rem;
+  --workspace-max-width: 120rem;
+  --workspace-narrow-max-width: 72rem;
 
   /* Shared field / dropdown geometry */
   --control-height: 42px;
@@ -1089,18 +1091,26 @@ svg {
 /* ---------- Layout ---------- */
 
 .main {
-  width: calc(100% - var(--rail-width));
-  max-width: 1440px;
-  margin: 0 0 0 var(--rail-width);
+  width: min(calc(100% - var(--rail-width)), var(--workspace-max-width));
+  max-width: none;
+  margin: 0 0 0 max(
+    var(--rail-width),
+    calc((100% + var(--rail-width) - var(--workspace-max-width)) / 2)
+  );
   padding: 2.6rem clamp(1.5rem, 4vw, 4rem) 5rem;
 }
 
 .main--narrow {
-  max-width: calc(1040px + var(--rail-width));
+  width: min(calc(100% - var(--rail-width)), var(--workspace-narrow-max-width));
+  margin-left: max(
+    var(--rail-width),
+    calc((100% + var(--rail-width) - var(--workspace-narrow-max-width)) / 2)
+  );
 }
 
 .main--wide {
-  max-width: none;
+  width: calc(100% - var(--rail-width));
+  margin-left: var(--rail-width);
 }
 
 .breadcrumbs {
@@ -3804,6 +3814,15 @@ dialog.fleet-settings-dialog {
 
   .form-card__actions {
     flex-direction: column-reverse;
+  }
+
+  .subscription-default .inline-form {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .subscription-default .field {
+    min-width: 0;
   }
 }
 

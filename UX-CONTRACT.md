@@ -26,8 +26,10 @@ Security and domain rules in the Go implementation remain authoritative.
   in one page-header row. The Entrance Hop opens a dedicated listener/protocol
   dialog from the relay map; custom Rule Set management is not exposed.
   Membership forms stay in dialogs rather than the map canvas.
-- Desktop uses a persistent left rail. Narrow layouts use a sticky horizontal
-  header without hiding page content or document scrolling.
+- Desktop uses a persistent left rail. Standard and focused-width pages remain
+  centered in the available workspace on large displays, while topology pages
+  retain the full canvas. Narrow layouts use a sticky horizontal header without
+  hiding page content or document scrolling.
 - A global user's Subscription destination owns only that user's bearer links
   and derived Nodes. The global Subscriptions destination owns the universal
   default route and ordered Rules used by every user export. Its Simplified
