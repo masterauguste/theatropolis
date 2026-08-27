@@ -124,6 +124,10 @@ func Open(path string, build BuildInfo) (*Store, error) {
 	if stored.SchemaVersion == 7 {
 		stored.SchemaVersion = 8
 	}
+	if stored.SchemaVersion == 8 {
+		migrateSchemaV8(&stored.Data)
+		stored.SchemaVersion = 9
+	}
 	if stored.SchemaVersion != SchemaVersion {
 		return nil, fmt.Errorf("%w: unsupported schema version %d", ErrInvalidState, stored.SchemaVersion)
 	}
@@ -384,7 +388,7 @@ func (s *Store) AddMembershipWithPlan(nodeID, userID string, plan MembershipPlan
 			return err
 		}
 		now := s.now().UTC()
-		today := utcDate(now)
+		today := billingDate(now)
 		created = Membership{
 			ID: membershipID, UserID: userID, Credential: credential,
 			MonthlyQuotaBytes:    plan.MonthlyQuotaBytes,
@@ -400,9 +404,11 @@ func (s *Store) AddMembershipWithPlan(nodeID, userID string, plan MembershipPlan
 			}
 			created.PendingCredential = &pending
 		}
-		if plan.SubscriptionMonths > 0 {
-			created.SubscriptionEndsAfter = addCalendarMonths(today, plan.SubscriptionMonths)
-			created.SubscriptionMonths = plan.SubscriptionMonths
+		if plan.SubscriptionValue > 0 {
+			created.SubscriptionStartedAt = now.Truncate(time.Second)
+			created.SubscriptionEndsAfter = subscriptionDeadline(now, plan.SubscriptionValue, plan.SubscriptionUnit)
+			created.SubscriptionValue = plan.SubscriptionValue
+			created.SubscriptionUnit = plan.SubscriptionUnit
 		}
 		node.Memberships = append(node.Memberships, created)
 		return nil
@@ -414,7 +420,7 @@ func migrateSchemaV4(state *State) {
 	for nodeIndex := range state.ProxyNodes {
 		for membershipIndex := range state.ProxyNodes[nodeIndex].Memberships {
 			membership := &state.ProxyNodes[nodeIndex].Memberships[membershipIndex]
-			start := utcDate(membership.CreatedAt)
+			start := billingDate(membership.CreatedAt)
 			membership.QuotaAnchorDay = start.Day()
 			membership.QuotaPeriodStartedOn = start
 			membership.QuotaResetsAfter = addCalendarMonths(start, 1)
@@ -428,6 +434,35 @@ func migrateSchemaV5(state *State) {
 	state.AppliedProxyNodes = topologySnapshot(state.ProxyNodes)
 }
 
+func migrateSchemaV8(state *State) {
+	for nodeIndex := range state.ProxyNodes {
+		for membershipIndex := range state.ProxyNodes[nodeIndex].Memberships {
+			membership := &state.ProxyNodes[nodeIndex].Memberships[membershipIndex]
+			// Schema v8 stored UTC calendar dates. Schema v9 uses the same
+			// calendar labels in the product's fixed UTC+8 billing clock.
+			membership.QuotaPeriodStartedOn = legacyUTCDateToBillingDate(membership.QuotaPeriodStartedOn)
+			membership.QuotaResetsAfter = legacyUTCDateToBillingDate(membership.QuotaResetsAfter)
+			if membership.LegacySubscriptionMonths == 0 {
+				continue
+			}
+			membership.SubscriptionValue = membership.LegacySubscriptionMonths
+			membership.SubscriptionUnit = SubscriptionMonths
+			membership.SubscriptionStartedAt = membership.CreatedAt.UTC().Truncate(time.Second)
+			lastValidDate := legacyUTCDateToBillingDate(membership.SubscriptionEndsAfter)
+			membership.SubscriptionEndsAfter = lastValidDate.AddDate(0, 0, 1)
+			membership.LegacySubscriptionMonths = 0
+		}
+	}
+}
+
+func legacyUTCDateToBillingDate(value time.Time) time.Time {
+	if value.IsZero() {
+		return time.Time{}
+	}
+	value = value.UTC()
+	return time.Date(value.Year(), value.Month(), value.Day(), 0, 0, 0, 0, billingLocation)
+}
+
 func (s *Store) RemoveMembership(nodeID, userID string) error {
 	return s.mutateUserProxyNode(nodeID, func(_ *State, node *ProxyNode) error {
 		before := len(node.Memberships)
@@ -436,6 +471,36 @@ func (s *Store) RemoveMembership(nodeID, userID string) error {
 		})
 		if len(node.Memberships) == before {
 			return ErrNotFound
+		}
+		return nil
+	})
+}
+
+// ResetMembershipCredential rotates the active entrance secret immediately.
+// If a topology draft changes the entrance credential shape, a distinct
+// candidate secret is staged for activation with that topology.
+func (s *Store) ResetMembershipCredential(nodeID, userID string) error {
+	return s.mutateUserProxyNode(nodeID, func(state *State, node *ProxyNode) error {
+		membership := membershipForUser(node, userID)
+		if membership == nil {
+			return ErrNotFound
+		}
+		activeEndpoint := node.Entrance.Endpoint
+		if appliedEndpoint, exists := appliedEntranceEndpoint(*state, node.ID); exists {
+			activeEndpoint = appliedEndpoint
+		}
+		credential, err := generateCredential(activeEndpoint)
+		if err != nil {
+			return err
+		}
+		membership.Credential = credential
+		membership.PendingCredential = nil
+		if credentialShapeChanged(activeEndpoint, node.Entrance.Endpoint) {
+			pending, pendingErr := generateCredential(node.Entrance.Endpoint)
+			if pendingErr != nil {
+				return pendingErr
+			}
+			membership.PendingCredential = &pending
 		}
 		return nil
 	})
@@ -1005,8 +1070,12 @@ func mergeRestoredMemberships(previous, current []Membership) []Membership {
 		old.QuotaAnchorDay = live.QuotaAnchorDay
 		old.QuotaPeriodStartedOn = live.QuotaPeriodStartedOn
 		old.QuotaResetsAfter = live.QuotaResetsAfter
+		old.SubscriptionStartedAt = live.SubscriptionStartedAt
 		old.SubscriptionEndsAfter = live.SubscriptionEndsAfter
-		old.SubscriptionMonths = live.SubscriptionMonths
+		old.SubscriptionValue = live.SubscriptionValue
+		old.SubscriptionUnit = live.SubscriptionUnit
+		old.LegacySubscriptionMonths = 0
+		old.Credential = live.Credential
 		old.DisabledReason = live.DisabledReason
 		result = append(result, old)
 	}

@@ -6,7 +6,7 @@ import "time"
 
 const (
 	SchemaID      = "theatropolis/proxy-node-state"
-	SchemaVersion = 8
+	SchemaVersion = 9
 )
 
 type Protocol string
@@ -177,11 +177,25 @@ type Membership struct {
 	QuotaAnchorDay        int              `json:"quota_anchor_day"`
 	QuotaPeriodStartedOn  time.Time        `json:"quota_period_started_on"`
 	QuotaResetsAfter      time.Time        `json:"quota_resets_after"`
+	SubscriptionStartedAt time.Time        `json:"subscription_started_at,omitempty"`
 	SubscriptionEndsAfter time.Time        `json:"subscription_ends_after,omitempty"`
-	SubscriptionMonths    int              `json:"subscription_months,omitempty"`
-	DisabledReason        MembershipStatus `json:"disabled_reason,omitempty"`
-	CreatedAt             time.Time        `json:"created_at"`
+	SubscriptionValue     int              `json:"subscription_value,omitempty"`
+	SubscriptionUnit      SubscriptionUnit `json:"subscription_unit,omitempty"`
+	// LegacySubscriptionMonths is retained only so schema-v8 state can be decoded
+	// and migrated. Schema-v9 state always leaves it zero.
+	LegacySubscriptionMonths int              `json:"subscription_months,omitempty"`
+	DisabledReason           MembershipStatus `json:"disabled_reason,omitempty"`
+	CreatedAt                time.Time        `json:"created_at"`
 }
+
+type SubscriptionUnit string
+
+const (
+	SubscriptionMinutes SubscriptionUnit = "minutes"
+	SubscriptionHours   SubscriptionUnit = "hours"
+	SubscriptionDays    SubscriptionUnit = "days"
+	SubscriptionMonths  SubscriptionUnit = "months"
+)
 
 type MembershipStatus string
 
@@ -195,8 +209,9 @@ const (
 // Proxy Node. A zero quota is unlimited; a zero subscription length never
 // expires.
 type MembershipPlan struct {
-	MonthlyQuotaBytes  uint64
-	SubscriptionMonths int
+	MonthlyQuotaBytes uint64
+	SubscriptionValue int
+	SubscriptionUnit  SubscriptionUnit
 }
 
 // TrafficObservation is a rolling-upgrade baseline for a legacy Agent's

@@ -15,7 +15,7 @@ import (
 	_ "modernc.org/sqlite"
 )
 
-const accountingSchemaVersion = 1
+const accountingSchemaVersion = 2
 
 type accountingDB struct {
 	db   *sql.DB
@@ -137,6 +137,11 @@ func (a *accountingDB) initialize(state *State) error {
 		}
 	case err != nil:
 		return fmt.Errorf("read accounting schema: %w", err)
+	case version == 1:
+		if err := migrateAccountingSchemaV1(transaction); err != nil {
+			return err
+		}
+		version = 2
 	case version != accountingSchemaVersion:
 		return fmt.Errorf("%w: unsupported accounting schema version %d", ErrInvalidState, version)
 	}
@@ -169,6 +174,46 @@ func (a *accountingDB) initialize(state *State) error {
 	}
 	if err := a.loadIntoState(state); err != nil {
 		return err
+	}
+	return nil
+}
+
+func migrateAccountingSchemaV1(transaction *sql.Tx) error {
+	rows, err := transaction.Query(`SELECT membership_id, period_started_at, resets_after FROM membership_usage`)
+	if err != nil {
+		return fmt.Errorf("read legacy accounting periods: %w", err)
+	}
+	type period struct {
+		id                   string
+		periodStart, resetAt int64
+	}
+	var periods []period
+	for rows.Next() {
+		var value period
+		if err := rows.Scan(&value.id, &value.periodStart, &value.resetAt); err != nil {
+			rows.Close()
+			return fmt.Errorf("decode legacy accounting period: %w", err)
+		}
+		periods = append(periods, value)
+	}
+	if err := rows.Close(); err != nil {
+		return fmt.Errorf("close legacy accounting periods: %w", err)
+	}
+	for _, value := range periods {
+		periodStart := legacyUTCDateToBillingDate(time.Unix(value.periodStart, 0)).Unix()
+		resetAt := legacyUTCDateToBillingDate(time.Unix(value.resetAt, 0)).Unix()
+		if _, err := transaction.Exec(
+			`UPDATE membership_usage SET period_started_at = ?, resets_after = ? WHERE membership_id = ?`,
+			periodStart, resetAt, value.id,
+		); err != nil {
+			return fmt.Errorf("migrate accounting period %q: %w", value.id, err)
+		}
+	}
+	if _, err := transaction.Exec(
+		`UPDATE accounting_meta SET value = ? WHERE key = 'schema_version'`,
+		strconv.Itoa(accountingSchemaVersion),
+	); err != nil {
+		return fmt.Errorf("record accounting schema migration: %w", err)
 	}
 	return nil
 }
@@ -355,7 +400,7 @@ func (a *accountingDB) loadIntoState(state *State) error {
 				membership.QuotaPeriodStartedOn = row.periodStart
 				membership.QuotaResetsAfter = row.resetAt
 			}
-			recomputeMembershipStatus(membership, utcDate(time.Now()))
+			recomputeMembershipStatus(membership, time.Now().UTC())
 		}
 	}
 
@@ -541,9 +586,9 @@ func (a *accountingDB) persistChanges(before, after State) error {
 	return nil
 }
 
-func recomputeMembershipStatus(membership *Membership, today time.Time) {
+func recomputeMembershipStatus(membership *Membership, now time.Time) {
 	membership.DisabledReason = MembershipEnabled
-	if !membership.SubscriptionEndsAfter.IsZero() && today.After(membership.SubscriptionEndsAfter) {
+	if !membership.SubscriptionEndsAfter.IsZero() && !now.UTC().Before(membership.SubscriptionEndsAfter) {
 		membership.DisabledReason = MembershipExpired
 		return
 	}

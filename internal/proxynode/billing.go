@@ -10,10 +10,19 @@ import (
 )
 
 const (
-	maxSubscriptionMonths = 1200
-	maxTrafficReportUsers = 100000
-	maxAccountingFailures = 256
+	maxSubscriptionMinutes = 52_560_000
+	maxSubscriptionHours   = 876_000
+	maxSubscriptionDays    = 36_500
+	maxSubscriptionMonths  = 1200
+	maxTrafficReportUsers  = 100000
+	maxAccountingFailures  = 256
 )
+
+var billingLocation = time.FixedZone("UTC+8", 8*60*60)
+
+// BillingLocation is the fixed product clock used for subscription, quota,
+// compensation, and other administrator-facing billing references.
+func BillingLocation() *time.Location { return billingLocation }
 
 const (
 	AccountingFailureCollection  = "collection_failed"
@@ -21,10 +30,54 @@ const (
 )
 
 func validateMembershipPlan(plan MembershipPlan) error {
-	if plan.SubscriptionMonths < 0 || plan.SubscriptionMonths > maxSubscriptionMonths {
-		return fmt.Errorf("%w: subscription length must be between 0 and %d months", ErrInvalidState, maxSubscriptionMonths)
+	if plan.SubscriptionValue == 0 && plan.SubscriptionUnit == "" {
+		return nil
+	}
+	if plan.SubscriptionValue <= 0 || plan.SubscriptionValue > maxSubscriptionValue(plan.SubscriptionUnit) {
+		return fmt.Errorf("%w: invalid subscription duration", ErrInvalidState)
 	}
 	return nil
+}
+
+func maxSubscriptionValue(unit SubscriptionUnit) int {
+	switch unit {
+	case SubscriptionMinutes:
+		return maxSubscriptionMinutes
+	case SubscriptionHours:
+		return maxSubscriptionHours
+	case SubscriptionDays:
+		return maxSubscriptionDays
+	case SubscriptionMonths:
+		return maxSubscriptionMonths
+	default:
+		return 0
+	}
+}
+
+func subscriptionDeadline(now time.Time, value int, unit SubscriptionUnit) time.Time {
+	now = now.UTC().Truncate(time.Second)
+	switch unit {
+	case SubscriptionMinutes:
+		return now.Add(time.Duration(value) * time.Minute)
+	case SubscriptionHours:
+		return now.Add(time.Duration(value) * time.Hour)
+	case SubscriptionDays:
+		return now.Add(time.Duration(value) * 24 * time.Hour)
+	case SubscriptionMonths:
+		// Preserve the original natural-month contract: a grant made on
+		// March 4 remains valid through April 4 and expires April 5 00:00 UTC+8.
+		return addCalendarMonths(billingDate(now), value).AddDate(0, 0, 1)
+	default:
+		return time.Time{}
+	}
+}
+
+func extendSubscriptionDeadline(deadline time.Time, value int, unit SubscriptionUnit) time.Time {
+	base := deadline.UTC()
+	if unit == SubscriptionMonths {
+		return addCalendarMonths(base, value)
+	}
+	return subscriptionDeadline(base, value, unit)
 }
 
 // RecordAccountingFailure appends one bounded, non-sensitive accounting audit
@@ -81,7 +134,7 @@ func validAccountingFailureReason(reason string) bool {
 }
 
 // UpdateMembershipPlan replaces a grant's monthly allowance and remaining
-// subscription term. A finite term starts on the current UTC date. Existing
+// subscription term. A finite term starts on the current UTC+8 date. Existing
 // period usage is retained, so reducing a quota can disable access immediately.
 func (s *Store) UpdateMembershipPlan(nodeID, userID string, plan MembershipPlan) error {
 	if err := validateMembershipPlan(plan); err != nil {
@@ -92,19 +145,106 @@ func (s *Store) UpdateMembershipPlan(nodeID, userID string, plan MembershipPlan)
 		if membership == nil {
 			return ErrNotFound
 		}
-		today := utcDate(s.now())
+		now := s.now().UTC()
 		membership.MonthlyQuotaBytes = plan.MonthlyQuotaBytes
+		membership.SubscriptionStartedAt = time.Time{}
 		membership.SubscriptionEndsAfter = time.Time{}
-		membership.SubscriptionMonths = plan.SubscriptionMonths
-		if plan.SubscriptionMonths > 0 {
-			membership.SubscriptionEndsAfter = addCalendarMonths(today, plan.SubscriptionMonths)
+		membership.SubscriptionValue = plan.SubscriptionValue
+		membership.SubscriptionUnit = plan.SubscriptionUnit
+		membership.LegacySubscriptionMonths = 0
+		if plan.SubscriptionValue > 0 {
+			membership.SubscriptionStartedAt = now.Truncate(time.Second)
+			membership.SubscriptionEndsAfter = subscriptionDeadline(now, plan.SubscriptionValue, plan.SubscriptionUnit)
 		}
-		membership.DisabledReason = MembershipEnabled
-		if membership.MonthlyQuotaBytes > 0 && membership.UsedBytes >= membership.MonthlyQuotaBytes {
-			membership.DisabledReason = MembershipQuotaReached
+		recomputeMembershipStatus(membership, now)
+		return nil
+	})
+}
+
+// ExtendMembershipSubscription adds time to a finite subscription without
+// changing its traffic period, reset date, or quota. Extension is strictly
+// additive to the stored deadline; it re-enables an expired grant only when the
+// resulting deadline moves into the future.
+func (s *Store) ExtendMembershipSubscription(nodeID, userID string, value int, unit SubscriptionUnit) error {
+	if err := validateMembershipPlan(MembershipPlan{SubscriptionValue: value, SubscriptionUnit: unit}); err != nil {
+		return err
+	}
+	return s.mutateUserProxyNode(nodeID, func(_ *State, node *ProxyNode) error {
+		membership := membershipForUser(node, userID)
+		if membership == nil {
+			return ErrNotFound
+		}
+		if membership.SubscriptionEndsAfter.IsZero() {
+			return fmt.Errorf("%w: subscription has no expiration", ErrConflict)
+		}
+		now := s.now().UTC()
+		membership.SubscriptionEndsAfter = extendSubscriptionDeadline(membership.SubscriptionEndsAfter, value, unit)
+		recomputeMembershipStatus(membership, now)
+		return nil
+	})
+}
+
+// ExtendProxyNodeSubscriptions applies one compensation duration to an
+// explicit set of finite Memberships. Quota periods and reset timing are never
+// changed.
+func (s *Store) ExtendProxyNodeSubscriptions(nodeID string, membershipIDs []string, value int, unit SubscriptionUnit) (int, error) {
+	if err := validateMembershipPlan(MembershipPlan{SubscriptionValue: value, SubscriptionUnit: unit}); err != nil {
+		return 0, err
+	}
+	selected := make(map[string]struct{}, len(membershipIDs))
+	for _, membershipID := range membershipIDs {
+		membershipID = strings.TrimSpace(membershipID)
+		if !validID(membershipID, "mem_") {
+			return 0, fmt.Errorf("%w: invalid Membership selection", ErrInvalidState)
+		}
+		selected[membershipID] = struct{}{}
+	}
+	if len(selected) == 0 {
+		return 0, fmt.Errorf("%w: no Memberships selected", ErrInvalidState)
+	}
+	extended := 0
+	err := s.mutateUserProxyNode(nodeID, func(_ *State, node *ProxyNode) error {
+		now := s.now().UTC()
+		for membershipIndex := range node.Memberships {
+			membership := &node.Memberships[membershipIndex]
+			if _, exists := selected[membership.ID]; !exists {
+				continue
+			}
+			if membership.SubscriptionEndsAfter.IsZero() {
+				return fmt.Errorf("%w: selected Membership has no expiration", ErrConflict)
+			}
+			membership.SubscriptionEndsAfter = extendSubscriptionDeadline(membership.SubscriptionEndsAfter, value, unit)
+			recomputeMembershipStatus(membership, now)
+			extended++
+		}
+		if extended != len(selected) {
+			return ErrNotFound
 		}
 		return nil
 	})
+	return extended, err
+}
+
+// ResetMembershipTraffic clears only the current-period usage. Billing anchor,
+// period boundaries, quota, and subscription deadline are preserved.
+func (s *Store) ResetMembershipTraffic(nodeID, userID string) (bool, error) {
+	configurationChanged := false
+	err := s.mutateBilling(func(state *State) (bool, error) {
+		nodeIndex := slices.IndexFunc(state.ProxyNodes, func(node ProxyNode) bool { return node.ID == nodeID })
+		if nodeIndex < 0 {
+			return false, ErrNotFound
+		}
+		membership := membershipForUser(&state.ProxyNodes[nodeIndex], userID)
+		if membership == nil {
+			return false, ErrNotFound
+		}
+		before := membership.DisabledReason
+		membership.UsedBytes = 0
+		recomputeMembershipStatus(membership, s.now().UTC())
+		configurationChanged = before != membership.DisabledReason
+		return configurationChanged, nil
+	})
+	return configurationChanged, err
 }
 
 func membershipForUser(node *ProxyNode, userID string) *Membership {
@@ -258,9 +398,7 @@ func trafficObservationMembership(
 	return aliases[trafficAliasKey(observation.InboundPath, observation.Username)]
 }
 
-// AdvanceBilling applies end-of-day transitions in UTC. A date stored in an
-// "After" field is inclusive: an April 4 subscription is disabled when this
-// method first runs on April 5.
+// AdvanceBilling applies quota period and subscription transitions in UTC+8.
 func (s *Store) AdvanceBilling(now time.Time) (bool, error) {
 	return s.advanceBilling(now, true, true)
 }
@@ -274,7 +412,8 @@ func (s *Store) advanceSubscriptions(now time.Time) (bool, error) {
 }
 
 func (s *Store) advanceBilling(now time.Time, resetTraffic, expireSubscriptions bool) (bool, error) {
-	today := utcDate(now)
+	now = now.UTC()
+	today := billingDate(now)
 	configurationChanged := false
 	err := s.mutateBilling(func(state *State) (bool, error) {
 		for nodeIndex := range state.ProxyNodes {
@@ -291,7 +430,7 @@ func (s *Store) advanceBilling(now time.Time, resetTraffic, expireSubscriptions 
 						configurationChanged = true
 					}
 				}
-				if expireSubscriptions && !membership.SubscriptionEndsAfter.IsZero() && today.After(membership.SubscriptionEndsAfter) &&
+				if expireSubscriptions && !membership.SubscriptionEndsAfter.IsZero() && !now.Before(membership.SubscriptionEndsAfter) &&
 					membership.DisabledReason != MembershipExpired {
 					membership.DisabledReason = MembershipExpired
 					configurationChanged = true
@@ -445,19 +584,20 @@ func validManagedTrafficPath(path string) bool {
 	return true
 }
 
-func utcDate(value time.Time) time.Time {
-	value = value.UTC()
-	return time.Date(value.Year(), value.Month(), value.Day(), 0, 0, 0, 0, time.UTC)
+func billingDate(value time.Time) time.Time {
+	value = value.In(billingLocation)
+	return time.Date(value.Year(), value.Month(), value.Day(), 0, 0, 0, 0, billingLocation)
 }
 
 func addCalendarMonths(date time.Time, months int) time.Time {
-	return addCalendarMonthsAnchored(date, months, date.UTC().Day())
+	date = billingDate(date)
+	return addCalendarMonthsAnchored(date, months, date.Day())
 }
 
 func addCalendarMonthsAnchored(date time.Time, months, anchorDay int) time.Time {
-	date = utcDate(date)
-	first := time.Date(date.Year(), date.Month(), 1, 0, 0, 0, 0, time.UTC).AddDate(0, months, 0)
+	date = billingDate(date)
+	first := time.Date(date.Year(), date.Month(), 1, 0, 0, 0, 0, billingLocation).AddDate(0, months, 0)
 	lastDay := first.AddDate(0, 1, -1).Day()
 	day := min(anchorDay, lastDay)
-	return time.Date(first.Year(), first.Month(), day, 0, 0, 0, 0, time.UTC)
+	return time.Date(first.Year(), first.Month(), day, 0, 0, 0, 0, billingLocation)
 }

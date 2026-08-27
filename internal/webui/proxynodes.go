@@ -1,6 +1,7 @@
 package webui
 
 import (
+	"context"
 	"encoding/base64"
 	"encoding/json"
 	"errors"
@@ -11,6 +12,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/masterauguste/theatropolis/internal/identity"
 	"github.com/masterauguste/theatropolis/internal/pool"
@@ -20,7 +22,7 @@ import (
 const maxProxyFormBytes = 128 << 10
 
 var membershipPlanFormFields = []string{
-	"quota_mode", "monthly_quota_gib", "expiration_mode", "subscription_months",
+	"quota_mode", "monthly_quota_gib", "expiration_mode", "subscription_value", "subscription_unit",
 }
 
 type proxyNodeListView struct {
@@ -35,44 +37,54 @@ type proxyNodeListView struct {
 }
 
 type proxyNodeDetailView struct {
-	ID               string
-	Name             string
-	URL              string
-	EntranceURL      string
-	EntranceHopURL   string
-	EntranceFallback string
-	RuleSetsURL      string
-	Entrance         endpointView
-	Tree             *proxyTreeHopView
-	RuleSets         []proxynode.CustomRuleSet
-	HopCount         int
-	LinkCount        int
-	MemberCount      int
-	TerminalCount    int
-	UnusedLinkCount  int
-	UserAccess       []nodeUserAccessView
-	AvailableUsers   []nodeUserOptionView
-	DefaultPlan      membershipPlanView
+	ID                   string
+	Name                 string
+	URL                  string
+	EntranceURL          string
+	EntranceHopURL       string
+	EntranceFallback     string
+	RuleSetsURL          string
+	Entrance             endpointView
+	Tree                 *proxyTreeHopView
+	RuleSets             []proxynode.CustomRuleSet
+	HopCount             int
+	LinkCount            int
+	MemberCount          int
+	FiniteMemberCount    int
+	CompensationStart    string
+	CompensationEnd      string
+	CompensationSelected int
+	TerminalCount        int
+	UnusedLinkCount      int
+	UserAccess           []nodeUserAccessView
+	AvailableUsers       []nodeUserOptionView
+	DefaultPlan          membershipPlanView
 }
 
 type membershipPlanView struct {
-	QuotaMode          string
-	QuotaGiB           string
-	ExpirationMode     string
-	SubscriptionMonths string
-	QuotaLabel         string
-	UsageLabel         string
-	ResetLabel         string
-	ExpirationLabel    string
-	StatusLabel        string
-	StatusClass        string
+	QuotaMode         string
+	QuotaGiB          string
+	ExpirationMode    string
+	SubscriptionValue string
+	SubscriptionUnit  string
+	CanExtend         bool
+	QuotaLabel        string
+	UsageLabel        string
+	ResetLabel        string
+	ExpirationLabel   string
+	StatusLabel       string
+	StatusClass       string
 }
 
 type nodeUserAccessView struct {
-	UserID string
-	Name   string
-	URL    string
-	Plan   membershipPlanView
+	UserID                string
+	MembershipID          string
+	Name                  string
+	URL                   string
+	Plan                  membershipPlanView
+	SubscriptionStartedAt string
+	SubscriptionEndsAfter string
+	CompensationSelected  bool
 }
 
 type nodeUserOptionView struct {
@@ -285,7 +297,7 @@ func (h *Handler) proxyNodesPage(response http.ResponseWriter, request *http.Req
 			ID: node.ID, Name: node.Name, URL: proxyNodeURL(node.ID),
 			Entrance: protocolLabel(node.Entrance.Endpoint.Protocol), EntranceAgent: root.AgentID,
 			HopCount: len(node.Hops), MemberCount: len(node.Memberships),
-			UpdatedAt: node.UpdatedAt.Local().Format("2006-01-02 15:04"),
+			UpdatedAt: node.UpdatedAt.In(proxynode.BillingLocation()).Format("2006-01-02 15:04 UTC+8"),
 		})
 	}
 	sort.Slice(views, func(left, right int) bool {
@@ -1048,6 +1060,125 @@ func (h *Handler) updateProxyNodeUser(response http.ResponseWriter, request *htt
 	http.Redirect(response, request, proxyNodeURL(nodeID), http.StatusSeeOther)
 }
 
+func (h *Handler) resetProxyNodeUserCredential(response http.ResponseWriter, request *http.Request) {
+	_, form, ok := h.authorizeProxyMutation(response, request, "return_to")
+	if !ok {
+		return
+	}
+	nodeID, userID := request.PathValue("proxy_id"), request.PathValue("user_id")
+	if err := h.proxyNodes.ResetMembershipCredential(nodeID, userID); err != nil {
+		handleProxyMutationError(response, err)
+		return
+	}
+	h.triggerProxyUserSync()
+	h.redirectMembershipAction(response, request, form.Get("return_to"), nodeID, userID)
+}
+
+func (h *Handler) resetProxyNodeUserTraffic(response http.ResponseWriter, request *http.Request) {
+	_, form, ok := h.authorizeProxyMutation(response, request, "return_to")
+	if !ok {
+		return
+	}
+	nodeID, userID := request.PathValue("proxy_id"), request.PathValue("user_id")
+	if agentID, exists := h.appliedEntranceAgent(nodeID); exists && h.controller != nil {
+		ctx, cancel := context.WithTimeout(request.Context(), 15*time.Second)
+		err := h.controller.RequestManagedUserTraffic(ctx, agentID)
+		cancel()
+		if err != nil {
+			http.Error(response, "could not establish a durable traffic-reset boundary: "+err.Error(), http.StatusConflict)
+			return
+		}
+	}
+	configurationChanged, err := h.proxyNodes.ResetMembershipTraffic(nodeID, userID)
+	if err != nil {
+		handleProxyMutationError(response, err)
+		return
+	}
+	if configurationChanged {
+		h.triggerProxyUserSync()
+	}
+	h.redirectMembershipAction(response, request, form.Get("return_to"), nodeID, userID)
+}
+
+func (h *Handler) extendProxyNodeUserSubscription(response http.ResponseWriter, request *http.Request) {
+	_, form, ok := h.authorizeProxyMutation(response, request, "return_to", "extension_value", "extension_unit")
+	if !ok {
+		return
+	}
+	value, unit, err := parseSubscriptionDuration(form.Get("extension_value"), form.Get("extension_unit"))
+	if err != nil {
+		http.Error(response, err.Error(), http.StatusBadRequest)
+		return
+	}
+	nodeID, userID := request.PathValue("proxy_id"), request.PathValue("user_id")
+	if err := h.proxyNodes.ExtendMembershipSubscription(nodeID, userID, value, unit); err != nil {
+		handleProxyMutationError(response, err)
+		return
+	}
+	h.triggerProxyUserSync()
+	h.redirectMembershipAction(response, request, form.Get("return_to"), nodeID, userID)
+}
+
+func (h *Handler) compensateProxyNodeSubscriptions(response http.ResponseWriter, request *http.Request) {
+	_, form, ok := h.authorizeProxyMutation(
+		response, request,
+		"outage_started_at", "outage_ended_at", "compensation_value", "compensation_unit", "membership_ids",
+	)
+	if !ok {
+		return
+	}
+	startedAt, err := parseBillingDateTimeLocal(form.Get("outage_started_at"))
+	if err != nil {
+		http.Error(response, "outage start time is invalid", http.StatusBadRequest)
+		return
+	}
+	endedAt, err := parseBillingDateTimeLocal(form.Get("outage_ended_at"))
+	if err != nil || !startedAt.Before(endedAt) {
+		http.Error(response, "outage end time must be after its start time", http.StatusBadRequest)
+		return
+	}
+	value, unit, err := parseSubscriptionDuration(form.Get("compensation_value"), form.Get("compensation_unit"))
+	if err != nil {
+		http.Error(response, err.Error(), http.StatusBadRequest)
+		return
+	}
+	nodeID := request.PathValue("proxy_id")
+	membershipIDs := slices.DeleteFunc(slices.Clone(form["membership_ids"]), func(id string) bool {
+		return strings.TrimSpace(id) == ""
+	})
+	if _, err := h.proxyNodes.ExtendProxyNodeSubscriptions(nodeID, membershipIDs, value, unit); err != nil {
+		handleProxyMutationError(response, err)
+		return
+	}
+	h.triggerProxyUserSync()
+	http.Redirect(response, request, proxyNodeURL(nodeID), http.StatusSeeOther)
+}
+
+func parseBillingDateTimeLocal(raw string) (time.Time, error) {
+	return time.ParseInLocation("2006-01-02T15:04", strings.TrimSpace(raw), proxynode.BillingLocation())
+}
+
+func (h *Handler) redirectMembershipAction(response http.ResponseWriter, request *http.Request, returnTo, nodeID, userID string) {
+	target := proxyNodeURL(nodeID)
+	if returnTo == "user" {
+		target = "/users/" + url.PathEscape(userID)
+	}
+	http.Redirect(response, request, target, http.StatusSeeOther)
+}
+
+func (h *Handler) appliedEntranceAgent(nodeID string) (string, bool) {
+	node, exists := h.proxyNodes.AppliedProxyNode(nodeID)
+	if !exists {
+		return "", false
+	}
+	for _, hop := range node.Hops {
+		if hop.ID == node.Entrance.HopID {
+			return hop.AgentID, true
+		}
+	}
+	return "", false
+}
+
 func (h *Handler) removeProxyNodeUser(response http.ResponseWriter, request *http.Request) {
 	_, _, ok := h.authorizeProxyMutation(response, request)
 	if !ok {
@@ -1114,12 +1245,16 @@ func (h *Handler) triggerProxyUserSync() {
 }
 
 func (h *Handler) proxyNodeDetail(node proxynode.ProxyNode) *proxyNodeDetailView {
+	compensationEnd := h.now().In(proxynode.BillingLocation()).Truncate(time.Minute)
+	compensationStart := compensationEnd.Add(-time.Hour)
 	detail := &proxyNodeDetailView{
 		ID: node.ID, Name: node.Name, URL: proxyNodeURL(node.ID),
 		EntranceURL: proxyNodeURL(node.ID) + "/entrance", RuleSetsURL: proxyRuleSetsURL(node.ID),
 		Entrance: endpointViewFor(node.Entrance.Endpoint), HopCount: len(node.Hops), LinkCount: len(node.Links), MemberCount: len(node.Memberships),
-		RuleSets:    append([]proxynode.CustomRuleSet(nil), node.RuleSets...),
-		DefaultPlan: defaultMembershipPlanView(),
+		RuleSets:          append([]proxynode.CustomRuleSet(nil), node.RuleSets...),
+		DefaultPlan:       defaultMembershipPlanView(),
+		CompensationStart: compensationStart.Format("2006-01-02T15:04"),
+		CompensationEnd:   compensationEnd.Format("2006-01-02T15:04"),
 	}
 	if entrance, ok := proxyHop(node, node.Entrance.HopID); ok {
 		detail.Entrance = endpointViewForAgent(node.Entrance.Endpoint, entrance.AgentID)
@@ -1132,13 +1267,18 @@ func (h *Handler) proxyNodeDetail(node proxynode.ProxyNode) *proxyNodeDetailView
 }
 
 func defaultMembershipPlanView() membershipPlanView {
-	return membershipPlanView{QuotaMode: "unlimited", ExpirationMode: "none", SubscriptionMonths: "1"}
+	return membershipPlanView{QuotaMode: "unlimited", ExpirationMode: "none", SubscriptionValue: "1", SubscriptionUnit: "months"}
 }
 
 func (h *Handler) attachProxyNodeUsers(detail *proxyNodeDetailView, node proxynode.ProxyNode, users []proxynode.User) {
+	compensationStart, _ := parseBillingDateTimeLocal(detail.CompensationStart)
+	compensationEnd, _ := parseBillingDateTimeLocal(detail.CompensationEnd)
 	assigned := make(map[string]proxynode.Membership, len(node.Memberships))
 	for _, membership := range node.Memberships {
 		assigned[membership.UserID] = membership
+		if !membership.SubscriptionEndsAfter.IsZero() {
+			detail.FiniteMemberCount++
+		}
 	}
 	for _, user := range users {
 		membership, exists := assigned[user.ID]
@@ -1146,10 +1286,21 @@ func (h *Handler) attachProxyNodeUsers(detail *proxyNodeDetailView, node proxyno
 			detail.AvailableUsers = append(detail.AvailableUsers, nodeUserOptionView{UserID: user.ID, Label: user.Name})
 			continue
 		}
-		detail.UserAccess = append(detail.UserAccess, nodeUserAccessView{
+		access := nodeUserAccessView{
 			UserID: user.ID, Name: user.Name, URL: "/users/" + url.PathEscape(user.ID),
 			Plan: membershipPlanViewFor(membership),
-		})
+		}
+		if !membership.SubscriptionEndsAfter.IsZero() {
+			access.MembershipID = membership.ID
+			access.SubscriptionStartedAt = membership.SubscriptionStartedAt.In(proxynode.BillingLocation()).Format(time.RFC3339)
+			access.SubscriptionEndsAfter = membership.SubscriptionEndsAfter.In(proxynode.BillingLocation()).Format(time.RFC3339)
+			access.CompensationSelected = membership.SubscriptionStartedAt.Before(compensationEnd) &&
+				membership.SubscriptionEndsAfter.After(compensationStart)
+			if access.CompensationSelected {
+				detail.CompensationSelected++
+			}
+		}
+		detail.UserAccess = append(detail.UserAccess, access)
 	}
 	sort.Slice(detail.UserAccess, func(left, right int) bool {
 		return strings.ToLower(detail.UserAccess[left].Name) < strings.ToLower(detail.UserAccess[right].Name)
@@ -1162,8 +1313,8 @@ func (h *Handler) attachProxyNodeUsers(detail *proxyNodeDetailView, node proxyno
 func membershipPlanViewFor(membership proxynode.Membership) membershipPlanView {
 	view := membershipPlanView{
 		QuotaMode: "unlimited", QuotaLabel: "Unlimited", UsageLabel: formatByteCount(membership.UsedBytes),
-		ExpirationMode: "none", SubscriptionMonths: "1",
-		ResetLabel:      membership.QuotaResetsAfter.Format("Jan 2, 2006") + " (UTC)",
+		ExpirationMode: "none", SubscriptionValue: "1", SubscriptionUnit: "months",
+		ResetLabel:      membership.QuotaResetsAfter.In(proxynode.BillingLocation()).Format("Jan 2, 2006") + " (UTC+8)",
 		ExpirationLabel: "No expiration", StatusLabel: "Active", StatusClass: "active",
 	}
 	if membership.MonthlyQuotaBytes > 0 {
@@ -1175,9 +1326,11 @@ func membershipPlanViewFor(membership proxynode.Membership) membershipPlanView {
 		view.QuotaLabel = formatByteCount(membership.MonthlyQuotaBytes) + " / month"
 	}
 	if !membership.SubscriptionEndsAfter.IsZero() {
-		view.ExpirationMode = "months"
-		view.SubscriptionMonths = strconv.Itoa(membership.SubscriptionMonths)
-		view.ExpirationLabel = "After " + membership.SubscriptionEndsAfter.Format("Jan 2, 2006") + " (UTC)"
+		view.ExpirationMode = "finite"
+		view.SubscriptionValue = strconv.Itoa(membership.SubscriptionValue)
+		view.SubscriptionUnit = string(membership.SubscriptionUnit)
+		view.CanExtend = true
+		view.ExpirationLabel = "Expires " + membership.SubscriptionEndsAfter.In(proxynode.BillingLocation()).Format("Jan 2, 2006 15:04") + " (UTC+8)"
 	}
 	switch membership.DisabledReason {
 	case proxynode.MembershipQuotaReached:
@@ -1203,16 +1356,31 @@ func parseMembershipPlan(form url.Values) (proxynode.MembershipPlan, error) {
 	}
 	switch form.Get("expiration_mode") {
 	case "none":
-	case "months":
-		months, err := strconv.Atoi(strings.TrimSpace(form.Get("subscription_months")))
-		if err != nil || months < 1 || months > 1200 {
-			return plan, errors.New("subscription must be between 1 and 1200 months")
+	case "finite":
+		value, unit, err := parseSubscriptionDuration(form.Get("subscription_value"), form.Get("subscription_unit"))
+		if err != nil {
+			return plan, err
 		}
-		plan.SubscriptionMonths = months
+		plan.SubscriptionValue, plan.SubscriptionUnit = value, unit
 	default:
 		return plan, errors.New("expiration mode is invalid")
 	}
 	return plan, nil
+}
+
+func parseSubscriptionDuration(rawValue, rawUnit string) (int, proxynode.SubscriptionUnit, error) {
+	value, err := strconv.Atoi(strings.TrimSpace(rawValue))
+	unit := proxynode.SubscriptionUnit(strings.TrimSpace(rawUnit))
+	maximum := map[proxynode.SubscriptionUnit]int{
+		proxynode.SubscriptionMinutes: 52_560_000,
+		proxynode.SubscriptionHours:   876_000,
+		proxynode.SubscriptionDays:    36_500,
+		proxynode.SubscriptionMonths:  1200,
+	}[unit]
+	if err != nil || value < 1 || maximum == 0 || value > maximum {
+		return 0, "", errors.New("subscription duration is invalid or exceeds 100 years")
+	}
+	return value, unit, nil
 }
 
 func formatByteCount(value uint64) string {

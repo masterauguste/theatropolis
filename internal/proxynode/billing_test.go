@@ -84,6 +84,50 @@ func TestCorruptAccountingDatabaseFailsClosed(t *testing.T) {
 	}
 }
 
+func TestAccountingSchemaOnePeriodsMigrateToUTCPlusEight(t *testing.T) {
+	statePath := filepath.Join(t.TempDir(), "proxy-node-state.json")
+	store, err := Open(statePath, testBuild())
+	if err != nil {
+		t.Fatal(err)
+	}
+	user, _ := store.CreateUser("alice")
+	node, _ := store.CreateProxyNode(CreateProxyNodeInput{
+		Name: "cinema", RootAgent: "edge-a", Entrance: testTLSEndpoint(ProtocolAnyTLS, 443),
+	})
+	membership, err := store.AddMembership(node.ID, user.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	legacyStart := time.Date(2028, time.February, 2, 0, 0, 0, 0, time.UTC)
+	legacyReset := time.Date(2028, time.March, 2, 0, 0, 0, 0, time.UTC)
+	if _, err := store.accounting.db.Exec(
+		`UPDATE membership_usage SET period_started_at = ?, resets_after = ? WHERE membership_id = ?`,
+		legacyStart.Unix(), legacyReset.Unix(), membership.ID,
+	); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.accounting.db.Exec(
+		`UPDATE accounting_meta SET value = '1' WHERE key = 'schema_version'`,
+	); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.accounting.db.Close(); err != nil {
+		t.Fatal(err)
+	}
+	reopened, err := Open(statePath, testBuild())
+	if err != nil {
+		t.Fatal(err)
+	}
+	updated, _ := reopened.ProxyNode(node.ID)
+	got := updated.Memberships[0]
+	if want := time.Date(2028, time.February, 2, 0, 0, 0, 0, billingLocation); !got.QuotaPeriodStartedOn.Equal(want) {
+		t.Fatalf("period start = %v, want %v", got.QuotaPeriodStartedOn, want)
+	}
+	if want := time.Date(2028, time.March, 2, 0, 0, 0, 0, billingLocation); !got.QuotaResetsAfter.Equal(want) {
+		t.Fatalf("reset boundary = %v, want %v", got.QuotaResetsAfter, want)
+	}
+}
+
 func TestRetiredMembershipAccountingIsDeleted(t *testing.T) {
 	store, err := Open(filepath.Join(t.TempDir(), "proxy-node-state.json"), testBuild())
 	if err != nil {
@@ -256,7 +300,7 @@ func TestRemnawaveStyleTrafficResetRunsAtTenMinutesAfterMidnight(t *testing.T) {
 	}}); err != nil {
 		t.Fatal(err)
 	}
-	resetDay := time.Date(2028, time.March, 3, 0, 0, 0, 0, time.UTC)
+	resetDay := time.Date(2028, time.March, 3, 0, 0, 0, 0, billingLocation)
 	if changed, err := store.advanceSubscriptions(resetDay); err != nil || changed {
 		t.Fatalf("midnight subscription pass changed=%v err=%v", changed, err)
 	}
@@ -635,7 +679,7 @@ func findRuleLinkID(state State, nodeID, ruleID string) string {
 	return ""
 }
 
-func TestSubscriptionEndsAfterInclusiveCalendarDate(t *testing.T) {
+func TestCalendarMonthSubscriptionExpiresAfterInclusiveEndDate(t *testing.T) {
 	store, _ := Open(filepath.Join(t.TempDir(), "state.json"), testBuild())
 	now := time.Date(2028, time.March, 4, 9, 0, 0, 0, time.UTC)
 	store.now = func() time.Time { return now }
@@ -643,19 +687,21 @@ func TestSubscriptionEndsAfterInclusiveCalendarDate(t *testing.T) {
 	node, _ := store.CreateProxyNode(CreateProxyNodeInput{
 		Name: "cinema", RootAgent: "edge-a", Entrance: testTLSEndpoint(ProtocolAnyTLS, 443),
 	})
-	membership, err := store.AddMembershipWithPlan(node.ID, user.ID, MembershipPlan{SubscriptionMonths: 1})
+	membership, err := store.AddMembershipWithPlan(node.ID, user.ID, MembershipPlan{
+		SubscriptionValue: 1, SubscriptionUnit: SubscriptionMonths,
+	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	wantEnd := time.Date(2028, time.April, 4, 0, 0, 0, 0, time.UTC)
+	wantEnd := time.Date(2028, time.April, 5, 0, 0, 0, 0, billingLocation)
 	if !membership.SubscriptionEndsAfter.Equal(wantEnd) {
 		t.Fatalf("subscription ends after %v, want %v", membership.SubscriptionEndsAfter, wantEnd)
 	}
-	changed, err := store.AdvanceBilling(wantEnd.Add(23 * time.Hour))
+	changed, err := store.AdvanceBilling(wantEnd.Add(-time.Second))
 	if err != nil || changed {
 		t.Fatalf("end-date check changed=%v err=%v", changed, err)
 	}
-	changed, err = store.AdvanceBilling(wantEnd.AddDate(0, 0, 1))
+	changed, err = store.AdvanceBilling(wantEnd)
 	if err != nil || !changed {
 		t.Fatalf("next-midnight check changed=%v err=%v", changed, err)
 	}
@@ -667,10 +713,228 @@ func TestSubscriptionEndsAfterInclusiveCalendarDate(t *testing.T) {
 
 func TestCalendarMonthClampsEndOfMonth(t *testing.T) {
 	start := time.Date(2028, time.January, 31, 0, 0, 0, 0, time.UTC)
-	if got, want := addCalendarMonths(start, 1), time.Date(2028, time.February, 29, 0, 0, 0, 0, time.UTC); !got.Equal(want) {
+	if got, want := addCalendarMonths(start, 1), time.Date(2028, time.February, 29, 0, 0, 0, 0, billingLocation); !got.Equal(want) {
 		t.Fatalf("January 31 + one month = %v, want %v", got, want)
 	}
-	if got, want := addCalendarMonthsAnchored(time.Date(2028, time.February, 29, 0, 0, 0, 0, time.UTC), 1, 31), time.Date(2028, time.March, 31, 0, 0, 0, 0, time.UTC); !got.Equal(want) {
+	if got, want := addCalendarMonthsAnchored(time.Date(2028, time.February, 29, 0, 0, 0, 0, billingLocation), 1, 31), time.Date(2028, time.March, 31, 0, 0, 0, 0, billingLocation); !got.Equal(want) {
 		t.Fatalf("next anchored month = %v, want %v", got, want)
+	}
+}
+
+func TestSubscriptionDurationUnits(t *testing.T) {
+	now := time.Date(2028, time.March, 4, 9, 17, 23, 0, time.UTC)
+	tests := []struct {
+		name  string
+		value int
+		unit  SubscriptionUnit
+		want  time.Time
+	}{
+		{name: "minutes", value: 15, unit: SubscriptionMinutes, want: now.Add(15 * time.Minute)},
+		{name: "hours", value: 6, unit: SubscriptionHours, want: now.Add(6 * time.Hour)},
+		{name: "days", value: 3, unit: SubscriptionDays, want: now.Add(72 * time.Hour)},
+		{name: "months", value: 1, unit: SubscriptionMonths, want: time.Date(2028, time.April, 5, 0, 0, 0, 0, billingLocation)},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			store, _ := Open(filepath.Join(t.TempDir(), "state.json"), testBuild())
+			store.now = func() time.Time { return now }
+			user, _ := store.CreateUser("alice")
+			node, _ := store.CreateProxyNode(CreateProxyNodeInput{
+				Name: "cinema", RootAgent: "edge-a", Entrance: testTLSEndpoint(ProtocolAnyTLS, 443),
+			})
+			membership, err := store.AddMembershipWithPlan(node.ID, user.ID, MembershipPlan{
+				SubscriptionValue: test.value, SubscriptionUnit: test.unit,
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !membership.SubscriptionEndsAfter.Equal(test.want) ||
+				membership.SubscriptionValue != test.value || membership.SubscriptionUnit != test.unit {
+				t.Fatalf("subscription = %#v, want deadline %v and %d %s", membership, test.want, test.value, test.unit)
+			}
+			if changed, err := store.AdvanceBilling(test.want.Add(-time.Second)); err != nil || changed {
+				t.Fatalf("subscription changed before deadline: changed=%v err=%v", changed, err)
+			}
+			if changed, err := store.AdvanceBilling(test.want); err != nil || !changed {
+				t.Fatalf("subscription did not expire at deadline: changed=%v err=%v", changed, err)
+			}
+		})
+	}
+}
+
+func TestSchemaEightSubscriptionMigrationPreservesLastValidDay(t *testing.T) {
+	state := State{ProxyNodes: []ProxyNode{{Memberships: []Membership{{
+		LegacySubscriptionMonths: 1,
+		CreatedAt:                time.Date(2028, time.March, 4, 9, 0, 0, 0, time.UTC),
+		SubscriptionEndsAfter:    time.Date(2028, time.April, 4, 0, 0, 0, 0, time.UTC),
+	}}}}}
+	migrateSchemaV8(&state)
+	membership := state.ProxyNodes[0].Memberships[0]
+	if membership.LegacySubscriptionMonths != 0 || membership.SubscriptionValue != 1 ||
+		membership.SubscriptionUnit != SubscriptionMonths ||
+		!membership.SubscriptionStartedAt.Equal(time.Date(2028, time.March, 4, 9, 0, 0, 0, time.UTC)) ||
+		!membership.SubscriptionEndsAfter.Equal(time.Date(2028, time.April, 5, 0, 0, 0, 0, billingLocation)) {
+		t.Fatalf("migrated subscription = %#v", membership)
+	}
+}
+
+func TestExtendSubscriptionPreservesTrafficPeriod(t *testing.T) {
+	store, _ := Open(filepath.Join(t.TempDir(), "state.json"), testBuild())
+	now := time.Date(2028, time.March, 4, 9, 0, 0, 0, time.UTC)
+	store.now = func() time.Time { return now }
+	user, _ := store.CreateUser("alice")
+	node, _ := store.CreateProxyNode(CreateProxyNodeInput{
+		Name: "cinema", RootAgent: "edge-a", Entrance: testTLSEndpoint(ProtocolAnyTLS, 443),
+	})
+	membership, err := store.AddMembershipWithPlan(node.ID, user.ID, MembershipPlan{
+		MonthlyQuotaBytes: 100, SubscriptionValue: 2, SubscriptionUnit: SubscriptionHours,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	periodStart, resetAt := membership.QuotaPeriodStartedOn, membership.QuotaResetsAfter
+	now = now.Add(30 * time.Minute)
+	if err := store.ExtendMembershipSubscription(node.ID, user.ID, 3, SubscriptionDays); err != nil {
+		t.Fatal(err)
+	}
+	updated, _ := store.ProxyNode(node.ID)
+	membership = updated.Memberships[0]
+	if want := time.Date(2028, time.March, 7, 11, 0, 0, 0, time.UTC); !membership.SubscriptionEndsAfter.Equal(want) {
+		t.Fatalf("extended deadline = %v, want %v", membership.SubscriptionEndsAfter, want)
+	}
+	if !membership.QuotaPeriodStartedOn.Equal(periodStart) || !membership.QuotaResetsAfter.Equal(resetAt) {
+		t.Fatalf("extension changed traffic period: %#v", membership)
+	}
+}
+
+func TestProxyNodeCompensationExtendsOnlyFiniteSubscriptions(t *testing.T) {
+	store, _ := Open(filepath.Join(t.TempDir(), "state.json"), testBuild())
+	now := time.Date(2028, time.March, 4, 9, 0, 0, 0, time.UTC)
+	store.now = func() time.Time { return now }
+	finiteUser, _ := store.CreateUser("finite")
+	unselectedUser, _ := store.CreateUser("unselected")
+	unlimitedUser, _ := store.CreateUser("unlimited")
+	expiredUser, _ := store.CreateUser("expired")
+	node, _ := store.CreateProxyNode(CreateProxyNodeInput{
+		Name: "cinema", RootAgent: "edge-a", Entrance: testTLSEndpoint(ProtocolAnyTLS, 443),
+	})
+	finite, _ := store.AddMembershipWithPlan(node.ID, finiteUser.ID, MembershipPlan{
+		SubscriptionValue: 2, SubscriptionUnit: SubscriptionHours,
+	})
+	unselected, _ := store.AddMembershipWithPlan(node.ID, unselectedUser.ID, MembershipPlan{
+		SubscriptionValue: 2, SubscriptionUnit: SubscriptionHours,
+	})
+	unlimited, _ := store.AddMembershipWithPlan(node.ID, unlimitedUser.ID, MembershipPlan{})
+	expired, _ := store.AddMembershipWithPlan(node.ID, expiredUser.ID, MembershipPlan{
+		SubscriptionValue: 1, SubscriptionUnit: SubscriptionMinutes,
+	})
+	now = now.Add(10 * time.Minute)
+	if changed, err := store.advanceSubscriptions(now); err != nil || !changed {
+		t.Fatalf("expire short subscription changed=%v err=%v", changed, err)
+	}
+
+	extended, err := store.ExtendProxyNodeSubscriptions(
+		node.ID, []string{finite.ID, expired.ID}, 1, SubscriptionHours,
+	)
+	if err != nil || extended != 2 {
+		t.Fatalf("ExtendProxyNodeSubscriptions() extended=%d err=%v", extended, err)
+	}
+	updated, _ := store.ProxyNode(node.ID)
+	byUser := make(map[string]Membership, len(updated.Memberships))
+	for _, membership := range updated.Memberships {
+		byUser[membership.UserID] = membership
+	}
+	if got := byUser[finiteUser.ID]; !got.SubscriptionEndsAfter.Equal(finite.SubscriptionEndsAfter.Add(time.Hour)) {
+		t.Fatalf("finite deadline = %v", got.SubscriptionEndsAfter)
+	}
+	if got := byUser[unselectedUser.ID]; !got.SubscriptionEndsAfter.Equal(unselected.SubscriptionEndsAfter) {
+		t.Fatalf("unselected finite membership changed = %#v", got)
+	}
+	if got := byUser[unlimitedUser.ID]; !got.SubscriptionEndsAfter.IsZero() || got.Credential != unlimited.Credential {
+		t.Fatalf("unlimited membership changed = %#v", got)
+	}
+	if got := byUser[expiredUser.ID]; !got.SubscriptionEndsAfter.Equal(expired.SubscriptionEndsAfter.Add(time.Hour)) ||
+		got.DisabledReason != MembershipEnabled {
+		t.Fatalf("expired compensated membership = %#v", got)
+	}
+	for _, membership := range updated.Memberships {
+		var original Membership
+		switch membership.UserID {
+		case finiteUser.ID:
+			original = finite
+		case unlimitedUser.ID:
+			original = unlimited
+		case unselectedUser.ID:
+			original = unselected
+		case expiredUser.ID:
+			original = expired
+		}
+		if !membership.QuotaPeriodStartedOn.Equal(original.QuotaPeriodStartedOn) ||
+			!membership.QuotaResetsAfter.Equal(original.QuotaResetsAfter) {
+			t.Fatalf("compensation moved quota timing for %s", membership.UserID)
+		}
+	}
+}
+
+func TestResetMembershipTrafficPreservesResetTiming(t *testing.T) {
+	directory := t.TempDir()
+	path := filepath.Join(directory, "state.json")
+	store, _ := Open(path, testBuild())
+	now := time.Date(2028, time.March, 4, 9, 0, 0, 0, time.UTC)
+	store.now = func() time.Time { return now }
+	user, _ := store.CreateUser("alice")
+	node, _ := store.CreateProxyNode(CreateProxyNodeInput{
+		Name: "cinema", RootAgent: "edge-a", Entrance: testTLSEndpoint(ProtocolAnyTLS, 443),
+	})
+	membership, _ := store.AddMembershipWithPlan(node.ID, user.ID, MembershipPlan{MonthlyQuotaBytes: 100})
+	if err := store.mutateBilling(func(state *State) (bool, error) {
+		member := &state.ProxyNodes[0].Memberships[0]
+		member.UsedBytes = 100
+		member.DisabledReason = MembershipQuotaReached
+		return true, nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	changed, err := store.ResetMembershipTraffic(node.ID, user.ID)
+	if err != nil || !changed {
+		t.Fatalf("ResetMembershipTraffic() changed=%v err=%v", changed, err)
+	}
+	updated, _ := store.ProxyNode(node.ID)
+	got := updated.Memberships[0]
+	if got.UsedBytes != 0 || got.DisabledReason != MembershipEnabled ||
+		!got.QuotaPeriodStartedOn.Equal(membership.QuotaPeriodStartedOn) || !got.QuotaResetsAfter.Equal(membership.QuotaResetsAfter) {
+		t.Fatalf("reset membership = %#v", got)
+	}
+	if err := store.accounting.db.Close(); err != nil {
+		t.Fatal(err)
+	}
+	reopened, err := Open(path, testBuild())
+	if err != nil {
+		t.Fatal(err)
+	}
+	reloaded, _ := reopened.ProxyNode(node.ID)
+	if reloaded.Memberships[0].UsedBytes != 0 {
+		t.Fatalf("durable reset usage = %d", reloaded.Memberships[0].UsedBytes)
+	}
+}
+
+func TestResetMembershipCredentialRotatesOnlySecret(t *testing.T) {
+	store, _ := Open(filepath.Join(t.TempDir(), "state.json"), testBuild())
+	user, _ := store.CreateUser("alice")
+	node, _ := store.CreateProxyNode(CreateProxyNodeInput{
+		Name: "cinema", RootAgent: "edge-a", Entrance: testTLSEndpoint(ProtocolAnyTLS, 443),
+	})
+	membership, _ := store.AddMembershipWithPlan(node.ID, user.ID, MembershipPlan{MonthlyQuotaBytes: 100})
+	if err := store.ResetMembershipCredential(node.ID, user.ID); err != nil {
+		t.Fatal(err)
+	}
+	updated, _ := store.ProxyNode(node.ID)
+	got := updated.Memberships[0]
+	if got.Credential.Secret == "" || got.Credential.Secret == membership.Credential.Secret {
+		t.Fatalf("credential was not rotated: old=%q new=%q", membership.Credential.Secret, got.Credential.Secret)
+	}
+	if got.ID != membership.ID || got.MonthlyQuotaBytes != membership.MonthlyQuotaBytes ||
+		!got.QuotaResetsAfter.Equal(membership.QuotaResetsAfter) {
+		t.Fatalf("credential reset changed unrelated membership state: %#v", got)
 	}
 }

@@ -91,6 +91,7 @@ type testAgentController struct {
 	deploymentListCalls int
 	probeErr            error
 	probeRequests       []probeRequest
+	trafficRequests     []string
 	autoApply           bool
 }
 
@@ -235,7 +236,8 @@ func (c *testAgentController) CanSyncManagedUserAuthority(agentID string) bool {
 	return c.CanDeployConfiguration(agentID)
 }
 
-func (c *testAgentController) RequestManagedUserTraffic(context.Context, string) error {
+func (c *testAgentController) RequestManagedUserTraffic(_ context.Context, agentID string) error {
+	c.trafficRequests = append(c.trafficRequests, agentID)
 	return nil
 }
 
@@ -1644,7 +1646,7 @@ func TestUserSettingsOwnProxyNodeAccessAssignments(t *testing.T) {
 	request = fixture.authenticatedMutationRequest(http.MethodPost, "/users/"+url.PathEscape(user.ID)+"/access", url.Values{
 		"csrf_token": {fixture.session.CSRFToken}, "proxy_id": {node.ID},
 		"quota_mode": {"limited"}, "monthly_quota_gib": {"100"},
-		"expiration_mode": {"months"}, "subscription_months": {"2"},
+		"expiration_mode": {"finite"}, "subscription_value": {"2"}, "subscription_unit": {"months"},
 	}.Encode())
 	response = httptest.NewRecorder()
 	fixture.handler.ServeHTTP(response, request)
@@ -1708,7 +1710,7 @@ func TestUserSettingsOwnProxyNodeAccessAssignments(t *testing.T) {
 	request = fixture.authenticatedMutationRequest(http.MethodPost, "/proxy-nodes/"+url.PathEscape(node.ID)+"/users", url.Values{
 		"csrf_token": {fixture.session.CSRFToken}, "user_id": {user.ID},
 		"quota_mode": {"unlimited"}, "monthly_quota_gib": {""},
-		"expiration_mode": {"none"}, "subscription_months": {"1"},
+		"expiration_mode": {"none"}, "subscription_value": {"1"}, "subscription_unit": {"months"},
 	}.Encode())
 	response = httptest.NewRecorder()
 	fixture.handler.ServeHTTP(response, request)
@@ -1719,6 +1721,127 @@ func TestUserSettingsOwnProxyNodeAccessAssignments(t *testing.T) {
 	if len(updated.Memberships) != 1 || updated.Memberships[0].MonthlyQuotaBytes != 0 ||
 		!updated.Memberships[0].SubscriptionEndsAfter.IsZero() {
 		t.Fatalf("Proxy Node grant membership = %#v", updated.Memberships)
+	}
+}
+
+func TestMembershipMaintenanceActions(t *testing.T) {
+	t.Parallel()
+
+	fixture := newWebFixture(t)
+	user, err := fixture.proxyNodes.CreateUser("Alice")
+	if err != nil {
+		t.Fatal(err)
+	}
+	node, err := fixture.proxyNodes.CreateProxyNode(proxynode.CreateProxyNodeInput{
+		Name: "Cinema", RootAgent: "edge-online",
+		Entrance: proxynode.Endpoint{
+			Protocol: proxynode.ProtocolAnyTLS, Listen: "::", ListenPort: 443, Family: "auto",
+			TLS: proxynode.TLSConfig{Mode: proxynode.TLSModeSelfSigned, ServerName: "cinema.example"},
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := fixture.proxyNodes.MarkTopologyApplied(fixture.proxyNodes.Snapshot().Revision, []string{"edge-online"}); err != nil {
+		t.Fatal(err)
+	}
+	membership, err := fixture.proxyNodes.AddMembershipWithPlan(node.ID, user.ID, proxynode.MembershipPlan{
+		MonthlyQuotaBytes: 10 << 30, SubscriptionValue: 30, SubscriptionUnit: proxynode.SubscriptionMinutes,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	request := fixture.authenticatedRequest(http.MethodGet, "/users/"+url.PathEscape(user.ID), "")
+	response := httptest.NewRecorder()
+	fixture.handler.ServeHTTP(response, request)
+	body := response.Body.String()
+	for _, expected := range []string{"Minutes", "Hours", "Days", "Calendar months", "Reset traffic", "Reset credential", "Extend subscription"} {
+		if response.Code != http.StatusOK || !strings.Contains(body, expected) {
+			t.Fatalf("user maintenance UI omitted %q: %d %q", expected, response.Code, body)
+		}
+	}
+	request = fixture.authenticatedRequest(http.MethodGet, proxyNodeURL(node.ID), "")
+	response = httptest.NewRecorder()
+	fixture.handler.ServeHTTP(response, request)
+	if response.Code != http.StatusOK || !strings.Contains(response.Body.String(), "Compensate subscriptions") ||
+		!strings.Contains(response.Body.String(), "Outage started (UTC+8)") ||
+		!strings.Contains(response.Body.String(), "Subscriptions overlapping the outage range") ||
+		!strings.Contains(response.Body.String(), `data-started-at="`) ||
+		!strings.Contains(response.Body.String(), `name="membership_ids" value="`+membership.ID+`"`) {
+		t.Fatalf("Proxy Node compensation UI = %d %q", response.Code, response.Body.String())
+	}
+
+	request = fixture.authenticatedMutationRequest(http.MethodPost,
+		"/proxy-nodes/"+url.PathEscape(node.ID)+"/users/"+url.PathEscape(user.ID)+"/subscription-extend",
+		url.Values{
+			"csrf_token": {fixture.session.CSRFToken}, "return_to": {"user"},
+			"extension_value": {"2"}, "extension_unit": {"hours"},
+		}.Encode())
+	response = httptest.NewRecorder()
+	fixture.handler.ServeHTTP(response, request)
+	if response.Code != http.StatusSeeOther || response.Header().Get("Location") != "/users/"+url.PathEscape(user.ID) {
+		t.Fatalf("extend subscription = %d location=%q body=%q", response.Code, response.Header().Get("Location"), response.Body.String())
+	}
+	updated, _ := fixture.proxyNodes.ProxyNode(node.ID)
+	if want := membership.SubscriptionEndsAfter.Add(2 * time.Hour); !updated.Memberships[0].SubscriptionEndsAfter.Equal(want) {
+		t.Fatalf("extended deadline = %v, want %v", updated.Memberships[0].SubscriptionEndsAfter, want)
+	}
+	beforeCompensation := updated.Memberships[0].SubscriptionEndsAfter
+	request = fixture.authenticatedMutationRequest(http.MethodPost,
+		"/proxy-nodes/"+url.PathEscape(node.ID)+"/users/compensate",
+		url.Values{
+			"csrf_token":         {fixture.session.CSRFToken},
+			"outage_started_at":  {fixture.now.In(proxynode.BillingLocation()).Format("2006-01-02T15:04")},
+			"outage_ended_at":    {fixture.now.Add(-time.Hour).In(proxynode.BillingLocation()).Format("2006-01-02T15:04")},
+			"compensation_value": {"1"}, "compensation_unit": {"days"},
+			"membership_ids": {membership.ID},
+		}.Encode())
+	response = httptest.NewRecorder()
+	fixture.handler.ServeHTTP(response, request)
+	updated, _ = fixture.proxyNodes.ProxyNode(node.ID)
+	if response.Code != http.StatusBadRequest ||
+		!updated.Memberships[0].SubscriptionEndsAfter.Equal(beforeCompensation) {
+		t.Fatalf("invalid outage range = %d membership=%#v", response.Code, updated.Memberships[0])
+	}
+	request = fixture.authenticatedMutationRequest(http.MethodPost,
+		"/proxy-nodes/"+url.PathEscape(node.ID)+"/users/compensate",
+		url.Values{
+			"csrf_token":         {fixture.session.CSRFToken},
+			"outage_started_at":  {fixture.now.Add(-3 * time.Hour).In(proxynode.BillingLocation()).Format("2006-01-02T15:04")},
+			"outage_ended_at":    {fixture.now.Add(-2 * time.Hour).In(proxynode.BillingLocation()).Format("2006-01-02T15:04")},
+			"compensation_value": {"1"}, "compensation_unit": {"days"},
+			"membership_ids": {membership.ID},
+		}.Encode())
+	response = httptest.NewRecorder()
+	fixture.handler.ServeHTTP(response, request)
+	updated, _ = fixture.proxyNodes.ProxyNode(node.ID)
+	if response.Code != http.StatusSeeOther ||
+		!updated.Memberships[0].SubscriptionEndsAfter.Equal(beforeCompensation.Add(24*time.Hour)) {
+		t.Fatalf("bulk compensation = %d membership=%#v", response.Code, updated.Memberships[0])
+	}
+
+	oldSecret := updated.Memberships[0].Credential.Secret
+	request = fixture.authenticatedMutationRequest(http.MethodPost,
+		"/proxy-nodes/"+url.PathEscape(node.ID)+"/users/"+url.PathEscape(user.ID)+"/credential-reset",
+		url.Values{"csrf_token": {fixture.session.CSRFToken}, "return_to": {"node"}}.Encode())
+	response = httptest.NewRecorder()
+	fixture.handler.ServeHTTP(response, request)
+	updated, _ = fixture.proxyNodes.ProxyNode(node.ID)
+	if response.Code != http.StatusSeeOther || updated.Memberships[0].Credential.Secret == oldSecret {
+		t.Fatalf("credential reset = %d membership=%#v", response.Code, updated.Memberships[0])
+	}
+
+	resetAt := updated.Memberships[0].QuotaResetsAfter
+	request = fixture.authenticatedMutationRequest(http.MethodPost,
+		"/proxy-nodes/"+url.PathEscape(node.ID)+"/users/"+url.PathEscape(user.ID)+"/traffic-reset",
+		url.Values{"csrf_token": {fixture.session.CSRFToken}, "return_to": {"node"}}.Encode())
+	response = httptest.NewRecorder()
+	fixture.handler.ServeHTTP(response, request)
+	updated, _ = fixture.proxyNodes.ProxyNode(node.ID)
+	if response.Code != http.StatusSeeOther || !updated.Memberships[0].QuotaResetsAfter.Equal(resetAt) ||
+		len(fixture.controller.trafficRequests) != 1 || fixture.controller.trafficRequests[0] != "edge-online" {
+		t.Fatalf("traffic reset = %d membership=%#v", response.Code, updated.Memberships[0])
 	}
 }
 

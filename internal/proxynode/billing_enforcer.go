@@ -10,7 +10,7 @@ import (
 
 const billingDeploymentRetry = 30 * time.Second
 
-// BillingEnforcer runs UTC end-of-day transitions and keeps retrying a
+// BillingEnforcer runs UTC+8 end-of-day transitions and keeps retrying a
 // security-relevant deployment while an entrance Agent is offline.
 type BillingEnforcer struct {
 	store    *Store
@@ -74,7 +74,7 @@ func (e *BillingEnforcer) TriggerAppliedRefresh() {
 
 func (e *BillingEnforcer) calendarLoop(ctx context.Context) {
 	for {
-		now := e.now().UTC()
+		now := e.now()
 		changed := false
 		subscriptionChanged, err := e.store.advanceSubscriptions(now)
 		if err != nil {
@@ -82,7 +82,7 @@ func (e *BillingEnforcer) calendarLoop(ctx context.Context) {
 		} else {
 			changed = subscriptionChanged
 		}
-		trafficResetAt := utcDate(now).Add(10 * time.Minute)
+		trafficResetAt := billingDate(now).Add(10 * time.Minute)
 		if !now.Before(trafficResetAt) {
 			trafficChanged, trafficErr := e.store.advanceTrafficPeriods(now)
 			if trafficErr != nil {
@@ -96,7 +96,14 @@ func (e *BillingEnforcer) calendarLoop(ctx context.Context) {
 		}
 		next := trafficResetAt
 		if !now.Before(trafficResetAt) {
-			next = utcDate(now).AddDate(0, 0, 1)
+			next = billingDate(now).AddDate(0, 0, 1)
+		}
+		// Minute/hour subscriptions need enforcement before the next daily
+		// quota-reset pass. A minute cadence bounds expiration delay without
+		// introducing one timer per Membership.
+		nextSubscriptionCheck := now.Truncate(time.Minute).Add(time.Minute)
+		if nextSubscriptionCheck.Before(next) {
+			next = nextSubscriptionCheck
 		}
 		timer := time.NewTimer(max(next.Sub(now), time.Second))
 		select {

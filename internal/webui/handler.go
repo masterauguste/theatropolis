@@ -101,6 +101,9 @@ type AgentController interface {
 	// RequestAddressProbe asks an online, probe-capable agent to resolve
 	// its public address for one explicit family ("ipv4" or "ipv6").
 	RequestAddressProbe(agentID, family string) error
+	// RequestManagedUserTraffic persists and clears the entrance Agent's
+	// current accounting interval before an administrator resets usage.
+	RequestManagedUserTraffic(context.Context, string) error
 }
 
 type Options struct {
@@ -401,6 +404,10 @@ func (h *Handler) routes() {
 	h.mux.HandleFunc("POST /proxy-nodes/{proxy_id}/deploy", h.deployProxyNodes)
 	h.mux.HandleFunc("POST /proxy-nodes/{proxy_id}/users", h.addProxyNodeUser)
 	h.mux.HandleFunc("POST /proxy-nodes/{proxy_id}/users/{user_id}/plan", h.updateProxyNodeUser)
+	h.mux.HandleFunc("POST /proxy-nodes/{proxy_id}/users/{user_id}/credential-reset", h.resetProxyNodeUserCredential)
+	h.mux.HandleFunc("POST /proxy-nodes/{proxy_id}/users/{user_id}/traffic-reset", h.resetProxyNodeUserTraffic)
+	h.mux.HandleFunc("POST /proxy-nodes/{proxy_id}/users/{user_id}/subscription-extend", h.extendProxyNodeUserSubscription)
+	h.mux.HandleFunc("POST /proxy-nodes/{proxy_id}/users/compensate", h.compensateProxyNodeSubscriptions)
 	h.mux.HandleFunc("POST /proxy-nodes/{proxy_id}/users/{user_id}/remove", h.removeProxyNodeUser)
 	h.mux.HandleFunc("GET /proxy-nodes/{proxy_id}/entrance", h.proxyEntrancePage)
 	h.mux.HandleFunc("POST /proxy-nodes/{proxy_id}/entrance", h.updateProxyEntrance)
@@ -739,7 +746,7 @@ func (h *Handler) settingsPageData(session Session) pageData {
 			failures = append(failures, accountingFailureView{
 				AgentID:    failure.AgentID,
 				Reason:     accountingFailureLabel(failure.Reason),
-				OccurredAt: failure.OccurredAt.UTC().Format("2 Jan 2006, 15:04:05 UTC"),
+				OccurredAt: failure.OccurredAt.In(proxynode.BillingLocation()).Format("2 Jan 2006, 15:04:05 UTC+8"),
 			})
 		}
 	}
@@ -1247,8 +1254,8 @@ func (h *Handler) replaceServer(response http.ResponseWriter, request *http.Requ
 	created := createdServerView{
 		AgentID:        agentID,
 		InstallCommand: h.installCommand(encodedToken),
-		ExpiresAt:      expiresAt.UTC().Format("2 Jan 2006, 15:04 UTC"),
-		ExpiresAtISO:   expiresAt.UTC().Format(time.RFC3339),
+		ExpiresAt:      expiresAt.In(proxynode.BillingLocation()).Format("2 Jan 2006, 15:04 UTC+8"),
+		ExpiresAtISO:   expiresAt.In(proxynode.BillingLocation()).Format(time.RFC3339),
 	}
 	resultID, err := h.storeEnrollmentResult(sessionToken, created, h.currentTime())
 	if err != nil {
@@ -2121,7 +2128,7 @@ func agentUpdateViewFor(state control.AgentUpdateState) *agentUpdateView {
 		StatusLabel:    label,
 		StatusClass:    class,
 		Diagnostic:     state.Diagnostic,
-		UpdatedAt:      state.UpdatedAt.UTC().Format("2 Jan 2006, 15:04:05 UTC"),
+		UpdatedAt:      state.UpdatedAt.In(proxynode.BillingLocation()).Format("2 Jan 2006, 15:04:05 UTC+8"),
 	}
 }
 
@@ -2367,8 +2374,8 @@ func (h *Handler) createServer(response http.ResponseWriter, request *http.Reque
 	created := createdServerView{
 		AgentID:        agentID,
 		InstallCommand: h.installCommand(encodedToken),
-		ExpiresAt:      expiresAt.UTC().Format("2 Jan 2006, 15:04 UTC"),
-		ExpiresAtISO:   expiresAt.UTC().Format(time.RFC3339),
+		ExpiresAt:      expiresAt.In(proxynode.BillingLocation()).Format("2 Jan 2006, 15:04 UTC+8"),
+		ExpiresAtISO:   expiresAt.In(proxynode.BillingLocation()).Format(time.RFC3339),
 	}
 	resultID, err := h.storeEnrollmentResult(sessionToken, created, h.currentTime())
 	if err != nil {
@@ -2445,7 +2452,7 @@ func deploymentViewFor(record deployment.Record) *deploymentView {
 		ID:         record.ID,
 		RevisionID: record.RevisionID,
 		Digest:     hex.EncodeToString(record.ConfigSHA256[:]),
-		UpdatedAt:  record.UpdatedAt.UTC().Format("2 Jan 2006, 15:04:05 UTC"),
+		UpdatedAt:  record.UpdatedAt.In(proxynode.BillingLocation()).Format("2 Jan 2006, 15:04:05 UTC+8"),
 		Diagnostic: record.Diagnostic,
 	}
 	switch record.Status {

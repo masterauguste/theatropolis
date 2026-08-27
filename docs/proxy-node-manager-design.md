@@ -207,7 +207,24 @@ could not determine which Proxy Node the client intended.
 Credentials are protocol-shaped. A password, UUID, Shadowsocks key, or
 username/password pair cannot be treated as one interchangeable value. The
 Membership owns the appropriate generated credential material for its entrance
-protocol.
+protocol. An administrator may rotate that credential from either Membership
+surface; rotation preserves quota and subscription state, immediately queues
+the user authority, and invalidates the previous import credential.
+
+A finite subscription may be granted in minutes, hours, days, or calendar
+months. All billing, quota, expiration, and compensation references use the
+fixed UTC+8 product clock. Minute/hour/day grants use exact durations. A calendar-month grant
+keeps the established natural-month behavior: a grant created on March 4 for
+one month remains active through April 4 and expires at April 5 00:00 UTC+8.
+Administrators may extend a finite deadline using any supported unit. Extension
+is strictly additive to the stored deadline, including for a disabled expired
+Membership; it re-enables that Membership only if the resulting deadline is in
+the future. Proxy Node-wide compensation takes a UTC+8 outage start and end,
+preselects finite Memberships whose current subscription interval overlaps that
+range, and presents a searchable checklist for administrator overrides before
+applying one extension to the checked Memberships. Unlimited Memberships are
+never candidates. Neither operation changes the quota period, anchor day, or
+next traffic reset.
 
 Secrets are displayed only through an explicit administrator action and are
 handled as sensitive state. Diagnostics, logs, topology exports, and ordinary
@@ -264,7 +281,7 @@ pruning. The master adds each authenticated control frame exactly once to the
 matching Membership's current-period usage in a private SQLite/WAL database,
 keeps a bounded non-sensitive accounting-failure history there, and remains the
 sole durable accounting authority. Topology and user policy remain in the
-schema-v8 JSON store; SQL is authoritative for high-frequency totals and reset
+schema-v9 JSON store; SQL is authoritative for high-frequency totals and reset
 boundaries. Schema-v7 JSON accounting values are imported once during upgrade,
 and a corrupt accounting database fails closed instead of becoming an empty
 ledger.
@@ -273,8 +290,11 @@ This intentionally follows an at-most-once polling model: a sing-box/Agent
 crash before sampling, a response lost after counters were cleared, or a master
 persistence failure can lose that interval. The system does not claim
 audit-grade billing. Rolling quota resets clear master-owned Membership usage
-in a serialized SQL transaction at 00:10 UTC; subscription expiration remains
-a separate 00:00 UTC user-plane transition. During rolling upgrades, legacy cumulative Agents retain their baseline
+in a serialized SQL transaction at 00:10 UTC+8. Subscription deadlines are
+checked once per minute and synchronize through the independent user plane.
+An administrator-requested traffic reset first requests and persists an
+entrance sample, then clears only the current-period total; it never moves the
+quota period or subscription deadline. During rolling upgrades, legacy cumulative Agents retain their baseline
 handling; reset-delta Agents advertise `managed-user-traffic-delta-v1` and use a
 fresh compatibility epoch for each batch so an older master also adds it once.
 

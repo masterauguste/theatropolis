@@ -301,18 +301,23 @@ func validateProxyNode(node ProxyNode, users map[string]User) error {
 		if !validID(membership.ID, "mem_") || membership.CreatedAt.IsZero() ||
 			membership.QuotaAnchorDay < 1 || membership.QuotaAnchorDay > 31 ||
 			membership.QuotaPeriodStartedOn.IsZero() || membership.QuotaResetsAfter.IsZero() ||
-			!membership.QuotaPeriodStartedOn.Equal(utcDate(membership.QuotaPeriodStartedOn)) ||
-			!membership.QuotaResetsAfter.Equal(utcDate(membership.QuotaResetsAfter)) ||
+			!membership.QuotaPeriodStartedOn.Equal(billingDate(membership.QuotaPeriodStartedOn)) ||
+			!membership.QuotaResetsAfter.Equal(billingDate(membership.QuotaResetsAfter)) ||
 			!membership.QuotaResetsAfter.After(membership.QuotaPeriodStartedOn) {
 			return errors.New("invalid Membership")
 		}
 		if !membership.SubscriptionEndsAfter.IsZero() &&
-			(!membership.SubscriptionEndsAfter.Equal(utcDate(membership.SubscriptionEndsAfter)) ||
-				membership.SubscriptionEndsAfter.Before(utcDate(membership.CreatedAt))) {
+			(membership.SubscriptionStartedAt.IsZero() || membership.SubscriptionStartedAt.Nanosecond() != 0 ||
+				membership.SubscriptionEndsAfter.Nanosecond() != 0 ||
+				!membership.SubscriptionEndsAfter.After(membership.SubscriptionStartedAt) ||
+				!membership.SubscriptionEndsAfter.After(membership.CreatedAt.UTC().Truncate(time.Second))) {
 			return errors.New("invalid Membership subscription")
 		}
-		if membership.SubscriptionMonths < 0 || membership.SubscriptionMonths > maxSubscriptionMonths ||
-			(membership.SubscriptionMonths == 0) != membership.SubscriptionEndsAfter.IsZero() {
+		if membership.LegacySubscriptionMonths != 0 ||
+			(membership.SubscriptionValue == 0) != membership.SubscriptionEndsAfter.IsZero() ||
+			(membership.SubscriptionValue > 0 &&
+				(membership.SubscriptionValue > maxSubscriptionValue(membership.SubscriptionUnit) || maxSubscriptionValue(membership.SubscriptionUnit) == 0)) ||
+			(membership.SubscriptionValue == 0 && (membership.SubscriptionUnit != "" || !membership.SubscriptionStartedAt.IsZero())) {
 			return errors.New("invalid Membership subscription length")
 		}
 		if membership.DisabledReason != MembershipEnabled &&

@@ -3232,6 +3232,93 @@ dialog.fleet-settings-dialog {
   gap: 1rem;
 }
 
+.subscription-duration-fields {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(10rem, 1fr);
+  gap: 0.75rem;
+}
+
+.subscription-duration-fields > small {
+  grid-column: 1 / -1;
+  color: var(--ink-500);
+}
+
+.membership-maintenance {
+  display: grid;
+  gap: 1rem;
+  padding: 1rem;
+  border: 1px solid var(--ink-200);
+  border-radius: var(--radius-md);
+  background: color-mix(in srgb, var(--surface) 72%, var(--ink-100));
+}
+
+.membership-maintenance h3 { margin: 0; }
+
+.membership-extension {
+  display: grid;
+  grid-template-columns: minmax(7rem, 0.7fr) minmax(10rem, 1fr) auto;
+  align-items: end;
+  gap: 0.75rem;
+}
+
+.membership-extension > small {
+  grid-column: 1 / -1;
+  color: var(--ink-500);
+}
+
+.membership-maintenance__actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.75rem;
+}
+
+.compensation-range {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 0.75rem;
+}
+
+.compensation-selector {
+  display: grid;
+  gap: 0.85rem;
+  padding: 1rem;
+  border: 1px solid var(--ink-200);
+  border-radius: var(--radius-md);
+}
+
+.compensation-selector__header {
+  display: flex;
+  align-items: start;
+  justify-content: space-between;
+  gap: 1rem;
+}
+
+.compensation-selector__header h3 { margin: 0; }
+.compensation-selector__header > strong { white-space: nowrap; color: var(--accent-700); }
+
+.compensation-candidates {
+  display: grid;
+  max-height: 18rem;
+  overflow-y: auto;
+  border: 1px solid var(--ink-200);
+  border-radius: var(--radius-sm);
+}
+
+.compensation-candidate {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  padding: 0.75rem 0.85rem;
+  border-bottom: 1px solid var(--ink-200);
+  cursor: pointer;
+}
+
+.compensation-candidate:last-child { border-bottom: 0; }
+.compensation-candidate:hover { background: var(--ink-100); }
+.compensation-candidate[hidden] { display: none; }
+.compensation-candidate > span { display: grid; gap: 0.15rem; }
+.compensation-candidate small { color: var(--ink-500); }
+
 .membership-facts {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
@@ -3294,6 +3381,11 @@ dialog.fleet-settings-dialog {
 @media (max-width: 640px) {
   .membership-plan-fields,
   .membership-facts { grid-template-columns: 1fr; }
+  .subscription-duration-fields,
+  .membership-extension,
+  .compensation-range { grid-template-columns: 1fr; }
+  .subscription-duration-fields > small,
+  .membership-extension > small { grid-column: auto; }
   .membership-facts div { border-right: 0; border-bottom: 1px solid var(--ink-200); }
   .membership-facts div:nth-last-child(-n + 2) { border-bottom: 1px solid var(--ink-200); }
   .membership-facts div:last-child { border-bottom: 0; }

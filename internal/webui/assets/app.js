@@ -1128,3 +1128,60 @@ if (masterUpdateForm) {
     }
   });
 }
+
+for (const dialog of document.querySelectorAll("[data-compensation-dialog]")) {
+  const form = dialog.querySelector("[data-compensation-form]");
+  const startInput = dialog.querySelector("[data-compensation-start]");
+  const endInput = dialog.querySelector("[data-compensation-end]");
+  const searchInput = dialog.querySelector("[data-compensation-search]");
+  const count = dialog.querySelector("[data-compensation-count]");
+  const submit = dialog.querySelector("[data-compensation-submit]");
+  const empty = dialog.querySelector("[data-compensation-empty]");
+  const candidates = [...dialog.querySelectorAll("[data-compensation-candidate]")];
+
+  const parseUTC8Input = (value) => {
+    if (!value) return Number.NaN;
+    return Date.parse(`${value}${value.length === 16 ? ":00" : ""}+08:00`);
+  };
+  const updateCount = () => {
+    const selected = candidates.filter((candidate) => candidate.querySelector("input").checked).length;
+    if (count) count.textContent = String(selected);
+    if (submit) submit.disabled = selected === 0;
+  };
+  const applyRange = () => {
+    const startedAt = parseUTC8Input(startInput?.value || "");
+    const endedAt = parseUTC8Input(endInput?.value || "");
+    const valid = Number.isFinite(startedAt) && Number.isFinite(endedAt) && startedAt < endedAt;
+    if (endInput) endInput.setCustomValidity(valid || !endInput.value ? "" : "Outage end must be after outage start.");
+    for (const candidate of candidates) {
+      const subscriptionStarted = Date.parse(candidate.dataset.startedAt || "");
+      const subscriptionEnded = Date.parse(candidate.dataset.endsAfter || "");
+      candidate.querySelector("input").checked = valid && subscriptionStarted < endedAt && subscriptionEnded > startedAt;
+    }
+    updateCount();
+  };
+  const applySearch = () => {
+    const query = (searchInput?.value || "").trim().toLocaleLowerCase();
+    let visible = 0;
+    for (const candidate of candidates) {
+      const matches = !query || (candidate.dataset.name || "").toLocaleLowerCase().includes(query);
+      candidate.hidden = !matches;
+      if (matches) visible++;
+    }
+    if (empty) empty.hidden = visible !== 0;
+  };
+
+  startInput?.addEventListener("change", applyRange);
+  endInput?.addEventListener("change", applyRange);
+  searchInput?.addEventListener("input", applySearch);
+  for (const candidate of candidates) {
+    candidate.querySelector("input")?.addEventListener("change", updateCount);
+  }
+  form?.addEventListener("submit", (event) => {
+    const selected = candidates.some((candidate) => candidate.querySelector("input").checked);
+    if (!selected) {
+      event.preventDefault();
+      submit?.focus();
+    }
+  });
+}
