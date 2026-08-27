@@ -666,7 +666,6 @@ func TestServerPageRoutesThroughProxyNodeManager(t *testing.T) {
 	for _, expected := range []string{
 		"Proxy Node roles",
 		`href="/proxy-nodes"`,
-		"does not own an editable sing-box configuration",
 	} {
 		if !strings.Contains(body, expected) {
 			t.Errorf("server management page does not contain %q", expected)

@@ -23,12 +23,14 @@ type envelope struct {
 }
 
 type Store struct {
-	mu         sync.RWMutex
-	path       string
-	state      State
-	build      BuildInfo
-	now        func() time.Time
-	accounting *accountingDB
+	mu                sync.RWMutex
+	path              string
+	state             State
+	build             BuildInfo
+	now               func() time.Time
+	accounting        *accountingDB
+	userIndex         map[string]int
+	subscriptionIndex map[string]int
 }
 
 func Open(path string, build BuildInfo) (*Store, error) {
@@ -49,6 +51,7 @@ func Open(path string, build BuildInfo) (*Store, error) {
 			return nil, err
 		}
 		store.accounting = accounting
+		store.rebuildIndexesLocked()
 		return store, nil
 	}
 	if err != nil {
@@ -128,6 +131,22 @@ func Open(path string, build BuildInfo) (*Store, error) {
 		migrateSchemaV8(&stored.Data)
 		stored.SchemaVersion = 9
 	}
+	if stored.SchemaVersion == 9 {
+		stored.SchemaVersion = 10
+	}
+	if stored.SchemaVersion == 10 {
+		stored.SchemaVersion = 11
+	}
+	if stored.SchemaVersion == 11 {
+		if err := migrateSchemaV11(&stored.Data); err != nil {
+			return nil, fmt.Errorf("%w: migrate schema version 11: %v", ErrInvalidState, err)
+		}
+		stored.SchemaVersion = 12
+	}
+	if stored.SchemaVersion == 12 {
+		migrateSchemaV12(&stored.Data)
+		stored.SchemaVersion = 13
+	}
 	if stored.SchemaVersion != SchemaVersion {
 		return nil, fmt.Errorf("%w: unsupported schema version %d", ErrInvalidState, stored.SchemaVersion)
 	}
@@ -152,11 +171,69 @@ func Open(path string, build BuildInfo) (*Store, error) {
 		return nil, err
 	}
 	store.accounting = accounting
+	store.rebuildIndexesLocked()
 	if err := validateState(store.state); err != nil {
 		_ = accounting.db.Close()
 		return nil, err
 	}
 	return store, nil
+}
+
+// migrateSchemaV12 removes the unreleased remote-provider experiment. Rules
+// that depended on a provider cannot be represented after its source is
+// removed, so they are discarded while ordinary rules retain their order.
+func migrateSchemaV12(state *State) {
+	state.SubscriptionPolicy.Rules = slices.DeleteFunc(state.SubscriptionPolicy.Rules, func(rule SubscriptionRule) bool {
+		return rule.Match == SubscriptionMatchProvider
+	})
+	for index := range state.SubscriptionPolicy.Rules {
+		state.SubscriptionPolicy.Rules[index].Provider = ""
+	}
+	reorderSubscriptionRules(state.SubscriptionPolicy.Rules)
+	state.SubscriptionPolicy.Providers = nil
+}
+
+// migrateSchemaV11 promotes the most recently edited legacy per-user policy
+// into the universal policy. Tokens remain user-bound. Version 11 was never a
+// released schema, but this keeps local previews and reinstallations usable.
+func migrateSchemaV11(state *State) error {
+	var selected *UserSubscription
+	selectedUserUpdatedAt := time.Time{}
+	for index := range state.Users {
+		subscription := &state.Users[index].Subscription
+		if subscription.DefaultAction != "" || len(subscription.Rules) != 0 || len(subscription.Providers) != 0 {
+			if selected == nil || subscription.UpdatedAt.After(selected.UpdatedAt) {
+				selected = subscription
+				selectedUserUpdatedAt = state.Users[index].UpdatedAt
+			}
+		}
+	}
+	if selected != nil {
+		updatedAt := selected.UpdatedAt
+		if updatedAt.IsZero() {
+			updatedAt = selectedUserUpdatedAt.UTC()
+		}
+		state.SubscriptionPolicy = SubscriptionPolicy{
+			DefaultAction: selected.DefaultAction,
+			Rules:         append([]SubscriptionRule(nil), selected.Rules...),
+			Providers:     append([]SubscriptionProvider(nil), selected.Providers...),
+			UpdatedAt:     updatedAt,
+		}
+	}
+	for index := range state.Users {
+		if state.Users[index].Subscription.Token == "" {
+			token, err := randomID("sub")
+			if err != nil {
+				return err
+			}
+			state.Users[index].Subscription.Token = token
+			state.Users[index].Subscription.UpdatedAt = state.Users[index].UpdatedAt.UTC()
+		}
+		state.Users[index].Subscription.DefaultAction = ""
+		state.Users[index].Subscription.Rules = nil
+		state.Users[index].Subscription.Providers = nil
+	}
+	return nil
 }
 
 func (s *Store) MarkReady() error {
@@ -179,12 +256,11 @@ func (s *Store) Snapshot() State {
 func (s *Store) User(id string) (User, bool) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
-	for _, user := range s.state.Users {
-		if user.ID == id {
-			return user, true
-		}
+	index, exists := s.userIndex[id]
+	if !exists || index < 0 || index >= len(s.state.Users) {
+		return User{}, false
 	}
-	return User{}, false
+	return cloneState(State{Users: []User{s.state.Users[index]}}).Users[0], true
 }
 
 func (s *Store) ProxyNode(id string) (ProxyNode, bool) {
@@ -218,8 +294,12 @@ func (s *Store) CreateUser(name string) (User, error) {
 	if err != nil {
 		return User{}, err
 	}
+	token, err := randomID("sub")
+	if err != nil {
+		return User{}, err
+	}
 	now := s.now().UTC()
-	created := User{ID: id, Name: name, CreatedAt: now, UpdatedAt: now}
+	created := User{ID: id, Name: name, Subscription: UserSubscription{Token: token, UpdatedAt: now}, CreatedAt: now, UpdatedAt: now}
 	err = s.mutateUser(func(state *State) error {
 		for _, user := range state.Users {
 			if strings.EqualFold(user.Name, name) {
@@ -274,16 +354,12 @@ func (s *Store) DeleteUser(id string) error {
 
 func (s *Store) CreateProxyNode(input CreateProxyNodeInput) (ProxyNode, error) {
 	input.Name = strings.TrimSpace(input.Name)
-	input.RootName = strings.TrimSpace(input.RootName)
 	input.RootAgent = strings.TrimSpace(input.RootAgent)
 	input.Entrance = normalizeEndpoint(input.Entrance)
-	if input.RootName == "" {
-		input.RootName = "Entrance"
-	}
 	if input.Final.Type == "" {
 		input.Final = Target{Type: TargetDirect}
 	}
-	if !validName(input.Name) || !validName(input.RootName) || !validAgentID(input.RootAgent) {
+	if !validName(input.Name) || !validAgentID(input.RootAgent) {
 		return ProxyNode{}, fmt.Errorf("%w: invalid Proxy Node fields", ErrInvalidState)
 	}
 	if (input.Final.Type != TargetDirect && input.Final.Type != TargetReject) || input.Final.LinkID != "" {
@@ -306,7 +382,7 @@ func (s *Store) CreateProxyNode(input CreateProxyNodeInput) (ProxyNode, error) {
 		Name:     input.Name,
 		Entrance: Entrance{HopID: hopID, Endpoint: input.Entrance},
 		Hops: []Hop{{
-			ID: hopID, Name: input.RootName, AgentID: input.RootAgent,
+			ID: hopID, Name: input.RootAgent, AgentID: input.RootAgent,
 			Final: input.Final, CreatedAt: now, UpdatedAt: now,
 		}},
 		Links: []Link{}, Memberships: []Membership{}, RuleSets: []CustomRuleSet{},
@@ -481,29 +557,59 @@ func (s *Store) RemoveMembership(nodeID, userID string) error {
 // candidate secret is staged for activation with that topology.
 func (s *Store) ResetMembershipCredential(nodeID, userID string) error {
 	return s.mutateUserProxyNode(nodeID, func(state *State, node *ProxyNode) error {
-		membership := membershipForUser(node, userID)
-		if membership == nil {
+		return resetMembershipCredential(state, node, userID)
+	})
+}
+
+// ResetUserCredentials rotates every Membership secret owned by one End User
+// in a single user-plane mutation. Disabled and expired Memberships are also
+// rotated so restoring them later cannot revive an old credential.
+func (s *Store) ResetUserCredentials(userID string) (int, error) {
+	rotated := 0
+	err := s.mutateUser(func(state *State) error {
+		if !slices.ContainsFunc(state.Users, func(user User) bool { return user.ID == userID }) {
 			return ErrNotFound
 		}
-		activeEndpoint := node.Entrance.Endpoint
-		if appliedEndpoint, exists := appliedEntranceEndpoint(*state, node.ID); exists {
-			activeEndpoint = appliedEndpoint
-		}
-		credential, err := generateCredential(activeEndpoint)
-		if err != nil {
-			return err
-		}
-		membership.Credential = credential
-		membership.PendingCredential = nil
-		if credentialShapeChanged(activeEndpoint, node.Entrance.Endpoint) {
-			pending, pendingErr := generateCredential(node.Entrance.Endpoint)
-			if pendingErr != nil {
-				return pendingErr
+		now := s.now().UTC()
+		for nodeIndex := range state.ProxyNodes {
+			node := &state.ProxyNodes[nodeIndex]
+			if membershipForUser(node, userID) == nil {
+				continue
 			}
-			membership.PendingCredential = &pending
+			if err := resetMembershipCredential(state, node, userID); err != nil {
+				return err
+			}
+			node.UpdatedAt = now
+			rotated++
 		}
 		return nil
 	})
+	return rotated, err
+}
+
+func resetMembershipCredential(state *State, node *ProxyNode, userID string) error {
+	membership := membershipForUser(node, userID)
+	if membership == nil {
+		return ErrNotFound
+	}
+	activeEndpoint := node.Entrance.Endpoint
+	if appliedEndpoint, exists := appliedEntranceEndpoint(*state, node.ID); exists {
+		activeEndpoint = appliedEndpoint
+	}
+	credential, err := generateCredential(activeEndpoint)
+	if err != nil {
+		return err
+	}
+	membership.Credential = credential
+	membership.PendingCredential = nil
+	if credentialShapeChanged(activeEndpoint, node.Entrance.Endpoint) {
+		pending, pendingErr := generateCredential(node.Entrance.Endpoint)
+		if pendingErr != nil {
+			return pendingErr
+		}
+		membership.PendingCredential = &pending
+	}
+	return nil
 }
 
 func (s *Store) AddLink(nodeID string, input AddLinkInput) (Link, Hop, error) {
@@ -530,15 +636,47 @@ func (s *Store) AddBranch(nodeID string, input AddBranchInput) (Link, Hop, Rule,
 	return s.addLink(nodeID, input.AddLinkInput, rule, false)
 }
 
+// AddBlockBranch creates a conditional terminal branch that rejects matching
+// traffic on its parent Hop. It deliberately creates no Link, credential, or
+// child Hop.
+func (s *Store) AddBlockBranch(nodeID string, input AddBlockBranchInput) (BlockBranch, error) {
+	input.ParentHopID = strings.TrimSpace(input.ParentHopID)
+	values := normalizeValues(input.Values)
+	if input.Match == MatchNone {
+		return BlockBranch{}, fmt.Errorf("%w: BLOCK requires a conditional match", ErrInvalidState)
+	}
+	if err := validateRule(Rule{Match: input.Match, Values: values}); err != nil {
+		return BlockBranch{}, fmt.Errorf("%w: %v", ErrInvalidState, err)
+	}
+	ruleID, err := randomID("rul")
+	if err != nil {
+		return BlockBranch{}, err
+	}
+	now := s.now().UTC()
+	created := BlockBranch{
+		ParentHopID: input.ParentHopID,
+		Rule:        Rule{ID: ruleID, Match: input.Match, Values: values},
+		CreatedAt:   now, UpdatedAt: now,
+	}
+	err = s.mutateProxyNode(nodeID, func(_ *State, node *ProxyNode) error {
+		if !slices.ContainsFunc(node.Hops, func(hop Hop) bool { return hop.ID == input.ParentHopID }) {
+			return ErrNotFound
+		}
+		created.Rule.Order = ruleCountForHop(*node, input.ParentHopID)
+		node.BlockBranches = append(node.BlockBranches, created)
+		return nil
+	})
+	return created, err
+}
+
 func (s *Store) addLink(nodeID string, input AddLinkInput, rule *Rule, fallback bool) (Link, Hop, Rule, error) {
 	input.ParentHopID = strings.TrimSpace(input.ParentHopID)
-	input.ChildName = strings.TrimSpace(input.ChildName)
 	input.ChildAgent = strings.TrimSpace(input.ChildAgent)
 	input.Endpoint = normalizeEndpoint(input.Endpoint)
 	if input.Final.Type == "" {
 		input.Final = Target{Type: TargetDirect}
 	}
-	if !validName(input.ChildName) || !validAgentID(input.ChildAgent) {
+	if !validAgentID(input.ChildAgent) {
 		return Link{}, Hop{}, Rule{}, fmt.Errorf("%w: invalid child Hop", ErrInvalidState)
 	}
 	if (input.Final.Type != TargetDirect && input.Final.Type != TargetReject) || input.Final.LinkID != "" {
@@ -560,7 +698,7 @@ func (s *Store) addLink(nodeID string, input AddLinkInput, rule *Rule, fallback 
 		return Link{}, Hop{}, Rule{}, err
 	}
 	now := s.now().UTC()
-	child := Hop{ID: hopID, Name: input.ChildName, AgentID: input.ChildAgent, Final: input.Final, CreatedAt: now, UpdatedAt: now}
+	child := Hop{ID: hopID, Name: input.ChildAgent, AgentID: input.ChildAgent, Final: input.Final, CreatedAt: now, UpdatedAt: now}
 	link := Link{ID: linkID, ParentHopID: input.ParentHopID, ChildHopID: hopID, Fallback: fallback, Endpoint: input.Endpoint, Credential: credential, CreatedAt: now, UpdatedAt: now}
 	createdRule := Rule{}
 	if rule != nil {
@@ -608,16 +746,17 @@ func (s *Store) UpdateLink(nodeID, linkID string, endpoint Endpoint) error {
 	})
 }
 
-func (s *Store) UpdateHop(nodeID, hopID, name, agentID string) error {
-	name = strings.TrimSpace(name)
+// MoveHop changes the Agent hosting a Hop while preserving the Hop identity,
+// terminal, incoming Link, and complete downstream subtree.
+func (s *Store) MoveHop(nodeID, hopID, agentID string) error {
 	agentID = strings.TrimSpace(agentID)
-	if !validName(name) || !validAgentID(agentID) {
+	if !validAgentID(agentID) {
 		return fmt.Errorf("%w: invalid Hop", ErrInvalidState)
 	}
 	return s.mutateProxyNode(nodeID, func(state *State, node *ProxyNode) error {
 		for index := range node.Hops {
 			if node.Hops[index].ID == hopID {
-				node.Hops[index].Name = name
+				node.Hops[index].Name = agentID
 				node.Hops[index].AgentID = agentID
 				node.Hops[index].UpdatedAt = s.now().UTC()
 				return validateListenerLayout(state)
@@ -627,23 +766,89 @@ func (s *Store) UpdateHop(nodeID, hopID, name, agentID string) error {
 	})
 }
 
+// UpdateHop is retained for callers compiled against the previous API. Hop
+// names are no longer independently mutable.
+func (s *Store) UpdateHop(nodeID, hopID, _ string, agentID string) error {
+	return s.MoveHop(nodeID, hopID, agentID)
+}
+
+// ReplaceLinkDestination retains a Link's routing identity and priority while
+// replacing everything downstream of it with one fresh terminal Hop. The Link
+// credential is rotated because the removed destination knew the old secret.
+func (s *Store) ReplaceLinkDestination(nodeID, linkID, agentID string, endpoint Endpoint, final Target) (Hop, error) {
+	agentID = strings.TrimSpace(agentID)
+	endpoint = normalizeEndpoint(endpoint)
+	if final.Type == "" {
+		final = Target{Type: TargetDirect}
+	}
+	if !validAgentID(agentID) {
+		return Hop{}, fmt.Errorf("%w: invalid destination Agent", ErrInvalidState)
+	}
+	if (final.Type != TargetDirect && final.Type != TargetReject) || final.LinkID != "" {
+		return Hop{}, fmt.Errorf("%w: replacement terminal exit must be Direct or Reject", ErrInvalidState)
+	}
+	if err := generateEndpointSecrets(&endpoint); err != nil {
+		return Hop{}, err
+	}
+	hopID, err := randomID("hop")
+	if err != nil {
+		return Hop{}, err
+	}
+	credential, err := generateCredential(endpoint)
+	if err != nil {
+		return Hop{}, err
+	}
+	now := s.now().UTC()
+	created := Hop{ID: hopID, Name: agentID, AgentID: agentID, Final: final, CreatedAt: now, UpdatedAt: now}
+	err = s.mutateProxyNode(nodeID, func(state *State, node *ProxyNode) error {
+		rootIndex := slices.IndexFunc(node.Links, func(link Link) bool { return link.ID == linkID })
+		if rootIndex < 0 {
+			return ErrNotFound
+		}
+		removeHops := descendantHops(*node, node.Links[rootIndex].ChildHopID)
+		node.Hops = slices.DeleteFunc(node.Hops, func(hop Hop) bool { return removeHops[hop.ID] })
+		node.Links = slices.DeleteFunc(node.Links, func(link Link) bool {
+			return link.ID != linkID && (removeHops[link.ParentHopID] || removeHops[link.ChildHopID])
+		})
+		node.BlockBranches = slices.DeleteFunc(node.BlockBranches, func(branch BlockBranch) bool {
+			return removeHops[branch.ParentHopID]
+		})
+		node.Hops = append(node.Hops, created)
+		rootIndex = slices.IndexFunc(node.Links, func(link Link) bool { return link.ID == linkID })
+		root := &node.Links[rootIndex]
+		root.ChildHopID = created.ID
+		root.Endpoint = endpoint
+		root.Credential = credential
+		root.UpdatedAt = now
+		normalizeLinkOrders(node)
+		normalizeRuleOrders(node)
+		return validateListenerLayout(state)
+	})
+	return created, err
+}
+
+func descendantHops(node ProxyNode, rootHopID string) map[string]bool {
+	result := map[string]bool{rootHopID: true}
+	changed := true
+	for changed {
+		changed = false
+		for _, link := range node.Links {
+			if result[link.ParentHopID] && !result[link.ChildHopID] {
+				result[link.ChildHopID] = true
+				changed = true
+			}
+		}
+	}
+	return result
+}
+
 func (s *Store) DeleteLink(nodeID, linkID string) error {
 	return s.mutateProxyNode(nodeID, func(_ *State, node *ProxyNode) error {
 		rootIndex := slices.IndexFunc(node.Links, func(link Link) bool { return link.ID == linkID })
 		if rootIndex < 0 {
 			return ErrNotFound
 		}
-		removeHops := map[string]bool{node.Links[rootIndex].ChildHopID: true}
-		changed := true
-		for changed {
-			changed = false
-			for _, link := range node.Links {
-				if removeHops[link.ParentHopID] && !removeHops[link.ChildHopID] {
-					removeHops[link.ChildHopID] = true
-					changed = true
-				}
-			}
-		}
+		removeHops := descendantHops(*node, node.Links[rootIndex].ChildHopID)
 		removeLinks := make(map[string]bool)
 		for _, link := range node.Links {
 			if link.ID == linkID || removeHops[link.ParentHopID] || removeHops[link.ChildHopID] {
@@ -652,6 +857,7 @@ func (s *Store) DeleteLink(nodeID, linkID string) error {
 		}
 		node.Hops = slices.DeleteFunc(node.Hops, func(hop Hop) bool { return removeHops[hop.ID] })
 		node.Links = slices.DeleteFunc(node.Links, func(link Link) bool { return removeLinks[link.ID] })
+		node.BlockBranches = slices.DeleteFunc(node.BlockBranches, func(branch BlockBranch) bool { return removeHops[branch.ParentHopID] })
 		normalizeLinkOrders(node)
 		normalizeRuleOrders(node)
 		return nil
@@ -697,7 +903,7 @@ func (s *Store) AddRule(nodeID string, input AddRuleInput) (Rule, error) {
 			if len(link.Rules) != 1 {
 				return fmt.Errorf("%w: Link has more than one routing Rule", ErrInvalidState)
 			}
-			clonedLink, clonedHops, clonedLinks, err := cloneLinkBranch(*node, *link, s.now().UTC())
+			clonedLink, clonedHops, clonedLinks, clonedBlocks, err := cloneLinkBranch(*node, *link, s.now().UTC())
 			if err != nil {
 				return err
 			}
@@ -707,6 +913,7 @@ func (s *Store) AddRule(nodeID string, input AddRuleInput) (Rule, error) {
 			node.Hops = append(node.Hops, clonedHops...)
 			node.Links = append(node.Links, clonedLink)
 			node.Links = append(node.Links, clonedLinks...)
+			node.BlockBranches = append(node.BlockBranches, clonedBlocks...)
 			normalizeLinkOrders(node)
 			return validateListenerLayout(state)
 		}
@@ -719,7 +926,7 @@ func (s *Store) AddRule(nodeID string, input AddRuleInput) (Rule, error) {
 		if len(link.Rules) != 1 {
 			return fmt.Errorf("%w: Link has more than one routing Rule", ErrInvalidState)
 		}
-		clonedLink, clonedHops, clonedLinks, err := cloneLinkBranch(*node, *link, s.now().UTC())
+		clonedLink, clonedHops, clonedLinks, clonedBlocks, err := cloneLinkBranch(*node, *link, s.now().UTC())
 		if err != nil {
 			return err
 		}
@@ -735,6 +942,7 @@ func (s *Store) AddRule(nodeID string, input AddRuleInput) (Rule, error) {
 		node.Hops = append(node.Hops, clonedHops...)
 		node.Links = append(node.Links, clonedLink)
 		node.Links = append(node.Links, clonedLinks...)
+		node.BlockBranches = append(node.BlockBranches, clonedBlocks...)
 		return validateListenerLayout(state)
 	})
 	return created, err
@@ -806,6 +1014,61 @@ func (s *Store) MoveRule(nodeID, linkID, ruleID string, delta int) error {
 			return ErrNotFound
 		}
 		ordered := orderedRulesForHop(*node, node.Links[linkIndex].ParentHopID)
+		index := slices.IndexFunc(ordered, func(entry orderedRule) bool { return entry.rule.ID == ruleID })
+		target := index + delta
+		if target < 0 || target >= len(ordered) {
+			return nil
+		}
+		ordered[index], ordered[target] = ordered[target], ordered[index]
+		applyRuleOrder(node, ordered)
+		return nil
+	})
+}
+
+func (s *Store) UpdateBlockBranch(nodeID, ruleID string, input UpdateRuleInput) error {
+	values := normalizeValues(input.Values)
+	if input.Match == MatchNone {
+		return fmt.Errorf("%w: BLOCK requires a conditional match", ErrInvalidState)
+	}
+	if err := validateRule(Rule{Match: input.Match, Values: values}); err != nil {
+		return fmt.Errorf("%w: %v", ErrInvalidState, err)
+	}
+	return s.mutateProxyNode(nodeID, func(_ *State, node *ProxyNode) error {
+		for index := range node.BlockBranches {
+			if node.BlockBranches[index].Rule.ID != ruleID {
+				continue
+			}
+			node.BlockBranches[index].Rule.Match = input.Match
+			node.BlockBranches[index].Rule.Values = values
+			node.BlockBranches[index].UpdatedAt = s.now().UTC()
+			return nil
+		}
+		return ErrNotFound
+	})
+}
+
+func (s *Store) DeleteBlockBranch(nodeID, ruleID string) error {
+	return s.mutateProxyNode(nodeID, func(_ *State, node *ProxyNode) error {
+		before := len(node.BlockBranches)
+		node.BlockBranches = slices.DeleteFunc(node.BlockBranches, func(branch BlockBranch) bool { return branch.Rule.ID == ruleID })
+		if len(node.BlockBranches) == before {
+			return ErrNotFound
+		}
+		normalizeRuleOrders(node)
+		return nil
+	})
+}
+
+func (s *Store) MoveBlockBranch(nodeID, ruleID string, delta int) error {
+	if delta != -1 && delta != 1 {
+		return fmt.Errorf("%w: invalid Rule movement", ErrInvalidState)
+	}
+	return s.mutateProxyNode(nodeID, func(_ *State, node *ProxyNode) error {
+		branchIndex := slices.IndexFunc(node.BlockBranches, func(branch BlockBranch) bool { return branch.Rule.ID == ruleID })
+		if branchIndex < 0 {
+			return ErrNotFound
+		}
+		ordered := orderedRulesForHop(*node, node.BlockBranches[branchIndex].ParentHopID)
 		index := slices.IndexFunc(ordered, func(entry orderedRule) bool { return entry.rule.ID == ruleID })
 		target := index + delta
 		if target < 0 || target >= len(ordered) {
@@ -992,12 +1255,10 @@ func (s *Store) MarkTopologyApplied(expectedRevision uint64, agentIDs []string) 
 		return err
 	}
 	build := normalizeBuild(s.build, s.now())
-	if err := s.persistLocked(next, build); err != nil {
+	if err := s.persistStateAndAccountingLocked(next, build); err != nil {
 		return err
 	}
-	s.state = next
-	s.build = build
-	return s.reconcileAccountingMembershipsLocked()
+	return nil
 }
 
 // RestoreTopology rolls the desired topology back to the snapshot captured
@@ -1041,12 +1302,10 @@ func (s *Store) RestoreTopology(expectedRevision uint64, previous State) error {
 		return err
 	}
 	build := normalizeBuild(s.build, s.now())
-	if err := s.persistLocked(next, build); err != nil {
+	if err := s.persistStateAndAccountingLocked(next, build); err != nil {
 		return err
 	}
-	s.state = next
-	s.build = build
-	return s.reconcileAccountingMembershipsLocked()
+	return nil
 }
 
 func mergeRestoredMemberships(previous, current []Membership) []Membership {
@@ -1127,12 +1386,10 @@ func (s *Store) mutate(mutation func(*State) error) error {
 		return err
 	}
 	build := normalizeBuild(s.build, s.now())
-	if err := s.persistLocked(next, build); err != nil {
+	if err := s.persistStateAndAccountingLocked(next, build); err != nil {
 		return err
 	}
-	s.state = next
-	s.build = build
-	return s.reconcileAccountingMembershipsLocked()
+	return nil
 }
 
 func (s *Store) mutateUser(mutation func(*State) error) error {
@@ -1147,19 +1404,68 @@ func (s *Store) mutateUser(mutation func(*State) error) error {
 		return err
 	}
 	build := normalizeBuild(s.build, s.now())
-	if err := s.persistLocked(next, build); err != nil {
+	if err := s.persistStateAndAccountingLocked(next, build); err != nil {
 		return err
 	}
-	s.state = next
-	s.build = build
-	return s.reconcileAccountingMembershipsLocked()
+	return nil
 }
 
-func (s *Store) reconcileAccountingMembershipsLocked() error {
+// persistStateAndAccountingLocked commits low-frequency membership identity and
+// policy changes across the JSON authority and SQLite accounting ledger. The
+// SQLite transaction remains open while the JSON file is atomically replaced.
+// A crash before SQLite commit rolls that transaction back; startup then
+// reconciles the old database to the already-durable JSON state. A JSON write
+// failure rolls the still-open SQL transaction back, so callers never observe
+// a reported failure after only one authority changed.
+func (s *Store) persistStateAndAccountingLocked(next State, build BuildInfo) error {
 	if s.accounting == nil {
 		return errors.New("accounting database is unavailable")
 	}
-	return s.accounting.reconcileMemberships(s.state)
+	if err := s.accounting.secureFiles(); err != nil {
+		return err
+	}
+	transaction, err := s.accounting.prepareMembershipReconciliation(next)
+	if err != nil {
+		return err
+	}
+	defer transaction.Rollback()
+	if err := s.persistLocked(next, build); err != nil {
+		return err
+	}
+	if err := transaction.Commit(); err != nil {
+		// The JSON rename has completed. Reconcile immediately to the new JSON
+		// authority so this process does not need a restart to converge. If the
+		// retry also fails, restore the previous JSON while its in-memory state
+		// is still available and report the mutation as failed.
+		commitErr := fmt.Errorf("commit membership accounting reconciliation: %w", err)
+		if retryErr := s.accounting.reconcileMemberships(next); retryErr == nil {
+			s.state = next
+			s.build = build
+			s.rebuildIndexesLocked()
+			return nil
+		} else if restoreErr := s.persistLocked(s.state, s.build); restoreErr != nil {
+			return errors.Join(commitErr, fmt.Errorf("retry accounting reconciliation: %w", retryErr), fmt.Errorf("restore proxy node state: %w", restoreErr))
+		} else if rollbackErr := s.accounting.reconcileMemberships(s.state); rollbackErr != nil {
+			return errors.Join(commitErr, fmt.Errorf("retry accounting reconciliation: %w", retryErr), fmt.Errorf("restore membership accounting: %w", rollbackErr))
+		}
+		return commitErr
+	}
+	s.state = next
+	s.build = build
+	s.rebuildIndexesLocked()
+	return nil
+}
+
+func (s *Store) rebuildIndexesLocked() {
+	s.userIndex = make(map[string]int, len(s.state.Users))
+	s.subscriptionIndex = make(map[string]int, len(s.state.Users))
+	for index := range s.state.Users {
+		user := &s.state.Users[index]
+		s.userIndex[user.ID] = index
+		if user.Subscription.Token != "" {
+			s.subscriptionIndex[user.Subscription.Token] = index
+		}
+	}
 }
 
 func (s *Store) persistLocked(state State, build BuildInfo) error {
@@ -1293,7 +1599,7 @@ func normalizeValues(values []string) []string {
 // a fresh credential and every cloned Hop/Rule gets a fresh opaque identity.
 // This lets compatible branches share one sing-box listener without sharing
 // the auth_user that selects their downstream routing policy.
-func cloneLinkBranch(node ProxyNode, root Link, now time.Time) (Link, []Hop, []Link, error) {
+func cloneLinkBranch(node ProxyNode, root Link, now time.Time) (Link, []Hop, []Link, []BlockBranch, error) {
 	children := make(map[string][]Link, len(node.Hops))
 	hops := make(map[string]Hop, len(node.Hops))
 	for _, hop := range node.Hops {
@@ -1310,10 +1616,11 @@ func cloneLinkBranch(node ProxyNode, root Link, now time.Time) (Link, []Hop, []L
 
 	clonedHops := make([]Hop, 0)
 	clonedLinks := make([]Link, 0)
+	clonedBlocks := make([]BlockBranch, 0)
 	active := make(map[string]bool, len(node.Hops))
 	var cloneHop func(string) (string, error)
 	cloneHop = func(oldHopID string) (string, error) {
-		if len(clonedHops)+len(clonedLinks) >= maxTopologyEntities {
+		if len(clonedHops)+len(clonedLinks)+len(clonedBlocks) >= maxTopologyEntities {
 			return "", fmt.Errorf("%w: cloned topology exceeds entity limit", ErrInvalidState)
 		}
 		if active[oldHopID] {
@@ -1333,6 +1640,20 @@ func cloneLinkBranch(node ProxyNode, root Link, now time.Time) (Link, []Hop, []L
 		clonedHop.CreatedAt = now
 		clonedHop.UpdatedAt = now
 		clonedHops = append(clonedHops, clonedHop)
+		for _, oldBranch := range node.BlockBranches {
+			if oldBranch.ParentHopID != oldHopID {
+				continue
+			}
+			clonedBranch := oldBranch
+			clonedBranch.ParentHopID = newHopID
+			clonedBranch.Rule.ID, err = randomID("rul")
+			if err != nil {
+				return "", err
+			}
+			clonedBranch.CreatedAt = now
+			clonedBranch.UpdatedAt = now
+			clonedBlocks = append(clonedBlocks, clonedBranch)
+		}
 		active[oldHopID] = true
 		defer delete(active, oldHopID)
 		for _, oldLink := range children[oldHopID] {
@@ -1369,15 +1690,15 @@ func cloneLinkBranch(node ProxyNode, root Link, now time.Time) (Link, []Hop, []L
 
 	childID, err := cloneHop(root.ChildHopID)
 	if err != nil {
-		return Link{}, nil, nil, err
+		return Link{}, nil, nil, nil, err
 	}
 	linkID, err := randomID("lnk")
 	if err != nil {
-		return Link{}, nil, nil, err
+		return Link{}, nil, nil, nil, err
 	}
 	credential, err := generateCredential(root.Endpoint)
 	if err != nil {
-		return Link{}, nil, nil, err
+		return Link{}, nil, nil, nil, err
 	}
 	clonedRoot := root
 	clonedRoot.ID = linkID
@@ -1385,7 +1706,7 @@ func cloneLinkBranch(node ProxyNode, root Link, now time.Time) (Link, []Hop, []L
 	clonedRoot.Credential = credential
 	clonedRoot.CreatedAt = now
 	clonedRoot.UpdatedAt = now
-	return clonedRoot, clonedHops, clonedLinks, nil
+	return clonedRoot, clonedHops, clonedLinks, clonedBlocks, nil
 }
 
 func migrateSchemaV1(state *State) error {
@@ -1527,9 +1848,10 @@ func normalizeLinkOrders(node *ProxyNode) {
 }
 
 type orderedRule struct {
-	linkIndex int
-	ruleIndex int
-	rule      Rule
+	linkIndex  int
+	ruleIndex  int
+	blockIndex int
+	rule       Rule
 }
 
 func orderedRulesForHop(node ProxyNode, hopID string) []orderedRule {
@@ -1539,7 +1861,12 @@ func orderedRulesForHop(node ProxyNode, hopID string) []orderedRule {
 			continue
 		}
 		for ruleIndex, rule := range node.Links[linkIndex].Rules {
-			result = append(result, orderedRule{linkIndex: linkIndex, ruleIndex: ruleIndex, rule: rule})
+			result = append(result, orderedRule{linkIndex: linkIndex, ruleIndex: ruleIndex, blockIndex: -1, rule: rule})
+		}
+	}
+	for blockIndex, branch := range node.BlockBranches {
+		if branch.ParentHopID == hopID {
+			result = append(result, orderedRule{linkIndex: -1, ruleIndex: -1, blockIndex: blockIndex, rule: branch.Rule})
 		}
 	}
 	sort.SliceStable(result, func(left, right int) bool { return result[left].rule.Order < result[right].rule.Order })
@@ -1548,6 +1875,10 @@ func orderedRulesForHop(node ProxyNode, hopID string) []orderedRule {
 
 func applyRuleOrder(node *ProxyNode, ordered []orderedRule) {
 	for order, entry := range ordered {
+		if entry.blockIndex >= 0 {
+			node.BlockBranches[entry.blockIndex].Rule.Order = order
+			continue
+		}
 		node.Links[entry.linkIndex].Rules[entry.ruleIndex].Order = order
 	}
 }
@@ -1603,7 +1934,7 @@ func migrateSchemaV3(state *State) error {
 				}
 			}
 			for ruleIndex := 1; ruleIndex < len(rules); ruleIndex++ {
-				clonedRoot, clonedHops, clonedLinks, err := cloneLinkBranch(*node, original, now)
+				clonedRoot, clonedHops, clonedLinks, clonedBlocks, err := cloneLinkBranch(*node, original, now)
 				if err != nil {
 					return err
 				}
@@ -1612,6 +1943,7 @@ func migrateSchemaV3(state *State) error {
 				node.Hops = append(node.Hops, clonedHops...)
 				node.Links = append(node.Links, clonedRoot)
 				node.Links = append(node.Links, clonedLinks...)
+				node.BlockBranches = append(node.BlockBranches, clonedBlocks...)
 			}
 		}
 		normalizeLinkOrders(node)

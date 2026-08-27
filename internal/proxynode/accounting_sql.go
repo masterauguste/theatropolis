@@ -314,24 +314,39 @@ func pruneAccountingMemberships(transaction *sql.Tx, state *State) error {
 // topology/user store. Startup performs the same reconciliation, covering a
 // process interruption after the JSON mutation committed.
 func (a *accountingDB) reconcileMemberships(state State) error {
-	transaction, err := a.db.BeginTx(context.Background(), nil)
+	transaction, err := a.prepareMembershipReconciliation(state)
 	if err != nil {
-		return fmt.Errorf("begin membership accounting reconciliation: %w", err)
+		return err
 	}
 	defer transaction.Rollback()
-	if err := ensureAccountingMemberships(transaction, &state); err != nil {
-		return err
-	}
-	if err := pruneAccountingMemberships(transaction, &state); err != nil {
-		return err
-	}
-	if err := setAccountingUserRevision(transaction, state.UserRevision); err != nil {
-		return err
-	}
 	if err := transaction.Commit(); err != nil {
 		return fmt.Errorf("commit membership accounting reconciliation: %w", err)
 	}
 	return a.secureFiles()
+}
+
+func (a *accountingDB) prepareMembershipReconciliation(state State) (*sql.Tx, error) {
+	transaction, err := a.db.BeginTx(context.Background(), nil)
+	if err != nil {
+		return nil, fmt.Errorf("begin membership accounting reconciliation: %w", err)
+	}
+	ok := false
+	defer func() {
+		if !ok {
+			_ = transaction.Rollback()
+		}
+	}()
+	if err := ensureAccountingMemberships(transaction, &state); err != nil {
+		return nil, err
+	}
+	if err := pruneAccountingMemberships(transaction, &state); err != nil {
+		return nil, err
+	}
+	if err := setAccountingUserRevision(transaction, state.UserRevision); err != nil {
+		return nil, err
+	}
+	ok = true
+	return transaction, nil
 }
 
 func setAccountingUserRevision(transaction *sql.Tx, revision uint64) error {

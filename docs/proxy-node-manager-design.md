@@ -100,7 +100,9 @@ same listener normally.
 ### Hop
 
 A Hop is a logical position in one Proxy Node's routing tree and is assigned to
-an Agent. It is not the Agent itself.
+an Agent. It is not the Agent itself. A Hop has no administrator-authored name;
+its visible label is always derived from its assigned Agent, so Agent identity
+changes cannot leave stale labels embedded in Proxy Node topology.
 
 The entrance is the root hop. Every other hop has exactly one incoming link,
 which is what "one parent" means. A hop can have multiple outgoing links, so
@@ -150,6 +152,11 @@ evaluated in administrator-defined order and the first match wins. At most one
 fallback Link exists per Hop and it is always ordered last. Adding another Rule
 from an active branch creates a sibling Link, clones that branch's downstream
 Hop tree, and generates fresh Link credentials throughout the clone.
+
+A conditional Rule may instead choose `BLOCK`. This compiles to sing-box's
+`reject` action on the Rule's parent Hop and creates no Link, listener,
+credential, or child Hop. BLOCK and Link Rules share the same ordered
+first-match priority space.
 
 Every Link receives its own automatically generated credentials. Those
 credentials are shared by all end-user traffic traversing that Link, but are
@@ -210,6 +217,12 @@ Membership owns the appropriate generated credential material for its entrance
 protocol. An administrator may rotate that credential from either Membership
 surface; rotation preserves quota and subscription state, immediately queues
 the user authority, and invalidates the previous import credential.
+The global End User surface can rotate every Membership credential owned by
+that user in one atomic user-plane mutation without changing the subscription
+bearer token. Resetting the subscription link is a wider atomic operation: it
+rotates the bearer token and every Membership credential together, so a failure
+cannot persist a new URL with only some Node credentials replaced. Revoking the
+subscription link changes only the bearer token state.
 
 A finite subscription may be granted in minutes, hours, days, or calendar
 months. All billing, quota, expiration, and compensation references use the
@@ -281,10 +294,18 @@ pruning. The master adds each authenticated control frame exactly once to the
 matching Membership's current-period usage in a private SQLite/WAL database,
 keeps a bounded non-sensitive accounting-failure history there, and remains the
 sole durable accounting authority. Topology and user policy remain in the
-schema-v9 JSON store; SQL is authoritative for high-frequency totals and reset
+schema-v13 JSON store; SQL is authoritative for high-frequency totals and reset
 boundaries. Schema-v7 JSON accounting values are imported once during upgrade,
 and a corrupt accounting database fails closed instead of becoming an empty
 ledger.
+
+Low-frequency membership identity and policy mutations prepare their SQLite
+reconciliation in an uncommitted transaction, atomically replace the JSON
+authority, and only then commit SQLite. A JSON failure rolls the SQL transaction
+back. A process interruption after the JSON rename but before the SQL commit is
+recovered at startup by reconciling SQLite to the durable JSON authority. This
+prevents a failed web mutation from silently changing user authority while
+preserving SQLite as the sole authority for current traffic totals.
 
 This intentionally follows an at-most-once polling model: a sing-box/Agent
 crash before sampling, a response lost after counters were cleared, or a master
@@ -318,13 +339,14 @@ At an entrance, authentication maps a connection to a Membership-specific
 Node's root routing tree. At a relay inbound, authentication maps the
 connection to that Link's identity and selects the child Hop's routing tree.
 
-Each Link-owned Rule has an explicit priority among all Rules at its parent Hop
+Each conditional Rule has an explicit priority among all Rules at its parent Hop
 and applies to all Proxy Node traffic which reaches that Hop. There is no
-separately configurable routing scope. Every conditional Rule owns a distinct
-Link, credential, child Hop, and downstream routing context. Compatible Links
-may still be coalesced into one physical listener, where their different
-authenticated users select their independent contexts. The first matching Rule
-wins; an optional unconditional fallback Link is evaluated last; otherwise the
+separately configurable routing scope. A relay Rule owns a distinct Link,
+credential, child Hop, and downstream routing context; a BLOCK Rule rejects on
+the current Hop without relay artifacts. Compatible Links may still be
+coalesced into one physical listener, where their different authenticated users
+select their independent contexts. The first matching Rule wins; an optional
+unconditional fallback Link is evaluated last; otherwise the
 Hop's required `direct` or `reject` terminal is used. The Rule match selector
 exposes `ALL` as that fallback choice. Selecting it creates or converts the
 branch into the Hop's single fallback Link without storing a synthetic match
@@ -341,7 +363,9 @@ path's final Hop, not on its entrance or an earlier relay.
 
 The Proxy Node overview renders this model as a recursive routing tree. Hop
 cards stay compact, and each Link-owned Rule appears as its own visible branch
-labelled with the actual match type and values. The visual branch is also the
+labelled with the actual match type and values. BLOCK Rules appear in the same
+ordered branch list and terminate in a visible BLOCK/Reject node on their
+current Hop. A relay visual branch is also the
 logical isolation boundary: it has its own child Hop tree, relay credential, and
 sing-box authenticated user. Compatible endpoints can share a physical socket
 without sharing those identities. A fallback Link appears as one final fallback branch, and
@@ -357,13 +381,19 @@ When a local Direct or Reject fallback terminal is visible in the tree, its
 inspector edits that action in place and can open the branch wizard already set
 to `ALL`, turning the fallback into a relay without detouring through the Hop
 inspector.
-Creating a branch is Rule-first: the administrator defines the match before the
-same atomic mutation creates the Link, its unique relay identity, and its child
-Hop. A failed Rule or endpoint validation therefore cannot leave an orphaned
-child Hop, and deleting the branch deletes its child subtree. The Hop inspector
-has only two mutations: change the hosting Agent or start this branch wizard.
-The entrance terminal remains under Entrance configuration because it has no
-parent Link. Creating either a Proxy Node entrance or a child branch returns to
+Creating a branch is Rule-first: the administrator defines the match, then
+chooses either a child Hop relay or BLOCK. A relay atomically creates the Link,
+its unique identity, and its child Hop; BLOCK atomically creates only the local
+terminal Rule. A failed validation therefore cannot leave an orphaned child
+Hop, and deleting a relay branch deletes its child subtree. The Hop inspector
+can move the Hop to another Agent while preserving its identity and complete
+downstream subtree, edit that Hop's Direct/Reject terminal exit, or start this
+branch wizard. The Link inspector also offers a destructive Replace Destination
+operation: the selected Link, Rule, fallback state, and priority are retained,
+but its old child Hop and entire downstream subtree are logically deleted, a
+fresh terminal Hop is created on the selected Agent, and the Link credential is
+rotated. This is one validated topology transaction rather than a staged live
+teardown. Creating either a Proxy Node entrance or a child branch returns to
 the relay map with the details window closed; selection is always an explicit
 operator action.
 
@@ -384,9 +414,10 @@ need them. A `sniff` action appears immediately before the first domain,
 Geosite/custom Rule Set, or protocol match; a `resolve` action appears
 immediately before the first destination-IP, GeoIP/custom Rule Set match. A
 custom Rule Set is opaque to the master and therefore conservatively requires
-both. If no DNS server is configured, sing-box's implicit local transport uses
-the Agent's system resolver. Earlier final Rules can still terminate routing
-without incurring either operation.
+both. Generated configurations explicitly define one `local` DNS server backed
+by the Agent's system resolver and set it as the default domain resolver; they
+never rely on a zero-server implicit fallback. Earlier final Rules can still
+terminate routing without incurring either operation.
 
 Generated sing-box tags must include opaque IDs or an equivalent collision-free
 component. Human-readable names are included for clarity but are never relied
@@ -674,10 +705,11 @@ leave application state untouched.
   are authoritative in the sibling private `proxy-node-accounting.sqlite` WAL
   database.
 - Shadowsocks 2022, AnyTLS, and Hysteria2 are supported on entrances and Links.
-- Link-owned clauses support protocol, domain, domain suffix, domain keyword,
+- Conditional clauses support protocol, domain, domain suffix, domain keyword,
   domain regex, IP/CIDR, geosite, geoip, custom Rule Set, and network matches.
-  `ALL` creates the optional fallback Link as the final relay branch. Each Hop
-  still has a Direct or Reject terminal for traffic not captured by a Link.
+  Each clause can relay to a child Hop or BLOCK (sing-box Reject) on the current
+  Hop. `ALL` creates the optional fallback Link as the final relay branch. Each
+  Hop still has a Direct or Reject terminal for unmatched traffic.
 - Credentials are generated automatically. Membership import URIs are revealed
   only on the global user's detail page; Link secrets are never displayed.
 - Agents advertise `proxy-node-config-v1`; an old Agent cannot receive a new
@@ -691,8 +723,9 @@ leave application state untouched.
   Padding and TCP Brutal are intentionally absent from the current UI.
 - The relay map renders every conditional Rule as a separate branch. Selecting
   a branch edits only that Rule; adding, deleting, or reordering Rules is done
-  directly from the map. Every visible Rule branch owns a distinct logical
-  Link, child Hop context, generated credential, and authenticated user.
+  directly from the map. Relay branches own a distinct logical Link, child Hop
+  context, generated credential, and authenticated user; BLOCK branches own no
+  relay resources and end locally with Reject.
 - Rule priority is explicit across the entire parent Hop, so Rules targeting
   different sibling Links can be interleaved. Dragging a numbered branch writes
   that exact order; the compiler emits it unchanged before the fallback Link
@@ -704,13 +737,53 @@ leave application state untouched.
   the Rule dialog.
 - The relay map is the only topology-management surface; there is no separate
   Hop manager. The Rule-first branch wizard atomically creates a Link and its
-  child Hop, so a child cannot exist independently from its parent Link. A Hop
-  inspector can only create a branch or move that Hop to another Agent. The
-  branch Link inspector owns conditional/fallback mode, its child's terminal,
-  deletion, child-Hop navigation, and transport settings; deleting a branch
+  child Hop, so a child cannot exist independently from its parent Link. Hops
+  have no editable names and are displayed using their assigned Agent. A Hop
+  inspector can create a branch, move that Hop and its intact subtree to another
+  Agent, or change its Direct/Reject terminal exit. The branch Link inspector
+  owns conditional/fallback mode, its child's terminal, deletion, transport
+  settings, and destructive destination replacement. Replacement preserves the
+  Link's routing Rule and priority, deletes the old destination subtree, rotates
+  the Link credential, and creates a fresh terminal Hop. Deleting a branch
   removes its child subtree. Entrance terminal settings live with the entrance.
   This keeps routing intent visually attached to the exact branch and sing-box
   user it controls.
 - Legacy master deployment records and Agent active configurations are moved to
   owner-only `legacy-config-quarantine/` directories. Destructive cleanup is
   intentionally not automated in this release.
+- Every End User receives one rotatable bearer subscription token when created. Three public
+  endpoints render Clash, Surge, and sing-box profiles from the same logical
+  subscription. The token is private master state, responses are `no-store`,
+  and rotation or revocation invalidates the old URL immediately.
+- Public token lookup is indexed. Rendering operates on one consistent
+  per-user projection rather than cloning the full fleet, and identical
+  rendered profiles use a bounded in-memory content cache keyed by the complete
+  projection.
+- Subscription Nodes are derived rather than stored: each enabled Membership
+  whose topology is applied and whose entrance has a routable address becomes
+  one or two exported nodes (IPv4 and IPv6 when both exist). Quota-disabled and
+  expired Memberships are omitted. An empty Proxy group fails closed to Reject.
+- Subscription routing is independent of the Proxy Node topology plane. One
+  universal ordered list of portable client-side matches is applied to every
+  user export; its actions are Proxy,
+  Direct, or Reject. Proxy is a selector containing every exported Node.
+  Editing it never deploys an Agent or changes a Membership credential.
+- Geosite and GeoIP are first-class universal matches. Clash receives native
+  rules with pinned auto-updating MetaCubeX data URLs, sing-box receives the
+  matching SagerNet binary rule set, and Surge receives master-hosted read-only
+  `DOMAIN-SET` and CIDR `RULE-SET` views of the public MetaCubeX categories.
+  Administrators do not create or manage remote rule-provider records.
+- sing-box exports explicitly use the platform `local` DNS server, insert
+  sniff/resolve actions at first use, enable a loopback-only Clash API for the
+  `Proxy` selector, and enable its cache file so graphical clients can retain a
+  selection. They include TUN transparent routing for the official Apple and
+  desktop clients plus a loopback mixed-proxy fallback. Surge intentionally
+  omits non-portable domain regular expressions
+  instead of translating them to URL matching, and emits network values as
+  uppercase `TCP`/`UDP`.
+- The public Surge rule-set adapter permits 120 requests per client per minute
+  under a 1,200-request global ceiling, caps each upstream body at 8 MiB,
+  coalesces concurrent misses to four upstream
+  fetches, and retains at most 128 converted entries / 64 MiB. Fresh results
+  live for one hour and a last-known-good result may be served for 24 hours when
+  upstream is unavailable.

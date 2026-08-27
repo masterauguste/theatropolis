@@ -1,5 +1,16 @@
 "use strict";
 
+const t = (text) => window.theatropolisText?.(text) || text;
+
+for (const option of document.querySelectorAll("[data-language-option]")) {
+  option.addEventListener("click", () => {
+    const locale = option.dataset.languageOption;
+    if (locale !== "en" && locale !== "zh-CN") return;
+    const secure = window.location.protocol === "https:" ? "; Secure" : "";
+    document.cookie = `theatropolis_language=${locale}; Path=/; Max-Age=31536000; SameSite=Lax${secure}`;
+  });
+}
+
 function updateProxyEndpointForm(select) {
   const form = select.closest("form");
   if (!form) return;
@@ -151,9 +162,11 @@ const showProxyListenerSummary = (editor, preset) => {
     `${preset.tlsMode.replace("_", "-")} · ${preset.serverName || "certificate identity pending"}`;
   summary.replaceChildren();
   const title = document.createElement("strong");
-  title.textContent = `${preset.protocolLabel} on ${preset.listen}:${preset.port}`;
+  title.textContent = `${preset.protocolLabel} ${t("on")} ${preset.listen}:${preset.port}`;
   const detail = document.createElement("span");
-  detail.textContent = `${identity} · shared by ${preset.referenceCount} logical reference${preset.referenceCount === 1 ? "" : "s"}`;
+  detail.textContent = window.theatropolisLocale === "zh-CN"
+    ? `${identity} · 由 ${preset.referenceCount} 个逻辑引用共享`
+    : `${identity} · shared by ${preset.referenceCount} logical reference${preset.referenceCount === 1 ? "" : "s"}`;
   summary.append(title, detail);
   summary.hidden = false;
 };
@@ -165,7 +178,7 @@ const validateProxyListener = (editor) => {
   const agent = proxyListenerAgent(editor);
   const candidate = proxyListenerModel(editor);
   if (!agent || !candidate.listen || !candidate.port) {
-    setProxyListenerStatus(editor, "Select an Agent and complete the socket to check availability.");
+    setProxyListenerStatus(editor, t("Select an Agent and complete the socket to check availability."));
     return;
   }
   const claims = new Set(proxyListenerClaims(agent, candidate));
@@ -194,10 +207,10 @@ const validateProxyListener = (editor) => {
     return;
   }
   if (current) {
-    setProxyListenerStatus(editor, "Saving will update this physical listener atomically.", "compatible");
+    setProxyListenerStatus(editor, t("Saving will update this physical listener atomically."), "compatible");
     return;
   }
-  setProxyListenerStatus(editor, "This socket is available for a new physical listener.", "compatible");
+  setProxyListenerStatus(editor, t("This socket is available for a new physical listener."), "compatible");
 };
 
 const updateProxyListenerChoices = (editor) => {
@@ -205,7 +218,7 @@ const updateProxyListenerChoices = (editor) => {
   if (!(select instanceof HTMLSelectElement)) return;
   const previous = select.value;
   const agent = proxyListenerAgent(editor);
-  select.replaceChildren(new Option("Configure manually", "manual"));
+  select.replaceChildren(new Option(t("Configure manually"), "manual"));
   for (const preset of proxyListenerCatalog.filter((item) => item.agent === agent)) {
     select.add(new Option(preset.label, preset.listenerId));
   }
@@ -227,7 +240,7 @@ for (const editor of document.querySelectorAll("[data-proxy-listener-editor]")) 
       if (fields) fields.hidden = true;
       showProxyListenerSummary(editor, preset);
       editor.querySelector('[name="listen_port"]')?.setCustomValidity("");
-      setProxyListenerStatus(editor, "Using the existing physical listener keeps all shared settings consistent.", "compatible");
+      setProxyListenerStatus(editor, t("Using the existing physical listener keeps all shared settings consistent."), "compatible");
     } else {
       if (fields) fields.hidden = false;
       if (summary) summary.hidden = true;
@@ -260,14 +273,41 @@ for (const select of document.querySelectorAll("[data-proxy-match]")) {
   select.addEventListener("change", update);
 }
 
+for (const form of document.querySelectorAll("[data-proxy-branch-form]")) {
+  const outcome = form.querySelector("[data-proxy-branch-outcome]");
+  const match = form.querySelector("[data-proxy-match]");
+  if (!(outcome instanceof HTMLSelectElement) || !(match instanceof HTMLSelectElement)) continue;
+  const update = () => {
+    const fallback = match.value === "none";
+    const resetOutcome = fallback && outcome.value === "block";
+    if (resetOutcome) outcome.value = "relay";
+    const blocked = outcome.value === "block";
+    form.action = blocked ? form.dataset.blockAction : form.dataset.relayAction;
+    for (const section of form.querySelectorAll("[data-proxy-branch-relay]")) {
+      section.hidden = blocked;
+      for (const control of section.querySelectorAll("input, select, textarea, button")) {
+        const disabledChanged = control.disabled !== blocked;
+        control.disabled = blocked;
+        if (disabledChanged && control instanceof HTMLSelectElement) {
+          control.dispatchEvent(new Event("change", { bubbles: true }));
+        }
+      }
+    }
+    if (resetOutcome) outcome.dispatchEvent(new Event("change", { bubbles: true }));
+  };
+  match.addEventListener("change", update);
+  outcome.addEventListener("change", update);
+  update();
+}
+
 for (const button of document.querySelectorAll("[data-copy-value]")) {
   button.addEventListener("click", async () => {
     const original = button.textContent;
     try {
       await navigator.clipboard.writeText(button.dataset.copyValue || "");
-      button.textContent = "Copied";
+      button.textContent = t("Copied");
     } catch (_) {
-      button.textContent = "Copy failed";
+      button.textContent = t("Copy failed");
     }
     window.setTimeout(() => { button.textContent = original; }, 1500);
   });
@@ -294,7 +334,7 @@ const topologyMutationForms = () => [...(topologyWorkflow?.querySelectorAll("for
 
 const topologyActionControls = () => [
   ...(topologyWorkflow?.querySelectorAll(
-    ".proxy-tree-panel button, #proxy-tree-inspector button, dialog[id^='proxy-add-link-'] button, dialog[id^='proxy-add-rule-'] button, dialog[id^='proxy-edit-link-'] button, .proxy-node-settings button",
+    ".proxy-tree-panel button, #proxy-tree-inspector button, dialog[id^='proxy-add-link-'] button, dialog[id^='proxy-add-rule-'] button, dialog[id^='proxy-edit-link-'] button, [data-topology-control]",
   ) || []),
 ];
 
@@ -339,7 +379,7 @@ const renderTopologyStatus = (status) => {
   proxyDeployment.hidden = false;
   proxyDeployment.classList.toggle("notice--error", status.status === "failed");
   const heading = proxyDeployment.querySelector("strong");
-  if (heading) heading.textContent = `Topology change: ${status.label || status.status || "Applying"}`;
+  if (heading) heading.textContent = `${t("Topology change")}: ${status.label || status.status || t("Applying")}`;
   let error = proxyDeployment.querySelector("p");
   if (status.error) {
     if (!error) {
@@ -379,7 +419,7 @@ const beginTopologyApply = (reloadOnComplete) => {
   if (proxyDeployment) {
     proxyDeployment.hidden = false;
     const heading = proxyDeployment.querySelector("strong");
-    if (heading) heading.textContent = "Applying topology change…";
+    if (heading) heading.textContent = t("Applying topology change…");
   }
   if (topologyPolling) return;
   topologyPolling = true;
@@ -460,6 +500,32 @@ document.addEventListener("drop", (event) => {
   }
 });
 
+const showAppNotice = (message, tone = "error") => {
+  let region = document.querySelector("[data-app-notices]");
+  if (!region) {
+    region = document.createElement("div");
+    region.className = "app-notices";
+    region.dataset.appNotices = "";
+    region.setAttribute("aria-live", "assertive");
+    region.setAttribute("aria-atomic", "false");
+    document.body.append(region);
+  }
+  const notice = document.createElement("div");
+  notice.className = `notice notice--${tone} app-notice`;
+  notice.setAttribute("role", "alert");
+  const text = document.createElement("span");
+  text.textContent = message;
+  const close = document.createElement("button");
+  close.className = "app-notice__close";
+  close.type = "button";
+  close.setAttribute("aria-label", t("Dismiss notification"));
+  close.textContent = "×";
+  close.addEventListener("click", () => notice.remove());
+  notice.append(text, close);
+  region.append(notice);
+  window.setTimeout(() => notice.remove(), 8000);
+};
+
 document.addEventListener("dragend", () => {
   if (!draggedProxyBranch) return;
   const list = draggedProxyBranch.parentElement;
@@ -510,7 +576,7 @@ document.addEventListener("dragend", () => {
       document.addEventListener("topologyapplycomplete", (completion) => {
         if (completion.detail?.status === "failed") {
           restoreOrder();
-          window.alert(completion.detail.error || "The topology change failed and the previous branch order was restored.");
+          showAppNotice(completion.detail.error || t("The topology change failed and the previous branch order was restored."));
         }
         delete list.dataset.reorderPending;
       }, { once: true });
@@ -521,11 +587,12 @@ document.addEventListener("dragend", () => {
   }).catch(() => {
     restoreOrder();
     delete list.dataset.reorderPending;
-    window.alert("The new branch order could not be saved. The previous order was restored.");
+    showAppNotice(t("The new branch order could not be saved. The previous order was restored."));
   });
 });
 
 const dialogTriggers = new WeakMap();
+const dialogReturns = new WeakMap();
 
 const redirectForExpiredSession = (response) => {
   let loginRedirect = false;
@@ -572,6 +639,12 @@ document.addEventListener("click", (event) => {
       matchSelect.value = matchDefault;
       matchSelect.dispatchEvent(new Event("change", { bubbles: true }));
     }
+    const sourceDialog = button.closest("dialog");
+    if (sourceDialog instanceof HTMLDialogElement && sourceDialog !== dialog && sourceDialog.open) {
+      dialogReturns.set(dialog, sourceDialog);
+      sourceDialog.dataset.dialogSwapping = "true";
+      sourceDialog.close();
+    }
     dialogTriggers.set(dialog, button);
     if (!dialog.open) dialog.showModal();
     return;
@@ -605,6 +678,15 @@ if (initialInspector) {
   window.history.replaceState(null, "", cleanURL);
 }
 
+const initialDialog = new URLSearchParams(window.location.search).get("dialog");
+if (initialDialog) {
+  const trigger = document.querySelector(`[data-dialog-open="${CSS.escape(initialDialog)}"]`);
+  if (trigger instanceof HTMLElement) trigger.click();
+  const cleanURL = new URL(window.location.href);
+  cleanURL.searchParams.delete("dialog");
+  window.history.replaceState(null, "", cleanURL);
+}
+
 document.addEventListener("cancel", (event) => {
   if (event.target.matches("dialog.modal")) {
     event.preventDefault();
@@ -613,6 +695,17 @@ document.addEventListener("cancel", (event) => {
 
 document.addEventListener("close", (event) => {
   if (event.target.matches("dialog.modal")) {
+    if (event.target.dataset.dialogSwapping === "true") {
+      delete event.target.dataset.dialogSwapping;
+      return;
+    }
+    const returnDialog = dialogReturns.get(event.target);
+    if (returnDialog instanceof HTMLDialogElement && returnDialog.isConnected && !returnDialog.open) {
+      dialogReturns.delete(event.target);
+      returnDialog.showModal();
+      dialogTriggers.get(event.target)?.focus();
+      return;
+    }
     dialogTriggers.get(event.target)?.focus();
   }
 }, true);
@@ -625,7 +718,7 @@ const loadAsyncRegion = async (region) => {
   region.innerHTML = `
     <div class="loading-state" role="status">
       <span class="loading-spinner" aria-hidden="true"></span>
-      <span>${region.dataset.asyncLoadingLabel || "Loading…"}</span>
+      <span>${region.dataset.asyncLoadingLabel || t("Loading…")}</span>
     </div>`;
   try {
     const response = await fetch(url, {
@@ -642,8 +735,8 @@ const loadAsyncRegion = async (region) => {
   } catch {
     region.innerHTML = `
       <div class="notice notice--error async-error" role="alert">
-        <span>This section could not be loaded.</span>
-        <button class="button button--secondary button--small" type="button" data-async-retry>Try again</button>
+        <span>${t("This section could not be loaded.")}</span>
+        <button class="button button--secondary button--small" type="button" data-async-retry>${t("Try again")}</button>
       </div>`;
     region.setAttribute("aria-busy", "false");
   } finally {
@@ -682,11 +775,13 @@ for (const button of document.querySelectorAll("[data-copy-target]")) {
     const item = button.dataset.copyLabel || "value";
     try {
       await navigator.clipboard.writeText(value);
-      status.textContent = `${item[0].toUpperCase()}${item.slice(1)} copied to clipboard.`;
+      status.textContent = window.theatropolisLocale === "zh-CN"
+        ? `${item}已复制到剪贴板。`
+        : `${item[0].toUpperCase()}${item.slice(1)} copied to clipboard.`;
       const label = button.querySelector("span");
       if (label) {
         const original = label.textContent;
-        label.textContent = "Copied";
+        label.textContent = t("Copied");
         window.setTimeout(() => {
           label.textContent = original;
         }, 1800);
@@ -697,7 +792,9 @@ for (const button of document.querySelectorAll("[data-copy-target]")) {
       range.selectNodeContents(target);
       selection.removeAllRanges();
       selection.addRange(range);
-      status.textContent = `Clipboard access was unavailable. The ${item} has been selected for you.`;
+      status.textContent = window.theatropolisLocale === "zh-CN"
+        ? `无法访问剪贴板，已为你选中${item}。`
+        : `Clipboard access was unavailable. The ${item} has been selected for you.`;
     }
   });
 }
@@ -711,8 +808,8 @@ for (const button of document.querySelectorAll("[data-reveal-secret]")) {
     const revealing = input.type === "password";
     const secretLabel = button.dataset.secretLabel || "password";
     input.type = revealing ? "text" : "password";
-    button.textContent = revealing ? "Hide" : "Show";
-    button.setAttribute("aria-label", `${revealing ? "Hide" : "Show"} ${secretLabel}`);
+    button.textContent = revealing ? t("Hide") : t("Show");
+    button.setAttribute("aria-label", `${revealing ? t("Hide") : t("Show")} ${secretLabel}`);
     button.setAttribute("aria-pressed", revealing ? "true" : "false");
   });
 }
@@ -726,6 +823,159 @@ const errorSummary = document.querySelector("[data-error-summary]");
 if (errorSummary && !document.querySelector('[aria-invalid="true"]')) {
   errorSummary.focus();
 }
+
+let formValidationSequence = 0;
+
+const fieldValidationLabel = (control) => {
+  const field = control.closest(".field");
+  const visible = field?.querySelector(":scope > span")?.textContent.trim()
+    || control.labels?.[0]?.textContent.trim();
+  return visible || control.name || (window.theatropolisLocale === "zh-CN" ? "此项" : "This field");
+};
+
+const fieldValidationMessage = (control) => {
+  const chinese = window.theatropolisLocale === "zh-CN";
+  const label = fieldValidationLabel(control);
+  const validity = control.validity;
+  if (validity.valueMissing) {
+    if (control.type === "checkbox" || control.type === "radio") {
+      return chinese ? "请选择此项。" : "Select this option.";
+    }
+    return chinese ? `请填写${label}。` : `Enter ${label}.`;
+  }
+  if (validity.rangeUnderflow) {
+    return chinese ? `${label}不能小于 ${control.min}。` : `${label} must be at least ${control.min}.`;
+  }
+  if (validity.rangeOverflow) {
+    return chinese ? `${label}不能大于 ${control.max}。` : `${label} must be at most ${control.max}.`;
+  }
+  if (validity.tooLong) {
+    return chinese ? `${label}不能超过 ${control.maxLength} 个字符。` : `${label} must be ${control.maxLength} characters or fewer.`;
+  }
+  if (validity.typeMismatch) {
+    return chinese ? `请填写有效的${label}。` : `Enter a valid ${label}.`;
+  }
+  if (validity.stepMismatch) {
+    return chinese ? `请填写有效的${label}。` : `Enter a valid ${label}.`;
+  }
+  if (validity.patternMismatch) {
+    return chinese ? `${label}格式不正确。` : `${label} has an invalid format.`;
+  }
+  if (validity.customError && control.validationMessage) return control.validationMessage;
+  return chinese ? `请检查${label}。` : `Check ${label}.`;
+};
+
+const clearFieldValidation = (control) => {
+  const errorID = control.dataset.validationErrorId;
+  if (errorID) document.getElementById(errorID)?.remove();
+  delete control.dataset.validationErrorId;
+  control.removeAttribute("aria-invalid");
+  if (control instanceof HTMLSelectElement) {
+    control.closest(".select-box")?.classList.remove("is-invalid");
+  }
+  if (control.dataset.validationDescribedBy !== undefined) {
+    if (control.dataset.validationDescribedBy) {
+      control.setAttribute("aria-describedby", control.dataset.validationDescribedBy);
+    } else {
+      control.removeAttribute("aria-describedby");
+    }
+    delete control.dataset.validationDescribedBy;
+  }
+};
+
+const showFieldValidation = (control) => {
+  clearFieldValidation(control);
+  const error = document.createElement("span");
+  error.className = "form-field-error";
+  error.id = `form-field-error-${++formValidationSequence}`;
+  error.textContent = fieldValidationMessage(control);
+  error.setAttribute("role", "alert");
+  control.dataset.validationErrorId = error.id;
+  control.dataset.validationDescribedBy = control.getAttribute("aria-describedby") || "";
+  control.setAttribute("aria-invalid", "true");
+  if (control instanceof HTMLSelectElement) {
+    control.closest(".select-box")?.classList.add("is-invalid");
+  }
+  const describedBy = [control.dataset.validationDescribedBy, error.id].filter(Boolean).join(" ");
+  control.setAttribute("aria-describedby", describedBy);
+  const anchor = control instanceof HTMLSelectElement
+    ? control.closest(".select-box") || control
+    : control;
+  const field = control.closest(".field");
+  if (field) field.append(error);
+  else anchor.insertAdjacentElement("afterend", error);
+};
+
+const focusInvalidControl = (control) => {
+  const dialog = control.closest("dialog");
+  if (dialog instanceof HTMLDialogElement && !dialog.open) dialog.showModal();
+  const focusTarget = control instanceof HTMLSelectElement
+    ? control.closest(".select-box")?.querySelector(".select-box__input") || control
+    : control;
+  focusTarget.focus({ preventScroll: true });
+  focusTarget.scrollIntoView({ block: "center", behavior: "smooth" });
+};
+
+const validateOwnedForm = (form) => {
+  const invalid = [];
+  const radioNames = new Set();
+  for (const control of form.elements) {
+    if (!(control instanceof HTMLInputElement || control instanceof HTMLSelectElement || control instanceof HTMLTextAreaElement)) continue;
+    if (!control.willValidate || control.validity.valid) {
+      if (control.dataset.validationErrorId) clearFieldValidation(control);
+      continue;
+    }
+    if (control.type === "radio" && control.name) {
+      if (radioNames.has(control.name)) continue;
+      radioNames.add(control.name);
+    }
+    invalid.push(control);
+  }
+  let summary = form.querySelector(":scope > [data-client-validation-summary], :scope > .modal__body > [data-client-validation-summary]");
+  if (invalid.length === 0) {
+    summary?.remove();
+    return true;
+  }
+  for (const control of invalid) showFieldValidation(control);
+  if (!summary) {
+    summary = document.createElement("div");
+    summary.className = "notice notice--error form-validation-summary";
+    summary.dataset.clientValidationSummary = "";
+    summary.setAttribute("role", "alert");
+    const body = form.querySelector(":scope > .modal__body");
+    (body || form).prepend(summary);
+  }
+  summary.textContent = window.theatropolisLocale === "zh-CN"
+    ? "请检查标出的字段。"
+    : "Check the highlighted fields.";
+  focusInvalidControl(invalid[0]);
+  return false;
+};
+
+window.theatropolisShowValidation = (control) => {
+  showFieldValidation(control);
+  focusInvalidControl(control);
+};
+
+document.addEventListener("invalid", (event) => event.preventDefault(), true);
+document.addEventListener("submit", (event) => {
+  const form = event.target;
+  if (!(form instanceof HTMLFormElement) || validateOwnedForm(form)) return;
+  event.preventDefault();
+  event.stopImmediatePropagation();
+}, true);
+document.addEventListener("input", (event) => {
+  const control = event.target;
+  if (control instanceof HTMLInputElement || control instanceof HTMLSelectElement || control instanceof HTMLTextAreaElement) {
+    if (control.validity.valid && control.dataset.validationErrorId) clearFieldValidation(control);
+  }
+}, true);
+document.addEventListener("change", (event) => {
+  const control = event.target;
+  if (control instanceof HTMLInputElement || control instanceof HTMLSelectElement || control instanceof HTMLTextAreaElement) {
+    if (control.validity.valid && control.dataset.validationErrorId) clearFieldValidation(control);
+  }
+}, true);
 
 const configurationDeploymentForm = document.querySelector("form.configuration-form");
 if (configurationDeploymentForm) {
@@ -798,7 +1048,7 @@ if (configurationDeploymentForm) {
     if (resultNotice) {
       resultNotice.hidden = false;
       resultNotice.className = "notice";
-      resultNotice.textContent = "The agent is validating and activating this configuration.";
+      resultNotice.textContent = t("The agent is validating and activating this configuration.");
     }
     try {
       const response = await fetch(configurationDeploymentForm.action, {
@@ -912,7 +1162,7 @@ if (versionCatalogURL) {
       },
     );
     if (redirectForExpiredSession(response)) {
-      throw new Error("Your session expired.");
+      throw new Error(t("Your session expired."));
     }
     const data = await response.json().catch(() => ({}));
     if (!response.ok) {
@@ -933,10 +1183,10 @@ if (versionCatalogURL) {
 
     if (refreshButton) {
       refreshButton.disabled = true;
-      refreshButton.textContent = "Checking…";
+      refreshButton.textContent = t("Checking…");
     }
     for (const indicator of loadingIndicators) indicator.hidden = false;
-    if (masterLabel) masterLabel.textContent = "checking…";
+    if (masterLabel) masterLabel.textContent = t("checking…");
     if (masterButton) masterButton.disabled = true;
     if (warning) {
       warning.textContent = "";
@@ -957,21 +1207,21 @@ if (versionCatalogURL) {
       if (masterButton && masterButtonText && latest) {
         if (latest === document.body.dataset.masterVersion) {
           masterButton.disabled = true;
-          masterButtonText.textContent = "Master is up to date";
+          masterButtonText.textContent = t("Master is up to date");
         } else {
           masterButton.disabled = false;
-          masterButtonText.textContent = `Update master to ${latest}`;
+          masterButtonText.textContent = window.theatropolisLocale === "zh-CN" ? `将主控端更新至 ${latest}` : `Update master to ${latest}`;
         }
       } else if (masterButton && masterButtonText) {
         masterButton.disabled = true;
-        masterButtonText.textContent = "Latest version unavailable";
+        masterButtonText.textContent = t("Latest version unavailable");
       }
     } catch (error) {
       if (agentInput) agentInput.value = "";
-      if (agentLabel) agentLabel.textContent = "unavailable";
-      if (masterLabel) masterLabel.textContent = "unavailable";
+      if (agentLabel) agentLabel.textContent = t("unavailable");
+      if (masterLabel) masterLabel.textContent = t("unavailable");
       if (masterButton) masterButton.disabled = true;
-      if (masterButtonText) masterButtonText.textContent = "Latest version unavailable";
+      if (masterButtonText) masterButtonText.textContent = t("Latest version unavailable");
       if (warning) {
         warning.textContent = error.message;
         warning.hidden = false;
@@ -980,7 +1230,7 @@ if (versionCatalogURL) {
       for (const indicator of loadingIndicators) indicator.hidden = true;
       if (refreshButton) {
         refreshButton.disabled = false;
-        refreshButton.textContent = "Check again";
+        refreshButton.textContent = t("Check again");
       }
     }
   };
@@ -1015,7 +1265,7 @@ if (versionCatalogURL) {
         if (select.options.length === 0) {
           const option = document.createElement("option");
           option.value = "";
-          option.textContent = "No versions available";
+          option.textContent = t("No versions available");
           select.appendChild(option);
         }
         const hasVersion = select.value !== "";
@@ -1068,20 +1318,20 @@ const monitorMasterUpdate = (statusURL, message, returnLink = null) => {
       }
       const status = await response.json();
       if (status.status === "applied") {
-        if (message) message.textContent = "Update complete. Reconnecting to the updated master…";
+        if (message) message.textContent = t("Update complete. Reconnecting to the updated master…");
         window.setTimeout(() => window.location.replace("/settings"), 700);
         return;
       }
       if (status.status === "failed") {
-        if (message) message.textContent = status.diagnostic || "The master update failed.";
+        if (message) message.textContent = status.diagnostic || t("The master update failed.");
         if (returnLink) returnLink.hidden = false;
         return;
       }
       if (message && attempts > 1) {
-        message.textContent = "The master is restarting. Waiting for it to come back online…";
+        message.textContent = t("The master is restarting. Waiting for it to come back online…");
       }
     } catch {
-      if (message) message.textContent = "The master is restarting. Waiting for it to come back online…";
+      if (message) message.textContent = t("The master is restarting. Waiting for it to come back online…");
     }
     window.setTimeout(pollMasterUpdate, 1500);
   };
@@ -1103,7 +1353,7 @@ if (masterUpdateForm) {
     const button = masterUpdateForm.querySelector("[data-master-update-button]");
     if (progress) {
       progress.hidden = false;
-      progress.textContent = "Scheduling the verified update…";
+      progress.textContent = t("Scheduling the verified update…");
     }
     if (button) button.disabled = true;
     try {
@@ -1120,7 +1370,7 @@ if (masterUpdateForm) {
       if (!response.ok || !data.status_url) {
         throw new Error(data.error || `update request returned ${response.status}`);
       }
-      if (progress) progress.textContent = "Installing the update. Waiting for the master to restart…";
+      if (progress) progress.textContent = t("Installing the update. Waiting for the master to restart…");
       monitorMasterUpdate(data.status_url, progress);
     } catch (error) {
       if (progress) progress.textContent = error.message || "The master update could not be scheduled.";
@@ -1129,11 +1379,82 @@ if (masterUpdateForm) {
   });
 }
 
+const bindLocalSearch = (search, clear, applySearch) => {
+  let composing = false;
+  search?.addEventListener("compositionstart", () => { composing = true; });
+  search?.addEventListener("compositionend", () => { composing = false; applySearch(); });
+  search?.addEventListener("input", () => { if (!composing) applySearch(); });
+  clear?.addEventListener("click", () => {
+    if (!search) return;
+    search.value = "";
+    applySearch();
+    search.focus();
+  });
+};
+
+for (const picker of document.querySelectorAll("[data-node-role-picker]")) {
+  const form = picker.closest("form");
+  const search = picker.querySelector("[data-node-role-search]");
+  const clear = picker.querySelector("[data-node-role-search-clear]");
+  const empty = picker.querySelector("[data-node-role-empty]");
+  const options = [...picker.querySelectorAll("[data-node-role-option]")];
+  const submit = form?.querySelector("[data-node-role-submit]");
+  const applySearch = () => {
+    const query = (search?.value || "").trim().toLocaleLowerCase();
+    let visible = 0;
+    for (const option of options) {
+      const matches = !query || (option.dataset.searchName || "").toLocaleLowerCase().includes(query);
+      option.hidden = !matches;
+      if (matches) visible++;
+    }
+    if (clear) clear.hidden = query === "";
+    if (empty) empty.hidden = visible !== 0;
+  };
+  const updateSubmit = () => {
+    if (submit) submit.disabled = !options.some((option) => option.querySelector("input")?.checked);
+  };
+
+  bindLocalSearch(search, clear, applySearch);
+  for (const option of options) option.querySelector("input")?.addEventListener("change", updateSubmit);
+  form?.addEventListener("submit", (event) => {
+    if (options.some((option) => option.querySelector("input")?.checked)) return;
+    event.preventDefault();
+    search?.focus();
+  });
+  applySearch();
+  updateSubmit();
+}
+
+for (const list of document.querySelectorAll("[data-proxy-user-list]")) {
+  const module = list.closest(".proxy-node-user-module");
+  const search = module?.querySelector("[data-proxy-user-search]");
+  const clear = module?.querySelector("[data-proxy-user-search-clear]");
+  const count = module?.querySelector("[data-proxy-user-search-count]");
+  const empty = module?.querySelector("[data-proxy-user-search-empty]");
+  const cards = [...list.querySelectorAll("[data-proxy-user-card]")];
+  const applySearch = () => {
+    const query = (search?.value || "").trim().toLocaleLowerCase();
+    let visible = 0;
+    for (const card of cards) {
+      const matches = !query || (card.dataset.searchName || "").toLocaleLowerCase().includes(query);
+      card.hidden = !matches;
+      if (matches) visible++;
+    }
+    if (clear) clear.hidden = query === "";
+    if (count) count.textContent = window.theatropolisLocale === "zh-CN" ? `${visible} 位用户` : `${visible} ${visible === 1 ? "user" : "users"}`;
+    if (empty) empty.hidden = visible !== 0;
+  };
+
+  bindLocalSearch(search, clear, applySearch);
+  applySearch();
+}
+
 for (const dialog of document.querySelectorAll("[data-compensation-dialog]")) {
   const form = dialog.querySelector("[data-compensation-form]");
   const startInput = dialog.querySelector("[data-compensation-start]");
   const endInput = dialog.querySelector("[data-compensation-end]");
   const searchInput = dialog.querySelector("[data-compensation-search]");
+  const searchClear = dialog.querySelector("[data-compensation-search-clear]");
   const count = dialog.querySelector("[data-compensation-count]");
   const submit = dialog.querySelector("[data-compensation-submit]");
   const empty = dialog.querySelector("[data-compensation-empty]");
@@ -1168,12 +1489,13 @@ for (const dialog of document.querySelectorAll("[data-compensation-dialog]")) {
       candidate.hidden = !matches;
       if (matches) visible++;
     }
+    if (searchClear) searchClear.hidden = query === "";
     if (empty) empty.hidden = visible !== 0;
   };
 
   startInput?.addEventListener("change", applyRange);
   endInput?.addEventListener("change", applyRange);
-  searchInput?.addEventListener("input", applySearch);
+  bindLocalSearch(searchInput, searchClear, applySearch);
   for (const candidate of candidates) {
     candidate.querySelector("input")?.addEventListener("change", updateCount);
   }

@@ -1,12 +1,15 @@
 {{define "login.html"}}
 <!doctype html>
-<html lang="en">
+<html lang="{{.Locale}}">
 {{template "document-head" .}}
 <body class="auth-page">
   <a class="skip-link" href="#main">Skip to content</a>
   <main class="auth-shell" id="main">
     <div class="auth-card">
-      {{template "brand" .}}
+      <div class="auth-card__topline">
+        {{template "brand" .}}
+        {{if eq .Locale "zh-CN"}}<a class="language-switch" href="/language/en" hreflang="en" lang="en" data-language-option="en">English</a>{{else}}<a class="language-switch" href="/language/zh-CN" hreflang="zh-CN" lang="zh-CN" data-language-option="zh-CN">中文</a>{{end}}
+      </div>
       <div class="auth-card__heading">
         <p class="eyebrow">Operator access</p>
         <h1 id="login-title">Sign in to continue</h1>
@@ -28,7 +31,7 @@
         <div class="notice notice--error" id="login-error" role="alert">{{.Error}}</div>
         {{end}}
 
-        <form class="stack" action="/login" method="post">
+        <form novalidate class="stack" action="/login" method="post">
           {{if .LegacyLogin}}
           <div class="field">
             <label for="access-key">Access key</label>

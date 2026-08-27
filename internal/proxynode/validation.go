@@ -9,6 +9,7 @@ import (
 	"regexp"
 	"slices"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -23,15 +24,16 @@ const (
 )
 
 var (
-	ErrNotFound       = errors.New("proxy node resource not found")
-	ErrConflict       = errors.New("proxy node resource conflicts with existing state")
-	ErrInvalidState   = errors.New("invalid proxy node state")
-	ErrNewerSchema    = errors.New("proxy node state uses a newer schema")
-	ErrUnsafeStorage  = errors.New("unsafe proxy node storage")
-	namePattern       = regexp.MustCompile(`\A[A-Za-z0-9][A-Za-z0-9._-]{0,95}\z`)
-	agentIDPattern    = regexp.MustCompile(`\A[A-Za-z0-9][A-Za-z0-9._-]{0,127}\z`)
-	idPattern         = regexp.MustCompile(`\A[a-z]{2,4}_[A-Za-z0-9_-]{20,32}\z`)
-	ruleSetTagPattern = regexp.MustCompile(`\A[A-Za-z0-9][A-Za-z0-9._-]{0,127}\z`)
+	ErrNotFound            = errors.New("proxy node resource not found")
+	ErrConflict            = errors.New("proxy node resource conflicts with existing state")
+	ErrInvalidState        = errors.New("invalid proxy node state")
+	ErrNewerSchema         = errors.New("proxy node state uses a newer schema")
+	ErrUnsafeStorage       = errors.New("unsafe proxy node storage")
+	namePattern            = regexp.MustCompile(`\A[A-Za-z0-9][A-Za-z0-9._-]{0,95}\z`)
+	agentIDPattern         = regexp.MustCompile(`\A[A-Za-z0-9][A-Za-z0-9._-]{0,127}\z`)
+	idPattern              = regexp.MustCompile(`\A[a-z]{2,4}_[A-Za-z0-9_-]{20,32}\z`)
+	ruleSetTagPattern      = regexp.MustCompile(`\A[A-Za-z0-9][A-Za-z0-9._-]{0,127}\z`)
+	subscriptionGeoPattern = regexp.MustCompile(`\A[A-Za-z0-9][A-Za-z0-9._@!-]{0,127}\z`)
 )
 
 func validateState(state State) error {
@@ -40,6 +42,9 @@ func validateState(state State) error {
 	}
 	if err := validateStateCore(state); err != nil {
 		return err
+	}
+	if err := validateSubscriptionPolicy(state.SubscriptionPolicy); err != nil {
+		return fmt.Errorf("%w: invalid universal subscription policy: %v", ErrInvalidState, err)
 	}
 	applied := State{
 		Revision: state.AppliedRevision, UserRevision: state.UserRevision,
@@ -60,9 +65,19 @@ func validateState(state State) error {
 func validateStateCore(state State) error {
 	userIDs := make(map[string]User, len(state.Users))
 	userNames := make(map[string]struct{}, len(state.Users))
+	subscriptionTokens := make(map[string]struct{}, len(state.Users))
 	for _, user := range state.Users {
 		if !validID(user.ID, "usr_") || !validName(user.Name) || user.CreatedAt.IsZero() || user.UpdatedAt.IsZero() {
 			return fmt.Errorf("%w: invalid end user", ErrInvalidState)
+		}
+		if err := validateUserSubscription(user.Subscription); err != nil {
+			return fmt.Errorf("%w: invalid subscription for end user %q: %v", ErrInvalidState, user.Name, err)
+		}
+		if user.Subscription.Token != "" {
+			if _, exists := subscriptionTokens[user.Subscription.Token]; exists {
+				return fmt.Errorf("%w: duplicate user subscription token", ErrInvalidState)
+			}
+			subscriptionTokens[user.Subscription.Token] = struct{}{}
 		}
 		key := strings.ToLower(user.Name)
 		if _, exists := userIDs[user.ID]; exists {
@@ -122,6 +137,12 @@ func validateStateCore(state State) error {
 			}
 			globalCredentials[link.Credential.Secret] = struct{}{}
 		}
+		for _, branch := range node.BlockBranches {
+			if _, exists := globalIDs[branch.Rule.ID]; exists {
+				return fmt.Errorf("%w: entity ID is reused", ErrInvalidState)
+			}
+			globalIDs[branch.Rule.ID] = struct{}{}
+		}
 		for _, membership := range node.Memberships {
 			if _, exists := globalIDs[membership.ID]; exists {
 				return fmt.Errorf("%w: entity ID is reused", ErrInvalidState)
@@ -178,11 +199,126 @@ func validateStateCore(state State) error {
 	return nil
 }
 
+func validateUserSubscription(subscription UserSubscription) error {
+	if subscription.DefaultAction != "" || len(subscription.Rules) != 0 || len(subscription.Providers) != 0 {
+		return errors.New("user contains a legacy per-user policy")
+	}
+	if subscription.Token == "" {
+		return nil
+	}
+	if !validID(subscription.Token, "sub_") {
+		return errors.New("invalid bearer token")
+	}
+	if subscription.UpdatedAt.IsZero() {
+		return errors.New("missing update time")
+	}
+	return nil
+}
+
+func validateSubscriptionPolicy(policy SubscriptionPolicy) error {
+	if policy.DefaultAction == "" && len(policy.Rules) == 0 && len(policy.Providers) == 0 && policy.UpdatedAt.IsZero() {
+		return nil
+	}
+	if policy.DefaultAction == "" {
+		policy.DefaultAction = SubscriptionProxy
+	}
+	if policy.UpdatedAt.IsZero() {
+		return errors.New("missing update time")
+	}
+	if !validSubscriptionAction(policy.DefaultAction) {
+		return errors.New("invalid default action")
+	}
+	if len(policy.Providers) != 0 {
+		return errors.New("subscription policy contains legacy rule providers")
+	}
+	if len(policy.Rules) > 512 {
+		return errors.New("subscription is too large")
+	}
+	ruleIDs := make(map[string]struct{}, len(policy.Rules))
+	orders := make(map[int]struct{}, len(policy.Rules))
+	for _, rule := range policy.Rules {
+		if !validID(rule.ID, "sru_") || rule.Order < 0 || rule.Order >= len(policy.Rules) ||
+			!validSubscriptionAction(rule.Action) || !validSubscriptionMatch(rule.Match) {
+			return errors.New("invalid subscription rule")
+		}
+		if _, exists := ruleIDs[rule.ID]; exists {
+			return errors.New("duplicate subscription rule ID")
+		}
+		if _, exists := orders[rule.Order]; exists {
+			return errors.New("duplicate subscription rule order")
+		}
+		ruleIDs[rule.ID] = struct{}{}
+		orders[rule.Order] = struct{}{}
+		if rule.Provider != "" || len(rule.Values) == 0 || len(rule.Values) > 256 {
+			return errors.New("subscription rule values are invalid")
+		}
+		for _, value := range rule.Values {
+			if strings.TrimSpace(value) != value || value == "" || len(value) > maxValueBytes || strings.ContainsRune(value, '\x00') {
+				return errors.New("subscription rule value is invalid")
+			}
+			if err := validateSubscriptionRuleValue(rule.Match, value); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
+}
+
+func validateSubscriptionRuleValue(match SubscriptionMatch, value string) error {
+	if strings.ContainsAny(value, "\r\n") {
+		return errors.New("subscription rule value contains a line break")
+	}
+	switch match {
+	case SubscriptionMatchIPCIDR, SubscriptionMatchSourceIPCIDR:
+		if net.ParseIP(value) == nil {
+			if _, _, err := net.ParseCIDR(value); err != nil {
+				return errors.New("subscription IP/CIDR value is invalid")
+			}
+		}
+	case SubscriptionMatchDestinationPort, SubscriptionMatchSourcePort:
+		parts := strings.Split(value, "-")
+		if len(parts) > 2 {
+			return errors.New("subscription port value is invalid")
+		}
+		for _, part := range parts {
+			port, err := strconv.Atoi(part)
+			if err != nil || port < 1 || port > 65535 {
+				return errors.New("subscription port value is invalid")
+			}
+		}
+	case SubscriptionMatchNetwork:
+		if !strings.EqualFold(value, "tcp") && !strings.EqualFold(value, "udp") {
+			return errors.New("subscription network must be TCP or UDP")
+		}
+	case SubscriptionMatchGeosite, SubscriptionMatchGeoIP:
+		if !subscriptionGeoPattern.MatchString(value) {
+			return errors.New("subscription geo rule-set value is invalid")
+		}
+	}
+	return nil
+}
+
+func validSubscriptionAction(action SubscriptionAction) bool {
+	return action == SubscriptionProxy || action == SubscriptionDirect || action == SubscriptionReject
+}
+
+func validSubscriptionMatch(match SubscriptionMatch) bool {
+	switch match {
+	case SubscriptionMatchDomain, SubscriptionMatchDomainSuffix, SubscriptionMatchDomainKeyword,
+		SubscriptionMatchDomainRegex, SubscriptionMatchIPCIDR, SubscriptionMatchSourceIPCIDR,
+		SubscriptionMatchGeosite, SubscriptionMatchGeoIP, SubscriptionMatchDestinationPort, SubscriptionMatchSourcePort,
+		SubscriptionMatchNetwork, SubscriptionMatchProcessName:
+		return true
+	default:
+		return false
+	}
+}
+
 func validateProxyNode(node ProxyNode, users map[string]User) error {
 	if len(node.Hops) == 0 {
 		return errors.New("Proxy Node has no entrance Hop")
 	}
-	if len(node.Hops)+len(node.Links) > maxTopologyEntities {
+	if len(node.Hops)+len(node.Links)+len(node.BlockBranches) > maxTopologyEntities {
 		return errors.New("Proxy Node exceeds topology entity limit")
 	}
 	if err := validateEndpoint(node.Entrance.Endpoint); err != nil {
@@ -190,7 +326,7 @@ func validateProxyNode(node ProxyNode, users map[string]User) error {
 	}
 	hops := make(map[string]Hop, len(node.Hops))
 	for _, hop := range node.Hops {
-		if !validID(hop.ID, "hop_") || !validName(hop.Name) || !validAgentID(hop.AgentID) || hop.CreatedAt.IsZero() || hop.UpdatedAt.IsZero() {
+		if !validID(hop.ID, "hop_") || !validAgentID(hop.AgentID) || hop.CreatedAt.IsZero() || hop.UpdatedAt.IsZero() {
 			return errors.New("invalid Hop")
 		}
 		if _, exists := hops[hop.ID]; exists {
@@ -255,6 +391,22 @@ func validateProxyNode(node ProxyNode, users map[string]User) error {
 		links[link.ID] = link
 		parentByChild[link.ChildHopID] = link.ParentHopID
 		outgoing[link.ParentHopID] = append(outgoing[link.ParentHopID], link)
+	}
+	for _, branch := range node.BlockBranches {
+		if _, exists := hops[branch.ParentHopID]; !exists {
+			return errors.New("BLOCK branch parent does not exist")
+		}
+		if branch.CreatedAt.IsZero() || branch.UpdatedAt.IsZero() || !validID(branch.Rule.ID, "rul_") ||
+			branch.Rule.Order < 0 || branch.Rule.LegacyTarget != nil {
+			return errors.New("invalid BLOCK branch")
+		}
+		if branch.Rule.Match == MatchNone {
+			return errors.New("BLOCK branch requires a conditional match")
+		}
+		if err := validateRule(branch.Rule); err != nil {
+			return err
+		}
+		ruleOrders[branch.ParentHopID] = append(ruleOrders[branch.ParentHopID], branch.Rule.Order)
 	}
 	for hopID, orders := range ruleOrders {
 		sort.Ints(orders)

@@ -1,6 +1,6 @@
 {{define "server.html"}}
 <!doctype html>
-<html lang="en">
+<html lang="{{.Locale}}">
 {{template "document-head" .}}
 <body data-version-catalog-url="/servers/{{.Agent.ID}}/versions"{{if and .Agent.Deployment .Agent.Deployment.Pending}} data-deployment-refresh-url="{{.Agent.URL}}" data-deployment-status-url="{{.Agent.DeploymentStatusURL}}"{{end}}>
   <a class="skip-link" href="#main">Skip to content</a>
@@ -16,7 +16,6 @@
         <div>
           <p class="eyebrow">Server management</p>
           <h1>{{.Agent.ID}}</h1>
-          <p class="page-header__description">Inspect enrollment, connectivity, addresses, and software for this Agent.</p>
         </div>
         <div class="page-header__actions">
           <a class="button button--secondary button--icon" href="{{.Agent.URL}}" aria-label="Refresh server status">
@@ -63,7 +62,6 @@
           <small>{{.Agent.OperatingSystem}} / {{.Agent.Architecture}}</small>
           {{else}}
           <strong class="summary-card__value">Unknown</strong>
-          <small>Connect the agent to inspect its version.</small>
           {{end}}
         </article>
       </section>
@@ -72,26 +70,22 @@
 
         <section class="panel" aria-labelledby="proxy-role-heading">
           <div class="panel__header">
-            <div>
-              <h2 id="proxy-role-heading">Proxy Node roles</h2>
-              <p>Entrances, relay Links, users, and routing are managed as logical Proxy Nodes.</p>
-            </div>
+            <h2 id="proxy-role-heading">Proxy Node roles</h2>
             <a class="button button--primary" href="/proxy-nodes">Open Proxy Nodes</a>
           </div>
-          <div class="panel__empty"><p>This server can participate in any number of independently deployed routing trees. It does not own an editable sing-box configuration.</p></div>
         </section>
 
         <dialog class="modal actions-modal" id="server-actions-dialog" aria-labelledby="server-actions-title">
           <div class="modal__surface">
             <header class="modal__header">
-              <div><p class="eyebrow">Operations</p><h2 id="server-actions-title">Server and software actions</h2><p>Updates, deployment diagnostics, and access controls.</p></div>
+              <div><p class="eyebrow">Operations</p><h2 id="server-actions-title">Server and software actions</h2></div>
               <button class="button button--secondary button--icon-only" type="button" data-dialog-close aria-label="Close server actions">×</button>
             </header>
             <div class="modal__body actions-list">
               <details class="action-section" open>
                 <summary><span><strong>Server settings</strong><small>{{if .Agent.DefaultTLSAddress}}{{.Agent.DefaultTLSAddress}}{{else}}No default TLS address{{end}}</small></span></summary>
                 <div class="action-section__body">
-                  <form action="/servers/{{.Agent.ID}}/tls-address" method="post" class="stack stack--compact">
+                  <form novalidate action="/servers/{{.Agent.ID}}/tls-address" method="post" class="stack stack--compact">
                     <input type="hidden" name="csrf_token" value="{{.CSRFToken}}">
                     <label class="field">
                       <span>Default TLS address <span class="field__optional">Optional</span></span>
@@ -106,7 +100,6 @@
                         inputmode="url"
                         maxlength="253"
                       >
-                      <small>Preferred hostname for new AnyTLS and Hysteria2 outbound selections. Clear it to use IP addresses by default.</small>
                     </label>
                     <button class="button button--secondary button--full" type="submit" data-submit-button data-submit-label="Saving…">Save server settings</button>
                   </form>
@@ -125,7 +118,7 @@
                   </dl>
                   {{if .Agent.SingBoxUpdate.Diagnostic}}<div class="diagnostic"><strong>sing-box update diagnostic</strong><pre>{{.Agent.SingBoxUpdate.Diagnostic}}</pre></div>{{end}}
                   {{end}}
-                  <form action="/servers/{{.Agent.ID}}/sing-box-update" method="post" class="stack stack--compact">
+                  <form novalidate action="/servers/{{.Agent.ID}}/sing-box-update" method="post" class="stack stack--compact">
                     <input type="hidden" name="csrf_token" value="{{.CSRFToken}}">
                     <label class="field">
                       <span>sing-box release</span>
@@ -175,7 +168,7 @@
               </div>
               {{end}}
               {{end}}
-              <form action="/servers/{{.Agent.ID}}/agent-update" method="post" class="stack stack--compact">
+              <form novalidate action="/servers/{{.Agent.ID}}/agent-update" method="post" class="stack stack--compact">
                 <input type="hidden" name="csrf_token" value="{{.CSRFToken}}">
                 <input type="hidden" name="target_version" value="" data-latest-agent-version>
                 <dl class="detail-list detail-list--compact">
@@ -240,7 +233,7 @@
                 <summary><span><strong>Replace Agent</strong><small>Move this identity and its profile to another server</small></span></summary>
                 <div class="action-section__body">
                   <p>The current Agent remains authorized until the replacement uses its one-time token. At that moment the old connection is closed and this master immediately deploys the retained profile to the replacement.</p>
-                  <form action="/servers/{{.Agent.ID}}/replace" method="post" class="stack">
+                  <form novalidate action="/servers/{{.Agent.ID}}/replace" method="post" class="stack">
                     <input type="hidden" name="csrf_token" value="{{.CSRFToken}}">
                     <input type="hidden" name="agent_id" value="{{.Agent.ID}}">
                     <label class="field">
@@ -261,7 +254,7 @@
                 <summary><span><strong>Revoke access</strong><small>Disconnect and invalidate this identity</small></span></summary>
                 <div class="action-section__body">
               <p>This immediately closes an active control session and invalidates enrollment credentials. It does not uninstall the remote agent or stop its current sing-box process.</p>
-              <form
+              <form novalidate
                 action="/servers/{{.Agent.ID}}/revoke"
                 method="post"
               >

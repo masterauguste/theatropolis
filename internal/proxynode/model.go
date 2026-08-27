@@ -6,7 +6,7 @@ import "time"
 
 const (
 	SchemaID      = "theatropolis/proxy-node-state"
-	SchemaVersion = 9
+	SchemaVersion = 13
 )
 
 type Protocol string
@@ -61,6 +61,7 @@ type State struct {
 	UserRevision        uint64               `json:"user_revision"`
 	AppliedRevision     uint64               `json:"applied_revision"`
 	Users               []User               `json:"users"`
+	SubscriptionPolicy  SubscriptionPolicy   `json:"subscription_policy,omitempty"`
 	ProxyNodes          []ProxyNode          `json:"proxy_nodes"`
 	AppliedProxyNodes   []ProxyNode          `json:"applied_proxy_nodes,omitempty"`
 	ManagedAgents       []string             `json:"managed_agents,omitempty"`
@@ -69,22 +70,104 @@ type State struct {
 }
 
 type User struct {
-	ID        string    `json:"id"`
-	Name      string    `json:"name"`
-	CreatedAt time.Time `json:"created_at"`
-	UpdatedAt time.Time `json:"updated_at"`
+	ID           string           `json:"id"`
+	Name         string           `json:"name"`
+	Subscription UserSubscription `json:"subscription,omitempty"`
+	CreatedAt    time.Time        `json:"created_at"`
+	UpdatedAt    time.Time        `json:"updated_at"`
+}
+
+type SubscriptionAction string
+
+const (
+	SubscriptionProxy  SubscriptionAction = "proxy"
+	SubscriptionDirect SubscriptionAction = "direct"
+	SubscriptionReject SubscriptionAction = "reject"
+)
+
+type SubscriptionMatch string
+
+const (
+	SubscriptionMatchDomain          SubscriptionMatch = "domain"
+	SubscriptionMatchDomainSuffix    SubscriptionMatch = "domain_suffix"
+	SubscriptionMatchDomainKeyword   SubscriptionMatch = "domain_keyword"
+	SubscriptionMatchDomainRegex     SubscriptionMatch = "domain_regex"
+	SubscriptionMatchIPCIDR          SubscriptionMatch = "ip_cidr"
+	SubscriptionMatchSourceIPCIDR    SubscriptionMatch = "source_ip_cidr"
+	SubscriptionMatchGeosite         SubscriptionMatch = "geosite"
+	SubscriptionMatchGeoIP           SubscriptionMatch = "geoip"
+	SubscriptionMatchDestinationPort SubscriptionMatch = "destination_port"
+	SubscriptionMatchSourcePort      SubscriptionMatch = "source_port"
+	SubscriptionMatchNetwork         SubscriptionMatch = "network"
+	SubscriptionMatchProtocol        SubscriptionMatch = "protocol"
+	SubscriptionMatchProcessName     SubscriptionMatch = "process_name"
+	// SubscriptionMatchProvider is retained only to decode and migrate schema
+	// v12 preview state. New policies cannot contain provider-backed rules.
+	SubscriptionMatchProvider SubscriptionMatch = "provider"
+)
+
+type SubscriptionProviderBehavior string
+
+const (
+	SubscriptionProviderDomain    SubscriptionProviderBehavior = "domain"
+	SubscriptionProviderIPCIDR    SubscriptionProviderBehavior = "ipcidr"
+	SubscriptionProviderClassical SubscriptionProviderBehavior = "classical"
+)
+
+type UserSubscription struct {
+	Token     string    `json:"token,omitempty"`
+	UpdatedAt time.Time `json:"updated_at,omitempty"`
+	// Deprecated schema-v11 fields are retained only so strict decoding can
+	// migrate unreleased preview state. Schema v13 validation requires them empty.
+	DefaultAction SubscriptionAction     `json:"default_action,omitempty"`
+	Rules         []SubscriptionRule     `json:"rules,omitempty"`
+	Providers     []SubscriptionProvider `json:"providers,omitempty"`
+}
+
+// SubscriptionPolicy is the universal routing policy applied to every public
+// user subscription. Users own only their bearer token and eligible Nodes.
+type SubscriptionPolicy struct {
+	DefaultAction SubscriptionAction `json:"default_action,omitempty"`
+	Rules         []SubscriptionRule `json:"rules,omitempty"`
+	// Providers is retained only to decode and migrate schema v12 preview
+	// state. Schema v13 validation requires it to be empty.
+	Providers []SubscriptionProvider `json:"providers,omitempty"`
+	UpdatedAt time.Time              `json:"updated_at,omitempty"`
+}
+
+type SubscriptionRule struct {
+	ID     string            `json:"id"`
+	Order  int               `json:"order"`
+	Match  SubscriptionMatch `json:"match"`
+	Values []string          `json:"values,omitempty"`
+	// Provider is retained only to decode and migrate schema v12 preview
+	// state. Schema v13 validation requires it to be empty.
+	Provider string             `json:"provider,omitempty"`
+	Action   SubscriptionAction `json:"action"`
+}
+
+type SubscriptionProvider struct {
+	ID             string                       `json:"id"`
+	Name           string                       `json:"name"`
+	Behavior       SubscriptionProviderBehavior `json:"behavior"`
+	DefaultURL     string                       `json:"default_url"`
+	ClashURL       string                       `json:"clash_url,omitempty"`
+	SurgeURL       string                       `json:"surge_url,omitempty"`
+	SingBoxURL     string                       `json:"sing_box_url,omitempty"`
+	UpdateInterval int                          `json:"update_interval"`
 }
 
 type ProxyNode struct {
-	ID          string          `json:"id"`
-	Name        string          `json:"name"`
-	Entrance    Entrance        `json:"entrance"`
-	Hops        []Hop           `json:"hops"`
-	Links       []Link          `json:"links"`
-	Memberships []Membership    `json:"memberships"`
-	RuleSets    []CustomRuleSet `json:"rule_sets,omitempty"`
-	CreatedAt   time.Time       `json:"created_at"`
-	UpdatedAt   time.Time       `json:"updated_at"`
+	ID            string          `json:"id"`
+	Name          string          `json:"name"`
+	Entrance      Entrance        `json:"entrance"`
+	Hops          []Hop           `json:"hops"`
+	Links         []Link          `json:"links"`
+	BlockBranches []BlockBranch   `json:"block_branches,omitempty"`
+	Memberships   []Membership    `json:"memberships"`
+	RuleSets      []CustomRuleSet `json:"rule_sets,omitempty"`
+	CreatedAt     time.Time       `json:"created_at"`
+	UpdatedAt     time.Time       `json:"updated_at"`
 }
 
 type Entrance struct {
@@ -132,7 +215,9 @@ type TLSConfig struct {
 }
 
 type Hop struct {
-	ID          string    `json:"id"`
+	ID string `json:"id"`
+	// Name is retained for schema compatibility with existing state. Hop labels
+	// are derived from AgentID; new mutations keep this field equal to AgentID.
 	Name        string    `json:"name"`
 	AgentID     string    `json:"agent_id"`
 	LegacyRules []Rule    `json:"rules,omitempty"`
@@ -152,6 +237,16 @@ type Link struct {
 	Credential  Credential `json:"credential"`
 	CreatedAt   time.Time  `json:"created_at"`
 	UpdatedAt   time.Time  `json:"updated_at"`
+}
+
+// BlockBranch is an ordered, conditional terminal branch. Matching traffic is
+// rejected on ParentHopID without creating a relay listener, credential, or
+// child Hop. Its Rule shares the same first-match priority space as Link Rules.
+type BlockBranch struct {
+	ParentHopID string    `json:"parent_hop_id"`
+	Rule        Rule      `json:"rule"`
+	CreatedAt   time.Time `json:"created_at"`
+	UpdatedAt   time.Time `json:"updated_at"`
 }
 
 type Rule struct {
@@ -254,7 +349,8 @@ type CustomRuleSet struct {
 }
 
 type CreateProxyNodeInput struct {
-	Name      string
+	Name string
+	// RootName is deprecated. Hop labels are derived from RootAgent.
 	RootName  string
 	RootAgent string
 	Entrance  Endpoint
@@ -263,16 +359,23 @@ type CreateProxyNodeInput struct {
 
 type AddLinkInput struct {
 	ParentHopID string
-	ChildName   string
-	ChildAgent  string
-	Endpoint    Endpoint
-	Final       Target
+	// ChildName is deprecated. Hop labels are derived from ChildAgent.
+	ChildName  string
+	ChildAgent string
+	Endpoint   Endpoint
+	Final      Target
 }
 
 type AddBranchInput struct {
 	AddLinkInput
 	Match  MatchType
 	Values []string
+}
+
+type AddBlockBranchInput struct {
+	ParentHopID string
+	Match       MatchType
+	Values      []string
 }
 
 type AddRuleInput struct {

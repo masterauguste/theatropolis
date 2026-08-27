@@ -311,11 +311,18 @@ func renderAgentConfig(render *agentRender) ([]byte, error) {
 	for _, tag := range ruleSetTags {
 		ruleSets = append(ruleSets, render.ruleSets[tag])
 	}
-	route := map[string]any{"rules": rules, "final": "tp-reject"}
+	route := map[string]any{
+		"rules":                   rules,
+		"final":                   "tp-reject",
+		"default_domain_resolver": "tp-local-dns",
+	}
 	if len(ruleSets) > 0 {
 		route["rule_set"] = ruleSets
 	}
 	config := map[string]any{
+		"dns": map[string]any{"servers": []map[string]any{{
+			"type": "local", "tag": "tp-local-dns",
+		}}},
 		"inbounds":  inbounds,
 		"outbounds": render.outbounds,
 		"route":     route,
@@ -448,13 +455,20 @@ func renderHopRules(render *agentRender, candidate *ingressCandidate) error {
 	}
 	sort.Slice(links, func(left, right int) bool { return links[left].Order < links[right].Order })
 	type routedRule struct {
-		link *Link
-		rule Rule
+		link  *Link
+		block bool
+		rule  Rule
 	}
 	rules := make([]routedRule, 0)
 	for _, link := range links {
 		for _, rule := range link.Rules {
 			rules = append(rules, routedRule{link: link, rule: rule})
+		}
+	}
+	for index := range candidate.node.BlockBranches {
+		branch := &candidate.node.BlockBranches[index]
+		if branch.ParentHopID == candidate.hop.ID {
+			rules = append(rules, routedRule{block: true, rule: branch.Rule})
 		}
 	}
 	sort.SliceStable(rules, func(left, right int) bool { return rules[left].rule.Order < rules[right].rule.Order })
@@ -469,8 +483,12 @@ func renderHopRules(render *agentRender, candidate *ingressCandidate) error {
 		if err := renderRuleMatch(render, candidate.node, route.rule, rendered); err != nil {
 			return err
 		}
-		rendered["action"] = "route"
-		rendered["outbound"] = linkOutboundTag(route.link.ID)
+		if route.block {
+			rendered["action"] = "reject"
+		} else {
+			rendered["action"] = "route"
+			rendered["outbound"] = linkOutboundTag(route.link.ID)
+		}
 		render.rules = append(render.rules, rendered)
 	}
 	for _, link := range links {

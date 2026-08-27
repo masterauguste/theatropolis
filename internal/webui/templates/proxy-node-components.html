@@ -28,7 +28,7 @@
 {{define "proxy-endpoint-fields"}}
 <div class="proxy-listener-editor" data-proxy-listener-editor data-agent="{{.AgentID}}" data-current-listener="{{.ListenerID}}">
   <div class="proxy-listener-picker">
-    <label class="field" data-native-select><span>Physical listener</span><select data-proxy-listener-select><option value="manual">Configure manually</option></select><small>Reuse a listener already present on the selected Agent, or configure a new socket.</small></label>
+    <label class="field"><span>Physical listener</span><select data-proxy-listener-select><option value="manual">Configure manually</option></select></label>
     <div class="proxy-listener-status" data-proxy-listener-status role="status" aria-live="polite"></div>
   </div>
   <div class="proxy-listener-summary" data-proxy-listener-summary hidden></div>
@@ -41,7 +41,6 @@
     <fieldset class="builder-subsection" data-proxy-section="shadowsocks">
       <legend>Shadowsocks 2022 listener</legend>
       <label class="field"><span>Method</span><select name="method"><option value="2022-blake3-aes-128-gcm"{{if eq .Method "2022-blake3-aes-128-gcm"}} selected{{end}}>AES-128-GCM</option><option value="2022-blake3-aes-256-gcm"{{if eq .Method "2022-blake3-aes-256-gcm"}} selected{{end}}>AES-256-GCM</option><option value="2022-blake3-chacha20-poly1305"{{if eq .Method "2022-blake3-chacha20-poly1305"}} selected{{end}}>ChaCha20-Poly1305</option></select></label>
-      <p class="muted">Server and user keys are generated automatically and never reused.</p>
       <input type="hidden" name="mux_padding" value="{{if .MuxPadding}}1{{else}}0{{end}}">
       <input type="hidden" name="mux_brutal" value="{{if .MuxBrutal}}1{{else}}0{{end}}">
       <input type="hidden" name="mux_brutal_up_mbps" value="{{if .MuxBrutalUpMbps}}{{.MuxBrutalUpMbps}}{{end}}">
@@ -62,23 +61,23 @@
       <div class="builder-fields">
         <label class="field"><span>Upload Mbps <span class="field__optional">Optional</span></span><input name="up_mbps" type="number" min="0" max="1000000" value="{{if .UpMbps}}{{.UpMbps}}{{end}}"></label>
         <label class="field"><span>Download Mbps <span class="field__optional">Optional</span></span><input name="down_mbps" type="number" min="0" max="1000000" value="{{if .DownMbps}}{{.DownMbps}}{{end}}"></label>
-        <label class="field"><span>Obfuscation</span><select name="obfs_type"><option value=""{{if eq .ObfsType ""}} selected{{end}}>Disabled</option><option value="salamander"{{if eq .ObfsType "salamander"}} selected{{end}}>Salamander</option><option value="gecko"{{if eq .ObfsType "gecko"}} selected{{end}}>Gecko</option></select><small>The obfuscation secret is generated automatically.</small></label>
+        <label class="field"><span>Obfuscation</span><select name="obfs_type"><option value=""{{if eq .ObfsType ""}} selected{{end}}>Disabled</option><option value="salamander"{{if eq .ObfsType "salamander"}} selected{{end}}>Salamander</option><option value="gecko"{{if eq .ObfsType "gecko"}} selected{{end}}>Gecko</option></select></label>
       </div>
     </fieldset>
   </div>
 </div>
 <div class="builder-fields proxy-link-options">
-  <label class="field"><span>Relay address family</span><select name="family"><option value="auto"{{if or (eq .Family "") (eq .Family "auto")}} selected{{end}}>Automatic</option><option value="ipv4"{{if eq .Family "ipv4"}} selected{{end}}>IPv4</option><option value="ipv6"{{if eq .Family "ipv6"}} selected{{end}}>IPv6</option></select><small>Used by the parent when this endpoint is a Link.</small></label>
+  <label class="field"><span>Relay address family</span><select name="family"><option value="auto"{{if or (eq .Family "") (eq .Family "auto")}} selected{{end}}>Automatic</option><option value="ipv4"{{if eq .Family "ipv4"}} selected{{end}}>IPv4</option><option value="ipv6"{{if eq .Family "ipv6"}} selected{{end}}>IPv6</option></select></label>
   <fieldset class="builder-subsection proxy-link-options__mux" data-proxy-section="shadowsocks">
     <legend>Link multiplex</legend>
-    <label class="field"><span>Multiplex</span><select name="mux_enabled"><option value="0"{{if not .MuxEnabled}} selected{{end}}>Disabled</option><option value="1"{{if .MuxEnabled}} selected{{end}}>Enabled (smux)</option></select><small>A shared listener accepts multiplexed sessions when any attached Link enables this. Relay Links with multiplex disabled continue to use ordinary connections.</small></label>
+    <label class="field"><span>Multiplex</span><select name="mux_enabled"><option value="0"{{if not .MuxEnabled}} selected{{end}}>Disabled</option><option value="1"{{if .MuxEnabled}} selected{{end}}>Enabled (smux)</option></select></label>
   </fieldset>
 </div>
 {{end}}
 
 {{define "proxy-rule-fields"}}
-<label class="field"><span>Match type</span><select name="match" data-proxy-match required><option value="none"{{if eq .Match "none"}} selected{{end}}>ALL — fallback</option><option value="protocol"{{if eq .Match "protocol"}} selected{{end}}>Protocol</option><option value="domain"{{if eq .Match "domain"}} selected{{end}}>Domain</option><option value="domain_suffix"{{if eq .Match "domain_suffix"}} selected{{end}}>Domain suffix</option><option value="domain_keyword"{{if eq .Match "domain_keyword"}} selected{{end}}>Domain keyword</option><option value="domain_regex"{{if eq .Match "domain_regex"}} selected{{end}}>Domain regex</option><option value="ip_cidr"{{if eq .Match "ip_cidr"}} selected{{end}}>IP / CIDR</option><option value="geosite"{{if eq .Match "geosite"}} selected{{end}}>Geosite</option><option value="geoip"{{if eq .Match "geoip"}} selected{{end}}>GeoIP</option><option value="rule_set"{{if eq .Match "rule_set"}} selected{{end}}>Custom Rule Set</option><option value="network"{{if eq .Match "network"}} selected{{end}}>Network</option></select><small>ALL creates the single fallback branch and is evaluated after every conditional sibling.</small></label>
-<label class="field" data-proxy-match-values><span>Values</span><textarea name="values" rows="4" placeholder="One value per line or comma-separated" required>{{.FormValues}}</textarea><small>Values within this Rule are ORed. Geosite and GeoIP accept one catalog name.</small></label>
+<label class="field"><span>Match type</span><select name="match" data-proxy-match required><option value="none"{{if eq .Match "none"}} selected{{end}}>ALL — fallback</option><option value="protocol"{{if eq .Match "protocol"}} selected{{end}}>Protocol</option><option value="domain"{{if eq .Match "domain"}} selected{{end}}>Domain</option><option value="domain_suffix"{{if eq .Match "domain_suffix"}} selected{{end}}>Domain suffix</option><option value="domain_keyword"{{if eq .Match "domain_keyword"}} selected{{end}}>Domain keyword</option><option value="domain_regex"{{if eq .Match "domain_regex"}} selected{{end}}>Domain regex</option><option value="ip_cidr"{{if eq .Match "ip_cidr"}} selected{{end}}>IP / CIDR</option><option value="geosite"{{if eq .Match "geosite"}} selected{{end}}>Geosite</option><option value="geoip"{{if eq .Match "geoip"}} selected{{end}}>GeoIP</option><option value="rule_set"{{if eq .Match "rule_set"}} selected{{end}}>Custom Rule Set</option><option value="network"{{if eq .Match "network"}} selected{{end}}>Network</option></select></label>
+<label class="field" data-proxy-match-values><span>Values</span><textarea class="resize-none" name="values" rows="4" placeholder="One value per line or comma-separated" required>{{.FormValues}}</textarea></label>
 {{end}}
 
 {{define "proxy-breadcrumbs"}}

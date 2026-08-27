@@ -89,3 +89,23 @@ before changed senders.
 
 The full architecture and old-format cutover policy are recorded in
 [docs/proxy-node-manager-design.md](docs/proxy-node-manager-design.md).
+
+## User subscriptions
+
+Each global user automatically receives one rotatable bearer subscription link
+with Clash, Surge, and sing-box format endpoints. The feed derives its Proxy group from
+that user's currently active Proxy Node memberships; expired, quota-disabled,
+unapplied, and unreachable entrances are not exported. One universal ordered
+rule list applies to every user and routes to only `Proxy`, `Direct`, or `Reject`.
+Clash uses its native `GEOSITE` and `GEOIP` rules with auto-updating MetaCubeX
+data URLs. sing-box uses remote SagerNet binary rule sets. Surge receives
+read-only `DOMAIN-SET` and CIDR `RULE-SET` adapters sourced from
+[MetaCubeX/meta-rules-dat](https://github.com/MetaCubeX/meta-rules-dat).
+Resetting a subscription link atomically replaces the bearer URL and every
+Proxy Node credential owned by that user. Revoking only the bearer link leaves
+Node credentials unchanged. Both actions take effect through the immediate
+user plane without a topology deployment.
+
+The subscription workflow and format coverage are inspired by
+[Sub-Store](https://github.com/sub-store-org/Sub-Store). Theatropolis' exporter
+is an independent implementation and does not copy Sub-Store source code.

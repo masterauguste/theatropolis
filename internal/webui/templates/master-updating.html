@@ -1,6 +1,6 @@
 {{define "master-updating.html"}}
 <!doctype html>
-<html lang="en">
+<html lang="{{.Locale}}">
 {{template "document-head" .}}
 <body data-master-update-status-url="/settings/update-status?request_id={{.MasterUpdateRequestID}}">
   <a class="skip-link" href="#main">Skip to content</a>

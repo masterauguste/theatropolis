@@ -49,12 +49,11 @@
             </div>
             {{end}}
           </div>
-          <small class="muted">Choose among these users when importing this outbound in an agent's routing editor.</small>
         </section>
 
         <section aria-labelledby="{{.DialogID}}-overrides">
           <h3 id="{{.DialogID}}-overrides">Address overrides</h3>
-          <form action="{{.AddressURL}}" method="post" class="stack">
+          <form novalidate action="{{.AddressURL}}" method="post" class="stack">
             <input type="hidden" name="csrf_token" value="{{$.CSRFToken}}">
             <div class="field-grid field-grid--two">
               <label class="field">
@@ -66,7 +65,6 @@
                 <input type="text" name="override_ipv6" value="{{.OverrideV6}}" placeholder="Automatic" maxlength="64">
               </label>
             </div>
-            <small>Overrides must be public IP addresses. Leave a field empty to use automatic discovery for that family.</small>
             <button class="button button--primary" type="submit">Save address overrides</button>
           </form>
         </section>
@@ -88,7 +86,7 @@
 
 {{define "pool.html"}}
 <!doctype html>
-<html lang="en">
+<html lang="{{.Locale}}">
 {{template "document-head" .}}
 <body>
   <a class="skip-link" href="#main">Skip to content</a>
@@ -98,13 +96,12 @@
       <div>
         <p class="eyebrow">Fleet</p>
         <h1>Outbound pool</h1>
-        <p class="page-header__description">Inbound users other servers can import as outbounds, plus shared manual entries.</p>
       </div>
     </header>
     {{if .Pool}}
     <section class="panel settings-panel" aria-labelledby="pool-heading">
       <div class="panel__header">
-        <div><h2 id="pool-heading">Fleet outbound pool</h2><p>Each entry represents one inbound. Open it to view its users or override the server addresses used for routing.</p></div>
+        <h2 id="pool-heading">Fleet outbound pool</h2>
       </div>
       {{if .Error}}
       <div class="notice notice--error" role="alert" tabindex="-1" data-error-summary>{{.Error}}</div>
@@ -137,7 +134,7 @@
               <td data-label="Protocol">{{.Type}}{{if .Port}} · {{.Port}}{{end}}</td>
               <td data-label="Outbound JSON"><code class="pool-outbound-json">{{.Outbound}}</code></td>
               <td data-label="Actions">
-                <form action="/pool/delete" method="post" class="pool-delete-form">
+                <form novalidate action="/pool/delete" method="post" class="pool-delete-form">
                   <input type="hidden" name="csrf_token" value="{{$.CSRFToken}}">
                   <input type="hidden" name="name" value="{{.Name}}">
                   <label class="danger-confirm">
@@ -155,22 +152,19 @@
       {{else}}
       <p class="muted">No manual entries yet.</p>
       {{end}}
-      <form action="/pool" method="post" class="stack">
+      <form novalidate action="/pool" method="post" class="stack">
         <input type="hidden" name="csrf_token" value="{{.CSRFToken}}">
         <label class="field">
           <span>Entry name</span>
           <input type="text" name="name" value="{{.PoolFormName}}" placeholder="backup-relay" maxlength="128" required{{if eq .ErrorField "pool_name"}} aria-invalid="true"{{end}}>
-          <small>Adding an existing name replaces its outbound. Reference it as <code>manual/&lt;name&gt;</code>.</small>
         </label>
         <label class="field">
           <span>Remark <small>(optional)</small></span>
           <input type="text" name="remark" value="{{.PoolFormRemark}}" placeholder="Singapore backup" maxlength="256"{{if eq .ErrorField "pool_remark"}} aria-invalid="true"{{end}}>
-          <small>A friendly label shown in the pool and routing editor. It does not change the stable reference.</small>
         </label>
         <label class="field">
           <span>Proxy URI or outbound JSON</span>
-          <textarea name="outbound_json" rows="4" spellcheck="false" placeholder='ss://method:password@example.com:8388#Singapore' required{{if eq .ErrorField "pool_json"}} aria-invalid="true"{{end}}>{{.PoolFormJSON}}</textarea>
-          <small>Paste an <code>ss://</code>, <code>vmess://</code>, <code>vless://</code>, <code>trojan://</code>, <code>hysteria2://</code>, <code>tuic://</code>, <code>anytls://</code>, <code>socks://</code>, or <code>http(s)://</code> URI. Advanced users can still enter a sing-box outbound JSON object.</small>
+          <textarea class="resize-none" name="outbound_json" rows="4" spellcheck="false" placeholder='ss://method:password@example.com:8388#Singapore' required{{if eq .ErrorField "pool_json"}} aria-invalid="true"{{end}}>{{.PoolFormJSON}}</textarea>
         </label>
         <button class="button button--secondary" type="submit" data-submit-button data-submit-label="Saving…">Save pool entry</button>
       </form>

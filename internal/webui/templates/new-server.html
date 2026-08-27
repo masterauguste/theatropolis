@@ -1,6 +1,6 @@
 {{define "new-server.html"}}
 <!doctype html>
-<html lang="en">
+<html lang="{{.Locale}}">
 {{template "document-head" .}}
 <body>
   <a class="skip-link" href="#main">Skip to content</a>
@@ -16,19 +16,15 @@
         <div>
           <p class="eyebrow">Secure enrollment</p>
           <h1>Add a server</h1>
-          <p class="page-header__description">Create a short-lived credential, then run one command on the destination server.</p>
         </div>
       </header>
 
       <section class="form-layout">
-        <form class="panel form-card" action="/servers" method="post">
+        <form novalidate class="panel form-card" action="/servers" method="post">
           <input type="hidden" name="csrf_token" value="{{.CSRFToken}}">
           <div class="form-card__header">
             <span class="step-number">1</span>
-            <div>
-              <h2>Server identity</h2>
-              <p>This ID stays with the agent after enrollment.</p>
-            </div>
+            <h2>Server identity</h2>
           </div>
 
           {{if .Error}}

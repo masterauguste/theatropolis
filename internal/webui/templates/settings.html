@@ -1,6 +1,6 @@
 {{define "settings.html"}}
 <!doctype html>
-<html lang="en">
+<html lang="{{.Locale}}">
 {{template "document-head" .}}
 <body data-version-catalog-url="/settings/versions" data-master-version="{{.MasterVersion}}">
   <a class="skip-link" href="#main">Skip to content</a>
@@ -10,12 +10,11 @@
       <div>
         <p class="eyebrow">Global settings</p>
         <h1>Master</h1>
-        <p class="page-header__description">Version and update controls for this control plane.</p>
       </div>
     </header>
     <section class="panel settings-panel">
       <div class="panel__header">
-        <div><h2>Master software</h2><p>Updates always target the newest published Theatropolis release.</p></div>
+        <h2>Master software</h2>
       </div>
       {{if .MasterUpdate}}
       <dl class="detail-list detail-list--compact">
@@ -31,7 +30,7 @@
       </dl>
       <button class="button button--secondary button--small" type="button" data-master-version-refresh>Check again</button>
       <small data-agent-catalog-warning hidden class="field-warning"></small>
-      <form action="/master-update" method="post" data-master-update-form>
+      <form novalidate action="/master-update" method="post" data-master-update-form>
         <input type="hidden" name="csrf_token" value="{{.CSRFToken}}">
         <button class="button button--primary" type="submit" data-submit-button data-submit-label="Scheduling…" data-master-update-button disabled>
           <span data-master-button-text>Checking for updates…</span>
@@ -41,10 +40,7 @@
     </section>
     <section class="panel settings-panel" aria-labelledby="accounting-errors-heading">
       <div class="panel__header">
-        <div>
-          <h2 id="accounting-errors-heading">Accounting errors</h2>
-          <p>Non-sensitive failures recorded while collecting or saving entrance traffic.</p>
-        </div>
+        <h2 id="accounting-errors-heading">Accounting errors</h2>
         <span class="panel__count">{{.AccountingFailureTotal}} recorded</span>
       </div>
       {{if .AccountingFailures}}

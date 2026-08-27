@@ -24,11 +24,8 @@
 
 <section class="panel" aria-labelledby="fleet-heading">
   <div class="panel__header">
-    <div>
-      <h2 id="fleet-heading">Servers</h2>
-      <p>Current connection state and enrollment readiness.</p>
-    </div>
-    <span class="panel__count">{{.Stats.Total}} total</span>
+    <h2 id="fleet-heading">Servers</h2>
+    <span class="panel__count">{{count .Stats.Total "total"}}</span>
   </div>
 
   {{if .Agents}}
@@ -66,7 +63,6 @@
   {{else}}
   <div class="empty-state">
     <h3>No servers enrolled yet</h3>
-    <p>Create a server entry to generate its secure, single-use installation command.</p>
     <a class="button button--primary" href="/servers/new">Add your first server</a>
   </div>
   {{end}}
@@ -75,7 +71,7 @@
 
 {{define "servers.html"}}
 <!doctype html>
-<html lang="en">
+<html lang="{{.Locale}}">
 {{template "document-head" .}}
 <body data-version-catalog-url="/servers/versions">
   <a class="skip-link" href="#main">Skip to content</a>
@@ -85,7 +81,6 @@
         <div>
           <p class="eyebrow">Infrastructure</p>
           <h1>Servers</h1>
-          <p class="page-header__description">Enroll and monitor every agent connected to this master.</p>
         </div>
         <div class="page-header__actions">
           <button class="button button--secondary button--icon" type="button" data-async-reload="servers-content" aria-label="Refresh server status">
@@ -120,7 +115,6 @@
             <div>
               <p class="eyebrow">Fleet maintenance</p>
               <h2 id="fleet-settings-title">Server settings</h2>
-              <p>Manage software versions across connected servers.</p>
             </div>
             <button class="button button--secondary button--icon-only" type="button" data-dialog-close aria-label="Close server settings">×</button>
           </header>
@@ -129,9 +123,8 @@
               <div class="fleet-settings-action__copy">
                 <p class="eyebrow">Theatropolis</p>
                 <h3 id="fleet-agent-update-heading">Update Agent software</h3>
-                <p>Install the latest published Theatropolis Agent on every connected eligible server.</p>
               </div>
-              <form action="/servers/agent-update-all" method="post">
+              <form novalidate action="/servers/agent-update-all" method="post">
                 <input type="hidden" name="csrf_token" value="{{.CSRFToken}}">
                 <button class="button button--secondary button--full" type="submit" data-submit-button data-submit-label="Queuing…">Update all Agents</button>
               </form>
@@ -141,9 +134,8 @@
               <div class="fleet-settings-action__copy">
                 <p class="eyebrow">Proxy runtime</p>
                 <h3 id="fleet-sing-box-heading">Change sing-box version</h3>
-                <p>Choose one signed managed-user build for every connected compatible Agent.</p>
               </div>
-              <form action="/servers/sing-box-update-all" method="post" class="stack stack--compact">
+              <form novalidate action="/servers/sing-box-update-all" method="post" class="stack stack--compact">
                 <input type="hidden" name="csrf_token" value="{{.CSRFToken}}">
                 <label class="field">
                   <span>Target version</span>

@@ -1,24 +1,27 @@
 "use strict";
 
 (() => {
+  const t = (text) => window.theatropolisText?.(text) || text;
   const enhanced = new WeakMap();
   let openControl = null;
   let menuSequence = 0;
 
   const fieldLabel = (select) => {
     const field = select.closest(".field");
-    return field?.querySelector(":scope > span")?.textContent.trim() || select.name || "Option";
+    return field?.querySelector(":scope > span")?.textContent.trim() || select.name || t("Option");
   };
 
   const selectedLabel = (control) =>
-    control.select.selectedOptions[0]?.textContent || "Select an option";
+    control.select.selectedOptions[0]?.textContent || t("Select an option");
 
   const availableButtons = (control) =>
     control.optionButtons.filter((button) => !button.disabled && !button.hidden);
 
   const positionMenu = (control) => {
     const bounds = control.trigger.getBoundingClientRect();
-    const gap = 6;
+    const gap = Number.parseFloat(
+      getComputedStyle(document.documentElement).getPropertyValue("--select-menu-gap"),
+    ) || 6;
     const viewportWidth = document.documentElement.clientWidth;
     const viewportMargin = 8;
     const menuWidth = Math.max(
@@ -139,7 +142,7 @@
     });
     control.empty = document.createElement("span");
     control.empty.className = "select-box__empty";
-    control.empty.textContent = "No matching options";
+    control.empty.textContent = t("No matching options");
     control.empty.hidden = true;
     control.menu.append(control.empty);
   };
@@ -217,7 +220,11 @@
     syncControl(control);
 
     trigger.addEventListener("pointerdown", (event) => {
-      if (event.target === input || control.select.disabled) return;
+      if (control.select.disabled) return;
+      if (event.target === input) {
+        openDropdown(control);
+        return;
+      }
       event.preventDefault();
       input.focus();
       openDropdown(control);

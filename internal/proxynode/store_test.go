@@ -152,6 +152,91 @@ func TestAddBranchAtomicallyCreatesRuleLinkAndChildBeforeFallback(t *testing.T) 
 	}
 }
 
+func TestBlockBranchRejectsMatchingTrafficWithoutCreatingRelayTopology(t *testing.T) {
+	store, err := Open(filepath.Join(t.TempDir(), "proxy-node-state.json"), testBuild())
+	if err != nil {
+		t.Fatal(err)
+	}
+	user, err := store.CreateUser("alice")
+	if err != nil {
+		t.Fatal(err)
+	}
+	node, err := store.CreateProxyNode(CreateProxyNodeInput{
+		Name: "cinema", RootAgent: "edge-a", Entrance: testTLSEndpoint(ProtocolAnyTLS, 443),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.AddMembership(node.ID, user.ID); err != nil {
+		t.Fatal(err)
+	}
+	block, err := store.AddBlockBranch(node.ID, AddBlockBranchInput{
+		ParentHopID: node.Entrance.HopID, Match: MatchDomainSuffix, Values: []string{"ads.example"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, _ := store.ProxyNode(node.ID)
+	if len(got.Hops) != 1 || len(got.Links) != 0 || len(got.BlockBranches) != 1 || block.Rule.Order != 0 {
+		t.Fatalf("BLOCK branch created relay topology: %#v", got)
+	}
+	if _, err := store.AddBlockBranch(node.ID, AddBlockBranchInput{ParentHopID: node.Entrance.HopID, Match: MatchNone}); err == nil {
+		t.Fatal("ALL was accepted as a conditional BLOCK branch")
+	}
+
+	link, _, rule, err := store.AddBranch(node.ID, AddBranchInput{
+		AddLinkInput: AddLinkInput{
+			ParentHopID: node.Entrance.HopID, ChildName: "Exit", ChildAgent: "edge-b",
+			Endpoint: testTLSEndpoint(ProtocolAnyTLS, 8443),
+		},
+		Match: MatchDomain, Values: []string{"allowed.example"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.ReorderRules(node.ID, node.Entrance.HopID, []string{rule.ID, block.Rule.ID}); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.UpdateBlockBranch(node.ID, block.Rule.ID, UpdateRuleInput{Match: MatchDomain, Values: []string{"blocked.example"}}); err != nil {
+		t.Fatal(err)
+	}
+
+	compiled, err := Compile(store.Snapshot(), testResolver{"edge-a": "192.0.2.10", "edge-b": "192.0.2.11"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var config struct {
+		Route struct {
+			Rules []map[string]any `json:"rules"`
+		} `json:"route"`
+	}
+	if err := json.Unmarshal(compiled.Configs["edge-a"], &config); err != nil {
+		t.Fatal(err)
+	}
+	routes := make([]map[string]any, 0, len(config.Route.Rules))
+	for _, candidate := range config.Route.Rules {
+		if candidate["action"] != "sniff" && candidate["action"] != "resolve" {
+			routes = append(routes, candidate)
+		}
+	}
+	if len(routes) < 3 || routes[0]["outbound"] != linkOutboundTag(link.ID) || routes[1]["action"] != "reject" {
+		t.Fatalf("compiled BLOCK priority/action = %#v", config.Route.Rules)
+	}
+	if domains, ok := routes[1]["domain"].([]any); !ok || len(domains) != 1 || domains[0] != "blocked.example" {
+		t.Fatalf("compiled BLOCK match = %#v", routes[1])
+	}
+	if _, exists := routes[1]["outbound"]; exists {
+		t.Fatalf("BLOCK unexpectedly has an outbound: %#v", routes[1])
+	}
+	if err := store.DeleteBlockBranch(node.ID, block.Rule.ID); err != nil {
+		t.Fatal(err)
+	}
+	got, _ = store.ProxyNode(node.ID)
+	if len(got.BlockBranches) != 0 || got.Links[0].Rules[0].Order != 0 {
+		t.Fatalf("deleting BLOCK did not normalize remaining priorities: %#v", got)
+	}
+}
+
 func TestAllMatchCreatesAndConvertsFallbackBranches(t *testing.T) {
 	store, err := Open(filepath.Join(t.TempDir(), "proxy-node-state.json"), testBuild())
 	if err != nil {
@@ -403,6 +488,82 @@ func TestSecondRuleCreatesIndependentBranchAndClonesDownstreamContext(t *testing
 	}
 	if len(authUsers) != 2 {
 		t.Fatalf("downstream routing was not scoped to two branch auth_users: %#v", transit.Route.Rules)
+	}
+}
+
+func TestMoveHopPreservesSubtreeAndReplaceLinkDestinationDeletesIt(t *testing.T) {
+	store, err := Open(filepath.Join(t.TempDir(), "proxy-node-state.json"), testBuild())
+	if err != nil {
+		t.Fatal(err)
+	}
+	node, err := store.CreateProxyNode(CreateProxyNodeInput{
+		Name: "cinema", RootAgent: "edge-a", Entrance: testTLSEndpoint(ProtocolAnyTLS, 443),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	root, child, rule, err := store.AddBranch(node.ID, AddBranchInput{
+		AddLinkInput: AddLinkInput{ParentHopID: node.Entrance.HopID, ChildAgent: "edge-b", Endpoint: testTLSEndpoint(ProtocolAnyTLS, 8443)},
+		Match:        MatchDomainSuffix, Values: []string{"example.net"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	nested, grandchild, err := store.AddLink(node.ID, AddLinkInput{
+		ParentHopID: child.ID, ChildAgent: "edge-c", Endpoint: testTLSEndpoint(ProtocolHysteria2, 9443),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	block, err := store.AddBlockBranch(node.ID, AddBlockBranchInput{
+		ParentHopID: child.ID, Match: MatchProtocol, Values: []string{"bittorrent"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if err := store.MoveHop(node.ID, child.ID, "edge-d"); err != nil {
+		t.Fatal(err)
+	}
+	moved, _ := store.ProxyNode(node.ID)
+	movedChildIndex := slices.IndexFunc(moved.Hops, func(hop Hop) bool { return hop.ID == child.ID })
+	if movedChildIndex < 0 || moved.Hops[movedChildIndex].AgentID != "edge-d" || moved.Hops[movedChildIndex].Name != "edge-d" {
+		t.Fatalf("moved Hop = %#v", moved.Hops)
+	}
+	if !slices.ContainsFunc(moved.Links, func(link Link) bool { return link.ID == nested.ID && link.ParentHopID == child.ID }) ||
+		!slices.ContainsFunc(moved.Hops, func(hop Hop) bool { return hop.ID == grandchild.ID }) ||
+		!slices.ContainsFunc(moved.BlockBranches, func(branch BlockBranch) bool { return branch.Rule.ID == block.Rule.ID }) {
+		t.Fatalf("moving Hop changed its subtree: %#v", moved)
+	}
+
+	replacementEndpoint := Endpoint{
+		Protocol: ProtocolShadowsocks, Listen: "::", ListenPort: 10443, Family: "auto", Method: "2022-blake3-aes-128-gcm",
+	}
+	replacement, err := store.ReplaceLinkDestination(node.ID, root.ID, "edge-e", replacementEndpoint, Target{Type: TargetReject})
+	if err != nil {
+		t.Fatal(err)
+	}
+	updated, _ := store.ProxyNode(node.ID)
+	retainedIndex := slices.IndexFunc(updated.Links, func(link Link) bool { return link.ID == root.ID })
+	if retainedIndex < 0 {
+		t.Fatal("destination replacement removed the parent Link")
+	}
+	retained := updated.Links[retainedIndex]
+	if retained.ChildHopID != replacement.ID || retained.Credential == root.Credential || retained.Order != root.Order ||
+		len(retained.Rules) != 1 || retained.Rules[0].ID != rule.ID {
+		t.Fatalf("retained Link = %#v", retained)
+	}
+	if replacement.AgentID != "edge-e" || replacement.Name != "edge-e" || replacement.Final.Type != TargetReject {
+		t.Fatalf("replacement Hop = %#v", replacement)
+	}
+	for _, removedID := range []string{child.ID, grandchild.ID} {
+		if slices.ContainsFunc(updated.Hops, func(hop Hop) bool { return hop.ID == removedID }) {
+			t.Fatalf("removed subtree Hop %q remains: %#v", removedID, updated.Hops)
+		}
+	}
+	if slices.ContainsFunc(updated.Links, func(link Link) bool { return link.ID == nested.ID }) ||
+		slices.ContainsFunc(updated.BlockBranches, func(branch BlockBranch) bool { return branch.Rule.ID == block.Rule.ID }) {
+		t.Fatalf("removed subtree routing artifacts remain: %#v", updated)
 	}
 }
 
@@ -755,6 +916,11 @@ func TestCompileSupportsEveryManagedProtocolOnLinksAndEveryRuleMatch(t *testing.
 		t.Fatal(err)
 	}
 	root := string(compiled.Configs["edge-a"])
+	for _, required := range []string{`"type": "local"`, `"tag": "tp-local-dns"`, `"default_domain_resolver": "tp-local-dns"`} {
+		if !strings.Contains(root, required) {
+			t.Errorf("root config lacks DNS setting %s: %s", required, root)
+		}
+	}
 	for _, protocol := range protocols {
 		if !strings.Contains(root, `"type": "`+string(protocol)+`"`) {
 			t.Errorf("root config lacks %s Link outbound: %s", protocol, root)

@@ -115,6 +115,7 @@ type Options struct {
 	SingBoxReleases ReleaseCatalog
 	GeositeRuleSets RuleSetOptions
 	GeoipRuleSets   RuleSetOptions
+	GeositeContent  *http.Client
 	MasterUpdater   *agentupdate.Scheduler
 	PublicURL       string
 	Version         string
@@ -126,29 +127,35 @@ type Options struct {
 }
 
 type Handler struct {
-	registry        *identity.Registry
-	sessions        SessionRegistry
-	controller      AgentController
-	access          *AccessManager
-	releases        ReleaseCatalog
-	singBoxReleases ReleaseCatalog
-	geositeRuleSets RuleSetOptions
-	geoipRuleSets   RuleSetOptions
-	masterUpdater   *agentupdate.Scheduler
-	version         string
-	publicURL       string
-	publicScheme    string
-	publicHost      string
-	publicPort      string
-	masterAddress   string
-	assetVersion    string
-	logger          *slog.Logger
-	now             func() time.Time
-	proxyNodes      *proxynode.Store
-	proxyDeployer   *proxynode.Deployer
-	proxyUserSync   ProxyUserSynchronizer
-	templates       *template.Template
-	mux             *http.ServeMux
+	registry             *identity.Registry
+	sessions             SessionRegistry
+	controller           AgentController
+	access               *AccessManager
+	releases             ReleaseCatalog
+	singBoxReleases      ReleaseCatalog
+	geositeRuleSets      RuleSetOptions
+	geoipRuleSets        RuleSetOptions
+	geositeContent       *http.Client
+	masterUpdater        *agentupdate.Scheduler
+	version              string
+	publicURL            string
+	publicScheme         string
+	publicHost           string
+	publicPort           string
+	masterAddress        string
+	assetVersion         string
+	logger               *slog.Logger
+	now                  func() time.Time
+	proxyNodes           *proxynode.Store
+	proxyDeployer        *proxynode.Deployer
+	proxyUserSync        ProxyUserSynchronizer
+	ruleSetCache         *ruleSetCache
+	ruleSetLimiter       *fixedWindowLimiter
+	ruleSetGlobalLimiter *fixedWindowLimiter
+	subscriptionCache    *renderedSubscriptionCache
+	publicCacheOnce      sync.Once
+	templates            map[string]*template.Template
+	mux                  *http.ServeMux
 
 	enrollmentMu            sync.Mutex
 	enrollmentWindowStarted time.Time
@@ -167,7 +174,28 @@ type Handler struct {
 	agentMutationMu sync.Mutex
 }
 
+func (h *Handler) ensurePublicCaches() {
+	h.publicCacheOnce.Do(func() {
+		if h.ruleSetCache == nil {
+			h.ruleSetCache = newRuleSetCache()
+		}
+		if h.ruleSetLimiter == nil {
+			h.ruleSetLimiter = newFixedWindowLimiter(publicRuleSetRequestsPerMinute, time.Minute)
+		}
+		if h.ruleSetGlobalLimiter == nil {
+			h.ruleSetGlobalLimiter = newFixedWindowLimiter(publicRuleSetGlobalPerMinute, time.Minute)
+		}
+		if h.subscriptionCache == nil {
+			h.subscriptionCache = newRenderedSubscriptionCache()
+		}
+		if h.now == nil {
+			h.now = time.Now
+		}
+	})
+}
+
 type pageData struct {
+	Locale                 string
 	Title                  string
 	ActiveNav              string
 	AssetVersion           string
@@ -204,6 +232,8 @@ type pageData struct {
 	ProxyNode              *proxyNodeDetailView
 	EndUsers               []endUserListView
 	EndUser                *endUserDetailView
+	UserSubscription       *userSubscriptionView
+	SubscriptionPolicy     *subscriptionPolicyView
 	AgentOptions           []agentOptionView
 	Endpoint               endpointView
 	ListenerOptions        []listenerOptionView
@@ -326,7 +356,7 @@ func New(options Options) (http.Handler, error) {
 	if err != nil {
 		return nil, err
 	}
-	templates, err := template.ParseFS(webFiles, "templates/*.html")
+	templates, err := parseLocalizedTemplates()
 	if err != nil {
 		return nil, fmt.Errorf("parse web UI templates: %w", err)
 	}
@@ -343,32 +373,49 @@ func New(options Options) (http.Handler, error) {
 		versionLabel = "development"
 	}
 	versionDigest := sha256.Sum256([]byte(versionLabel))
+	geositeContent := options.GeositeContent
+	if geositeContent == nil {
+		geositeContent = &http.Client{
+			Timeout: 20 * time.Second,
+			CheckRedirect: func(request *http.Request, _ []*http.Request) error {
+				if request.URL.Scheme != "https" || request.URL.Hostname() != "raw.githubusercontent.com" {
+					return errors.New("Geosite content redirected to an untrusted host")
+				}
+				return nil
+			},
+		}
+	}
 
 	handler := &Handler{
-		registry:        options.Registry,
-		sessions:        options.Sessions,
-		controller:      options.Controller,
-		access:          options.Access,
-		releases:        options.Releases,
-		singBoxReleases: options.SingBoxReleases,
-		geositeRuleSets: options.GeositeRuleSets,
-		geoipRuleSets:   options.GeoipRuleSets,
-		masterUpdater:   options.MasterUpdater,
-		version:         versionLabel,
-		publicURL:       public.origin,
-		publicScheme:    public.scheme,
-		publicHost:      public.hostname,
-		publicPort:      public.port,
-		masterAddress:   net.JoinHostPort(public.hostname, public.port),
-		assetVersion:    base64.RawURLEncoding.EncodeToString(versionDigest[:12]),
-		logger:          logger,
-		now:             now,
-		proxyNodes:      options.ProxyNodes,
-		proxyDeployer:   options.ProxyDeployer,
-		proxyUserSync:   options.ProxyUserSync,
-		templates:       templates,
-		mux:             http.NewServeMux(),
-		results:         make(map[string]enrollmentResult),
+		registry:             options.Registry,
+		sessions:             options.Sessions,
+		controller:           options.Controller,
+		access:               options.Access,
+		releases:             options.Releases,
+		singBoxReleases:      options.SingBoxReleases,
+		geositeRuleSets:      options.GeositeRuleSets,
+		geoipRuleSets:        options.GeoipRuleSets,
+		geositeContent:       geositeContent,
+		masterUpdater:        options.MasterUpdater,
+		version:              versionLabel,
+		publicURL:            public.origin,
+		publicScheme:         public.scheme,
+		publicHost:           public.hostname,
+		publicPort:           public.port,
+		masterAddress:        net.JoinHostPort(public.hostname, public.port),
+		assetVersion:         base64.RawURLEncoding.EncodeToString(versionDigest[:12]),
+		logger:               logger,
+		now:                  now,
+		proxyNodes:           options.ProxyNodes,
+		proxyDeployer:        options.ProxyDeployer,
+		proxyUserSync:        options.ProxyUserSync,
+		ruleSetCache:         newRuleSetCache(),
+		ruleSetLimiter:       newFixedWindowLimiter(publicRuleSetRequestsPerMinute, time.Minute),
+		ruleSetGlobalLimiter: newFixedWindowLimiter(publicRuleSetGlobalPerMinute, time.Minute),
+		subscriptionCache:    newRenderedSubscriptionCache(),
+		templates:            templates,
+		mux:                  http.NewServeMux(),
+		results:              make(map[string]enrollmentResult),
 		sessionAgentUpdate: make(
 			map[[sha256.Size]byte]map[string]string,
 		),
@@ -380,6 +427,7 @@ func New(options Options) (http.Handler, error) {
 func (h *Handler) routes() {
 	h.mux.HandleFunc("GET /healthz", h.health)
 	h.mux.HandleFunc("GET /assets/app.css", h.asset("assets/app.css", "text/css; charset=utf-8"))
+	h.mux.HandleFunc("GET /assets/i18n.js", h.asset("assets/i18n.js", "text/javascript; charset=utf-8"))
 	h.mux.HandleFunc("GET /assets/app.js", h.asset("assets/app.js", "text/javascript; charset=utf-8"))
 	h.mux.HandleFunc(
 		"GET /assets/dropdown.js",
@@ -390,6 +438,7 @@ func (h *Handler) routes() {
 		h.asset("assets/config-editor.js", "text/javascript; charset=utf-8"),
 	)
 	h.mux.HandleFunc("GET /login", h.loginPage)
+	h.mux.HandleFunc("GET /language/{locale}", h.changeLanguage)
 	h.mux.HandleFunc("POST /login", h.login)
 	h.mux.HandleFunc("POST /logout", h.logout)
 	h.mux.HandleFunc("GET /servers", h.serversPage)
@@ -399,6 +448,7 @@ func (h *Handler) routes() {
 	h.mux.HandleFunc("POST /proxy-nodes/deploy", h.deployProxyNodes)
 	h.mux.HandleFunc("GET /proxy-nodes/deployment-status", h.proxyDeploymentStatus)
 	h.mux.HandleFunc("GET /proxy-nodes/{proxy_id}/manage", h.proxyNodePage)
+	h.mux.HandleFunc("GET /proxy-nodes/{proxy_id}/users", h.proxyNodeUsersPage)
 	h.mux.HandleFunc("POST /proxy-nodes/{proxy_id}/rename", h.renameProxyNode)
 	h.mux.HandleFunc("POST /proxy-nodes/{proxy_id}/delete", h.deleteProxyNode)
 	h.mux.HandleFunc("POST /proxy-nodes/{proxy_id}/deploy", h.deployProxyNodes)
@@ -411,20 +461,22 @@ func (h *Handler) routes() {
 	h.mux.HandleFunc("POST /proxy-nodes/{proxy_id}/users/{user_id}/remove", h.removeProxyNodeUser)
 	h.mux.HandleFunc("GET /proxy-nodes/{proxy_id}/entrance", h.proxyEntrancePage)
 	h.mux.HandleFunc("POST /proxy-nodes/{proxy_id}/entrance", h.updateProxyEntrance)
-	h.mux.HandleFunc("GET /proxy-nodes/{proxy_id}/rule-sets", h.proxyRuleSetsPage)
-	h.mux.HandleFunc("POST /proxy-nodes/{proxy_id}/rule-sets", h.upsertProxyRuleSet)
-	h.mux.HandleFunc("POST /proxy-nodes/{proxy_id}/rule-sets/delete", h.deleteProxyRuleSet)
 	h.mux.HandleFunc("GET /proxy-nodes/{proxy_id}/hops/{hop_id}", h.proxyHopPage)
 	h.mux.HandleFunc("POST /proxy-nodes/{proxy_id}/hops/{hop_id}", h.updateProxyHop)
 	h.mux.HandleFunc("POST /proxy-nodes/{proxy_id}/hops/{hop_id}/links", h.addProxyLink)
+	h.mux.HandleFunc("POST /proxy-nodes/{proxy_id}/hops/{hop_id}/block-rules", h.addProxyBlockRule)
 	h.mux.HandleFunc("POST /proxy-nodes/{proxy_id}/hops/{hop_id}/links/delete", h.deleteProxyLink)
 	h.mux.HandleFunc("GET /proxy-nodes/{proxy_id}/links/{link_id}", h.proxyLinkPage)
 	h.mux.HandleFunc("POST /proxy-nodes/{proxy_id}/links/{link_id}", h.updateProxyLink)
+	h.mux.HandleFunc("POST /proxy-nodes/{proxy_id}/links/{link_id}/destination", h.updateProxyLinkDestination)
 	h.mux.HandleFunc("POST /proxy-nodes/{proxy_id}/links/{link_id}/rules", h.addProxyRule)
 	h.mux.HandleFunc("POST /proxy-nodes/{proxy_id}/links/{link_id}/rules/{rule_id}", h.updateProxyRule)
 	h.mux.HandleFunc("POST /proxy-nodes/{proxy_id}/links/{link_id}/rules/delete", h.deleteProxyRule)
 	h.mux.HandleFunc("POST /proxy-nodes/{proxy_id}/links/{link_id}/rules/move", h.moveProxyRule)
 	h.mux.HandleFunc("POST /proxy-nodes/{proxy_id}/hops/{hop_id}/rules/reorder", h.reorderProxyRules)
+	h.mux.HandleFunc("POST /proxy-nodes/{proxy_id}/block-rules/{rule_id}", h.updateProxyBlockRule)
+	h.mux.HandleFunc("POST /proxy-nodes/{proxy_id}/block-rules/{rule_id}/delete", h.deleteProxyBlockRule)
+	h.mux.HandleFunc("POST /proxy-nodes/{proxy_id}/block-rules/{rule_id}/move", h.moveProxyBlockRule)
 	h.mux.HandleFunc("POST /proxy-nodes/{proxy_id}/links/{link_id}/fallback", h.updateProxyLinkFallback)
 	h.mux.HandleFunc("POST /proxy-nodes/{proxy_id}/links/{link_id}/move", h.moveProxyLink)
 	h.mux.HandleFunc("POST /proxy-nodes/{proxy_id}/hops/{hop_id}/final", h.updateProxyFinal)
@@ -434,8 +486,23 @@ func (h *Handler) routes() {
 	h.mux.HandleFunc("POST /users/{user_id}/access", h.addUserProxyAccess)
 	h.mux.HandleFunc("POST /users/{user_id}/access/remove", h.removeUserProxyAccess)
 	h.mux.HandleFunc("POST /users/{user_id}/access/update", h.updateUserProxyAccess)
+	h.mux.HandleFunc("POST /users/{user_id}/credentials/reset", h.resetEndUserCredentials)
 	h.mux.HandleFunc("POST /users/{user_id}/rename", h.renameEndUser)
 	h.mux.HandleFunc("POST /users/{user_id}/delete", h.deleteEndUser)
+	h.mux.HandleFunc("GET /users/{user_id}/subscription", h.userSubscriptionRoot)
+	h.mux.HandleFunc("GET /users/{user_id}/subscription/nodes", h.userSubscriptionNodesPage)
+	h.mux.HandleFunc("GET /users/{user_id}/subscription/rules", h.userSubscriptionRulesPage)
+	h.mux.HandleFunc("POST /users/{user_id}/subscription/token", h.rotateUserSubscriptionToken)
+	h.mux.HandleFunc("POST /users/{user_id}/subscription/reset", h.resetUserSubscription)
+	h.mux.HandleFunc("POST /users/{user_id}/subscription/revoke", h.revokeUserSubscriptionToken)
+	h.mux.HandleFunc("GET /subscriptions", h.subscriptionPolicyPage)
+	h.mux.HandleFunc("POST /subscriptions/default", h.updateSubscriptionDefault)
+	h.mux.HandleFunc("POST /subscriptions/rules", h.addSubscriptionRule)
+	h.mux.HandleFunc("POST /subscriptions/rules/{rule_id}", h.updateSubscriptionRule)
+	h.mux.HandleFunc("POST /subscriptions/rules/{rule_id}/delete", h.deleteSubscriptionRule)
+	h.mux.HandleFunc("POST /subscriptions/rules/{rule_id}/move", h.moveSubscriptionRule)
+	h.mux.HandleFunc("GET /subscription-rule-sets/{kind}/{name}", h.publicSurgeRuleSet)
+	h.mux.HandleFunc("GET /subscriptions/{token}/{format}", h.publicUserSubscription)
 	h.mux.HandleFunc("GET /servers/content", h.serversContent)
 	h.mux.HandleFunc("GET /pool", h.poolPage)
 	h.mux.HandleFunc("GET /pool/content", h.poolContent)
@@ -489,6 +556,7 @@ func (h *Handler) routes() {
 
 func (h *Handler) ServeHTTP(response http.ResponseWriter, request *http.Request) {
 	setSecurityHeaders(response.Header())
+	response.Header().Set("Content-Language", localeForRequest(request))
 	if request.URL.Path != "/healthz" && !h.validRequestHost(request.Host) {
 		http.Error(response, "request host is not configured", http.StatusMisdirectedRequest)
 		return
@@ -893,7 +961,7 @@ func (h *Handler) deploymentStatus(
 		Diagnostic  string `json:"diagnostic,omitempty"`
 	}{
 		Pending:     pending,
-		StatusLabel: deploymentStatusLabel(view),
+		StatusLabel: localizedText(response.Header().Get("Content-Language"), deploymentStatusLabel(view)),
 		StatusClass: deploymentStatusClass(view),
 		Diagnostic:  deploymentDiagnostic(view),
 	}); err != nil {
@@ -2716,11 +2784,18 @@ func (h *Handler) render(
 	templateName string,
 	data pageData,
 ) {
+	locale := normalizeLocale(response.Header().Get("Content-Language"))
+	data.Locale = locale
 	data.AssetVersion = h.assetVersion
 	data.PublicURL = h.publicURL
 	data.MasterAddress = h.masterAddress
 	var rendered bytes.Buffer
-	if err := h.templates.ExecuteTemplate(&rendered, templateName, data); err != nil {
+	templates := h.templates[locale]
+	if templates == nil {
+		templates = h.templates[localeEnglish]
+	}
+	localizePageData(locale, &data)
+	if err := templates.ExecuteTemplate(&rendered, templateName, data); err != nil {
 		h.logger.Error("render web UI", "template", templateName, "error", err)
 		http.Error(response, "interface could not be rendered", http.StatusInternalServerError)
 		return

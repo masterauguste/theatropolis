@@ -1,5 +1,7 @@
 "use strict";
 
+const t = (text) => window.theatropolisText?.(text) || text;
+
 const configTextarea = document.getElementById("config-json");
 const configurationForm = configTextarea?.closest("form");
 const configurationEditor = configurationForm?.closest(".configuration-panel");
@@ -56,7 +58,7 @@ if (configTextarea && configurationForm && configurationEditor) {
     for (const [name, count] of Object.entries(counts)) {
       const output = configurationEditor.querySelector(`[data-resource-count="${name}"]`);
       if (output) {
-        output.textContent = `${count} configured`;
+        output.textContent = window.theatropolisLocale === "zh-CN" ? `已配置 ${count} 项` : `${count} configured`;
       }
     }
   }
@@ -75,8 +77,7 @@ if (configTextarea && configurationForm && configurationEditor) {
       if (dialog instanceof HTMLDialogElement && !dialog.open) {
         dialog.showModal();
       }
-      control.focus();
-      control.reportValidity();
+      window.theatropolisShowValidation?.(control);
       return true;
     }
     return false;
@@ -247,7 +248,7 @@ if (configTextarea && configurationForm && configurationEditor) {
     if (!editor || !button) return;
     card.classList.toggle("is-editing", editing);
     editor.hidden = !editing;
-    button.textContent = editing ? "Done" : "Edit";
+    button.textContent = editing ? t("Done") : t("Edit");
     button.setAttribute("aria-expanded", editing ? "true" : "false");
   }
 
@@ -285,8 +286,8 @@ if (configTextarea && configurationForm && configurationEditor) {
       // Empty values are left to the required attribute, if any.
       input.setCustomValidity(!value || base64ByteLength(value) === expected ? "" : `${label}: ${hint}`);
     };
-    check(serverKey, "Server key");
-    for (const input of userKeys) check(input, "User key");
+    check(serverKey, t("Server key"));
+    for (const input of userKeys) check(input, t("User key"));
   }
 
   function updateInboundVisibility(card) {
@@ -303,8 +304,8 @@ if (configTextarea && configurationForm && configurationEditor) {
     card.querySelector("[data-obfs-password-field]").hidden = !obfsEnabled;
     field(card, "inbound", "obfs_password").required = obfsEnabled;
     card.querySelector("[data-users-hint]").textContent = type === "shadowsocks"
-      ? "Optional — the server key alone accepts one user. Keys are base64 PSKs sized to the method."
-      : "At least one user is required.";
+      ? t("Optional — the server key alone accepts one user. Keys are base64 PSKs sized to the method.")
+      : t("At least one user is required.");
     const tlsFields = card.querySelector("[data-tls-fields]");
     tlsFields.hidden = type === "shadowsocks";
     for (const element of card.querySelectorAll("[data-acme-field]")) {
@@ -327,7 +328,7 @@ if (configTextarea && configurationForm && configurationEditor) {
     }
     const serverPassword = field(card, "inbound", "password");
     serverPassword.required = type === "shadowsocks";
-    const title = field(card, "inbound", "tag").value || "New inbound";
+    const title = field(card, "inbound", "tag").value || t("New inbound");
     const port = field(card, "inbound", "listen_port").value || "no port";
     const users = card.querySelectorAll("[data-user-row]").length;
     updateCardSummary(card, title, `${type} · ${port} · ${users} user${users === 1 ? "" : "s"}`);
@@ -420,8 +421,8 @@ if (configTextarea && configurationForm && configurationEditor) {
 
   function destinationOptions() {
     const options = [
-      { value: "builtin/direct", label: "Direct" },
-      { value: "builtin/reject", label: "Reject" },
+      { value: "builtin/direct", label: t("Direct") },
+      { value: "builtin/reject", label: t("Reject") },
     ];
     for (const entry of poolOptionValues) {
       const detail = [entry.type, entry.port ? `port ${entry.port}` : ""].filter(Boolean).join(" · ");
@@ -465,7 +466,7 @@ if (configTextarea && configurationForm && configurationEditor) {
     if (selectedValue && !options.some((entry) => entry.value === selectedValue)) {
       const saved = document.createElement("option");
       saved.value = selectedValue;
-      saved.textContent = "Saved pool destination";
+      saved.textContent = t("Saved pool destination");
       select.append(saved);
     }
     select.value = selectedValue || options[0]?.value || "";
@@ -502,7 +503,7 @@ if (configTextarea && configurationForm && configurationEditor) {
         poolOptionState = "error";
         poolRoutingWarning.hidden = false;
         poolRoutingWarning.textContent =
-          "The fleet outbound pool is unavailable. Direct and Reject remain usable.";
+          t("The fleet outbound pool is unavailable. Direct and Reject remain usable.");
       })
       .finally(refreshDestinationOptions);
   }
@@ -563,32 +564,32 @@ if (configTextarea && configurationForm && configurationEditor) {
   };
 
   const matchLabels = {
-    protocol: ["Protocols", "Filter protocols or type a value…"],
-    network: ["Networks", "Filter networks…"],
-    domain: ["Exact domains", "Type a domain and press Enter…"],
-    domain_suffix: ["Domain suffixes", "Type a suffix and press Enter…"],
-    domain_keyword: ["Domain keywords", "Type a keyword and press Enter…"],
-    domain_regex: ["Domain expressions", "Type an expression and press Enter…"],
-    ip_cidr: ["IP addresses or CIDRs", "Type an IP or CIDR and press Enter…"],
-    geosite: ["Geosite rule sets", "Filter geosite rule sets…"],
-    geoip: ["GeoIP rule sets", "Filter GeoIP rule sets…"],
-    rule_set: ["Custom rule-set tags", "Type a rule-set tag and press Enter…"],
+    protocol: [t("Protocols"), t("Filter protocols or type a value…")],
+    network: [t("Networks"), t("Filter networks…")],
+    domain: [t("Exact domains"), t("Type a domain and press Enter…")],
+    domain_suffix: [t("Domain suffixes"), t("Type a suffix and press Enter…")],
+    domain_keyword: [t("Domain keywords"), t("Type a keyword and press Enter…")],
+    domain_regex: [t("Domain expressions"), t("Type an expression and press Enter…")],
+    ip_cidr: [t("IP addresses or CIDRs"), t("Type an IP or CIDR and press Enter…")],
+    geosite: [t("Geosite rule sets"), t("Filter geosite rule sets…")],
+    geoip: [t("GeoIP rule sets"), t("Filter GeoIP rule sets…")],
+    rule_set: [t("Custom rule-set tags"), t("Type a rule-set tag and press Enter…")],
   };
 
   function updateMatchHint(card) {
     const type = field(card, "route", "match_type").value;
     const hint = card.querySelector("[data-route-match-hint]");
     if ((type === "geosite" || type === "geoip") && geoOptionState.get(type) === "error") {
-      hint.textContent = "The cached catalog is unavailable; type a valid rule-set name manually.";
+      hint.textContent = t("The cached catalog is unavailable; type a valid rule-set name manually.");
       return;
     }
     hint.textContent = type === "domain" || type === "domain_suffix" ||
       type === "domain_keyword" || type === "domain_regex" || type === "ip_cidr" ||
       type === "rule_set"
-      ? "Press Enter after each value. Multiple values in one rule use OR semantics."
+      ? t("Press Enter after each value. Multiple values in one rule use OR semantics.")
       : type === "geosite" || type === "geoip"
-        ? "Choose one rule set."
-        : "Choose one or more values. Multiple values in one rule use OR semantics.";
+        ? t("Choose one rule set.")
+        : t("Choose one or more values. Multiple values in one rule use OR semantics.");
   }
 
   function renderMatchChips(card) {
@@ -666,7 +667,7 @@ if (configTextarea && configurationForm && configurationEditor) {
     if (matches.length === 0 && filterValue) {
       const empty = document.createElement("span");
       empty.className = "geo-option geo-option--empty";
-      empty.textContent = "Press Enter to add this value";
+      empty.textContent = t("Press Enter to add this value");
       list.append(empty);
     }
   }
@@ -697,7 +698,9 @@ if (configTextarea && configurationForm && configurationEditor) {
     const bounds = trigger.getBoundingClientRect();
     const viewportWidth = document.documentElement.clientWidth;
     const margin = 8;
-    const gap = 0;
+    const gap = Number.parseFloat(
+      getComputedStyle(document.documentElement).getPropertyValue("--select-menu-gap"),
+    ) || 6;
     const width = Math.max(0, Math.min(bounds.width, viewportWidth - margin * 2));
     const availableBelow = window.innerHeight - bounds.bottom - margin;
     const availableAbove = bounds.top - margin;
@@ -794,7 +797,7 @@ if (configTextarea && configurationForm && configurationEditor) {
     select.required = type !== "all";
     if (type === "all") return;
     card.querySelector("[data-route-scope-label]").textContent =
-      type === "inbound" ? "Inbound" : "User";
+      type === "inbound" ? t("Inbound") : t("User");
     const values = new Set();
     for (const inbound of inboundList.querySelectorAll("[data-inbound-card]")) {
       if (type === "inbound") {
@@ -868,7 +871,7 @@ if (configTextarea && configurationForm && configurationEditor) {
     if (type === "none") {
       setMatchOptionsOpen(card, false);
     }
-    const labels = matchLabels[type] || ["Match values", "Type a value and press Enter…"];
+    const labels = matchLabels[type] || [t("Match values"), t("Type a value and press Enter…")];
     card.querySelector("[data-route-match-label]").textContent = labels[0];
     card.querySelector("[data-route-match-filter]").placeholder = labels[1];
     if (type === "geosite" || type === "geoip") {
@@ -918,7 +921,7 @@ if (configTextarea && configurationForm && configurationEditor) {
       delete inbound[key];
     }
     if (inbound.listen_port === 80) {
-      throw new Error("Port 80 is reserved for ACME HTTP-01 and cannot be used by a proxy inbound.");
+      throw new Error(t("Port 80 is reserved for ACME HTTP-01 and cannot be used by a proxy inbound."));
     }
     if ((type === "anytls" || type === "hysteria2") && inbound.users.length === 0) {
       throw new Error(`${inbound.tag || type} requires at least one user.`);
@@ -1014,7 +1017,7 @@ if (configTextarea && configurationForm && configurationEditor) {
     if (scopeType === "auth_user" && scopeValue) rule.auth_user = [scopeValue];
     const values = matchSelection(card);
     if (matchType !== "none" && values.length === 0) {
-      throw new Error("Every routing rule needs at least one match value.");
+      throw new Error(t("Every routing rule needs at least one match value."));
     }
     if (matchType === "geosite" || matchType === "geoip") {
       // geosite/geoip are UI-level match types; the JSON field stays rule_set.
@@ -1137,13 +1140,15 @@ if (configTextarea && configurationForm && configurationEditor) {
     configTextarea.value = `${JSON.stringify(next, null, 2)}\n`;
     configTextarea.setCustomValidity("");
     documentModel = next;
-    summary.textContent = `${next.inbounds.length} inbound(s), ${next.outbounds.length} outbound(s), ${managedRules.length} rule(s)`;
+    summary.textContent = window.theatropolisLocale === "zh-CN"
+      ? `${next.inbounds.length} 个入站，${next.outbounds.length} 个出口，${managedRules.length} 条规则`
+      : `${next.inbounds.length} inbound(s), ${next.outbounds.length} outbound(s), ${managedRules.length} rule(s)`;
     return next;
   }
 
   function renderModel(model) {
     if (!objectValue(model)) {
-      throw new Error("The configuration root must be a JSON object.");
+      throw new Error(t("The configuration root must be a JSON object."));
     }
     documentModel = clone(model);
     inboundList.replaceChildren();
@@ -1181,7 +1186,9 @@ if (configTextarea && configurationForm && configurationEditor) {
     const visibleRouteRules = listValue(route.rules).filter(
       (rule) => rule?.action !== "sniff" && rule?.action !== "resolve",
     ).length;
-    summary.textContent = `${listValue(documentModel.inbounds).length} inbound(s), ${listValue(documentModel.outbounds).length} outbound(s), ${visibleRouteRules} rule(s)`;
+    summary.textContent = window.theatropolisLocale === "zh-CN"
+      ? `${listValue(documentModel.inbounds).length} 个入站，${listValue(documentModel.outbounds).length} 个出口，${visibleRouteRules} 条规则`
+      : `${listValue(documentModel.inbounds).length} inbound(s), ${listValue(documentModel.outbounds).length} outbound(s), ${visibleRouteRules} rule(s)`;
     updateResourceCounts();
   }
 
@@ -1423,12 +1430,12 @@ if (configTextarea && configurationForm && configurationEditor) {
     if (!advancedPanel.hidden) {
       try {
         const parsed = JSON.parse(configTextarea.value);
-        if (!objectValue(parsed)) throw new Error("The configuration root must be a JSON object.");
+        if (!objectValue(parsed)) throw new Error(t("The configuration root must be a JSON object."));
         configTextarea.setCustomValidity("");
       } catch (error) {
         event.preventDefault();
         configTextarea.setCustomValidity(error.message);
-        configTextarea.reportValidity();
+        window.theatropolisShowValidation?.(configTextarea);
       }
       return;
     }

@@ -5,6 +5,7 @@
   <meta name="color-scheme" content="light">
   <title>{{.Title}} · Theatropolis</title>
   <link rel="stylesheet" href="/assets/app.css?v={{.AssetVersion}}">
+  <script src="/assets/i18n.js?v={{.AssetVersion}}" defer></script>
   <script src="/assets/dropdown.js?v={{.AssetVersion}}" defer></script>
 </head>
 {{end}}
@@ -12,15 +13,15 @@
 {{define "membership-plan-fields"}}
 <div class="membership-plan-fields">
   <label class="field"><span>Monthly traffic quota</span><select name="quota_mode" required><option value="unlimited"{{if eq .QuotaMode "unlimited"}} selected{{end}}>Unlimited</option><option value="limited"{{if eq .QuotaMode "limited"}} selected{{end}}>Set a monthly quota</option></select></label>
-  <label class="field"><span>Quota (GiB)</span><input type="number" name="monthly_quota_gib" min="1" max="1000000" step="1" value="{{.QuotaGiB}}" placeholder="100"><small>Used when “Set a monthly quota” is selected.</small></label>
+  <label class="field"><span>Quota (GiB)</span><input type="number" name="monthly_quota_gib" min="1" max="1000000" step="1" value="{{.QuotaGiB}}" placeholder="100"></label>
   <label class="field"><span>Subscription expiration</span><select name="expiration_mode" required><option value="none"{{if eq .ExpirationMode "none"}} selected{{end}}>No expiration</option><option value="finite"{{if eq .ExpirationMode "finite"}} selected{{end}}>Expire after a duration</option></select></label>
-  <div class="subscription-duration-fields"><label class="field"><span>Duration</span><input type="number" name="subscription_value" min="1" max="52560000" step="1" value="{{.SubscriptionValue}}"></label><label class="field"><span>Unit</span><select name="subscription_unit"><option value="minutes"{{if eq .SubscriptionUnit "minutes"}} selected{{end}}>Minutes</option><option value="hours"{{if eq .SubscriptionUnit "hours"}} selected{{end}}>Hours</option><option value="days"{{if eq .SubscriptionUnit "days"}} selected{{end}}>Days</option><option value="months"{{if eq .SubscriptionUnit "months"}} selected{{end}}>Calendar months</option></select></label><small>Used when “Expire after a duration” is selected. Calendar-month grants remain valid through the corresponding end date.</small></div>
+  <div class="subscription-duration-fields"><label class="field"><span>Duration</span><input type="number" name="subscription_value" min="1" max="52560000" step="1" value="{{.SubscriptionValue}}"></label><label class="field"><span>Unit</span><select name="subscription_unit"><option value="minutes"{{if eq .SubscriptionUnit "minutes"}} selected{{end}}>Minutes</option><option value="hours"{{if eq .SubscriptionUnit "hours"}} selected{{end}}>Hours</option><option value="days"{{if eq .SubscriptionUnit "days"}} selected{{end}}>Days</option><option value="months"{{if eq .SubscriptionUnit "months"}} selected{{end}}>Calendar months</option></select></label></div>
 </div>
 {{end}}
 
 {{define "brand"}}
 <a class="brand" href="/servers" aria-label="Theatropolis servers">
-  <span class="brand__mark" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M5 20 V8.5 Q12 4 19 8.5 V20"/><path d="M3 20 H21"/><path d="M5 8.5 Q8.5 11 12 8.5 Q15.5 11 19 8.5"/></svg></span>
+  <span class="brand__mark" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="5" cy="12" r="2"/><circle cx="19" cy="6" r="2"/><circle cx="19" cy="18" r="2"/><path d="M7 12h3.5c4.5 0 3.5-6 6.5-6M10.5 12H13c3 0 2 6 4 6"/></svg></span>
   <strong>Theatropolis</strong>
 </a>
 {{end}}
@@ -33,9 +34,15 @@
       <a href="/servers"{{if eq .ActiveNav "servers"}} class="is-active" aria-current="page"{{end}}>Servers</a>
       <a href="/proxy-nodes"{{if eq .ActiveNav "proxy-nodes"}} class="is-active" aria-current="page"{{end}}>Proxy Nodes</a>
       <a href="/users"{{if eq .ActiveNav "users"}} class="is-active" aria-current="page"{{end}}>Users</a>
+	  <a href="/subscriptions"{{if eq .ActiveNav "subscriptions"}} class="is-active" aria-current="page"{{end}}>Subscriptions</a>
       <a href="/settings"{{if eq .ActiveNav "settings"}} class="is-active" aria-current="page"{{end}}>Settings</a>
     </nav>
-    <form action="/logout" method="post">
+    {{if eq .Locale "zh-CN"}}
+    <a class="language-switch" href="/language/en" hreflang="en" lang="en" data-language-option="en">English</a>
+    {{else}}
+    <a class="language-switch" href="/language/zh-CN" hreflang="zh-CN" lang="zh-CN" data-language-option="zh-CN">中文</a>
+    {{end}}
+    <form novalidate action="/logout" method="post">
       <input type="hidden" name="csrf_token" value="{{.CSRFToken}}">
       <button class="button button--secondary button--small" type="submit">Sign out</button>
     </form>
