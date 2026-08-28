@@ -8,7 +8,7 @@ Security and domain rules in the Go implementation remain authoritative.
 | Capability | Canonical owner | Source of truth | Allowed variants | Verification |
 |---|---|---|---|---|
 | Table Selection | Semantic table and labeled row controls | Server-rendered templates | Responsive row cards | Keyboard and narrow-viewport browser pass |
-| Select/Listbox | Native select progressively enhanced by `dropdown.js` | Native select value and form validation | Explicit `data-native-select` escape hatch | Keyboard, filter, scroll, and form submission tests |
+| Select/Listbox | Native select progressively enhanced by `dropdown.js` | Native select value and form validation | Explicit `data-native-select` escape hatch | Trigger geometry, keyboard, in-menu filter, scroll, and form submission tests |
 | Date | Native date/time control | Server parser and fixed UTC+8 calendar rules | Date, time, and datetime-local | Locale and boundary tests |
 | Form | Server-rendered form with CSRF and server validation | Go mutation handler | Inline, dialog, and destructive forms | Handler tests and duplicate-submit browser pass |
 | Scrollbar | Global token-driven scrollbar | `app.css` root tokens | Bounded dialog and list scrollports | Desktop, narrow, forced-colors, and keyboard pass |
@@ -101,7 +101,9 @@ Security and domain rules in the Go implementation remain authoritative.
 - Opening places focus inside the dialog; closing restores it to the invoker.
 - Authored select/listbox popovers remain above dialog footers, clamp to the
   viewport, scroll internally, and use the same visual and keyboard contract
-  in regular forms, listener editors, and routing editors.
+  in regular forms, listener editors, and routing editors. The closed trigger
+  only displays the committed selection and owns exactly its visible hit area;
+  opening the popover focuses a dedicated filter field above the option list.
 
 ## Mutation outcomes
 

@@ -5,6 +5,8 @@
     "Option": "选项",
     "Select an option": "请选择",
     "No matching options": "没有匹配的选项",
+    "Filter options": "筛选选项",
+    "Clear filter": "清除筛选",
     "Loading…": "正在加载…",
     "Retry": "重试",
     "Try again": "重试",

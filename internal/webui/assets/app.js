@@ -1021,7 +1021,7 @@ const focusInvalidControl = (control) => {
   const dialog = control.closest("dialog");
   if (dialog instanceof HTMLDialogElement && !dialog.open) dialog.showModal();
   const focusTarget = control instanceof HTMLSelectElement
-    ? control.closest(".select-box")?.querySelector(".select-box__input") || control
+    ? control.closest(".select-box")?.querySelector(".select-box__trigger") || control
     : control;
   focusTarget.focus({ preventScroll: true });
   focusTarget.scrollIntoView({ block: "center", behavior: "smooth" });

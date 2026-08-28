@@ -4048,6 +4048,23 @@ func TestAssetsAreSelfHostedAndSecurityHeadersApplyToErrors(t *testing.T) {
 			)
 		}
 		assertSecurityHeaders(t, response.Header())
+		if path == "/assets/dropdown.js" {
+			asset := response.Body.String()
+			for _, expected := range []string{
+				`trigger.setAttribute("role", "combobox")`,
+				`filter.className = "select-box__filter"`,
+				`const menuRoot = select.closest("dialog") || document.body`,
+				`const currentRoot = control.select.closest("dialog") || document.body`,
+				`filter.addEventListener("compositionstart"`,
+			} {
+				if !strings.Contains(asset, expected) {
+					t.Errorf("shared dropdown does not contain %q", expected)
+				}
+			}
+			if strings.Contains(asset, `input.className = "select-box__input"`) {
+				t.Fatal("shared dropdown still uses its closed trigger as the filter input")
+			}
+		}
 		if path == "/assets/config-editor.js" &&
 			!strings.Contains(response.Body.String(), `option.addEventListener("pointerdown"`) {
 			t.Fatal("config editor rule-set options do not commit before popover dismissal")

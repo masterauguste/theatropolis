@@ -3,6 +3,7 @@
 (() => {
   const t = (text) => window.theatropolisText?.(text) || text;
   const enhanced = new WeakMap();
+  const controls = new Set();
   let openControl = null;
   let menuSequence = 0;
 
@@ -13,6 +14,12 @@
 
   const selectedLabel = (control) =>
     control.select.selectedOptions[0]?.textContent || t("Select an option");
+
+  const svgPart = (name, attributes) => {
+    const element = document.createElementNS("http://www.w3.org/2000/svg", name);
+    for (const [key, value] of Object.entries(attributes)) element.setAttribute(key, value);
+    return element;
+  };
 
   const availableButtons = (control) =>
     control.optionButtons.filter((button) => !button.disabled && !button.hidden);
@@ -30,7 +37,7 @@
     );
     const availableBelow = window.innerHeight - bounds.bottom - gap - 12;
     const availableAbove = bounds.top - gap - 12;
-    const maxHeight = Math.max(0, Math.min(320, Math.max(availableBelow, availableAbove)));
+    const maxHeight = Math.max(0, Math.min(360, Math.max(availableBelow, availableAbove)));
     control.menu.style.width = `${menuWidth}px`;
     control.menu.style.maxHeight = `${maxHeight}px`;
     control.menu.style.left =
@@ -38,7 +45,7 @@
         viewportMargin,
         Math.min(bounds.left, viewportWidth - menuWidth - viewportMargin),
       )}px`;
-    if (availableBelow >= 150 || availableBelow >= availableAbove) {
+    if (availableBelow >= 180 || availableBelow >= availableAbove) {
       control.menu.style.top = `${bounds.bottom + gap}px`;
       control.menu.style.bottom = "auto";
     } else {
@@ -56,28 +63,24 @@
         !label.includes(normalized) &&
         !value.includes(normalized);
     }
-    const anyVisible = availableButtons(control).length > 0;
-    control.empty.hidden = anyVisible;
+    control.empty.hidden = availableButtons(control).length > 0;
+    control.clear.hidden = normalized.length === 0;
   };
 
   const closeDropdown = (control = openControl, restoreFocus = false) => {
     if (!control || !control.open) return;
     control.open = false;
-    control.input.setAttribute("aria-expanded", "false");
+    control.trigger.setAttribute("aria-expanded", "false");
     control.wrapper.classList.remove("is-open");
     if (typeof control.menu.hidePopover === "function" && control.menu.matches(":popover-open")) {
       control.menu.hidePopover();
     }
     control.menu.hidden = true;
-    control.input.value = selectedLabel(control);
+    control.filter.value = "";
     control.query = "";
     filterOptions(control);
     if (openControl === control) openControl = null;
-    if (restoreFocus) {
-      control.suppressFocusOpen = true;
-      control.input.focus();
-      control.suppressFocusOpen = false;
-    }
+    if (restoreFocus) control.trigger.focus();
   };
 
   const focusOption = (control, index) => {
@@ -88,28 +91,40 @@
     available[normalized].scrollIntoView({ block: "nearest" });
   };
 
-  const openDropdown = (control, focusSelected = false) => {
+  const focusFilter = (control) => {
+    window.requestAnimationFrame(() => {
+      if (!control.open) return;
+      control.filter.focus({ preventScroll: true });
+    });
+  };
+
+  const openDropdown = (control, focusTarget = "filter") => {
     if (control.select.disabled) return;
     if (!control.open) {
       closeDropdown();
+      const currentRoot = control.select.closest("dialog") || document.body;
+      if (control.menu.parentElement !== currentRoot) currentRoot.append(control.menu);
       control.open = true;
       openControl = control;
-      control.input.setAttribute("aria-expanded", "true");
+      control.trigger.setAttribute("aria-expanded", "true");
       control.wrapper.classList.add("is-open");
       control.menu.hidden = false;
+      control.filter.value = "";
       control.query = "";
+      filterOptions(control);
       if (typeof control.menu.showPopover === "function") {
         control.menu.showPopover();
       }
-      filterOptions(control);
       positionMenu(control);
     }
-    if (focusSelected) {
+    if (focusTarget === "selected") {
       const available = availableButtons(control);
       const selectedIndex = available.findIndex(
         (button) => button.getAttribute("aria-selected") === "true",
       );
       focusOption(control, selectedIndex < 0 ? 0 : selectedIndex);
+    } else if (focusTarget === "filter") {
+      focusFilter(control);
     }
   };
 
@@ -123,7 +138,7 @@
   };
 
   const rebuildOptions = (control) => {
-    control.menu.replaceChildren();
+    control.options.replaceChildren();
     control.optionButtons = Array.from(control.select.options, (option) => {
       const button = document.createElement("button");
       button.type = "button";
@@ -137,22 +152,23 @@
         event.stopPropagation();
         selectValue(control, option.value);
       });
-      control.menu.append(button);
+      control.options.append(button);
       return button;
     });
     control.empty = document.createElement("span");
     control.empty.className = "select-box__empty";
     control.empty.textContent = t("No matching options");
     control.empty.hidden = true;
-    control.menu.append(control.empty);
+    control.options.append(control.empty);
   };
 
   function syncControl(control, rebuild = true) {
     if (rebuild) rebuildOptions(control);
-    if (!control.open) control.input.value = selectedLabel(control);
-    control.input.disabled = control.select.disabled;
+    control.value.textContent = selectedLabel(control);
+    control.trigger.tabIndex = control.select.disabled ? -1 : 0;
+    control.trigger.setAttribute("aria-disabled", String(control.select.disabled));
     control.wrapper.classList.toggle("is-disabled", control.select.disabled);
-    control.input.setAttribute("aria-label", fieldLabel(control.select));
+    control.trigger.setAttribute("aria-label", fieldLabel(control.select));
     const invalid = control.select.getAttribute("aria-invalid") === "true";
     control.wrapper.classList.toggle("is-invalid", invalid);
     const selected = control.select.selectedOptions[0];
@@ -173,83 +189,136 @@
 
     const trigger = document.createElement("span");
     trigger.className = "select-box__trigger";
+    trigger.tabIndex = 0;
+    trigger.setAttribute("role", "combobox");
+    trigger.setAttribute("aria-haspopup", "listbox");
+    trigger.setAttribute("aria-expanded", "false");
 
-    const input = document.createElement("input");
-    input.type = "text";
-    input.className = "select-box__input";
-    input.autocomplete = "off";
-    input.spellcheck = false;
-    input.setAttribute("role", "combobox");
-    input.setAttribute("aria-autocomplete", "list");
-    input.setAttribute("aria-haspopup", "listbox");
-    input.setAttribute("aria-expanded", "false");
+    const value = document.createElement("span");
+    value.className = "select-box__value";
 
     const chevron = document.createElement("span");
     chevron.className = "select-box__chevron";
     chevron.setAttribute("aria-hidden", "true");
-    chevron.innerHTML =
-      '<svg viewBox="0 0 20 20"><path d="m5.5 7.5 4.5 4.5 4.5-4.5"/></svg>';
-    trigger.append(input, chevron);
+    const chevronSVG = svgPart("svg", { viewBox: "0 0 20 20" });
+    chevronSVG.append(svgPart("path", { d: "m5.5 7.5 4.5 4.5 4.5-4.5" }));
+    chevron.append(chevronSVG);
+    trigger.append(value, chevron);
 
     const menu = document.createElement("span");
     menu.className = "select-box__menu";
-    menu.id = `select-box-menu-${++menuSequence}`;
-    menu.setAttribute("role", "listbox");
     menu.setAttribute("popover", "manual");
     menu.hidden = true;
-    input.setAttribute("aria-controls", menu.id);
+
+    const search = document.createElement("span");
+    search.className = "select-box__search";
+    const searchIcon = document.createElement("span");
+    searchIcon.className = "select-box__search-icon";
+    searchIcon.setAttribute("aria-hidden", "true");
+    const searchSVG = svgPart("svg", { viewBox: "0 0 20 20" });
+    searchSVG.append(
+      svgPart("circle", { cx: "8.5", cy: "8.5", r: "5.25" }),
+      svgPart("path", { d: "m12.5 12.5 4 4" }),
+    );
+    searchIcon.append(searchSVG);
+    const filter = document.createElement("input");
+    filter.type = "search";
+    filter.className = "select-box__filter";
+    filter.autocomplete = "off";
+    filter.spellcheck = false;
+    filter.placeholder = t("Filter options");
+    filter.setAttribute("aria-label", t("Filter options"));
+    const clear = document.createElement("button");
+    clear.type = "button";
+    clear.className = "select-box__clear";
+    clear.setAttribute("aria-label", t("Clear filter"));
+    clear.textContent = "×";
+    clear.hidden = true;
+    search.append(searchIcon, filter, clear);
+
+    const options = document.createElement("span");
+    options.className = "select-box__options";
+    options.id = `select-box-menu-${++menuSequence}`;
+    options.setAttribute("role", "listbox");
+    trigger.setAttribute("aria-controls", options.id);
+    menu.append(search, options);
 
     select.before(wrapper);
     select.classList.add("select-box__native");
     select.tabIndex = -1;
-    wrapper.append(select, trigger, menu);
+    wrapper.append(select, trigger);
+    const menuRoot = select.closest("dialog") || document.body;
+    menuRoot.append(menu);
 
     const control = {
       select,
       wrapper,
       trigger,
-      input,
+      value,
       menu,
+      search,
+      filter,
+      clear,
+      options,
       empty: null,
       optionButtons: [],
       open: false,
-      suppressFocusOpen: false,
       query: "",
+      composing: false,
     };
     enhanced.set(select, control);
+    controls.add(control);
     syncControl(control);
 
-    trigger.addEventListener("pointerdown", (event) => {
-      if (control.select.disabled) return;
-      if (event.target === input) {
-        openDropdown(control);
-        return;
-      }
+    trigger.addEventListener("click", (event) => {
       event.preventDefault();
-      input.focus();
-      openDropdown(control);
+      event.stopPropagation();
+      if (control.select.disabled) return;
+      if (control.open) closeDropdown(control, true);
+      else openDropdown(control);
     });
-    input.addEventListener("focus", () => {
-      if (control.suppressFocusOpen) return;
-      openDropdown(control);
-      input.select();
-    });
-    input.addEventListener("input", () => {
-      openDropdown(control);
-      control.query = input.value;
-      filterOptions(control, control.query);
-    });
-    input.addEventListener("keydown", (event) => {
+    trigger.addEventListener("keydown", (event) => {
       if (event.key === "ArrowDown" || event.key === "ArrowUp") {
         event.preventDefault();
+        openDropdown(control, "selected");
+      } else if (event.key === "Enter" || event.key === " ") {
+        event.preventDefault();
         openDropdown(control);
+      } else if (event.key === "Escape") {
+        event.preventDefault();
+        closeDropdown(control, true);
+      } else if (
+        event.key.length === 1 &&
+        !event.altKey &&
+        !event.ctrlKey &&
+        !event.metaKey
+      ) {
+        event.preventDefault();
+        openDropdown(control);
+        control.filter.value = event.key;
+        control.query = event.key;
+        filterOptions(control, control.query);
+        focusFilter(control);
+      }
+    });
+    filter.addEventListener("compositionstart", () => {
+      control.composing = true;
+    });
+    filter.addEventListener("compositionend", () => {
+      control.composing = false;
+      control.query = filter.value;
+      filterOptions(control, control.query);
+    });
+    filter.addEventListener("input", () => {
+      if (control.composing) return;
+      control.query = filter.value;
+      filterOptions(control, control.query);
+    });
+    filter.addEventListener("keydown", (event) => {
+      if (event.isComposing || control.composing) return;
+      if (event.key === "ArrowDown" || event.key === "ArrowUp") {
+        event.preventDefault();
         focusOption(control, event.key === "ArrowDown" ? 0 : -1);
-      } else if (event.key === "Enter") {
-        const first = availableButtons(control)[0];
-        if (control.open && first) {
-          event.preventDefault();
-          first.click();
-        }
       } else if (event.key === "Escape") {
         event.preventDefault();
         closeDropdown(control, true);
@@ -257,7 +326,15 @@
         closeDropdown(control);
       }
     });
+    clear.addEventListener("click", (event) => {
+      event.preventDefault();
+      filter.value = "";
+      control.query = "";
+      filterOptions(control);
+      filter.focus();
+    });
     menu.addEventListener("keydown", (event) => {
+      if (event.target === filter) return;
       const available = availableButtons(control);
       const current = available.indexOf(document.activeElement);
       if (event.key === "ArrowDown" || event.key === "ArrowUp") {
@@ -271,13 +348,24 @@
         closeDropdown(control, true);
       } else if (event.key === "Tab") {
         closeDropdown(control);
+      } else if (
+        event.key.length === 1 &&
+        !event.altKey &&
+        !event.ctrlKey &&
+        !event.metaKey
+      ) {
+        event.preventDefault();
+        filter.focus();
+        filter.value = event.key;
+        control.query = event.key;
+        filterOptions(control, control.query);
       }
     });
     select.addEventListener("change", () => syncControl(control, false));
-    select.addEventListener("focus", () => input.focus());
+    select.addEventListener("focus", () => trigger.focus());
     select.addEventListener("invalid", () => {
       control.wrapper.classList.add("is-invalid");
-      window.setTimeout(() => input.focus(), 0);
+      window.setTimeout(() => trigger.focus(), 0);
     });
   };
 
@@ -312,6 +400,12 @@
       const control = enhanced.get(select);
       if (control) syncControl(control);
     }
+    for (const control of controls) {
+      if (control.select.isConnected && control.wrapper.isConnected) continue;
+      closeDropdown(control);
+      control.menu.remove();
+      controls.delete(control);
+    }
   });
   observer.observe(document.body, {
     childList: true,
@@ -322,7 +416,11 @@
   });
 
   document.addEventListener("pointerdown", (event) => {
-    if (openControl && !openControl.wrapper.contains(event.target)) {
+    if (
+      openControl &&
+      !openControl.wrapper.contains(event.target) &&
+      !openControl.menu.contains(event.target)
+    ) {
       closeDropdown();
     }
   });
@@ -346,12 +444,11 @@
   });
   window.addEventListener("resize", () => closeDropdown());
   window.addEventListener("scroll", (event) => {
-    // The menu is its own scroll container. Only close when the page or an
-    // ancestor scrolls and moves the trigger; scrolling a long option list
-    // must leave the dropdown open.
+    // The options list owns dropdown scrolling. Close only when another
+    // surface scrolls and moves the trigger.
     if (
       openControl &&
-      (event.target === openControl.menu || openControl.menu.contains(event.target))
+      (event.target === openControl.options || openControl.options.contains(event.target))
     ) {
       return;
     }

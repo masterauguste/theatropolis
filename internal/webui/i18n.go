@@ -53,6 +53,8 @@ var simplifiedChinese = map[string]string{
 	"This master still uses its existing access key. Rerun the master installer with": "此主控端仍在使用现有访问密钥。准备迁移时，请使用以下参数重新运行主控端安装程序：",
 	"when you are ready to migrate it.":                                               "。",
 	"No matching options":                                                             "没有匹配的选项",
+	"Filter options":                                                                  "筛选选项",
+	"Clear filter":                                                                    "清除筛选",
 	"Select an option":                                                                "请选择",
 	"Select a Geosite rule set":                                                       "请选择 Geosite 规则集",
 	"Subscription Addresses":                                                          "订阅连接地址",

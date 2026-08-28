@@ -94,9 +94,11 @@ compact sticky top bar with horizontal navigation and document scrolling.
   cobalt, secondary is white with a divider, and danger remains visually
   separated.
 - Inputs use white surfaces, a clear border, and a cobalt focus halo. Every
-  single-select uses the shared authored searchable dropdown: the field,
-  chevron, menu surface, selected state, disabled state, and focus treatment
-  stay identical across regular forms, dialogs, and routing editors.
+  single-select uses the shared authored dropdown: its closed trigger is a
+  selection-only control whose clickable boundary matches its painted border,
+  while a dedicated search field stays inside the open menu. Trigger, menu,
+  selected state, disabled state, and focus treatment remain identical across
+  regular forms, dialogs, and routing editors.
 - Tables use a subtle header surface and row dividers. Mobile rows retain the
   established stacked-card behavior.
 - Dialogs use a dim cool backdrop, a restrained shadow, stable header/footer,

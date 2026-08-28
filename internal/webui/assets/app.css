@@ -1773,6 +1773,7 @@ textarea[aria-invalid="true"]:focus {
 
 .select-box__trigger {
   display: flex;
+  box-sizing: border-box;
   width: 100%;
   min-height: var(--control-height);
   align-items: center;
@@ -1780,7 +1781,8 @@ textarea[aria-invalid="true"]:focus {
   background: var(--surface);
   border: 1px solid var(--control-border);
   border-radius: var(--radius-sm);
-  cursor: text;
+  cursor: pointer;
+  user-select: none;
   transition: border-color var(--ease), box-shadow var(--ease), background-color var(--ease);
 }
 
@@ -1809,26 +1811,16 @@ textarea[aria-invalid="true"]:focus {
   opacity: 0.7;
 }
 
-.select-box input.select-box__input,
-.select-box input.select-box__input:hover:not(:disabled):not([readonly]),
-.select-box input.select-box__input:focus {
-  width: 100%;
+.select-box__value {
+  display: block;
   min-width: 0;
   min-height: calc(var(--control-height) - 2px);
   padding: 0.55rem var(--control-padding-x);
   flex: 1;
-  color: inherit;
-  background: transparent;
-  border: 0;
-  border-radius: inherit;
-  box-shadow: none;
-  outline: none;
-}
-
-.select-box__input:disabled {
-  background: transparent;
-  cursor: not-allowed;
-  opacity: 1;
+  align-content: center;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .select-box__chevron,
@@ -1873,15 +1865,14 @@ textarea[aria-invalid="true"]:focus {
   position: fixed;
   z-index: 100;
   box-sizing: border-box;
+  display: flex;
+  flex-direction: column;
   max-width: calc(100dvw - 1rem);
-  max-height: min(20rem, calc(100dvh - 1.5rem));
+  max-height: min(22.5rem, calc(100dvh - 1.5rem));
   margin: 0;
   padding: 0.35rem;
-  overflow-x: hidden;
-  overflow-y: auto;
+  overflow: hidden;
   overscroll-behavior: contain;
-  scrollbar-gutter: stable;
-  -webkit-overflow-scrolling: touch;
   color: var(--ink-900);
   background: var(--surface);
   border: 1px solid var(--control-border);
@@ -1890,8 +1881,109 @@ textarea[aria-invalid="true"]:focus {
   animation: select-menu-enter 110ms ease-out;
 }
 
+.select-box__menu[hidden] {
+  display: none;
+}
+
 .select-box__menu::backdrop {
   background: transparent;
+}
+
+.select-box__search {
+  display: flex;
+  min-height: 2.55rem;
+  margin-bottom: 0.3rem;
+  flex: 0 0 auto;
+  align-items: center;
+  color: var(--ink-500);
+  background: var(--ink-050);
+  border: 1px solid var(--control-border);
+  border-radius: calc(var(--select-menu-radius) - 2px);
+  transition: border-color var(--ease), box-shadow var(--ease), background-color var(--ease);
+}
+
+.select-box__search:focus-within {
+  color: var(--accent-700);
+  background: var(--surface);
+  border-color: var(--accent-600);
+  box-shadow: var(--control-focus-ring);
+}
+
+.select-box__search-icon {
+  display: inline-flex;
+  width: 2.35rem;
+  flex: 0 0 auto;
+  align-items: center;
+  justify-content: center;
+  pointer-events: none;
+}
+
+.select-box__search-icon svg {
+  width: 1rem;
+  height: 1rem;
+  fill: none;
+  stroke: currentColor;
+  stroke-linecap: round;
+  stroke-width: 1.7;
+}
+
+input.select-box__filter,
+input.select-box__filter:hover:not(:disabled):not([readonly]),
+input.select-box__filter:focus {
+  width: 100%;
+  min-width: 0;
+  min-height: 2.45rem;
+  padding: 0.45rem 0;
+  flex: 1;
+  color: var(--ink-900);
+  background: transparent;
+  border: 0;
+  border-radius: 0;
+  box-shadow: none;
+  outline: none;
+}
+
+input.select-box__filter::-webkit-search-cancel-button {
+  display: none;
+}
+
+.select-box__clear {
+  display: inline-flex;
+  width: 2.4rem;
+  min-height: 2.4rem;
+  padding: 0;
+  flex: 0 0 auto;
+  align-items: center;
+  justify-content: center;
+  color: var(--ink-500);
+  background: transparent;
+  border: 0;
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+  font-size: 1.2rem;
+  line-height: 1;
+}
+
+.select-box__clear:hover,
+.select-box__clear:focus-visible {
+  color: var(--ink-900);
+  background: var(--ink-100);
+  outline: none;
+}
+
+.select-box__clear[hidden] {
+  display: none;
+}
+
+.select-box__options {
+  display: block;
+  min-height: 0;
+  overflow-x: hidden;
+  overflow-y: auto;
+  flex: 1 1 auto;
+  overscroll-behavior: contain;
+  scrollbar-gutter: stable;
+  -webkit-overflow-scrolling: touch;
 }
 
 .select-box__option {
