@@ -4056,6 +4056,10 @@ func TestAssetsAreSelfHostedAndSecurityHeadersApplyToErrors(t *testing.T) {
 				`const menuRoot = select.closest("dialog") || document.body`,
 				`const currentRoot = control.select.closest("dialog") || document.body`,
 				`filter.addEventListener("compositionstart"`,
+				`const optionBatchSize = 80`,
+				`const renderNextBatch =`,
+				`options.addEventListener("scroll"`,
+				`clearRenderedOptions(control);`,
 			} {
 				if !strings.Contains(asset, expected) {
 					t.Errorf("shared dropdown does not contain %q", expected)
@@ -4063,6 +4067,9 @@ func TestAssetsAreSelfHostedAndSecurityHeadersApplyToErrors(t *testing.T) {
 			}
 			if strings.Contains(asset, `input.className = "select-box__input"`) {
 				t.Fatal("shared dropdown still uses its closed trigger as the filter input")
+			}
+			if strings.Contains(asset, `button.addEventListener("click"`) {
+				t.Fatal("shared dropdown still installs one click listener per rendered option")
 			}
 		}
 		if path == "/assets/config-editor.js" &&

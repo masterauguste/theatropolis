@@ -8,7 +8,7 @@ Security and domain rules in the Go implementation remain authoritative.
 | Capability | Canonical owner | Source of truth | Allowed variants | Verification |
 |---|---|---|---|---|
 | Table Selection | Semantic table and labeled row controls | Server-rendered templates | Responsive row cards | Keyboard and narrow-viewport browser pass |
-| Select/Listbox | Native select progressively enhanced by `dropdown.js` | Native select value and form validation | Explicit `data-native-select` escape hatch | Trigger geometry, keyboard, in-menu filter, scroll, and form submission tests |
+| Select/Listbox | Native select progressively enhanced by `dropdown.js` | Native select value and form validation | Explicit `data-native-select` escape hatch | Trigger geometry, keyboard, in-menu filter, incremental large-list rendering, scroll, close cleanup, and form submission tests |
 | Date | Native date/time control | Server parser and fixed UTC+8 calendar rules | Date, time, and datetime-local | Locale and boundary tests |
 | Form | Server-rendered form with CSRF and server validation | Go mutation handler | Inline, dialog, and destructive forms | Handler tests and duplicate-submit browser pass |
 | Scrollbar | Global token-driven scrollbar | `app.css` root tokens | Bounded dialog and list scrollports | Desktop, narrow, forced-colors, and keyboard pass |

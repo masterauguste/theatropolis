@@ -4,6 +4,7 @@
   const t = (text) => window.theatropolisText?.(text) || text;
   const enhanced = new WeakMap();
   const controls = new Set();
+  const optionBatchSize = 80;
   let openControl = null;
   let menuSequence = 0;
 
@@ -54,17 +55,63 @@
     }
   };
 
-  const filterOptions = (control, query = "") => {
-    const normalized = query.trim().toLocaleLowerCase();
-    for (const button of control.optionButtons) {
-      const label = button.textContent.trim().toLocaleLowerCase();
-      const value = button.dataset.value.toLocaleLowerCase();
-      button.hidden = Boolean(normalized) &&
-        !label.includes(normalized) &&
-        !value.includes(normalized);
+  const readOptions = (control) => {
+    control.optionRecords = Array.from(control.select.options, (option) => ({
+      value: option.value,
+      label: option.textContent,
+      disabled: option.disabled,
+    }));
+  };
+
+  const clearRenderedOptions = (control) => {
+    control.options.replaceChildren();
+    control.empty.hidden = true;
+    control.optionButtons = [];
+    control.filteredRecords = [];
+    control.renderOffset = 0;
+  };
+
+  const renderNextBatch = (control, reset = false) => {
+    if (reset) {
+      clearRenderedOptions(control);
+      const normalized = control.query.trim().toLocaleLowerCase();
+      control.filteredRecords = control.optionRecords.filter((record) =>
+        !normalized ||
+        record.label.toLocaleLowerCase().includes(normalized) ||
+        record.value.toLocaleLowerCase().includes(normalized),
+      );
     }
-    control.empty.hidden = availableButtons(control).length > 0;
-    control.clear.hidden = normalized.length === 0;
+    if (control.filteredRecords.length === 0) {
+      control.empty.hidden = false;
+      control.options.append(control.empty);
+      return;
+    }
+    const records = control.filteredRecords.slice(
+      control.renderOffset,
+      control.renderOffset + optionBatchSize,
+    );
+    if (records.length === 0) return;
+    const fragment = document.createDocumentFragment();
+    for (const record of records) {
+      const button = document.createElement("button");
+      button.type = "button";
+      button.className = "select-box__option";
+      button.setAttribute("role", "option");
+      button.setAttribute("aria-selected", String(record.value === control.select.value));
+      button.dataset.value = record.value;
+      button.disabled = record.disabled;
+      button.textContent = record.label;
+      fragment.append(button);
+      control.optionButtons.push(button);
+    }
+    control.renderOffset += records.length;
+    control.options.append(fragment);
+  };
+
+  const filterOptions = (control, query = "") => {
+    control.query = query;
+    control.clear.hidden = query.length === 0;
+    if (control.open) renderNextBatch(control, true);
   };
 
   const closeDropdown = (control = openControl, restoreFocus = false) => {
@@ -78,7 +125,8 @@
     control.menu.hidden = true;
     control.filter.value = "";
     control.query = "";
-    filterOptions(control);
+    control.clear.hidden = true;
+    clearRenderedOptions(control);
     if (openControl === control) openControl = null;
     if (restoreFocus) control.trigger.focus();
   };
@@ -137,33 +185,8 @@
     closeDropdown(control, true);
   };
 
-  const rebuildOptions = (control) => {
-    control.options.replaceChildren();
-    control.optionButtons = Array.from(control.select.options, (option) => {
-      const button = document.createElement("button");
-      button.type = "button";
-      button.className = "select-box__option";
-      button.setAttribute("role", "option");
-      button.dataset.value = option.value;
-      button.disabled = option.disabled;
-      button.textContent = option.textContent;
-      button.addEventListener("click", (event) => {
-        event.preventDefault();
-        event.stopPropagation();
-        selectValue(control, option.value);
-      });
-      control.options.append(button);
-      return button;
-    });
-    control.empty = document.createElement("span");
-    control.empty.className = "select-box__empty";
-    control.empty.textContent = t("No matching options");
-    control.empty.hidden = true;
-    control.options.append(control.empty);
-  };
-
   function syncControl(control, rebuild = true) {
-    if (rebuild) rebuildOptions(control);
+    if (rebuild) readOptions(control);
     control.value.textContent = selectedLabel(control);
     control.trigger.tabIndex = control.select.disabled ? -1 : 0;
     control.trigger.setAttribute("aria-disabled", String(control.select.disabled));
@@ -171,12 +194,8 @@
     control.trigger.setAttribute("aria-label", fieldLabel(control.select));
     const invalid = control.select.getAttribute("aria-invalid") === "true";
     control.wrapper.classList.toggle("is-invalid", invalid);
-    const selected = control.select.selectedOptions[0];
-    for (const button of control.optionButtons) {
-      const isSelected = selected && button.dataset.value === selected.value;
-      button.setAttribute("aria-selected", String(Boolean(isSelected)));
-    }
-    filterOptions(control, control.query);
+    if (control.open) renderNextBatch(control, true);
+    else clearRenderedOptions(control);
     if (control.select.disabled) closeDropdown(control);
   }
 
@@ -260,12 +279,18 @@
       filter,
       clear,
       options,
-      empty: null,
+      empty: document.createElement("span"),
       optionButtons: [],
+      optionRecords: [],
+      filteredRecords: [],
+      renderOffset: 0,
       open: false,
       query: "",
       composing: false,
     };
+    control.empty.className = "select-box__empty";
+    control.empty.textContent = t("No matching options");
+    control.empty.hidden = true;
     enhanced.set(select, control);
     controls.add(control);
     syncControl(control);
@@ -332,6 +357,22 @@
       control.query = "";
       filterOptions(control);
       filter.focus();
+    });
+    options.addEventListener("click", (event) => {
+      if (!(event.target instanceof Element)) return;
+      const button = event.target.closest(".select-box__option");
+      if (!button || button.disabled) return;
+      event.preventDefault();
+      event.stopPropagation();
+      selectValue(control, button.dataset.value);
+    });
+    options.addEventListener("scroll", () => {
+      if (
+        options.scrollTop + options.clientHeight >= options.scrollHeight - 32 &&
+        control.renderOffset < control.filteredRecords.length
+      ) {
+        renderNextBatch(control);
+      }
     });
     menu.addEventListener("keydown", (event) => {
       if (event.target === filter) return;
