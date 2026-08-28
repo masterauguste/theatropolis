@@ -8,9 +8,23 @@ import (
 	"strings"
 	"sync/atomic"
 	"testing"
+
+	"github.com/masterauguste/theatropolis/internal/proxynode"
 )
 
 type geositeRoundTripper func(*http.Request) (*http.Response, error)
+
+func TestQuotaReachedMembershipRemainsVisibleInSubscription(t *testing.T) {
+	for status, want := range map[proxynode.MembershipStatus]bool{
+		proxynode.MembershipEnabled:      true,
+		proxynode.MembershipQuotaReached: true,
+		proxynode.MembershipExpired:      false,
+	} {
+		if got := membershipVisibleInSubscription(status); got != want {
+			t.Errorf("membershipVisibleInSubscription(%q) = %t, want %t", status, got, want)
+		}
+	}
+}
 
 func (roundTrip geositeRoundTripper) RoundTrip(request *http.Request) (*http.Response, error) {
 	return roundTrip(request)

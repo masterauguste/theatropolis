@@ -461,7 +461,7 @@ func (h *Handler) subscriptionViewAndProfile(userID string) (*userSubscriptionVi
 				nodeView.Status, nodeView.StatusCSS = "Included", "active"
 			}
 		}
-		if applied && hasRoot && membership.DisabledReason == proxynode.MembershipEnabled && h.controller.PoolRegistry() != nil {
+		if applied && hasRoot && membershipVisibleInSubscription(membership.DisabledReason) && h.controller.PoolRegistry() != nil {
 			addresses := subscriptionAddresses(h.controller.PoolRegistry(), root.AgentID, node.SubscriptionAddressMode)
 			for _, address := range addresses {
 				name := node.Name
@@ -492,6 +492,10 @@ func (h *Handler) subscriptionViewAndProfile(userID string) (*userSubscriptionVi
 		return strings.ToLower(view.Nodes[left].Name) < strings.ToLower(view.Nodes[right].Name)
 	})
 	return view, profile, true
+}
+
+func membershipVisibleInSubscription(status proxynode.MembershipStatus) bool {
+	return status == proxynode.MembershipEnabled || status == proxynode.MembershipQuotaReached
 }
 
 func subscriptionPolicyViewFor(policy proxynode.SubscriptionPolicy) *subscriptionPolicyView {

@@ -80,7 +80,10 @@ Security and domain rules in the Go implementation remain authoritative.
   shows an empty state without offering a duplicate grant.
 - Empty states explain the next useful action. Async regions reserve their
   surface and provide loading, retry, expired-session, and empty states.
-- Subscription Nodes are derived from each user's current Memberships. The
+- Subscription Nodes are derived from each user's current Memberships. Nodes
+  whose quota is exhausted remain visible with their stable credential while
+  entrance authentication is disabled; they resume without re-import after the
+  quota reset. Expired Nodes remain omitted. The
   universal Subscription Rules are explicitly ordered and use only Proxy,
   Direct, or Reject; Proxy is each export's generated group of active Nodes with
   Direct and Reject as its final manual choices. An empty group exposes Direct

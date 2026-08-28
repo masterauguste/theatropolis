@@ -377,6 +377,9 @@ func TestTrafficQuotaDisablesMembershipAndCalendarResetReenablesIt(t *testing.T)
 	if updated.Memberships[0].UsedBytes != 1200 || updated.Memberships[0].DisabledReason != MembershipQuotaReached {
 		t.Fatalf("membership after quota = %#v", updated.Memberships[0])
 	}
+	if updated.Memberships[0].Credential != membership.Credential {
+		t.Fatalf("quota enforcement rotated credential: got %#v want %#v", updated.Memberships[0].Credential, membership.Credential)
+	}
 	compiled, err := Compile(store.Snapshot(), testResolver{"edge-a": "203.0.113.10"})
 	if err != nil {
 		t.Fatal(err)
@@ -392,6 +395,16 @@ func TestTrafficQuotaDisablesMembershipAndCalendarResetReenablesIt(t *testing.T)
 	updated, _ = store.ProxyNode(node.ID)
 	if updated.Memberships[0].UsedBytes != 0 || updated.Memberships[0].DisabledReason != MembershipEnabled {
 		t.Fatalf("membership after reset = %#v; original=%#v", updated.Memberships[0], membership)
+	}
+	if updated.Memberships[0].Credential != membership.Credential {
+		t.Fatalf("quota reset rotated credential: got %#v want %#v", updated.Memberships[0].Credential, membership.Credential)
+	}
+	restored, err := Compile(store.Snapshot(), testResolver{"edge-a": "203.0.113.10"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Contains(restored.Configs["edge-a"], []byte(membership.Credential.Secret)) {
+		t.Fatal("quota reset did not restore the stable credential")
 	}
 }
 

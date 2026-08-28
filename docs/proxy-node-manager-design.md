@@ -764,8 +764,11 @@ leave application state untouched.
   one or two exported nodes. Each Proxy Node chooses IPv4 and IPv6, IPv4 only,
   or IPv6 only; legacy and newly created Nodes default to both families, and an
   unavailable selected family is omitted. This is master-side subscription
-  metadata and never deploys topology. Quota-disabled and expired Memberships
-  are omitted. An empty Proxy group offers Direct first and Reject second.
+  metadata and never deploys topology. A quota-disabled Membership remains in
+  the subscription with its stable credential, while the independent user plane
+  removes that credential from the live entrance authority until reset. Expired
+  Memberships are omitted. An empty Proxy group offers Direct first and Reject
+  second.
 - Subscription routing is independent of the Proxy Node topology plane. One
   universal ordered list of portable client-side matches is applied to every
   user export; its actions are Proxy,
