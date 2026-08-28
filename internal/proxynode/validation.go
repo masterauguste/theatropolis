@@ -318,6 +318,9 @@ func validateProxyNode(node ProxyNode, users map[string]User) error {
 	if len(node.Hops) == 0 {
 		return errors.New("Proxy Node has no entrance Hop")
 	}
+	if !validSubscriptionAddressMode(node.SubscriptionAddressMode) {
+		return errors.New("invalid configuration subscription address mode")
+	}
 	if len(node.Hops)+len(node.Links)+len(node.BlockBranches) > maxTopologyEntities {
 		return errors.New("Proxy Node exceeds topology entity limit")
 	}
@@ -543,6 +546,10 @@ func validateProxyNode(node ProxyNode, users map[string]User) error {
 		ruleSetTags[ruleSet.Tag] = struct{}{}
 	}
 	return nil
+}
+
+func validSubscriptionAddressMode(mode SubscriptionAddressMode) bool {
+	return mode == "" || mode == SubscriptionAddressDual || mode == SubscriptionAddressIPv4 || mode == SubscriptionAddressIPv6
 }
 
 func validateReachability(root string, hops map[string]Hop, links []Link) error {

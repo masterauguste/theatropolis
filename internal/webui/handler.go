@@ -437,6 +437,10 @@ func (h *Handler) routes() {
 		"GET /assets/config-editor.js",
 		h.asset("assets/config-editor.js", "text/javascript; charset=utf-8"),
 	)
+	h.mux.HandleFunc(
+		"GET /assets/subscription-rules.js",
+		h.asset("assets/subscription-rules.js", "text/javascript; charset=utf-8"),
+	)
 	h.mux.HandleFunc("GET /login", h.loginPage)
 	h.mux.HandleFunc("GET /language/{locale}", h.changeLanguage)
 	h.mux.HandleFunc("POST /login", h.login)
@@ -450,6 +454,7 @@ func (h *Handler) routes() {
 	h.mux.HandleFunc("GET /proxy-nodes/{proxy_id}/manage", h.proxyNodePage)
 	h.mux.HandleFunc("GET /proxy-nodes/{proxy_id}/users", h.proxyNodeUsersPage)
 	h.mux.HandleFunc("POST /proxy-nodes/{proxy_id}/rename", h.renameProxyNode)
+	h.mux.HandleFunc("POST /proxy-nodes/{proxy_id}/subscription-addresses", h.updateProxyNodeSubscriptionAddresses)
 	h.mux.HandleFunc("POST /proxy-nodes/{proxy_id}/delete", h.deleteProxyNode)
 	h.mux.HandleFunc("POST /proxy-nodes/{proxy_id}/deploy", h.deployProxyNodes)
 	h.mux.HandleFunc("POST /proxy-nodes/{proxy_id}/users", h.addProxyNodeUser)
@@ -496,6 +501,7 @@ func (h *Handler) routes() {
 	h.mux.HandleFunc("POST /users/{user_id}/subscription/reset", h.resetUserSubscription)
 	h.mux.HandleFunc("POST /users/{user_id}/subscription/revoke", h.revokeUserSubscriptionToken)
 	h.mux.HandleFunc("GET /subscriptions", h.subscriptionPolicyPage)
+	h.mux.HandleFunc("GET /subscriptions/rule-set-options", h.subscriptionRuleSetOptions)
 	h.mux.HandleFunc("POST /subscriptions/default", h.updateSubscriptionDefault)
 	h.mux.HandleFunc("POST /subscriptions/rules", h.addSubscriptionRule)
 	h.mux.HandleFunc("POST /subscriptions/rules/{rule_id}", h.updateSubscriptionRule)
@@ -2141,6 +2147,18 @@ func (h *Handler) serverRuleSetOptions(response http.ResponseWriter, request *ht
 		http.NotFound(response, request)
 		return
 	}
+	h.writeRuleSetOptions(response, request)
+}
+
+func (h *Handler) subscriptionRuleSetOptions(response http.ResponseWriter, request *http.Request) {
+	if _, ok := h.authenticate(response, request); !ok {
+		http.Error(response, "unauthorized", http.StatusUnauthorized)
+		return
+	}
+	h.writeRuleSetOptions(response, request)
+}
+
+func (h *Handler) writeRuleSetOptions(response http.ResponseWriter, request *http.Request) {
 	var catalog RuleSetOptions
 	switch request.URL.Query().Get("kind") {
 	case "geosite":
@@ -2161,6 +2179,7 @@ func (h *Handler) serverRuleSetOptions(response http.ResponseWriter, request *ht
 		result.Options = options
 	}
 	response.Header().Set("Content-Type", "application/json")
+	response.Header().Set("Cache-Control", "no-store")
 	if err := json.NewEncoder(response).Encode(result); err != nil {
 		h.logger.Warn("encode rule-set catalog", "error", err)
 	}

@@ -761,8 +761,11 @@ leave application state untouched.
   projection.
 - Subscription Nodes are derived rather than stored: each enabled Membership
   whose topology is applied and whose entrance has a routable address becomes
-  one or two exported nodes (IPv4 and IPv6 when both exist). Quota-disabled and
-  expired Memberships are omitted. An empty Proxy group fails closed to Reject.
+  one or two exported nodes. Each Proxy Node chooses IPv4 and IPv6, IPv4 only,
+  or IPv6 only; legacy and newly created Nodes default to both families, and an
+  unavailable selected family is omitted. This is master-side subscription
+  metadata and never deploys topology. Quota-disabled and expired Memberships
+  are omitted. An empty Proxy group fails closed to Reject.
 - Subscription routing is independent of the Proxy Node topology plane. One
   universal ordered list of portable client-side matches is applied to every
   user export; its actions are Proxy,

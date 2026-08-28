@@ -71,6 +71,56 @@ func TestUserSubscriptionLifecycleIsDurableAndIndependent(t *testing.T) {
 	}
 }
 
+func TestProxyNodeSubscriptionAddressModeIsUserPlaneMetadata(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "proxy-node-state.json")
+	store, err := Open(path, testBuild())
+	if err != nil {
+		t.Fatal(err)
+	}
+	node, err := store.CreateProxyNode(CreateProxyNodeInput{
+		Name: "cinema", RootAgent: "edge-a", Entrance: testTLSEndpoint(ProtocolAnyTLS, 443),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.MarkTopologyApplied(store.Snapshot().Revision, []string{"edge-a"}); err != nil {
+		t.Fatal(err)
+	}
+	before := store.Snapshot()
+	if EffectiveSubscriptionAddressMode(node.SubscriptionAddressMode) != SubscriptionAddressDual {
+		t.Fatalf("legacy/default mode = %q, want dual", node.SubscriptionAddressMode)
+	}
+	if err := store.SetProxyNodeSubscriptionAddressMode(node.ID, SubscriptionAddressIPv6); err != nil {
+		t.Fatal(err)
+	}
+	after := store.Snapshot()
+	if after.Revision != before.Revision || after.UserRevision != before.UserRevision+1 {
+		t.Fatalf("revisions = topology %d user %d, want %d/%d", after.Revision, after.UserRevision, before.Revision, before.UserRevision+1)
+	}
+	updated, exists := store.ProxyNode(node.ID)
+	if !exists || updated.SubscriptionAddressMode != SubscriptionAddressIPv6 {
+		t.Fatalf("updated Proxy Node = %#v, exists=%v", updated, exists)
+	}
+	if len(after.AppliedProxyNodes) != 1 || after.AppliedProxyNodes[0].SubscriptionAddressMode != "" {
+		t.Fatalf("subscription metadata leaked into applied topology: %#v", after.AppliedProxyNodes)
+	}
+	if err := store.accounting.db.Close(); err != nil {
+		t.Fatal(err)
+	}
+	reloaded, err := Open(path, testBuild())
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = reloaded.accounting.db.Close() })
+	updated, exists = reloaded.ProxyNode(node.ID)
+	if !exists || updated.SubscriptionAddressMode != SubscriptionAddressIPv6 {
+		t.Fatalf("reloaded Proxy Node = %#v, exists=%v", updated, exists)
+	}
+	if err := reloaded.SetProxyNodeSubscriptionAddressMode(node.ID, "invalid"); err == nil {
+		t.Fatal("invalid subscription address mode was accepted")
+	}
+}
+
 func TestUserCredentialAndSubscriptionResetsAreAtomicAndScoped(t *testing.T) {
 	store, err := Open(filepath.Join(t.TempDir(), "state.json"), testBuild())
 	if err != nil {

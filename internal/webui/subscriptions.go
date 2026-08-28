@@ -462,7 +462,7 @@ func (h *Handler) subscriptionViewAndProfile(userID string) (*userSubscriptionVi
 			}
 		}
 		if applied && hasRoot && membership.DisabledReason == proxynode.MembershipEnabled && h.controller.PoolRegistry() != nil {
-			addresses := subscriptionAddresses(h.controller.PoolRegistry(), root.AgentID)
+			addresses := subscriptionAddresses(h.controller.PoolRegistry(), root.AgentID, node.SubscriptionAddressMode)
 			for _, address := range addresses {
 				name := node.Name
 				if len(addresses) > 1 {
@@ -481,6 +481,9 @@ func (h *Handler) subscriptionViewAndProfile(userID string) (*userSubscriptionVi
 					profile.Nodes = append(profile.Nodes, candidate)
 					nodeView.Addresses = append(nodeView.Addresses, address.family)
 				}
+			}
+			if len(nodeView.Addresses) == 0 {
+				nodeView.Status, nodeView.StatusCSS = "Unavailable", "disabled"
 			}
 		}
 		view.Nodes = append(view.Nodes, nodeView)
@@ -512,12 +515,19 @@ type subscriptionAddress struct {
 	address string
 }
 
-func subscriptionAddresses(registry *pool.Registry, agentID string) []subscriptionAddress {
+func subscriptionAddresses(registry *pool.Registry, agentID string, mode proxynode.SubscriptionAddressMode) []subscriptionAddress {
 	result := make([]subscriptionAddress, 0, 2)
+	effectiveMode := proxynode.EffectiveSubscriptionAddressMode(mode)
 	for _, candidate := range []struct {
 		family string
 		kind   pool.Family
 	}{{"IPv4", pool.FamilyIPv4}, {"IPv6", pool.FamilyIPv6}} {
+		if effectiveMode == proxynode.SubscriptionAddressIPv4 && candidate.kind != pool.FamilyIPv4 {
+			continue
+		}
+		if effectiveMode == proxynode.SubscriptionAddressIPv6 && candidate.kind != pool.FamilyIPv6 {
+			continue
+		}
 		if address, exists := registry.AgentAddressForFamily(agentID, candidate.kind); exists {
 			result = append(result, subscriptionAddress{family: candidate.family, address: address})
 		}

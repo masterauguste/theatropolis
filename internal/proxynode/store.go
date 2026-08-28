@@ -1534,6 +1534,9 @@ func topologySnapshot(nodes []ProxyNode) []ProxyNode {
 	for index, node := range nodes {
 		result[index] = cloneProxyNode(node)
 		result[index].Memberships = []Membership{}
+		// Subscription address selection is master-side presentation metadata,
+		// not part of the sing-box topology applied to Agents.
+		result[index].SubscriptionAddressMode = ""
 	}
 	return result
 }

@@ -2,6 +2,30 @@
 
 const t = (text) => window.theatropolisText?.(text) || text;
 
+const ruleSetCatalogRequests = new Map();
+window.theatropolisRuleSetCatalog = (kind) => {
+  if (kind !== "geosite" && kind !== "geoip") {
+    return Promise.reject(new Error("unsupported rule-set catalog"));
+  }
+  if (ruleSetCatalogRequests.has(kind)) return ruleSetCatalogRequests.get(kind);
+  const request = fetch(`/subscriptions/rule-set-options?kind=${encodeURIComponent(kind)}`, {
+    headers: { Accept: "application/json" },
+    credentials: "same-origin",
+  }).then(async (response) => {
+    if (!response.ok) throw new Error(`rule-set-options HTTP ${response.status}`);
+    const body = await response.json();
+    if (!Array.isArray(body?.options) || body.options.length === 0) {
+      throw new Error(body?.warning || "rule-set-options returned no options");
+    }
+    return body.options;
+  }).catch((error) => {
+    ruleSetCatalogRequests.delete(kind);
+    throw error;
+  });
+  ruleSetCatalogRequests.set(kind, request);
+  return request;
+};
+
 for (const option of document.querySelectorAll("[data-language-option]")) {
   option.addEventListener("click", () => {
     const locale = option.dataset.languageOption;
@@ -258,19 +282,99 @@ for (const editor of document.querySelectorAll("[data-proxy-listener-editor]")) 
   updateProxyListenerChoices(editor);
 }
 
+const proxyRuleSetContextVisible = (form) => {
+  const dialog = form.closest("dialog");
+  if (dialog && !dialog.open) return false;
+  const view = form.closest("[data-proxy-inspector-view]");
+  return !view || !view.hidden;
+};
+
+const compactProxyRuleSet = (ruleSet) => {
+  const current = ruleSet.value;
+  ruleSet.replaceChildren(new Option(current || t("Loading…"), current, true, true));
+  ruleSet.options[0].disabled = !current;
+};
+
+const populateProxyRuleSet = (ruleSet, kind, options) => {
+  const current = ruleSet.value;
+  const placeholder = new Option(
+    kind === "geosite" ? t("Select a Geosite rule set") : t("Select a GeoIP rule set"),
+    "",
+    true,
+    false,
+  );
+  placeholder.disabled = true;
+  ruleSet.replaceChildren(placeholder);
+  if (current && !options.includes(current)) {
+    ruleSet.append(new Option(current.replaceAll("\n", ", "), current));
+  }
+  for (const option of options) ruleSet.append(new Option(option, option));
+  ruleSet.value = current;
+  if (!current) placeholder.selected = true;
+};
+
+const loadProxyRuleSet = async (form, kind) => {
+  const ruleSet = form.querySelector("[data-proxy-rule-set]");
+  const status = form.querySelector("[data-proxy-rule-set-status]");
+  if (!(ruleSet instanceof HTMLSelectElement) || !status) return;
+  status.textContent = t("Loading…");
+  status.hidden = false;
+  try {
+    const options = await window.theatropolisRuleSetCatalog(kind);
+    if (form.querySelector("[data-proxy-match]")?.value !== kind) return;
+    populateProxyRuleSet(ruleSet, kind, options);
+    status.hidden = true;
+  } catch (_error) {
+    const retry = document.createElement("button");
+    retry.type = "button";
+    retry.className = "button-link";
+    retry.textContent = t("Retry");
+    retry.addEventListener("click", () => loadProxyRuleSet(form, kind));
+    status.replaceChildren(document.createTextNode(t("Rule set catalog unavailable.")), retry);
+    status.hidden = false;
+  }
+};
+
+const updateProxyMatch = (select) => {
+  const form = select.closest("form");
+  const values = form?.querySelector("[data-proxy-match-values]");
+  const textarea = values?.querySelector("textarea");
+  const ruleSetField = form?.querySelector("[data-proxy-rule-set-field]");
+  const ruleSet = ruleSetField?.querySelector("[data-proxy-rule-set]");
+  const ruleSetLabel = ruleSetField?.querySelector(":scope > span");
+  if (!form || !values || !(textarea instanceof HTMLTextAreaElement) ||
+      !ruleSetField || !(ruleSet instanceof HTMLSelectElement)) return;
+
+  const all = select.value === "none";
+  const kind = select.value === "geosite" || select.value === "geoip" ? select.value : "";
+  values.hidden = all || Boolean(kind);
+  textarea.disabled = all || Boolean(kind);
+  textarea.required = !all && !kind;
+  ruleSetField.hidden = !kind;
+  ruleSet.disabled = !kind;
+  ruleSet.required = Boolean(kind);
+  if (all) textarea.value = "";
+  if (!kind) return;
+
+  if (ruleSet.dataset.ruleSetKind !== kind) {
+    const placeholder = new Option(t("Loading…"), "", true, true);
+    placeholder.disabled = true;
+    ruleSet.replaceChildren(placeholder);
+  }
+  ruleSet.dataset.ruleSetKind = kind;
+  if (ruleSetLabel) ruleSetLabel.textContent = kind === "geosite" ? "Geosite" : "GeoIP";
+  if (proxyRuleSetContextVisible(form) && ruleSet.options.length <= 1) {
+    loadProxyRuleSet(form, kind);
+  }
+};
+
+const refreshProxyRuleSets = (root) => {
+  for (const select of root.querySelectorAll("[data-proxy-match]")) updateProxyMatch(select);
+};
+
 for (const select of document.querySelectorAll("[data-proxy-match]")) {
-  const update = () => {
-    const values = select.closest("form")?.querySelector("[data-proxy-match-values]");
-    if (!values) return;
-    const all = select.value === "none";
-    values.hidden = all;
-    for (const input of values.querySelectorAll("input, textarea, select")) {
-      input.required = !all;
-      if (all) input.value = "";
-    }
-  };
-  update();
-  select.addEventListener("change", update);
+  updateProxyMatch(select);
+  select.addEventListener("change", () => updateProxyMatch(select));
 }
 
 for (const form of document.querySelectorAll("[data-proxy-branch-form]")) {
@@ -624,6 +728,7 @@ document.addEventListener("click", (event) => {
     }
     dialogTriggers.set(dialog, inspectorButton);
     if (!dialog.open) dialog.showModal();
+    refreshProxyRuleSets(selected);
     return;
   }
 
@@ -647,6 +752,7 @@ document.addEventListener("click", (event) => {
     }
     dialogTriggers.set(dialog, button);
     if (!dialog.open) dialog.showModal();
+    refreshProxyRuleSets(dialog);
     return;
   }
 
@@ -671,6 +777,7 @@ if (initialInspector) {
     if (selected && dialog instanceof HTMLDialogElement) {
       for (const view of views) view.hidden = view !== selected;
       dialog.showModal();
+      refreshProxyRuleSets(selected);
     }
   }
   const cleanURL = new URL(window.location.href);
@@ -695,6 +802,9 @@ document.addEventListener("cancel", (event) => {
 
 document.addEventListener("close", (event) => {
   if (event.target.matches("dialog.modal")) {
+    for (const ruleSet of event.target.querySelectorAll("[data-proxy-rule-set]")) {
+      if (ruleSet.options.length > 1) compactProxyRuleSet(ruleSet);
+    }
     if (event.target.dataset.dialogSwapping === "true") {
       delete event.target.dataset.dialogSwapping;
       return;
@@ -703,6 +813,7 @@ document.addEventListener("close", (event) => {
     if (returnDialog instanceof HTMLDialogElement && returnDialog.isConnected && !returnDialog.open) {
       dialogReturns.delete(event.target);
       returnDialog.showModal();
+      refreshProxyRuleSets(returnDialog);
       dialogTriggers.get(event.target)?.focus();
       return;
     }

@@ -2,6 +2,7 @@ package proxynode
 
 import (
 	"errors"
+	"fmt"
 	"slices"
 	"sort"
 	"strings"
@@ -11,6 +12,26 @@ type SubscriptionRuleInput struct {
 	Match  SubscriptionMatch
 	Values []string
 	Action SubscriptionAction
+}
+
+func EffectiveSubscriptionAddressMode(mode SubscriptionAddressMode) SubscriptionAddressMode {
+	if mode == "" {
+		return SubscriptionAddressDual
+	}
+	return mode
+}
+
+// SetProxyNodeSubscriptionAddressMode changes only public configuration
+// subscription rendering. It deliberately uses the user/subscription plane so
+// no topology deployment or sing-box restart is scheduled.
+func (s *Store) SetProxyNodeSubscriptionAddressMode(nodeID string, mode SubscriptionAddressMode) error {
+	if mode != SubscriptionAddressDual && mode != SubscriptionAddressIPv4 && mode != SubscriptionAddressIPv6 {
+		return fmt.Errorf("%w: invalid configuration subscription address mode", ErrInvalidState)
+	}
+	return s.mutateUserProxyNode(nodeID, func(_ *State, node *ProxyNode) error {
+		node.SubscriptionAddressMode = mode
+		return nil
+	})
 }
 
 // SubscriptionProjection is the smallest consistent state snapshot needed to

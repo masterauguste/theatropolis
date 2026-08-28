@@ -85,6 +85,17 @@ const (
 	SubscriptionReject SubscriptionAction = "reject"
 )
 
+type SubscriptionAddressMode string
+
+const (
+	// SubscriptionAddressDual is also the effective value for legacy Proxy
+	// Nodes whose persisted mode is empty. Configuration subscriptions already
+	// exported both available address families before this setting existed.
+	SubscriptionAddressDual SubscriptionAddressMode = "dual"
+	SubscriptionAddressIPv4 SubscriptionAddressMode = "ipv4"
+	SubscriptionAddressIPv6 SubscriptionAddressMode = "ipv6"
+)
+
 type SubscriptionMatch string
 
 const (
@@ -158,16 +169,17 @@ type SubscriptionProvider struct {
 }
 
 type ProxyNode struct {
-	ID            string          `json:"id"`
-	Name          string          `json:"name"`
-	Entrance      Entrance        `json:"entrance"`
-	Hops          []Hop           `json:"hops"`
-	Links         []Link          `json:"links"`
-	BlockBranches []BlockBranch   `json:"block_branches,omitempty"`
-	Memberships   []Membership    `json:"memberships"`
-	RuleSets      []CustomRuleSet `json:"rule_sets,omitempty"`
-	CreatedAt     time.Time       `json:"created_at"`
-	UpdatedAt     time.Time       `json:"updated_at"`
+	ID                      string                  `json:"id"`
+	Name                    string                  `json:"name"`
+	SubscriptionAddressMode SubscriptionAddressMode `json:"subscription_address_mode,omitempty"`
+	Entrance                Entrance                `json:"entrance"`
+	Hops                    []Hop                   `json:"hops"`
+	Links                   []Link                  `json:"links"`
+	BlockBranches           []BlockBranch           `json:"block_branches,omitempty"`
+	Memberships             []Membership            `json:"memberships"`
+	RuleSets                []CustomRuleSet         `json:"rule_sets,omitempty"`
+	CreatedAt               time.Time               `json:"created_at"`
+	UpdatedAt               time.Time               `json:"updated_at"`
 }
 
 type Entrance struct {

@@ -83,8 +83,15 @@ Security and domain rules in the Go implementation remain authoritative.
 - Subscription Nodes are derived from each user's current Memberships. The
   universal Subscription Rules are explicitly ordered and use only Proxy,
   Direct, or Reject; Proxy is each export's generated group of active Nodes.
-  Geosite is selected directly as a Rule match; no provider-management surface
-  exists.
+  Each Proxy Node owns a configuration-subscription address selector with
+  IPv4-and-IPv6, IPv4-only, and IPv6-only choices. Existing and newly created
+  Nodes default to both families; an unavailable selected family is omitted.
+  Changing this selector updates subscription output without deploying topology.
+  Geosite is selected directly as a Rule match through the shared searchable
+  catalog selector; no provider-management or free-text Geosite surface exists.
+- Proxy Node topology Rules use the same searchable catalog selector for
+  single-value Geosite and GeoIP matches; all other match types keep their
+  established value editor.
 
 ## Dialogs and transient layers
 

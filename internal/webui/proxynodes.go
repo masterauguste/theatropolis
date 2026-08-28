@@ -37,26 +37,27 @@ type proxyNodeListView struct {
 }
 
 type proxyNodeDetailView struct {
-	ID                   string
-	Name                 string
-	URL                  string
-	UsersURL             string
-	EntranceFallback     string
-	Entrance             endpointView
-	Tree                 *proxyTreeHopView
-	HopCount             int
-	LinkCount            int
-	MemberCount          int
-	EndUserCount         int
-	FiniteMemberCount    int
-	CompensationStart    string
-	CompensationEnd      string
-	CompensationSelected int
-	TerminalCount        int
-	UnusedLinkCount      int
-	UserAccess           []nodeUserAccessView
-	AvailableUsers       []nodeUserOptionView
-	DefaultPlan          membershipPlanView
+	ID                      string
+	Name                    string
+	URL                     string
+	UsersURL                string
+	EntranceFallback        string
+	Entrance                endpointView
+	Tree                    *proxyTreeHopView
+	HopCount                int
+	LinkCount               int
+	MemberCount             int
+	EndUserCount            int
+	FiniteMemberCount       int
+	CompensationStart       string
+	CompensationEnd         string
+	CompensationSelected    int
+	TerminalCount           int
+	UnusedLinkCount         int
+	UserAccess              []nodeUserAccessView
+	AvailableUsers          []nodeUserOptionView
+	DefaultPlan             membershipPlanView
+	SubscriptionAddressMode string
 }
 
 type membershipPlanView struct {
@@ -420,6 +421,19 @@ func (h *Handler) renameProxyNode(response http.ResponseWriter, request *http.Re
 		return
 	}
 	http.Redirect(response, request, proxyNodeURL(id), http.StatusSeeOther)
+}
+
+func (h *Handler) updateProxyNodeSubscriptionAddresses(response http.ResponseWriter, request *http.Request) {
+	_, form, ok := h.authorizeProxyMutation(response, request, "mode")
+	if !ok {
+		return
+	}
+	nodeID := request.PathValue("proxy_id")
+	if err := h.proxyNodes.SetProxyNodeSubscriptionAddressMode(nodeID, proxynode.SubscriptionAddressMode(form.Get("mode"))); err != nil {
+		handleProxyMutationError(response, err)
+		return
+	}
+	http.Redirect(response, request, proxyNodeURL(nodeID), http.StatusSeeOther)
 }
 
 func (h *Handler) deleteProxyNode(response http.ResponseWriter, request *http.Request) {
@@ -1372,8 +1386,9 @@ func (h *Handler) proxyNodeDetail(node proxynode.ProxyNode) *proxyNodeDetailView
 	compensationStart := compensationEnd.Add(-time.Hour)
 	detail := &proxyNodeDetailView{
 		ID: node.ID, Name: node.Name, URL: proxyNodeURL(node.ID),
-		UsersURL: proxyNodeUsersURL(node.ID),
-		Entrance: endpointViewFor(node.Entrance.Endpoint), HopCount: len(node.Hops), LinkCount: len(node.Links), MemberCount: len(node.Memberships),
+		UsersURL:                proxyNodeUsersURL(node.ID),
+		SubscriptionAddressMode: string(proxynode.EffectiveSubscriptionAddressMode(node.SubscriptionAddressMode)),
+		Entrance:                endpointViewFor(node.Entrance.Endpoint), HopCount: len(node.Hops), LinkCount: len(node.Links), MemberCount: len(node.Memberships),
 		DefaultPlan:       defaultMembershipPlanView(),
 		CompensationStart: compensationStart.Format("2006-01-02T15:04"),
 		CompensationEnd:   compensationEnd.Format("2006-01-02T15:04"),

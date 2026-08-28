@@ -1383,6 +1383,7 @@ func TestProxyNodePagesUseLinkOwnedRulesAndMembershipCredentials(t *testing.T) {
 		"Relay Branch", "Private branch credential and auth_user", "Duplicate Branch", "Edit Relay", "Save Relay", "Replace Destination",
 		`action="` + proxyLinkURL(node.ID, link.ID) + `/destination"`,
 		`data-proxy-rule-branch="` + firstRule.ID + `"`,
+		`data-proxy-rule-set`, `data-rule-set-kind`,
 		`data-reorder-url="/proxy-nodes/` + node.ID + `/hops/` + node.Entrance.HopID + `/rules/reorder"`, "Delete branch",
 		`<option value="shadowsocks"`, `<option value="anytls"`, `<option value="hysteria2"`,
 		"example.net", "Address family", "Multiplex", "[::]:8443",
@@ -2001,7 +2002,7 @@ func TestUserSubscriptionLinksExportActiveNodesAndOrderedRules(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := registry.SetOverride("edge-online", "203.0.113.42"); err != nil {
+	if err := registry.SetOverrides("edge-online", "203.0.113.42", "2001:db8::42"); err != nil {
 		t.Fatal(err)
 	}
 	fixture.controller.poolRegistry = registry
@@ -2032,10 +2033,19 @@ func TestUserSubscriptionLinksExportActiveNodesAndOrderedRules(t *testing.T) {
 	}
 	waitForProxyDeployment(t, deployer)
 
-	request := fixture.authenticatedMutationRequest(http.MethodPost, "/users/"+user.ID+"/subscription/token", url.Values{
+	request := fixture.authenticatedRequest(http.MethodGet, proxyNodeURL(node.ID), "")
+	response := httptest.NewRecorder()
+	fixture.handler.ServeHTTP(response, request)
+	if response.Code != http.StatusOK || !strings.Contains(response.Body.String(), `data-dialog-open="proxy-node-subscription-addresses"`) ||
+		!strings.Contains(response.Body.String(), `action="/proxy-nodes/`+node.ID+`/subscription-addresses"`) ||
+		!strings.Contains(response.Body.String(), `<option value="dual" selected>IPv4 and IPv6</option>`) {
+		t.Fatalf("Proxy Node subscription address controls = %d %q", response.Code, response.Body.String())
+	}
+
+	request = fixture.authenticatedMutationRequest(http.MethodPost, "/users/"+user.ID+"/subscription/token", url.Values{
 		"csrf_token": {fixture.session.CSRFToken},
 	}.Encode())
-	response := httptest.NewRecorder()
+	response = httptest.NewRecorder()
 	fixture.handler.ServeHTTP(response, request)
 	if response.Code != http.StatusSeeOther || response.Header().Get("Location") != userSubscriptionNodesURL(user.ID) {
 		t.Fatalf("create subscription = %d location %q body %q", response.Code, response.Header().Get("Location"), response.Body.String())
@@ -2066,7 +2076,9 @@ func TestUserSubscriptionLinksExportActiveNodesAndOrderedRules(t *testing.T) {
 	response = httptest.NewRecorder()
 	fixture.handler.ServeHTTP(response, request)
 	if response.Code != http.StatusOK || !strings.Contains(response.Body.String(), "Domain suffix") ||
-		!strings.Contains(response.Body.String(), "example.com") || !strings.Contains(response.Body.String(), `<option value="geosite">Geosite</option>`) || strings.Contains(response.Body.String(), "Rule providers") {
+		!strings.Contains(response.Body.String(), "example.com") || !strings.Contains(response.Body.String(), `<option value="geosite">Geosite</option>`) ||
+		!strings.Contains(response.Body.String(), `data-subscription-geosite`) ||
+		!strings.Contains(response.Body.String(), `/assets/subscription-rules.js`) || strings.Contains(response.Body.String(), "Rule providers") {
 		t.Fatalf("subscription Rules page = %d %q", response.Code, response.Body.String())
 	}
 
@@ -2080,6 +2092,44 @@ func TestUserSubscriptionLinksExportActiveNodesAndOrderedRules(t *testing.T) {
 			response.Header().Get("Cross-Origin-Resource-Policy") != "cross-origin" {
 			t.Fatalf("%s subscription = %d headers %#v body %q", format, response.Code, response.Header(), response.Body.String())
 		}
+	}
+
+	request = fixture.request(http.MethodGet, "/subscriptions/"+updatedUser.Subscription.Token+"/clash", "")
+	response = httptest.NewRecorder()
+	fixture.handler.ServeHTTP(response, request)
+	if response.Code != http.StatusOK || !strings.Contains(response.Body.String(), "Cinema - IPv4") ||
+		!strings.Contains(response.Body.String(), "Cinema - IPv6") || !strings.Contains(response.Body.String(), "2001:db8::42") {
+		t.Fatalf("dual-stack Clash subscription = %d %q", response.Code, response.Body.String())
+	}
+	beforeModeChange := fixture.proxyNodes.Snapshot()
+	request = fixture.authenticatedMutationRequest(http.MethodPost, "/proxy-nodes/"+node.ID+"/subscription-addresses", url.Values{
+		"csrf_token": {fixture.session.CSRFToken}, "mode": {"ipv4"},
+	}.Encode())
+	response = httptest.NewRecorder()
+	fixture.handler.ServeHTTP(response, request)
+	if response.Code != http.StatusSeeOther || response.Header().Get("Location") != proxyNodeURL(node.ID) {
+		t.Fatalf("set subscription address mode = %d location %q body %q", response.Code, response.Header().Get("Location"), response.Body.String())
+	}
+	afterModeChange := fixture.proxyNodes.Snapshot()
+	if afterModeChange.Revision != beforeModeChange.Revision || afterModeChange.UserRevision != beforeModeChange.UserRevision+1 {
+		t.Fatalf("address mode revisions = %d/%d, want %d/%d", afterModeChange.Revision, afterModeChange.UserRevision, beforeModeChange.Revision, beforeModeChange.UserRevision+1)
+	}
+	request = fixture.request(http.MethodGet, "/subscriptions/"+updatedUser.Subscription.Token+"/clash", "")
+	response = httptest.NewRecorder()
+	fixture.handler.ServeHTTP(response, request)
+	if response.Code != http.StatusOK || !strings.Contains(response.Body.String(), `server: "203.0.113.42"`) ||
+		strings.Contains(response.Body.String(), "2001:db8::42") || strings.Contains(response.Body.String(), "Cinema - IPv6") {
+		t.Fatalf("IPv4-only Clash subscription = %d %q", response.Code, response.Body.String())
+	}
+	if err := registry.SetOverrides("edge-online", "", "2001:db8::42"); err != nil {
+		t.Fatal(err)
+	}
+	request = fixture.authenticatedRequest(http.MethodGet, userSubscriptionNodesURL(user.ID), "")
+	response = httptest.NewRecorder()
+	fixture.handler.ServeHTTP(response, request)
+	if response.Code != http.StatusOK || !strings.Contains(response.Body.String(), "Unavailable") ||
+		strings.Contains(response.Body.String(), `<span class="status-pill status-pill--active">Included</span>`) {
+		t.Fatalf("missing selected family status = %d %q", response.Code, response.Body.String())
 	}
 
 	request = fixture.authenticatedMutationRequest(http.MethodPost, "/users/"+user.ID+"/subscription/revoke", url.Values{
@@ -3295,6 +3345,44 @@ func TestServerRuleSetOptionsEndpoint(t *testing.T) {
 	}
 }
 
+func TestSubscriptionRuleSetOptionsEndpoint(t *testing.T) {
+	t.Parallel()
+	fixture := newWebFixture(t)
+	fixture.handler.(*Handler).geositeRuleSets = testRuleSetOptions{
+		options: []string{"category-ads-all", "cn", "openai"},
+	}
+	fixture.handler.(*Handler).geoipRuleSets = testRuleSetOptions{
+		options: []string{"cn", "private"},
+	}
+
+	request := fixture.request(http.MethodGet, "/subscriptions/rule-set-options?kind=geosite", "")
+	response := httptest.NewRecorder()
+	fixture.handler.ServeHTTP(response, request)
+	if response.Code != http.StatusUnauthorized {
+		t.Fatalf("unauthenticated subscription rule-set status = %d, want %d", response.Code, http.StatusUnauthorized)
+	}
+
+	request = fixture.authenticatedRequest(http.MethodGet, "/subscriptions/rule-set-options?kind=geosite", "")
+	response = httptest.NewRecorder()
+	fixture.handler.ServeHTTP(response, request)
+	if response.Code != http.StatusOK || response.Header().Get("Content-Type") != "application/json" ||
+		response.Header().Get("Cache-Control") != "no-store" {
+		t.Fatalf("subscription rule-set response = %d headers %#v body %q", response.Code, response.Header(), response.Body.String())
+	}
+	for _, option := range []string{"category-ads-all", "cn", "openai"} {
+		if !strings.Contains(response.Body.String(), option) {
+			t.Fatalf("subscription rule-set response missing %q: %q", option, response.Body.String())
+		}
+	}
+
+	request = fixture.authenticatedRequest(http.MethodGet, "/subscriptions/rule-set-options?kind=geoip", "")
+	response = httptest.NewRecorder()
+	fixture.handler.ServeHTTP(response, request)
+	if response.Code != http.StatusOK || !strings.Contains(response.Body.String(), "private") {
+		t.Fatalf("subscription GeoIP rule-set response = %d body %q", response.Code, response.Body.String())
+	}
+}
+
 func TestServerPageRendersAgentUpdateForm(t *testing.T) {
 	t.Parallel()
 
@@ -3940,6 +4028,7 @@ func TestAssetsAreSelfHostedAndSecurityHeadersApplyToErrors(t *testing.T) {
 		"/assets/app.js",
 		"/assets/config-editor.js",
 		"/assets/dropdown.js",
+		"/assets/subscription-rules.js",
 	} {
 		request := fixture.request(http.MethodGet, path, "")
 		response := httptest.NewRecorder()
