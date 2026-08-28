@@ -135,11 +135,12 @@ func renderClash(profile Profile) ([]byte, error) {
 	}
 	out.WriteString("\nproxy-groups:\n  - name: Proxy\n    type: select\n    proxies:\n")
 	if len(profile.Nodes) == 0 {
-		out.WriteString("      - REJECT\n")
+		out.WriteString("      - DIRECT\n      - REJECT\n")
 	} else {
 		for _, node := range profile.Nodes {
 			out.WriteString("      - " + yamlString(node.Name) + "\n")
 		}
+		out.WriteString("      - DIRECT\n      - REJECT\n")
 	}
 	out.WriteString("\nrules:\n")
 	for _, rule := range profile.Rules {
@@ -207,11 +208,12 @@ func renderSurge(profile Profile) ([]byte, error) {
 	}
 	out.WriteString("\n[Proxy Group]\nProxy = select")
 	if len(profile.Nodes) == 0 {
-		out.WriteString(", REJECT")
+		out.WriteString(", DIRECT, REJECT")
 	} else {
 		for _, node := range profile.Nodes {
 			out.WriteString(", " + surgeName(node.Name))
 		}
+		out.WriteString(", DIRECT, REJECT")
 	}
 	out.WriteString("\n\n[Rule]\n")
 	for _, rule := range profile.Rules {
@@ -327,7 +329,9 @@ func renderSingBox(profile Profile) ([]byte, error) {
 	)
 	selectorMembers := slices.Clone(nodeTags)
 	if len(selectorMembers) == 0 {
-		selectorMembers = []string{"Reject"}
+		selectorMembers = []string{"Direct", "Reject"}
+	} else {
+		selectorMembers = append(selectorMembers, "Direct", "Reject")
 	}
 	outbounds = append(outbounds, map[string]any{"type": "selector", "tag": "Proxy", "outbounds": selectorMembers})
 	rules := make([]map[string]any, 0, len(profile.Rules)+2)

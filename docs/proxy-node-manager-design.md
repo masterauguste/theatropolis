@@ -765,11 +765,14 @@ leave application state untouched.
   or IPv6 only; legacy and newly created Nodes default to both families, and an
   unavailable selected family is omitted. This is master-side subscription
   metadata and never deploys topology. Quota-disabled and expired Memberships
-  are omitted. An empty Proxy group fails closed to Reject.
+  are omitted. An empty Proxy group offers Direct first and Reject second.
 - Subscription routing is independent of the Proxy Node topology plane. One
   universal ordered list of portable client-side matches is applied to every
   user export; its actions are Proxy,
-  Direct, or Reject. Proxy is a selector containing every exported Node.
+  Direct, or Reject. Proxy is a selector containing every exported Node followed
+  by explicit Direct and Reject choices. When no Node is available, the selector
+  contains Direct followed by Reject, making Direct the default while retaining
+  a manual fail-closed choice.
   Editing it never deploys an Agent or changes a Membership credential.
 - Geosite and GeoIP are first-class universal matches. Clash receives native
   rules with pinned auto-updating MetaCubeX data URLs, sing-box receives the

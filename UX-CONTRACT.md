@@ -82,7 +82,9 @@ Security and domain rules in the Go implementation remain authoritative.
   surface and provide loading, retry, expired-session, and empty states.
 - Subscription Nodes are derived from each user's current Memberships. The
   universal Subscription Rules are explicitly ordered and use only Proxy,
-  Direct, or Reject; Proxy is each export's generated group of active Nodes.
+  Direct, or Reject; Proxy is each export's generated group of active Nodes with
+  Direct and Reject as its final manual choices. An empty group exposes Direct
+  followed by Reject, so Direct is the default.
   Each Proxy Node owns a configuration-subscription address selector with
   IPv4-and-IPv6, IPv4-only, and IPv6-only choices. Existing and newly created
   Nodes default to both families; an unavailable selected family is omitted.
