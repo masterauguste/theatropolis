@@ -357,6 +357,10 @@ grep -Fq 'theatropolis-update-helper apply-sing-box ' "$SING_BOX_UPDATE_SERVICE"
 	fail "sing-box update unit does not invoke the dedicated root helper"
 grep -Fqx 'RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX AF_NETLINK' "$SING_BOX_UPDATE_SERVICE" ||
 	fail "sing-box candidate sandbox does not match the Agent network-monitoring policy"
+grep -Fqx 'CapabilityBoundingSet=CAP_DAC_OVERRIDE CAP_FOWNER CAP_SETGID CAP_SETUID' "$SING_BOX_UPDATE_SERVICE" ||
+	fail "sing-box update helper does not bound its privilege-drop capabilities"
+grep -Fqx 'AmbientCapabilities=CAP_SETGID CAP_SETUID' "$SING_BOX_UPDATE_SERVICE" ||
+	fail "sing-box update helper cannot retain the capabilities required to drop privileges"
 [ -x "$TEST_ROOT/usr/local/libexec/theatropolis/theatropolis-update-helper" ] ||
 	fail "dedicated update helper was not installed"
 grep -Fqx "PathExists=$AGENT_STATE_DIRECTORY/sing-box-update-request.json" "$SING_BOX_UPDATE_PATH" ||
