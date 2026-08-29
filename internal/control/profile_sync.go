@@ -28,6 +28,7 @@ func (s *Server) queueAuthoritativeProfile(ctx context.Context, agentID, reason 
 	}
 	config := singbox.DisabledManagedConfig()
 	appliedRevision := ""
+	rebuiltAppliedProfile := false
 	previous, err := s.Deployments.LatestForAgent(ctx, agentID)
 	if err == nil {
 		if applied, _, exists := previous.AppliedConfiguration(); exists {
@@ -47,6 +48,16 @@ func (s *Server) queueAuthoritativeProfile(ctx context.Context, agentID, reason 
 		}
 	} else if !errors.Is(err, deployment.ErrNotFound) {
 		return fmt.Errorf("load authoritative Agent profile: %w", err)
+	}
+	if s.authoritativeProfileProvider != nil {
+		rebuilt, managed, rebuildErr := s.authoritativeProfileProvider(ctx, agentID)
+		if rebuildErr != nil {
+			return fmt.Errorf("rebuild authoritative Agent profile: %w", rebuildErr)
+		}
+		if managed {
+			config = rebuilt
+			rebuiltAppliedProfile = true
+		}
 	}
 
 	deploymentID, err := randomOpaqueID("dep")
@@ -83,6 +94,7 @@ func (s *Server) queueAuthoritativeProfile(ctx context.Context, agentID, reason 
 		"agent_id", agentID,
 		"deployment_id", record.ID,
 		"restored_previous_profile", previous.ID != "",
+		"rebuilt_applied_profile", rebuiltAppliedProfile,
 		"reason", reason,
 	)
 	return nil

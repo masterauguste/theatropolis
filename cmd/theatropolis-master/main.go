@@ -195,6 +195,7 @@ func serve(arguments []string) error {
 	billingEnforcer := proxynode.NewBillingEnforcer(proxyNodes, proxyDeployer, logger)
 	billingEnforcer.Start(ctx)
 	proxyDeployer.SetTopologyAppliedHook(billingEnforcer.TriggerDeployment)
+	server.SetAuthoritativeProfileProvider(proxyDeployer.AuthoritativeAppliedProfile)
 	server.SetProxyNodeUserHandler(billingEnforcer.TriggerDeployment)
 	server.SetProxyNodeAddressHandler(billingEnforcer.TriggerAppliedRefresh)
 	billingEnforcer.TriggerDeployment()

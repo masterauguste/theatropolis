@@ -90,6 +90,7 @@ type Server struct {
 	managedUserTrafficWaiters        map[string]chan error
 	proxyNodeAddressHandler          func()
 	proxyNodeUserHandler             func()
+	authoritativeProfileProvider     func(context.Context, string) ([]byte, bool, error)
 	managedUserAuthorityMu           sync.Mutex
 	managedUserAuthorityWaiters      map[string]chan *controlv1.ManagedUserAuthorityReport
 	closeOnce                        sync.Once
@@ -165,6 +166,15 @@ func (s *Server) SetProxyNodeAddressHandler(handler func()) {
 // own goroutine after the authenticated send loop is ready.
 func (s *Server) SetProxyNodeUserHandler(handler func()) {
 	s.proxyNodeUserHandler = handler
+}
+
+// SetAuthoritativeProfileProvider lets the Proxy Node store rebuild the
+// currently applied topology with the running master's compiler. Historical
+// deployment records remain the fallback for Agents outside that store.
+func (s *Server) SetAuthoritativeProfileProvider(
+	provider func(context.Context, string) ([]byte, bool, error),
+) {
+	s.authoritativeProfileProvider = provider
 }
 
 // PoolRegistry exposes the outbound-pool registry so master-local callers

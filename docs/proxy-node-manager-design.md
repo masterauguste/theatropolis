@@ -271,10 +271,14 @@ An authority-capable Agent must never treat an authority/topology digest
 mismatch as a successful user synchronization. It immediately stops the
 sing-box data plane while keeping its control connection available, persists
 the newest authority, and reports the fixed non-sensitive mismatch diagnostic.
-The master responds by replaying its retained applied profile as a topology
-deployment; the Agent overlays the persisted authority before validation and
-only then restarts sing-box. Startup follows the same fail-closed rule, so an
-old active file cannot briefly restore revoked credentials during reconnection.
+The master responds by rebuilding its last committed topology with the current
+compiler and latest memberships, then sends it as a topology deployment; the
+Agent overlays the persisted authority before validation and only then restarts
+sing-box. Historical deployment JSON is only a fallback for Agents outside the
+Proxy Node store, because replaying output from an older compiler can repeat the
+same authority mismatch forever. Startup follows the same fail-closed rule, so
+an old active file cannot briefly restore revoked credentials during
+reconnection.
 
 Topology deployment is a fleet transaction. Before the first Agent is touched,
 the master writes a private atomic journal containing every affected Agent's

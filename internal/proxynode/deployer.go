@@ -114,6 +114,30 @@ func (d *Deployer) Preview() (CompileResult, error) {
 	return CompileTopology(d.store.Snapshot(), d.resolver)
 }
 
+// AuthoritativeAppliedProfile rebuilds one managed Agent from the last
+// committed topology plus the latest live memberships. This is deliberately
+// compiler-backed rather than deployment-record-backed: an application
+// upgrade may change the generated sing-box structure, making an otherwise
+// valid historical profile incompatible with the newest user authority.
+func (d *Deployer) AuthoritativeAppliedProfile(
+	_ context.Context,
+	agentID string,
+) ([]byte, bool, error) {
+	state := d.store.Snapshot()
+	if !slices.Contains(state.ManagedAgents, agentID) {
+		return nil, false, nil
+	}
+	compiled, err := CompileAppliedUsers(state, d.resolver)
+	if err != nil {
+		return nil, true, err
+	}
+	config := compiled.Configs[agentID]
+	if config == nil {
+		config = emptyManagedConfig()
+	}
+	return append([]byte(nil), config...), true, nil
+}
+
 func (d *Deployer) Start() (FleetDeployment, error) {
 	return d.start(deploymentTopology, nil, false)
 }

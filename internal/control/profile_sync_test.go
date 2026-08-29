@@ -94,6 +94,57 @@ func TestProfileSyncReplaysRetainedMasterProfile(t *testing.T) {
 	}
 }
 
+func TestProfileSyncRebuildsManagedProfileInsteadOfReplayingStaleRecord(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	store := deployment.NewMemoryStore()
+	server := newTestServer(store, nil)
+	const agentID = "edge-managed-upgrade"
+	enrollTestIdentity(t, server.Identities, agentID)
+	stale := []byte(`{"inbounds":[],"outbounds":[{"type":"block","tag":"old"}],"route":{"final":"old"}}`)
+	fresh := []byte(`{"inbounds":[],"outbounds":[{"type":"block","tag":"new"}],"route":{"final":"new"}}`)
+	previous, err := deployment.New(
+		"stale-deployment", agentID, "old-compiler", stale, time.Now().UTC(),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.Create(ctx, previous); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.Transition(ctx, previous.ID, deployment.StatusDeploying, "", time.Now().UTC()); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.Transition(ctx, previous.ID, deployment.StatusApplied, "", time.Now().UTC()); err != nil {
+		t.Fatal(err)
+	}
+	server.SetAuthoritativeProfileProvider(func(_ context.Context, requested string) ([]byte, bool, error) {
+		if requested != agentID {
+			t.Fatalf("provider Agent = %q", requested)
+		}
+		return append([]byte(nil), fresh...), true, nil
+	})
+	session := newSession(agentID)
+	session.capabilities[ProxyNodeDeployCapability] = struct{}{}
+	session.capabilities[ManagedUserAuthorityCapability] = struct{}{}
+	if err := server.Sessions.Register(session); err != nil {
+		t.Fatal(err)
+	}
+	defer server.Sessions.Unregister(session)
+
+	if err := server.syncProfileOnConnect(ctx, agentID); err != nil {
+		t.Fatal(err)
+	}
+	command := (<-session.commands).GetDeployConfig()
+	if command == nil || !bytes.Equal(command.GetConfigJson(), fresh) {
+		t.Fatalf("replayed profile = %s, want rebuilt profile", command.GetConfigJson())
+	}
+	if deployment.ClassifyRevision(command.GetRevisionId()) != deployment.RevisionPlaneProxyNodeTopology {
+		t.Fatalf("rebuilt profile revision = %q, want topology plane", command.GetRevisionId())
+	}
+}
+
 func TestProfileSyncReclassifiesLegacyUsersRecordForAuthorityCapableReplacement(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
