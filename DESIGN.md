@@ -124,8 +124,10 @@ compact sticky top bar with horizontal navigation and document scrolling.
 - User subscription pages contain only a stable bearer-link surface and the
   read-only projection of that user's active Node roles. The global
   Subscriptions destination owns one compact ordered Rule ledger rendered as
-  draggable cards, with the drag handle retaining keyboard reordering, and the
-  FINAL Proxy/Direct/Reject outcome for every exported user profile.
+  draggable cards. Pointer reordering uses a solid card preview and cooperative
+  sibling-card motion rather than insertion lines; the drag handle retains
+  keyboard reordering. The page also owns the FINAL Proxy/Direct/Reject outcome
+  for every exported user profile.
 - Search uses one canonical control: magnifier leading icon, white bordered
   surface, cobalt focus halo, and a trailing clear action that appears only
   when a query exists.

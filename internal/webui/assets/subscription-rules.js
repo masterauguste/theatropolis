@@ -171,7 +171,11 @@
   const reorderStatus = document.querySelector("[data-subscription-reorder-status]");
   let draggedRule = null;
   let draggedRuleOrder = [];
+  let dragPreview = null;
+  let dragHideFrame = 0;
   let dropAccepted = false;
+  const reorderAnimations = new WeakMap();
+  const reducedMotion = window.matchMedia("(prefers-reduced-motion: reduce)");
 
   const ruleCards = () => [...ruleList.querySelectorAll(":scope > [data-subscription-rule-card]")];
   const ruleOrder = () => ruleCards().map((card) => card.dataset.ruleId).join(",");
@@ -186,16 +190,69 @@
     });
   };
 
-  const clearDropTarget = () => {
+  const settleRuleAnimations = () => {
+    for (const card of ruleCards()) reorderAnimations.get(card)?.cancel();
+  };
+
+  const cardPositions = () => {
+    settleRuleAnimations();
+    return new Map(ruleCards().map((card) => [card, card.getBoundingClientRect().top]));
+  };
+
+  const animateRuleReflow = (positions) => {
+    if (reducedMotion.matches) return;
     for (const card of ruleCards()) {
-      card.classList.remove("is-drop-target");
-      delete card.dataset.dropPosition;
+      if (card === draggedRule) continue;
+      const previousTop = positions.get(card);
+      if (previousTop === undefined) continue;
+      const delta = previousTop - card.getBoundingClientRect().top;
+      if (Math.abs(delta) < 1 || typeof card.animate !== "function") continue;
+      reorderAnimations.get(card)?.cancel();
+      const animation = card.animate(
+        [
+          { transform: `translateY(${delta}px)` },
+          { transform: "translateY(0)" },
+        ],
+        { duration: 160, easing: "cubic-bezier(0.2, 0.75, 0.25, 1)" },
+      );
+      reorderAnimations.set(card, animation);
+      const release = () => {
+        if (reorderAnimations.get(card) === animation) reorderAnimations.delete(card);
+      };
+      animation.addEventListener("finish", release, { once: true });
+      animation.addEventListener("cancel", release, { once: true });
+    }
+  };
+
+  const removeDragPreview = () => {
+    dragPreview?.remove();
+    dragPreview = null;
+  };
+
+  const createDragPreview = (card, event) => {
+    removeDragPreview();
+    const bounds = card.getBoundingClientRect();
+    dragPreview = card.cloneNode(true);
+    dragPreview.removeAttribute("draggable");
+    dragPreview.removeAttribute("data-subscription-rule-card");
+    dragPreview.removeAttribute("data-rule-id");
+    dragPreview.setAttribute("aria-hidden", "true");
+    dragPreview.setAttribute("inert", "");
+    dragPreview.className = "subscription-rule__drag-preview";
+    dragPreview.style.width = `${bounds.width}px`;
+    document.body.append(dragPreview);
+    if (event.dataTransfer) {
+      const offsetX = Math.max(0, Math.min(bounds.width, event.clientX - bounds.left));
+      const offsetY = Math.max(0, Math.min(bounds.height, event.clientY - bounds.top));
+      event.dataTransfer.setDragImage(dragPreview, offsetX, offsetY);
     }
   };
 
   const restoreRuleOrder = (cards) => {
+    const positions = cardPositions();
     for (const card of cards) ruleList.append(card);
     updateRulePositions();
+    animateRuleReflow(positions);
   };
 
   const showReorderStatus = (message, error = false) => {
@@ -268,25 +325,28 @@
     draggedRule = card;
     draggedRuleOrder = ruleCards();
     dropAccepted = false;
-    card.classList.add("is-dragging");
+    createDragPreview(card, event);
     if (event.dataTransfer) {
       event.dataTransfer.effectAllowed = "move";
       event.dataTransfer.setData("text/plain", card.dataset.ruleId || "subscription-rule");
     }
+    dragHideFrame = window.requestAnimationFrame(() => card.classList.add("is-dragging"));
   });
 
   ruleList.addEventListener("dragover", (event) => {
-    if (!draggedRule || !(event.target instanceof Element)) return;
-    const target = event.target.closest("[data-subscription-rule-card]");
-    if (!target || target === draggedRule || target.parentElement !== ruleList) return;
+    if (!draggedRule || !(event.target instanceof Element) || !ruleList.contains(event.target)) return;
     event.preventDefault();
     if (event.dataTransfer) event.dataTransfer.dropEffect = "move";
-    clearDropTarget();
-    const bounds = target.getBoundingClientRect();
-    const after = event.clientY > bounds.top + bounds.height / 2;
-    target.classList.add("is-drop-target");
-    target.dataset.dropPosition = after ? "after" : "before";
-    ruleList.insertBefore(draggedRule, after ? target.nextElementSibling : target);
+    const reference = ruleCards()
+      .filter((card) => card !== draggedRule)
+      .find((card) => {
+        const bounds = card.getBoundingClientRect();
+        return event.clientY < bounds.top + bounds.height / 2;
+      }) || null;
+    if (reference === draggedRule.nextElementSibling || (!reference && !draggedRule.nextElementSibling)) return;
+    const positions = cardPositions();
+    ruleList.insertBefore(draggedRule, reference);
+    animateRuleReflow(positions);
   });
 
   ruleList.addEventListener("drop", (event) => {
@@ -297,11 +357,13 @@
 
   ruleList.addEventListener("dragend", () => {
     if (!draggedRule) return;
+    window.cancelAnimationFrame(dragHideFrame);
+    dragHideFrame = 0;
     const movedCard = draggedRule;
     const previousCards = draggedRuleOrder;
     const previousOrder = previousCards.map((card) => card.dataset.ruleId).join(",");
     movedCard.classList.remove("is-dragging");
-    clearDropTarget();
+    removeDragPreview();
     draggedRule = null;
     draggedRuleOrder = [];
     if (!dropAccepted) {

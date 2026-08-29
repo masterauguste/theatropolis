@@ -93,8 +93,10 @@ Security and domain rules in the Go implementation remain authoritative.
   quota reset. Expired Nodes remain omitted. The
   universal Subscription Rules are explicitly ordered as draggable cards and
   use only Proxy, Direct, or Reject. Dropping a card atomically saves the complete
-  order without reloading; its handle also supports Arrow Up/Down as the
-  non-drag alternative. `FINAL（未匹配规则）` selects the exported default action.
+  order without reloading. During pointer drag, the dragged card remains a solid
+  preview while sibling cards animate into their new positions; no insertion
+  line is shown. Its handle also supports Arrow Up/Down as the non-drag
+  alternative. `FINAL（未匹配规则）` selects the exported default action.
   Proxy is each export's generated group of active Nodes with Direct and Reject
   as its final manual choices. An empty group exposes Direct followed by Reject,
   so Direct is the default.
