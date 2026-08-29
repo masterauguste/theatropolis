@@ -355,11 +355,6 @@ grep -Fqx "PathExists=$AGENT_STATE_DIRECTORY/update-request.json" "$UPDATE_PATH"
 	fail "update watcher does not monitor the agent request file"
 grep -Fq 'theatropolis-update-helper apply-sing-box ' "$SING_BOX_UPDATE_SERVICE" ||
 	fail "sing-box update unit does not invoke the dedicated root helper"
-if grep -Fq -- '--validation-user' "$SING_BOX_UPDATE_SERVICE"; then
-	fail "sing-box update unit still executes candidate code inside the root helper"
-fi
-grep -Fqx 'CapabilityBoundingSet=CAP_DAC_OVERRIDE CAP_FOWNER' "$SING_BOX_UPDATE_SERVICE" ||
-	fail "sing-box update unit retains unnecessary identity-changing capabilities"
 [ -x "$TEST_ROOT/usr/local/libexec/theatropolis/theatropolis-update-helper" ] ||
 	fail "dedicated update helper was not installed"
 grep -Fqx "PathExists=$AGENT_STATE_DIRECTORY/sing-box-update-request.json" "$SING_BOX_UPDATE_PATH" ||

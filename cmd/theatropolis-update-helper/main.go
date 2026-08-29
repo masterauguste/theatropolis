@@ -89,9 +89,11 @@ func applySingBox(arguments []string) error {
 	stateDirectory := flags.String("state-dir", "", "agent state directory")
 	installPath := flags.String("install-path", "", "installed sing-box binary")
 	libraryPath := flags.String("library-path", "", "installed libcronet library")
-	// Accepted for rolling upgrades from units generated before candidate
-	// execution moved out of the privileged helper. Intentionally unused.
-	_ = flags.String("validation-user", "", "deprecated compatibility option")
+	validationUser := flags.String(
+		"validation-user",
+		"theatropolis-agent",
+		"unprivileged account used to execute candidate code",
+	)
 	if err := flags.Parse(arguments); err != nil {
 		return err
 	}
@@ -107,5 +109,6 @@ func applySingBox(arguments []string) error {
 		LibraryPath:    *libraryPath,
 		Architecture:   runtime.GOARCH,
 		RunningVersion: runningVersion,
+		ValidationUser: *validationUser,
 	})
 }
