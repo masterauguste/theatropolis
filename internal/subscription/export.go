@@ -12,6 +12,7 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/masterauguste/theatropolis/internal/pool"
 	"github.com/masterauguste/theatropolis/internal/proxynode"
 )
 
@@ -553,7 +554,12 @@ func surgeName(value string) string {
 }
 
 func ValidateNode(node Node) error {
-	if strings.TrimSpace(node.Name) == "" || net.ParseIP(node.Server) == nil || node.Port < 1 || node.Port > 65535 || node.Password == "" {
+	serverValid := net.ParseIP(node.Server) != nil
+	if !serverValid {
+		normalized, err := pool.NormalizeSubscriptionDomain(node.Server)
+		serverValid = err == nil && normalized != ""
+	}
+	if strings.TrimSpace(node.Name) == "" || !serverValid || node.Port < 1 || node.Port > 65535 || node.Password == "" {
 		return fmt.Errorf("invalid subscription node %q", node.Name)
 	}
 	return nil

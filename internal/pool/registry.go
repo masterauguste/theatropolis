@@ -37,7 +37,8 @@ var (
 	ErrInvalidRemark     = errors.New("pool: invalid manual remark")
 	ErrManualNotFound    = errors.New("pool: manual outbound not found")
 	ErrInvalidAddress    = errors.New("pool: invalid address")
-	ErrInvalidTLSAddress = errors.New("pool: invalid default TLS address")
+	ErrInvalidDomain     = errors.New("pool: invalid subscription domain")
+	ErrInvalidTLSAddress = errors.New("pool: invalid TLS address")
 	ErrInvalidFamily     = errors.New("pool: invalid address family")
 )
 
@@ -161,15 +162,16 @@ type manualRecord struct {
 }
 
 type agentRecord struct {
-	reportedV4        []string
-	reportedV6        []string
-	observed          string
-	probedV4          []string
-	probedV6          []string
-	overrideV4        string
-	overrideV6        string
-	defaultTLSAddress string
-	updatedAt         time.Time
+	reportedV4           []string
+	reportedV6           []string
+	observed             string
+	probedV4             []string
+	probedV6             []string
+	overrideV4           string
+	overrideV6           string
+	subscriptionDomainV4 string
+	subscriptionDomainV6 string
+	updatedAt            time.Time
 }
 
 type renderedRecord struct {
@@ -268,6 +270,7 @@ func Open(path string) (*Registry, error) {
 			updatedAt: manual.UpdatedAt.UTC(),
 		}
 	}
+	legacyDefaultTLSAddress := false
 	for agentID, agent := range stored.Agents {
 		if !validComponent(agentID) {
 			return nil, errors.New("pool: registry contains an invalid agent ID")
@@ -276,6 +279,7 @@ func Open(path string) (*Registry, error) {
 		if err != nil {
 			return nil, err
 		}
+		legacyDefaultTLSAddress = legacyDefaultTLSAddress || agent.DefaultTLSAddress != ""
 		registry.agents[agentID] = record
 	}
 	for agentID, rendered := range stored.Rendered {
@@ -294,6 +298,11 @@ func Open(path string) (*Registry, error) {
 		}
 	}
 	registry.poolVersion = stored.PoolVersion
+	if legacyDefaultTLSAddress {
+		if err := registry.persistLocked(); err != nil {
+			return nil, fmt.Errorf("pool: discard removed default TLS address: %w", err)
+		}
+	}
 	return registry, nil
 }
 
@@ -480,15 +489,16 @@ func (r *Registry) SetReported(agentID string, v4, v6 []string) (bool, error) {
 	}
 
 	r.agents[agentID] = agentRecord{
-		reportedV4:        normalizedV4,
-		reportedV6:        normalizedV6,
-		observed:          previous.observed,
-		probedV4:          probedV4,
-		probedV6:          probedV6,
-		overrideV4:        previous.overrideV4,
-		overrideV6:        previous.overrideV6,
-		defaultTLSAddress: previous.defaultTLSAddress,
-		updatedAt:         r.now(),
+		reportedV4:           normalizedV4,
+		reportedV6:           normalizedV6,
+		observed:             previous.observed,
+		probedV4:             probedV4,
+		probedV6:             probedV6,
+		overrideV4:           previous.overrideV4,
+		overrideV6:           previous.overrideV6,
+		subscriptionDomainV4: previous.subscriptionDomainV4,
+		subscriptionDomainV6: previous.subscriptionDomainV6,
+		updatedAt:            r.now(),
 	}
 	previousVersion := r.poolVersion
 	r.poolVersion++
@@ -543,15 +553,16 @@ func (r *Registry) SetProbed(agentID string, v4, v6 []string) (bool, error) {
 	}
 
 	r.agents[agentID] = agentRecord{
-		reportedV4:        previous.reportedV4,
-		reportedV6:        previous.reportedV6,
-		observed:          previous.observed,
-		probedV4:          normalizedV4,
-		probedV6:          normalizedV6,
-		overrideV4:        previous.overrideV4,
-		overrideV6:        previous.overrideV6,
-		defaultTLSAddress: previous.defaultTLSAddress,
-		updatedAt:         r.now(),
+		reportedV4:           previous.reportedV4,
+		reportedV6:           previous.reportedV6,
+		observed:             previous.observed,
+		probedV4:             normalizedV4,
+		probedV6:             normalizedV6,
+		overrideV4:           previous.overrideV4,
+		overrideV6:           previous.overrideV6,
+		subscriptionDomainV4: previous.subscriptionDomainV4,
+		subscriptionDomainV6: previous.subscriptionDomainV6,
+		updatedAt:            r.now(),
 	}
 	previousVersion := r.poolVersion
 	r.poolVersion++
@@ -611,7 +622,8 @@ func (r *Registry) SetObserved(agentID, addr string) (bool, error) {
 		record.probedV6 = previous.probedV6
 		record.overrideV4 = previous.overrideV4
 		record.overrideV6 = previous.overrideV6
-		record.defaultTLSAddress = previous.defaultTLSAddress
+		record.subscriptionDomainV4 = previous.subscriptionDomainV4
+		record.subscriptionDomainV6 = previous.subscriptionDomainV6
 	}
 	r.agents[agentID] = record
 	previousVersion := r.poolVersion
@@ -669,7 +681,8 @@ func (r *Registry) SetOverrides(agentID, v4, v6 string) error {
 		record.observed = previous.observed
 		record.probedV4 = previous.probedV4
 		record.probedV6 = previous.probedV6
-		record.defaultTLSAddress = previous.defaultTLSAddress
+		record.subscriptionDomainV4 = previous.subscriptionDomainV4
+		record.subscriptionDomainV6 = previous.subscriptionDomainV6
 	}
 	r.agents[agentID] = record
 	previousVersion := r.poolVersion
@@ -716,50 +729,65 @@ func (r *Registry) Overrides(agentID string) (v4, v6 string) {
 	return record.overrideV4, record.overrideV6
 }
 
-// NormalizeTLSAddress validates and canonicalizes an optional DNS hostname
-// used as the preferred server address for TLS-capable derived outbounds.
+// NormalizeSubscriptionDomain validates and canonicalizes an optional DNS
+// hostname used to publish one address family in configuration subscriptions.
 // Schemes, ports, paths, IP literals, wildcards, and internationalized labels
 // are rejected so the value cannot be confused with a URL or socket address.
-func NormalizeTLSAddress(value string) (string, error) {
+func NormalizeSubscriptionDomain(value string) (string, error) {
 	value = strings.ToLower(strings.TrimSpace(value))
 	value = strings.TrimSuffix(value, ".")
 	if value == "" {
 		return "", nil
 	}
 	if len(value) > 253 || strings.ContainsAny(value, ":/\\[]*@") {
-		return "", ErrInvalidTLSAddress
+		return "", ErrInvalidDomain
 	}
 	if _, err := netip.ParseAddr(value); err == nil {
-		return "", ErrInvalidTLSAddress
+		return "", ErrInvalidDomain
 	}
 	labels := strings.Split(value, ".")
 	if len(labels) < 2 {
-		return "", ErrInvalidTLSAddress
+		return "", ErrInvalidDomain
 	}
 	for _, label := range labels {
 		if len(label) == 0 || len(label) > 63 ||
 			label[0] == '-' || label[len(label)-1] == '-' {
-			return "", ErrInvalidTLSAddress
+			return "", ErrInvalidDomain
 		}
 		for _, character := range label {
 			if (character < 'a' || character > 'z') &&
 				(character < '0' || character > '9') &&
 				character != '-' {
-				return "", ErrInvalidTLSAddress
+				return "", ErrInvalidDomain
 			}
 		}
 	}
 	return value, nil
 }
 
-// SetDefaultTLSAddress sets or clears an agent's preferred DNS destination
-// for TLS-capable pool entries. The value is metadata, but it changes newly
-// generated logical outbounds and therefore advances the pool version.
-func (r *Registry) SetDefaultTLSAddress(agentID, value string) error {
+// NormalizeTLSAddress retains validation for the optional per-reference TLS
+// hostname used by logical outbound rendering. It is unrelated to the removed
+// agent-wide default TLS address setting.
+func NormalizeTLSAddress(value string) (string, error) {
+	normalized, err := NormalizeSubscriptionDomain(value)
+	if err != nil {
+		return "", ErrInvalidTLSAddress
+	}
+	return normalized, nil
+}
+
+// SetSubscriptionDomains atomically sets or clears the DNS destinations used
+// for an agent's IPv4 and IPv6 configuration-subscription entries. These
+// values do not affect topology rendering, so the pool version is unchanged.
+func (r *Registry) SetSubscriptionDomains(agentID, ipv4, ipv6 string) error {
 	if !validComponent(agentID) {
 		return ErrInvalidName
 	}
-	normalized, err := NormalizeTLSAddress(value)
+	normalizedV4, err := NormalizeSubscriptionDomain(ipv4)
+	if err != nil {
+		return err
+	}
+	normalizedV6, err := NormalizeSubscriptionDomain(ipv6)
 	if err != nil {
 		return err
 	}
@@ -768,16 +796,18 @@ func (r *Registry) SetDefaultTLSAddress(agentID, value string) error {
 	defer r.mu.Unlock()
 
 	previous, existed := r.agents[agentID]
-	if existed && previous.defaultTLSAddress == normalized {
+	if existed && previous.subscriptionDomainV4 == normalizedV4 &&
+		previous.subscriptionDomainV6 == normalizedV6 {
 		return nil
 	}
-	if !existed && normalized == "" {
+	if !existed && normalizedV4 == "" && normalizedV6 == "" {
 		return nil
 	}
 	record := previous
-	record.defaultTLSAddress = normalized
+	record.subscriptionDomainV4 = normalizedV4
+	record.subscriptionDomainV6 = normalizedV6
 	record.updatedAt = r.now()
-	if normalized == "" &&
+	if normalizedV4 == "" && normalizedV6 == "" &&
 		len(record.reportedV4) == 0 &&
 		len(record.reportedV6) == 0 &&
 		record.observed == "" &&
@@ -789,25 +819,38 @@ func (r *Registry) SetDefaultTLSAddress(agentID, value string) error {
 	} else {
 		r.agents[agentID] = record
 	}
-	previousVersion := r.poolVersion
-	r.poolVersion++
 	if err := r.persistLocked(); err != nil {
 		if existed {
 			r.agents[agentID] = previous
 		} else {
 			delete(r.agents, agentID)
 		}
-		r.poolVersion = previousVersion
 		return err
 	}
 	return nil
 }
 
-// DefaultTLSAddress returns an agent's preferred TLS destination hostname.
-func (r *Registry) DefaultTLSAddress(agentID string) string {
+// SubscriptionDomains returns an agent's optional IPv4 and IPv6 subscription
+// hostnames. Empty values mean the corresponding family uses its resolved IP.
+func (r *Registry) SubscriptionDomains(agentID string) (ipv4, ipv6 string) {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
-	return r.agents[agentID].defaultTLSAddress
+	record := r.agents[agentID]
+	return record.subscriptionDomainV4, record.subscriptionDomainV6
+}
+
+// SubscriptionDomainForFamily returns the configured subscription hostname
+// for one concrete address family. FamilyAuto deliberately has no domain.
+func (r *Registry) SubscriptionDomainForFamily(agentID string, family Family) string {
+	ipv4, ipv6 := r.SubscriptionDomains(agentID)
+	switch family {
+	case FamilyIPv4:
+		return ipv4
+	case FamilyIPv6:
+		return ipv6
+	default:
+		return ""
+	}
 }
 
 func normalizeOverride(addr string, family Family) (string, error) {
@@ -1061,9 +1104,13 @@ func validateDiskAgent(agent diskAgent) (agentRecord, error) {
 	if err != nil {
 		return agentRecord{}, err
 	}
-	defaultTLSAddress, err := NormalizeTLSAddress(agent.DefaultTLSAddress)
+	subscriptionDomainV4, err := NormalizeSubscriptionDomain(agent.SubscriptionDomainV4)
 	if err != nil {
-		return agentRecord{}, errors.New("pool: registry contains an invalid default TLS address")
+		return agentRecord{}, errors.New("pool: registry contains an invalid IPv4 subscription domain")
+	}
+	subscriptionDomainV6, err := NormalizeSubscriptionDomain(agent.SubscriptionDomainV6)
+	if err != nil {
+		return agentRecord{}, errors.New("pool: registry contains an invalid IPv6 subscription domain")
 	}
 	// Migrate the original single override field into its matching family.
 	// Explicit family fields win if a partially migrated document contains
@@ -1084,15 +1131,16 @@ func validateDiskAgent(agent diskAgent) (agentRecord, error) {
 		}
 	}
 	return agentRecord{
-		reportedV4:        v4,
-		reportedV6:        v6,
-		observed:          observed,
-		probedV4:          probedV4,
-		probedV6:          probedV6,
-		overrideV4:        overrideV4,
-		overrideV6:        overrideV6,
-		defaultTLSAddress: defaultTLSAddress,
-		updatedAt:         agent.UpdatedAt.UTC(),
+		reportedV4:           v4,
+		reportedV6:           v6,
+		observed:             observed,
+		probedV4:             probedV4,
+		probedV6:             probedV6,
+		overrideV4:           overrideV4,
+		overrideV6:           overrideV6,
+		subscriptionDomainV4: subscriptionDomainV4,
+		subscriptionDomainV6: subscriptionDomainV6,
+		updatedAt:            agent.UpdatedAt.UTC(),
 	}, nil
 }
 
@@ -1145,16 +1193,20 @@ type diskManual struct {
 // added after version 1 shipped; they are optional, so version-1 documents
 // written before them load cleanly (missing fields decode as empty).
 type diskAgent struct {
-	ReportedV4        []string  `json:"reported_v4"`
-	ReportedV6        []string  `json:"reported_v6"`
-	ObservedAddress   string    `json:"observed_address,omitempty"`
-	ProbedV4          []string  `json:"probed_v4,omitempty"`
-	ProbedV6          []string  `json:"probed_v6,omitempty"`
-	AddressOverride   string    `json:"address_override,omitempty"` // legacy single-family field
-	AddressOverrideV4 string    `json:"address_override_v4,omitempty"`
-	AddressOverrideV6 string    `json:"address_override_v6,omitempty"`
-	DefaultTLSAddress string    `json:"default_tls_address,omitempty"`
-	UpdatedAt         time.Time `json:"updated_at"`
+	ReportedV4        []string `json:"reported_v4"`
+	ReportedV6        []string `json:"reported_v6"`
+	ObservedAddress   string   `json:"observed_address,omitempty"`
+	ProbedV4          []string `json:"probed_v4,omitempty"`
+	ProbedV6          []string `json:"probed_v6,omitempty"`
+	AddressOverride   string   `json:"address_override,omitempty"` // legacy single-family field
+	AddressOverrideV4 string   `json:"address_override_v4,omitempty"`
+	AddressOverrideV6 string   `json:"address_override_v6,omitempty"`
+	// DefaultTLSAddress is decode-only compatibility. Version-1 registries may
+	// contain it, but the removed ambiguous value is intentionally discarded.
+	DefaultTLSAddress    string    `json:"default_tls_address,omitempty"`
+	SubscriptionDomainV4 string    `json:"subscription_domain_ipv4,omitempty"`
+	SubscriptionDomainV6 string    `json:"subscription_domain_ipv6,omitempty"`
+	UpdatedAt            time.Time `json:"updated_at"`
 }
 
 type diskRender struct {
@@ -1190,15 +1242,16 @@ func (r *Registry) persistLocked() error {
 	}
 	for agentID, record := range r.agents {
 		stored.Agents[agentID] = diskAgent{
-			ReportedV4:        append([]string(nil), record.reportedV4...),
-			ReportedV6:        append([]string(nil), record.reportedV6...),
-			ObservedAddress:   record.observed,
-			ProbedV4:          append([]string(nil), record.probedV4...),
-			ProbedV6:          append([]string(nil), record.probedV6...),
-			AddressOverrideV4: record.overrideV4,
-			AddressOverrideV6: record.overrideV6,
-			DefaultTLSAddress: record.defaultTLSAddress,
-			UpdatedAt:         record.updatedAt.UTC(),
+			ReportedV4:           append([]string(nil), record.reportedV4...),
+			ReportedV6:           append([]string(nil), record.reportedV6...),
+			ObservedAddress:      record.observed,
+			ProbedV4:             append([]string(nil), record.probedV4...),
+			ProbedV6:             append([]string(nil), record.probedV6...),
+			AddressOverrideV4:    record.overrideV4,
+			AddressOverrideV6:    record.overrideV6,
+			SubscriptionDomainV4: record.subscriptionDomainV4,
+			SubscriptionDomainV6: record.subscriptionDomainV6,
+			UpdatedAt:            record.updatedAt.UTC(),
 		}
 	}
 	for agentID, record := range r.rendered {

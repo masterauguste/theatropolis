@@ -532,9 +532,15 @@ func subscriptionAddresses(registry *pool.Registry, agentID string, mode proxyno
 		if effectiveMode == proxynode.SubscriptionAddressIPv6 && candidate.kind != pool.FamilyIPv6 {
 			continue
 		}
-		if address, exists := registry.AgentAddressForFamily(agentID, candidate.kind); exists {
-			result = append(result, subscriptionAddress{family: candidate.family, address: address})
+		address := registry.SubscriptionDomainForFamily(agentID, candidate.kind)
+		if address == "" {
+			var exists bool
+			address, exists = registry.AgentAddressForFamily(agentID, candidate.kind)
+			if !exists {
+				continue
+			}
 		}
+		result = append(result, subscriptionAddress{family: candidate.family, address: address})
 	}
 	return result
 }

@@ -8,12 +8,30 @@ import (
 	"github.com/masterauguste/theatropolis/internal/proxynode"
 )
 
+func TestValidateNodeAcceptsDNSHostnamesAndRejectsURLs(t *testing.T) {
+	base := Node{Name: "Cinema", Protocol: proxynode.ProtocolAnyTLS, Port: 443, Password: "secret"}
+	for _, server := range []string{"203.0.113.8", "2001:db8::8", "v4.edge.example"} {
+		node := base
+		node.Server = server
+		if err := ValidateNode(node); err != nil {
+			t.Errorf("ValidateNode(%q) error = %v", server, err)
+		}
+	}
+	for _, server := range []string{"", "localhost", "https://edge.example", "edge.example:443", "*.edge.example"} {
+		node := base
+		node.Server = server
+		if err := ValidateNode(node); err == nil {
+			t.Errorf("ValidateNode(%q) error = nil", server)
+		}
+	}
+}
+
 func TestRenderProfilesKeepNodesAndRulesSeparate(t *testing.T) {
 	profile := Profile{
 		Name: "alice", Default: proxynode.SubscriptionProxy, RuleSetBaseURL: "https://master.example/subscription-rule-sets",
 		Nodes: []Node{
 			{Name: "Cinema", Protocol: proxynode.ProtocolShadowsocks, Server: "203.0.113.8", Port: 20048, Method: "2022-blake3-aes-256-gcm", ServerKey: "server-key", Password: "user-key"},
-			{Name: "Stage", Protocol: proxynode.ProtocolAnyTLS, Server: "2001:db8::8", Port: 443, Password: "secret", ServerName: "proxy.example.com", Insecure: true},
+			{Name: "Stage", Protocol: proxynode.ProtocolAnyTLS, Server: "v6.edge.example", Port: 443, Password: "secret", ServerName: "proxy.example.com", Insecure: true},
 		},
 		Rules: []proxynode.SubscriptionRule{
 			{ID: "sru_012345678901234567890123", Order: 0, Match: proxynode.SubscriptionMatchDomainSuffix, Values: []string{"example.com"}, Action: proxynode.SubscriptionDirect},
@@ -27,7 +45,7 @@ func TestRenderProfilesKeepNodesAndRulesSeparate(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, want := range []string{`password: "server-key:user-key"`, `"DOMAIN-SUFFIX,example.com,Direct"`, `"GEOSITE,openai,Reject"`, "geodata-mode: true", "MetaCubeX/meta-rules-dat@release/geoip.dat"} {
+	for _, want := range []string{`password: "server-key:user-key"`, `server: "v6.edge.example"`, `"DOMAIN-SUFFIX,example.com,Direct"`, `"GEOSITE,openai,Reject"`, "geodata-mode: true", "MetaCubeX/meta-rules-dat@release/geoip.dat"} {
 		if !strings.Contains(string(clash), want) {
 			t.Fatalf("Clash profile missing %q:\n%s", want, clash)
 		}
@@ -39,7 +57,7 @@ func TestRenderProfilesKeepNodesAndRulesSeparate(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, want := range []string{"[Proxy Group]", "Proxy = select", "DOMAIN-SUFFIX,example.com,Direct", "DOMAIN-SET,https://master.example/subscription-rule-sets/geosite/openai,Reject,update-interval=86400", "RULE-SET,https://master.example/subscription-rule-sets/geoip/cn,Direct,update-interval=86400"} {
+	for _, want := range []string{"[Proxy Group]", "Proxy = select", "v6.edge.example", "DOMAIN-SUFFIX,example.com,Direct", "DOMAIN-SET,https://master.example/subscription-rule-sets/geosite/openai,Reject,update-interval=86400", "RULE-SET,https://master.example/subscription-rule-sets/geoip/cn,Direct,update-interval=86400"} {
 		if !strings.Contains(string(surge), want) {
 			t.Fatalf("Surge profile missing %q:\n%s", want, surge)
 		}
@@ -64,6 +82,7 @@ func TestRenderProfilesKeepNodesAndRulesSeparate(t *testing.T) {
 		t.Fatal(err)
 	}
 	if !strings.Contains(string(singBox), `"tag": "Proxy"`) ||
+		!strings.Contains(string(singBox), `"server": "v6.edge.example"`) ||
 		!strings.Contains(string(singBox), `"type": "mixed"`) ||
 		!strings.Contains(string(singBox), `"type": "tun"`) ||
 		!strings.Contains(string(singBox), `"auto_route": true`) ||

@@ -15,7 +15,6 @@ import (
 
 type AddressResolver interface {
 	AgentAddressForFamily(agentID string, family pool.Family) (string, bool)
-	DefaultTLSAddress(agentID string) string
 }
 
 type CompileResult struct {

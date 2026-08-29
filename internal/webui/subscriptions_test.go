@@ -5,10 +5,12 @@ import (
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"path/filepath"
 	"strings"
 	"sync/atomic"
 	"testing"
 
+	"github.com/masterauguste/theatropolis/internal/pool"
 	"github.com/masterauguste/theatropolis/internal/proxynode"
 )
 
@@ -23,6 +25,43 @@ func TestQuotaReachedMembershipRemainsVisibleInSubscription(t *testing.T) {
 		if got := membershipVisibleInSubscription(status); got != want {
 			t.Errorf("membershipVisibleInSubscription(%q) = %t, want %t", status, got, want)
 		}
+	}
+}
+
+func TestSubscriptionAddressesPreferPerFamilyDomainsWithIPFallback(t *testing.T) {
+	registry, err := pool.Open(filepath.Join(t.TempDir(), "outbound-pool.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := registry.SetReported("edge-1", []string{"203.0.113.9"}, []string{"2001:db8::9"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := registry.SetSubscriptionDomains("edge-1", "v4.edge.example", ""); err != nil {
+		t.Fatal(err)
+	}
+	addresses := subscriptionAddresses(registry, "edge-1", proxynode.SubscriptionAddressDual)
+	want := []subscriptionAddress{{family: "IPv4", address: "v4.edge.example"}, {family: "IPv6", address: "2001:db8::9"}}
+	if len(addresses) != len(want) {
+		t.Fatalf("subscriptionAddresses() = %+v", addresses)
+	}
+	for index := range want {
+		if addresses[index] != want[index] {
+			t.Fatalf("subscriptionAddresses()[%d] = %+v, want %+v", index, addresses[index], want[index])
+		}
+	}
+}
+
+func TestSubscriptionDomainsPublishWithoutDiscoveredIPs(t *testing.T) {
+	registry, err := pool.Open(filepath.Join(t.TempDir(), "outbound-pool.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := registry.SetSubscriptionDomains("edge-1", "v4.edge.example", "v6.edge.example"); err != nil {
+		t.Fatal(err)
+	}
+	addresses := subscriptionAddresses(registry, "edge-1", proxynode.SubscriptionAddressIPv6)
+	if len(addresses) != 1 || addresses[0].family != "IPv6" || addresses[0].address != "v6.edge.example" {
+		t.Fatalf("subscriptionAddresses() = %+v", addresses)
 	}
 }
 

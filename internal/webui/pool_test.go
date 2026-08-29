@@ -71,9 +71,6 @@ func TestServerPoolOptionsEndpoint(t *testing.T) {
 	if err := registry.UpsertManual("backup", json.RawMessage(`{"type":"direct"}`)); err != nil {
 		t.Fatal(err)
 	}
-	if err := registry.SetDefaultTLSAddress("edge-source", "tls-source.example.com"); err != nil {
-		t.Fatal(err)
-	}
 
 	request := fixture.request(
 		http.MethodGet,
@@ -135,7 +132,7 @@ func TestServerPoolOptionsEndpoint(t *testing.T) {
 	if !source.Available || source.IPv4 != "203.0.113.7" || source.IPv6 != "2001:db8::7" ||
 		source.Type != "hysteria2" || source.Port != 8443 ||
 		source.AgentID != "edge-source" || source.InboundTag != "hy2-in" ||
-		source.User != "alice" || source.DefaultTLSAddress != "tls-source.example.com" ||
+		source.User != "alice" ||
 		source.Manual {
 		t.Fatalf("unexpected edge-source option: %+v", source)
 	}
@@ -173,18 +170,19 @@ func TestServerPoolOptionsEndpoint(t *testing.T) {
 	}
 }
 
-func TestServerDefaultTLSAddressSettings(t *testing.T) {
+func TestServerSubscriptionDomainSettings(t *testing.T) {
 	t.Parallel()
 
 	fixture := newPoolFixture(t)
 	enrollAgent(t, fixture.registry, "edge-settings")
 	form := url.Values{
-		"csrf_token":          {fixture.session.CSRFToken},
-		"default_tls_address": {"Tls.Edge.Example."},
+		"csrf_token":               {fixture.session.CSRFToken},
+		"subscription_domain_ipv4": {"V4.Edge.Example."},
+		"subscription_domain_ipv6": {"V6.Edge.Example."},
 	}.Encode()
 	request := fixture.authenticatedMutationRequest(
 		http.MethodPost,
-		"/servers/edge-settings/tls-address",
+		"/servers/edge-settings/subscription-domains",
 		form,
 	)
 	response := httptest.NewRecorder()
@@ -192,14 +190,14 @@ func TestServerDefaultTLSAddressSettings(t *testing.T) {
 	if response.Code != http.StatusSeeOther ||
 		response.Header().Get("Location") != "/servers/edge-settings/manage" {
 		t.Fatalf(
-			"save TLS address response = %d %q, body = %s",
+			"save subscription domains response = %d %q, body = %s",
 			response.Code,
 			response.Header().Get("Location"),
 			response.Body.String(),
 		)
 	}
-	if got := fixture.controller.poolRegistry.DefaultTLSAddress("edge-settings"); got != "tls.edge.example" {
-		t.Fatalf("DefaultTLSAddress() = %q, want tls.edge.example", got)
+	if ipv4, ipv6 := fixture.controller.poolRegistry.SubscriptionDomains("edge-settings"); ipv4 != "v4.edge.example" || ipv6 != "v6.edge.example" {
+		t.Fatalf("SubscriptionDomains() = %q, %q", ipv4, ipv6)
 	}
 
 	request = fixture.authenticatedRequest(
@@ -210,8 +208,31 @@ func TestServerDefaultTLSAddressSettings(t *testing.T) {
 	response = httptest.NewRecorder()
 	fixture.handler.ServeHTTP(response, request)
 	if response.Code != http.StatusOK ||
-		!strings.Contains(response.Body.String(), `value="tls.edge.example"`) {
+		!strings.Contains(response.Body.String(), `value="v4.edge.example"`) ||
+		!strings.Contains(response.Body.String(), `value="v6.edge.example"`) {
 		t.Fatalf("server settings page = %d, body = %s", response.Code, response.Body.String())
+	}
+
+	invalidForm := url.Values{
+		"csrf_token":               {fixture.session.CSRFToken},
+		"subscription_domain_ipv4": {"v4.changed.example"},
+		"subscription_domain_ipv6": {"https://v6.edge.example"},
+	}.Encode()
+	request = fixture.authenticatedMutationRequest(
+		http.MethodPost,
+		"/servers/edge-settings/subscription-domains",
+		invalidForm,
+	)
+	response = httptest.NewRecorder()
+	fixture.handler.ServeHTTP(response, request)
+	if response.Code != http.StatusBadRequest ||
+		!strings.Contains(response.Body.String(), `value="https://v6.edge.example"`) ||
+		!strings.Contains(response.Body.String(), `aria-describedby="server-page-error"`) ||
+		!strings.Contains(response.Body.String(), `data-initial-dialog="server-actions-dialog"`) {
+		t.Fatalf("invalid subscription domain page = %d, body = %s", response.Code, response.Body.String())
+	}
+	if ipv4, ipv6 := fixture.controller.poolRegistry.SubscriptionDomains("edge-settings"); ipv4 != "v4.edge.example" || ipv6 != "v6.edge.example" {
+		t.Fatalf("invalid submission changed SubscriptionDomains() to %q, %q", ipv4, ipv6)
 	}
 }
 

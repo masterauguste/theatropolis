@@ -127,8 +127,6 @@ func (fixedProxyResolver) AgentAddressForFamily(string, pool.Family) (string, bo
 	return "203.0.113.42", true
 }
 
-func (fixedProxyResolver) DefaultTLSAddress(string) string { return "proxy.example.com" }
-
 func (c *testAgentController) DeploymentRecords(
 	ctx context.Context,
 ) ([]deployment.Record, error) {
@@ -374,12 +372,12 @@ func TestProtectedPagesRequireAuthenticationAndConfiguredHost(t *testing.T) {
 	assertSecurityHeaders(t, response.Header())
 }
 
-func TestWebUILocaleNegotiationAndLanguagePreference(t *testing.T) {
+func TestWebUIDefaultsToChineseAndHonorsLanguagePreference(t *testing.T) {
 	t.Parallel()
 
 	fixture := newWebFixture(t)
-	request := fixture.request(http.MethodGet, "/login", "")
-	request.Header.Set("Accept-Language", "zh-CN,zh;q=0.9,en;q=0.6")
+	request := fixture.requestWithoutLocale(http.MethodGet, "/login", "")
+	request.Header.Set("Accept-Language", "en-US,en;q=0.9")
 	response := httptest.NewRecorder()
 	fixture.handler.ServeHTTP(response, request)
 	if response.Code != http.StatusOK {
@@ -402,12 +400,12 @@ func TestWebUILocaleNegotiationAndLanguagePreference(t *testing.T) {
 		t.Errorf("Chinese Content-Language = %q", got)
 	}
 
-	request = fixture.mutationRequest(
+	request = fixture.mutationRequestWithoutLocale(
 		http.MethodPost,
 		"/login",
 		url.Values{"username": {fixture.username}, "password": {"incorrect"}}.Encode(),
 	)
-	request.Header.Set("Accept-Language", "zh-CN")
+	request.Header.Set("Accept-Language", "en-US")
 	response = httptest.NewRecorder()
 	fixture.handler.ServeHTTP(response, request)
 	if response.Code != http.StatusUnauthorized || !strings.Contains(response.Body.String(), "用户名或密码不正确。") {
@@ -416,7 +414,6 @@ func TestWebUILocaleNegotiationAndLanguagePreference(t *testing.T) {
 
 	request = fixture.authenticatedRequest(http.MethodGet, "/servers", "")
 	request.Header.Set("Accept-Language", "zh-CN")
-	request.AddCookie(&http.Cookie{Name: languageCookieName, Value: localeEnglish})
 	response = httptest.NewRecorder()
 	fixture.handler.ServeHTTP(response, request)
 	if body := response.Body.String(); !strings.Contains(body, `<html lang="en">`) ||
@@ -497,8 +494,7 @@ func TestSimplifiedChineseCoversPrimaryWebUIRoutes(t *testing.T) {
 		{path: "/subscriptions", want: []string{"配置订阅", "通用导出策略", "默认路由", "添加规则"}},
 		{path: "/settings", want: []string{"系统设置", "主控端", "流量统计错误"}},
 	} {
-		request := fixture.authenticatedRequest(http.MethodGet, test.path, "")
-		request.AddCookie(&http.Cookie{Name: languageCookieName, Value: localeSimplifiedChinese})
+		request := fixture.authenticatedRequestWithLocale(http.MethodGet, test.path, "", localeSimplifiedChinese)
 		response := httptest.NewRecorder()
 		fixture.handler.ServeHTTP(response, request)
 		if response.Code != http.StatusOK {
@@ -1926,8 +1922,7 @@ func TestUserSettingsOwnProxyNodeAccessAssignments(t *testing.T) {
 		!strings.Contains(response.Body.String(), "100.00 GiB / month") {
 		t.Fatalf("Proxy Node map omitted the user dialog: %d %q", response.Code, response.Body.String())
 	}
-	request = fixture.authenticatedRequest(http.MethodGet, proxyNodeURL(node.ID), "")
-	request.AddCookie(&http.Cookie{Name: languageCookieName, Value: localeSimplifiedChinese})
+	request = fixture.authenticatedRequestWithLocale(http.MethodGet, proxyNodeURL(node.ID), "", localeSimplifiedChinese)
 	response = httptest.NewRecorder()
 	fixture.handler.ServeHTTP(response, request)
 	chineseBody := response.Body.String()
@@ -3681,10 +3676,9 @@ func TestCreateServerRequiresCSRFAndRevealsCommandOnce(t *testing.T) {
 
 	fixture := newWebFixture(t)
 	form := url.Values{
-		"agent_id":            {"edge-paris-1"},
-		"csrf_token":          {fixture.session.CSRFToken},
-		"default_tls_address": {""},
-		"ttl_seconds":         {"900"},
+		"agent_id":    {"edge-paris-1"},
+		"csrf_token":  {fixture.session.CSRFToken},
+		"ttl_seconds": {"900"},
 	}.Encode()
 
 	request := fixture.authenticatedRequest(http.MethodPost, "/servers", form)
@@ -3698,10 +3692,9 @@ func TestCreateServerRequiresCSRFAndRevealsCommandOnce(t *testing.T) {
 	}
 
 	badCSRF := url.Values{
-		"agent_id":            {"edge-paris-1"},
-		"csrf_token":          {strings.Repeat("A", encodedCredentialLength)},
-		"default_tls_address": {""},
-		"ttl_seconds":         {"900"},
+		"agent_id":    {"edge-paris-1"},
+		"csrf_token":  {strings.Repeat("A", encodedCredentialLength)},
+		"ttl_seconds": {"900"},
 	}.Encode()
 	request = fixture.authenticatedMutationRequest(http.MethodPost, "/servers", badCSRF)
 	response = httptest.NewRecorder()
@@ -3822,10 +3815,9 @@ func TestEnrollmentResultIsBoundToCreatingSession(t *testing.T) {
 
 	fixture := newWebFixture(t)
 	form := url.Values{
-		"agent_id":            {"edge-session-bound"},
-		"csrf_token":          {fixture.session.CSRFToken},
-		"default_tls_address": {""},
-		"ttl_seconds":         {"900"},
+		"agent_id":    {"edge-session-bound"},
+		"csrf_token":  {fixture.session.CSRFToken},
+		"ttl_seconds": {"900"},
 	}.Encode()
 	request := fixture.authenticatedMutationRequest(http.MethodPost, "/servers", form)
 	response := httptest.NewRecorder()
@@ -3857,17 +3849,12 @@ func TestEnrollmentResultIsBoundToCreatingSession(t *testing.T) {
 	}
 }
 
-func TestCreateServerStoresDefaultTLSAddress(t *testing.T) {
+func TestCreateServerRejectsRemovedDefaultTLSAddress(t *testing.T) {
 	t.Parallel()
 
 	fixture := newWebFixture(t)
-	poolRegistry, err := pool.Open(filepath.Join(t.TempDir(), "outbound-pool.json"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	fixture.controller.poolRegistry = poolRegistry
 	form := url.Values{
-		"agent_id":            {"edge-tls-default"},
+		"agent_id":            {"edge-no-tls-default"},
 		"csrf_token":          {fixture.session.CSRFToken},
 		"default_tls_address": {"Proxy.Example.COM."},
 		"ttl_seconds":         {"900"},
@@ -3875,25 +3862,11 @@ func TestCreateServerStoresDefaultTLSAddress(t *testing.T) {
 	request := fixture.authenticatedMutationRequest(http.MethodPost, "/servers", form)
 	response := httptest.NewRecorder()
 	fixture.handler.ServeHTTP(response, request)
-	if response.Code != http.StatusSeeOther {
-		t.Fatalf("create status = %d, body = %s", response.Code, response.Body.String())
+	if response.Code != http.StatusForbidden {
+		t.Fatalf("removed field status = %d, body = %s", response.Code, response.Body.String())
 	}
-	if got := poolRegistry.DefaultTLSAddress("edge-tls-default"); got != "proxy.example.com" {
-		t.Fatalf("DefaultTLSAddress() = %q, want proxy.example.com", got)
-	}
-
-	form = url.Values{
-		"agent_id":            {"edge-invalid-tls"},
-		"csrf_token":          {fixture.session.CSRFToken},
-		"default_tls_address": {"https://proxy.example.com"},
-		"ttl_seconds":         {"900"},
-	}.Encode()
-	request = fixture.authenticatedMutationRequest(http.MethodPost, "/servers", form)
-	response = httptest.NewRecorder()
-	fixture.handler.ServeHTTP(response, request)
-	if response.Code != http.StatusBadRequest ||
-		!strings.Contains(response.Body.String(), "DNS hostname only") {
-		t.Fatalf("invalid address response = %d, body = %s", response.Code, response.Body.String())
+	if snapshots := fixture.registry.Snapshot(fixture.now); len(snapshots) != 0 {
+		t.Fatalf("removed field created a server: %+v", snapshots)
 	}
 }
 
@@ -3957,10 +3930,9 @@ func TestEnrollmentRateLimitReturnsTooManyRequests(t *testing.T) {
 	fixture := newWebFixture(t)
 	for index := 0; index < enrollmentLimit; index++ {
 		form := url.Values{
-			"agent_id":            {fmt.Sprintf("edge-%d", index)},
-			"csrf_token":          {fixture.session.CSRFToken},
-			"default_tls_address": {""},
-			"ttl_seconds":         {"900"},
+			"agent_id":    {fmt.Sprintf("edge-%d", index)},
+			"csrf_token":  {fixture.session.CSRFToken},
+			"ttl_seconds": {"900"},
 		}.Encode()
 		request := fixture.authenticatedMutationRequest(http.MethodPost, "/servers", form)
 		response := httptest.NewRecorder()
@@ -3971,10 +3943,9 @@ func TestEnrollmentRateLimitReturnsTooManyRequests(t *testing.T) {
 	}
 
 	form := url.Values{
-		"agent_id":            {"edge-limited"},
-		"csrf_token":          {fixture.session.CSRFToken},
-		"default_tls_address": {""},
-		"ttl_seconds":         {"900"},
+		"agent_id":    {"edge-limited"},
+		"csrf_token":  {fixture.session.CSRFToken},
+		"ttl_seconds": {"900"},
 	}.Encode()
 	request := fixture.authenticatedMutationRequest(http.MethodPost, "/servers", form)
 	response := httptest.NewRecorder()
@@ -4000,10 +3971,9 @@ func TestEnrollmentPersistenceFailureReturnsInternalServerError(t *testing.T) {
 	}
 	fixture := newWebFixtureWithRegistry(t, registry)
 	form := url.Values{
-		"agent_id":            {"edge-storage-failure"},
-		"csrf_token":          {fixture.session.CSRFToken},
-		"default_tls_address": {""},
-		"ttl_seconds":         {"900"},
+		"agent_id":    {"edge-storage-failure"},
+		"csrf_token":  {fixture.session.CSRFToken},
+		"ttl_seconds": {"900"},
 	}.Encode()
 	request := fixture.authenticatedMutationRequest(http.MethodPost, "/servers", form)
 	response := httptest.NewRecorder()
@@ -4202,10 +4172,21 @@ func newWebFixtureWithAccess(
 }
 
 func (f webFixture) request(method, path, body string) *http.Request {
+	return f.requestWithLocale(method, path, body, localeEnglish)
+}
+
+func (f webFixture) requestWithoutLocale(method, path, body string) *http.Request {
+	return f.requestWithLocale(method, path, body, "")
+}
+
+func (f webFixture) requestWithLocale(method, path, body, locale string) *http.Request {
 	request := httptest.NewRequest(method, testPublicURL+path, strings.NewReader(body))
 	request.Host = "master.example.com:8443"
 	if body != "" {
 		request.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	}
+	if locale != "" {
+		request.AddCookie(&http.Cookie{Name: languageCookieName, Value: locale})
 	}
 	return request
 }
@@ -4217,8 +4198,21 @@ func (f webFixture) mutationRequest(method, path, body string) *http.Request {
 	return request
 }
 
+func (f webFixture) mutationRequestWithoutLocale(method, path, body string) *http.Request {
+	request := f.requestWithoutLocale(method, path, body)
+	request.Header.Set("Origin", testPublicURL)
+	request.Header.Set("Sec-Fetch-Site", "same-origin")
+	return request
+}
+
 func (f webFixture) authenticatedRequest(method, path, body string) *http.Request {
 	request := f.request(method, path, body)
+	request.AddCookie(NewSessionCookie(f.session.Token, f.session.ExpiresAt))
+	return request
+}
+
+func (f webFixture) authenticatedRequestWithLocale(method, path, body, locale string) *http.Request {
+	request := f.requestWithLocale(method, path, body, locale)
 	request.AddCookie(NewSessionCookie(f.session.Token, f.session.ExpiresAt))
 	return request
 }

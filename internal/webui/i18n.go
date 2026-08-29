@@ -120,6 +120,7 @@ var simplifiedChinese = map[string]string{
 	"The master stores no plaintext copy. Keep the value printed by the installer in your password manager.":                                                                                             "主控端不会保存明文副本。请将安装程序显示的值保存在密码管理器中。",
 	"TLS-protected sign-in. The master stores only a hash of your access key.":                                                                                                                           "登录受 TLS 保护。主控端只保存访问密钥的哈希值。",
 	"TLS-protected sign-in. Your password is stored as a salted, memory-hard verifier.":                                                                                                                  "登录受 TLS 保护。密码以加盐的内存困难校验值存储。",
+	"Enter DNS hostnames without a scheme, port, path, wildcard, or IP address.":                                                                                                                         "请输入纯 DNS 域名，不要包含协议、端口、路径、通配符或 IP 地址。",
 
 	"Access maintenance": "权限管理", "Access roster": "已授权用户", "Accounting errors": "流量统计错误",
 	"Action": "操作", "Actions": "操作", "Active": "正常", "Add a server": "添加服务器",
@@ -129,7 +130,7 @@ var simplifiedChinese = map[string]string{
 	"Affected subscriptions": "受影响的订阅", "Agent": "服务器", "Agent diagnostic": "Agent 诊断",
 	"Agent software": "Agent 程序", "Agent version": "Agent 版本", "Applying topology change…": "正在应用拓扑…",
 	"Assign a Node": "添加节点", "Assign role": "确认添加", "Authenticated sessions": "登录会话",
-	"Authenticated user": "认证用户", "Automatic": "自动", "Awaiting installation": "等待安装",
+	"Authenticated user": "认证用户", "Automatic": "自动", "Automatic IP addresses": "自动使用 IP 地址", "Awaiting installation": "等待安装",
 	"Bandwidth": "带宽", "Branch": "分支", "Branch settings": "分支设置", "Calendar months": "自然月",
 	"Cancel": "取消", "Certificate identity": "证书标识", "Certificate mode": "证书模式", "Certificate path": "证书路径",
 	"Change sing-box version": "更改 sing-box 版本", "Check again": "重新检查", "Checking for updates…": "正在检查更新…",
@@ -139,8 +140,8 @@ var simplifiedChinese = map[string]string{
 	"Control connection": "控制连接", "Copy": "复制", "Copy command": "复制命令", "Create Branch": "创建分支",
 	"Create Proxy Node": "创建代理节点", "Create replacement command": "创建替换命令", "Create subscription": "创建订阅",
 	"Create user": "创建用户", "Create your first Proxy Node": "创建第一个代理节点", "Credential": "凭据",
-	"Current version": "当前版本", "Custom Rule Set": "自定义规则集", "Custom Rule Sets": "自定义规则集",
-	"Days": "天", "Default route": "默认路由", "Default TLS address": "默认 TLS 地址", "Delete": "删除",
+	"Current version": "当前版本", "Custom domains": "自定义域名", "Custom Rule Set": "自定义规则集", "Custom Rule Sets": "自定义规则集",
+	"Days": "天", "Default route": "默认路由", "Delete": "删除",
 	"Delete and apply": "删除并应用", "Delete Branch": "删除分支", "Delete Proxy Node": "删除代理节点",
 	"Delete rule": "删除规则", "Delete user": "删除用户", "Destination": "目标", "Destination port": "目标端口",
 	"Details": "详情", "Direct": "直连", "Disabled": "已禁用", "Disconnect and invalidate this identity": "断开连接并使此身份失效", "offline": "离线",
@@ -156,7 +157,7 @@ var simplifiedChinese = map[string]string{
 	"Global settings": "系统设置", "Global user": "用户", "Grant access": "添加权限", "Hop": "节点",
 	"Hops": "节点", "Hours": "小时", "HTTPS SRS URL": "HTTPS SRS URL", "Import credentials": "导入凭据",
 	"Inactive": "未启用", "Inbound": "入站", "Infrastructure": "服务器管理", "Install selected sing-box version": "安装所选 sing-box 版本",
-	"IP addresses": "IP 地址", "Isolation": "隔离", "Known to this master": "已被主控端识别", "Last update": "最近更新",
+	"IP addresses": "IP 地址", "IPv4 domain": "IPv4 域名", "IPv6 domain": "IPv6 域名", "Isolation": "隔离", "Known to this master": "已被主控端识别", "Last update": "最近更新",
 	"Latest available": "最新可用版本", "Latest deployment": "最近部署", "Legacy sign-in": "旧版登录",
 	"Link multiplex": "链路多路复用", "Listen address": "监听地址", "Listen port": "监听端口", "Listener": "监听器",
 	"Loading fleet outbounds…": "正在加载舰队出口…", "Loading releases…": "正在加载版本…", "Loading servers…": "正在加载服务器…",
@@ -199,7 +200,7 @@ var simplifiedChinese = map[string]string{
 	"Servers": "服务器", "Set a monthly quota": "设置每月配额", "Settings": "设置", "Shown once.": "仅显示一次。",
 	"Sign in to continue": "登录以继续", "Sign in": "登录", "Sign out": "退出登录", "Single use": "仅限一次",
 	"Skip to content": "跳至内容", "Source port": "源端口", "Status": "状态", "Subscription compensation": "订阅补偿",
-	"Subscription expiration": "订阅到期方式", "Subscription link": "订阅链接", "Subscription links": "订阅链接",
+	"Subscription addresses": "订阅地址", "Subscription expiration": "订阅到期方式", "Subscription link": "订阅链接", "Subscription links": "订阅链接",
 	"Subscription rule": "订阅规则", "Subscriptions": "配置订阅", "Subscription": "订阅", "Supported OS": "支持的操作系统",
 	"Swipe to explore": "横向滑动查看", "Tag": "标签", "Target version": "目标版本", "Target": "目标", "Terminal Exit": "默认出口",
 	"Terminal": "终端", "Time": "时间", "TLS listener": "TLS 监听器", "TLS mode": "TLS 模式", "Total servers": "服务器总数",
@@ -468,16 +469,7 @@ func localeForRequest(request *http.Request) string {
 			return locale
 		}
 	}
-	for _, language := range strings.Split(request.Header.Get("Accept-Language"), ",") {
-		language = strings.TrimSpace(strings.SplitN(language, ";", 2)[0])
-		if strings.HasPrefix(strings.ToLower(language), "zh") {
-			return localeSimplifiedChinese
-		}
-		if strings.HasPrefix(strings.ToLower(language), "en") {
-			return localeEnglish
-		}
-	}
-	return localeEnglish
+	return localeSimplifiedChinese
 }
 
 func (h *Handler) changeLanguage(response http.ResponseWriter, request *http.Request) {

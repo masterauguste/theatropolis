@@ -55,18 +55,17 @@ type poolView struct {
 }
 
 type poolOption struct {
-	Ref               string `json:"ref"`
-	Remark            string `json:"remark,omitempty"`
-	AgentID           string `json:"agent_id,omitempty"`
-	InboundTag        string `json:"inbound_tag,omitempty"`
-	User              string `json:"user,omitempty"`
-	Type              string `json:"type"`
-	Port              int    `json:"port,omitempty"`
-	IPv4              string `json:"ipv4,omitempty"`
-	IPv6              string `json:"ipv6,omitempty"`
-	DefaultTLSAddress string `json:"default_tls_address,omitempty"`
-	Available         bool   `json:"available"`
-	Manual            bool   `json:"manual"`
+	Ref        string `json:"ref"`
+	Remark     string `json:"remark,omitempty"`
+	AgentID    string `json:"agent_id,omitempty"`
+	InboundTag string `json:"inbound_tag,omitempty"`
+	User       string `json:"user,omitempty"`
+	Type       string `json:"type"`
+	Port       int    `json:"port,omitempty"`
+	IPv4       string `json:"ipv4,omitempty"`
+	IPv6       string `json:"ipv6,omitempty"`
+	Available  bool   `json:"available"`
+	Manual     bool   `json:"manual"`
 }
 
 type poolOptionsResponse struct {
@@ -417,18 +416,17 @@ func (h *Handler) serverPoolOptions(response http.ResponseWriter, request *http.
 		entries, diagnostics := h.derivePoolEntries(request.Context(), agentID)
 		for _, entry := range entries {
 			result.Options = append(result.Options, poolOption{
-				Ref:               entry.Ref,
-				Remark:            manualRemarks[entry.Ref],
-				AgentID:           entry.AgentID,
-				InboundTag:        entry.InboundTag,
-				User:              poolUserLabel(entry),
-				Type:              entry.Type,
-				Port:              entry.Port,
-				IPv4:              entry.IPv4,
-				IPv6:              entry.IPv6,
-				DefaultTLSAddress: h.controller.PoolRegistry().DefaultTLSAddress(entry.AgentID),
-				Available:         entry.Available,
-				Manual:            entry.Manual,
+				Ref:        entry.Ref,
+				Remark:     manualRemarks[entry.Ref],
+				AgentID:    entry.AgentID,
+				InboundTag: entry.InboundTag,
+				User:       poolUserLabel(entry),
+				Type:       entry.Type,
+				Port:       entry.Port,
+				IPv4:       entry.IPv4,
+				IPv6:       entry.IPv6,
+				Available:  entry.Available,
+				Manual:     entry.Manual,
 			})
 		}
 		if len(diagnostics) > 0 {
@@ -517,7 +515,7 @@ func (h *Handler) setServerAddress(response http.ResponseWriter, request *http.R
 	http.Redirect(response, request, "/pool", http.StatusSeeOther)
 }
 
-func (h *Handler) setServerTLSAddress(response http.ResponseWriter, request *http.Request) {
+func (h *Handler) setServerSubscriptionDomains(response http.ResponseWriter, request *http.Request) {
 	sessionToken, ok := h.sessionToken(request)
 	if !ok {
 		h.redirectToLogin(response, request)
@@ -531,13 +529,15 @@ func (h *Handler) setServerTLSAddress(response http.ResponseWriter, request *htt
 		request,
 		maxEnrollmentBodyBytes,
 		"csrf_token",
-		"default_tls_address",
+		"subscription_domain_ipv4",
+		"subscription_domain_ipv6",
 	)
 	if err != nil || !h.authorizeCSRF(response, sessionToken, form.Get("csrf_token")) {
 		http.Error(response, "request was not authorized", http.StatusForbidden)
 		return
 	}
-	if _, err := h.access.Authenticate(sessionToken); err != nil {
+	session, err := h.authenticateSession(response, sessionToken)
+	if err != nil {
 		h.redirectToLogin(response, request)
 		return
 	}
@@ -551,25 +551,37 @@ func (h *Handler) setServerTLSAddress(response http.ResponseWriter, request *htt
 		http.Error(response, "the outbound pool is unavailable", http.StatusConflict)
 		return
 	}
-	if err := registry.SetDefaultTLSAddress(snapshot.ID, form.Get("default_tls_address")); err != nil {
-		if errors.Is(err, pool.ErrInvalidTLSAddress) {
-			http.Error(
-				response,
-				"enter a DNS hostname without a scheme, port, path, wildcard, or IP address",
-				http.StatusBadRequest,
-			)
+	ipv4, ipv4Err := pool.NormalizeSubscriptionDomain(form.Get("subscription_domain_ipv4"))
+	ipv6, ipv6Err := pool.NormalizeSubscriptionDomain(form.Get("subscription_domain_ipv6"))
+	if ipv4Err != nil || ipv6Err != nil {
+		data, pageErr := h.serverPageData(request.Context(), session, snapshot, "")
+		if pageErr != nil {
+			http.Error(response, "server details could not be loaded", http.StatusInternalServerError)
 			return
 		}
-		h.logger.Error("save agent default TLS address", "agent_id", snapshot.ID, "error", err)
-		http.Error(response, "the default TLS address could not be saved", http.StatusInternalServerError)
+		data.Error = "Enter DNS hostnames without a scheme, port, path, wildcard, or IP address."
+		data.ErrorField = "subscription_domain_ipv4"
+		if ipv6Err != nil {
+			data.ErrorField = "subscription_domain_ipv6"
+		}
+		data.Agent.SubscriptionDomainV4 = form.Get("subscription_domain_ipv4")
+		data.Agent.SubscriptionDomainV6 = form.Get("subscription_domain_ipv6")
+		h.render(response, http.StatusBadRequest, "server.html", data)
+		return
+	}
+	if err := registry.SetSubscriptionDomains(snapshot.ID, ipv4, ipv6); err != nil {
+		h.logger.Error("save agent subscription domains", "agent_id", snapshot.ID, "error", err)
+		http.Error(response, "the subscription domains could not be saved", http.StatusInternalServerError)
 		return
 	}
 	h.logger.Info(
-		"agent default TLS address saved",
+		"agent subscription domains saved",
 		"agent_id",
 		snapshot.ID,
-		"default_tls_address",
-		registry.DefaultTLSAddress(snapshot.ID),
+		"subscription_domain_ipv4",
+		ipv4,
+		"subscription_domain_ipv6",
+		ipv6,
 	)
 	http.Redirect(
 		response,

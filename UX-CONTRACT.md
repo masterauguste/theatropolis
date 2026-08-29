@@ -35,9 +35,9 @@ Security and domain rules in the Go implementation remain authoritative.
   default route and ordered Rules used by every user export. Its Simplified
   Chinese navigation and page label is `配置订阅`; generic subscription fields
   such as link and expiry retain their context-specific wording.
-- The Web UI supports English and Simplified Chinese (`zh-CN`). Browser language
-  selects the first visit, while the explicit language control stores a
-  one-year, host-scoped preference and takes precedence afterward. The switch
+- The Web UI supports English and Simplified Chinese (`zh-CN`). Simplified
+  Chinese is used when no explicit preference exists; the language control stores
+  a one-year, host-scoped preference that takes precedence afterward. The switch
   returns to the current same-origin route; an untrusted referrer is never used
   as a redirect target. Navigation, document titles, validation, status text,
   authored controls, and client-generated feedback follow the active locale.
@@ -46,6 +46,10 @@ Security and domain rules in the Go implementation remain authoritative.
 
 - Primary buttons commit or create the page's main object. Secondary buttons
   save optional settings, cancel, close, refresh, or open supporting controls.
+- Add Server collects only identity and enrollment lifetime. Optional IPv4 and
+  IPv6 configuration-subscription domains belong to the enrolled Server's
+  settings dialog and save atomically. Invalid values reopen that dialog with
+  both entered values preserved and the invalid field focused.
 - Visible button labels use title case.
 - Danger actions remain visually and spatially distinct from routine saves.
 - Existing server-side validation is authoritative. Invalid submissions retain
@@ -90,7 +94,12 @@ Security and domain rules in the Go implementation remain authoritative.
   followed by Reject, so Direct is the default.
   Each Proxy Node owns a configuration-subscription address selector with
   IPv4-and-IPv6, IPv4-only, and IPv6-only choices. Existing and newly created
-  Nodes default to both families; an unavailable selected family is omitted.
+  Nodes default to both families. For each selected family, an Agent's optional
+  family-specific subscription domain replaces its discovered IP; otherwise
+  the discovered IP remains the fallback. A configured domain may publish its
+  family even when no IP has been discovered. The entrance TLS identity remains
+  the exported SNI and is never replaced by this address metadata. An unavailable
+  family with neither domain nor IP is omitted.
   Changing this selector updates subscription output without deploying topology.
   Geosite is selected directly as a Rule match through the shared searchable
   catalog selector; no provider-management or free-text Geosite surface exists.

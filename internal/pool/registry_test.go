@@ -52,20 +52,20 @@ func TestOpenRequiresPath(t *testing.T) {
 	}
 }
 
-func TestDefaultTLSAddressValidationAndReload(t *testing.T) {
+func TestSubscriptionDomainsValidationAndReload(t *testing.T) {
 	registry, path := openTestRegistry(t)
-	if err := registry.SetDefaultTLSAddress("edge-1", " Proxy.Example.COM. "); err != nil {
-		t.Fatalf("SetDefaultTLSAddress() error = %v", err)
+	if err := registry.SetSubscriptionDomains("edge-1", " V4.Proxy.Example.COM. ", "V6.Proxy.Example.COM."); err != nil {
+		t.Fatalf("SetSubscriptionDomains() error = %v", err)
 	}
-	if got := registry.DefaultTLSAddress("edge-1"); got != "proxy.example.com" {
-		t.Fatalf("DefaultTLSAddress() = %q, want proxy.example.com", got)
+	if ipv4, ipv6 := registry.SubscriptionDomains("edge-1"); ipv4 != "v4.proxy.example.com" || ipv6 != "v6.proxy.example.com" {
+		t.Fatalf("SubscriptionDomains() = %q, %q", ipv4, ipv6)
 	}
-	if registry.PoolVersion() != 1 {
-		t.Fatalf("PoolVersion() = %d, want 1", registry.PoolVersion())
+	if registry.PoolVersion() != 0 {
+		t.Fatalf("subscription metadata changed PoolVersion() to %d", registry.PoolVersion())
 	}
 	reloaded := reopenTestRegistry(t, path)
-	if got := reloaded.DefaultTLSAddress("edge-1"); got != "proxy.example.com" {
-		t.Fatalf("reloaded DefaultTLSAddress() = %q, want proxy.example.com", got)
+	if ipv4, ipv6 := reloaded.SubscriptionDomains("edge-1"); ipv4 != "v4.proxy.example.com" || ipv6 != "v6.proxy.example.com" {
+		t.Fatalf("reloaded SubscriptionDomains() = %q, %q", ipv4, ipv6)
 	}
 	for _, invalid := range []string{
 		"localhost",
@@ -75,15 +75,37 @@ func TestDefaultTLSAddressValidationAndReload(t *testing.T) {
 		"203.0.113.10",
 		"-proxy.example.com",
 	} {
-		if err := registry.SetDefaultTLSAddress("edge-2", invalid); !errors.Is(err, ErrInvalidTLSAddress) {
-			t.Errorf("SetDefaultTLSAddress(%q) error = %v, want ErrInvalidTLSAddress", invalid, err)
+		if err := registry.SetSubscriptionDomains("edge-2", invalid, ""); !errors.Is(err, ErrInvalidDomain) {
+			t.Errorf("SetSubscriptionDomains(%q) error = %v, want ErrInvalidDomain", invalid, err)
 		}
 	}
-	if err := registry.SetDefaultTLSAddress("edge-1", ""); err != nil {
-		t.Fatalf("clear SetDefaultTLSAddress() error = %v", err)
+	if err := registry.SetSubscriptionDomains("edge-1", "", ""); err != nil {
+		t.Fatalf("clear SetSubscriptionDomains() error = %v", err)
 	}
-	if got := registry.DefaultTLSAddress("edge-1"); got != "" {
-		t.Fatalf("cleared DefaultTLSAddress() = %q, want empty", got)
+	if ipv4, ipv6 := registry.SubscriptionDomains("edge-1"); ipv4 != "" || ipv6 != "" {
+		t.Fatalf("cleared SubscriptionDomains() = %q, %q", ipv4, ipv6)
+	}
+}
+
+func TestLegacyDefaultTLSAddressIsDiscarded(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "outbound-pool.json")
+	legacy := `{"version":1,"pool_version":0,"manual":[],"agents":{"edge-1":{"reported_v4":[],"reported_v6":[],"default_tls_address":"legacy.example.com","updated_at":"2026-01-02T03:04:05Z"}},"rendered":{}}`
+	if err := os.WriteFile(path, []byte(legacy), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	registry, err := Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ipv4, ipv6 := registry.SubscriptionDomains("edge-1"); ipv4 != "" || ipv6 != "" {
+		t.Fatalf("legacy default migrated ambiguously: %q, %q", ipv4, ipv6)
+	}
+	stored, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(stored), "default_tls_address") {
+		t.Fatalf("removed default TLS address was persisted: %s", stored)
 	}
 }
 
@@ -178,7 +200,7 @@ func TestDiscardLegacyConfigurationPreservesAgentMetadata(t *testing.T) {
 	if _, err := registry.SetReported("edge-1", []string{"203.0.113.20"}, nil); err != nil {
 		t.Fatal(err)
 	}
-	if err := registry.SetDefaultTLSAddress("edge-1", "proxy.example.com"); err != nil {
+	if err := registry.SetSubscriptionDomains("edge-1", "v4.proxy.example.com", "v6.proxy.example.com"); err != nil {
 		t.Fatal(err)
 	}
 	if err := registry.MarkRendered("edge-1", 1, [32]byte{1}); err != nil {
@@ -196,14 +218,14 @@ func TestDiscardLegacyConfigurationPreservesAgentMetadata(t *testing.T) {
 	if address, ok := registry.AgentAddress("edge-1"); !ok || address != "203.0.113.20" {
 		t.Fatalf("Agent address = %q, %v", address, ok)
 	}
-	if registry.DefaultTLSAddress("edge-1") != "proxy.example.com" {
-		t.Fatal("Agent TLS metadata was discarded")
+	if ipv4, ipv6 := registry.SubscriptionDomains("edge-1"); ipv4 != "v4.proxy.example.com" || ipv6 != "v6.proxy.example.com" {
+		t.Fatal("Agent subscription metadata was discarded")
 	}
 	reloaded, err := Open(path)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(reloaded.Manual()) != 0 || reloaded.DefaultTLSAddress("edge-1") != "proxy.example.com" {
+	if ipv4, ipv6 := reloaded.SubscriptionDomains("edge-1"); len(reloaded.Manual()) != 0 || ipv4 != "v4.proxy.example.com" || ipv6 != "v6.proxy.example.com" {
 		t.Fatal("cutover result did not persist")
 	}
 }

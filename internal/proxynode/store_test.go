@@ -637,8 +637,6 @@ func (r testResolver) AgentAddressForFamily(agentID string, _ pool.Family) (stri
 	return value, ok
 }
 
-func (testResolver) DefaultTLSAddress(string) string { return "" }
-
 func TestCompileKeepsEmptyEntranceReadyForLiveUserManagement(t *testing.T) {
 	store, err := Open(filepath.Join(t.TempDir(), "state.json"), testBuild())
 	if err != nil {

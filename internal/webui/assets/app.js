@@ -785,7 +785,7 @@ if (initialInspector) {
   window.history.replaceState(null, "", cleanURL);
 }
 
-const initialDialog = new URLSearchParams(window.location.search).get("dialog");
+const initialDialog = new URLSearchParams(window.location.search).get("dialog") || document.body.dataset.initialDialog;
 if (initialDialog) {
   const trigger = document.querySelector(`[data-dialog-open="${CSS.escape(initialDialog)}"]`);
   if (trigger instanceof HTMLElement) trigger.click();

@@ -433,15 +433,6 @@ if (configTextarea && configurationForm && configurationEditor) {
         });
         continue;
       }
-      if (
-        entry.default_tls_address &&
-        (entry.type === "anytls" || entry.type === "hysteria2")
-      ) {
-        options.push({
-          value: destinationKey(entry.ref, "", entry.default_tls_address),
-          label: `${poolOptionLabel(entry)} 路 TLS ${entry.default_tls_address}${detail ? ` 路 ${detail}` : ""}`,
-        });
-      }
       for (const family of POOL_FAMILIES) {
         const address = entry[family];
         options.push({

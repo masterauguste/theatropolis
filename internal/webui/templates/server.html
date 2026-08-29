@@ -2,7 +2,7 @@
 <!doctype html>
 <html lang="{{.Locale}}">
 {{template "document-head" .}}
-<body data-version-catalog-url="/servers/{{.Agent.ID}}/versions"{{if and .Agent.Deployment .Agent.Deployment.Pending}} data-deployment-refresh-url="{{.Agent.URL}}" data-deployment-status-url="{{.Agent.DeploymentStatusURL}}"{{end}}>
+<body data-version-catalog-url="/servers/{{.Agent.ID}}/versions"{{if or (eq .ErrorField "subscription_domain_ipv4") (eq .ErrorField "subscription_domain_ipv6")}} data-initial-dialog="server-actions-dialog"{{end}}{{if and .Agent.Deployment .Agent.Deployment.Pending}} data-deployment-refresh-url="{{.Agent.URL}}" data-deployment-status-url="{{.Agent.DeploymentStatusURL}}"{{end}}>
   <a class="skip-link" href="#main">Skip to content</a>
   {{template "global-header" .}}
   <main class="main main--wide" id="main">
@@ -29,7 +29,7 @@
       </header>
 
       {{if .Error}}
-      <div class="notice notice--error" role="alert">{{.Error}}</div>
+      <div class="notice notice--error" id="server-page-error" role="alert">{{.Error}}</div>
       {{end}}
 
       <section class="server-summary" aria-label="Server status">
@@ -83,22 +83,36 @@
             </header>
             <div class="modal__body actions-list">
               <details class="action-section" open>
-                <summary><span><strong>Server settings</strong><small>{{if .Agent.DefaultTLSAddress}}{{.Agent.DefaultTLSAddress}}{{else}}No default TLS address{{end}}</small></span></summary>
+                <summary><span><strong>Subscription addresses</strong><small>{{if or .Agent.SubscriptionDomainV4 .Agent.SubscriptionDomainV6}}Custom domains{{else}}Automatic IP addresses{{end}}</small></span></summary>
                 <div class="action-section__body">
-                  <form novalidate action="/servers/{{.Agent.ID}}/tls-address" method="post" class="stack stack--compact">
+                  <form novalidate action="/servers/{{.Agent.ID}}/subscription-domains" method="post" class="stack stack--compact">
                     <input type="hidden" name="csrf_token" value="{{.CSRFToken}}">
                     <label class="field">
-                      <span>Default TLS address <span class="field__optional">Optional</span></span>
+                      <span>IPv4 domain <span class="field__optional">Optional</span></span>
                       <input
-                        name="default_tls_address"
+                        name="subscription_domain_ipv4"
                         type="text"
-                        value="{{.Agent.DefaultTLSAddress}}"
-                        placeholder="proxy.example.com"
+                        value="{{.Agent.SubscriptionDomainV4}}"
+                        placeholder="ipv4.proxy.example.com"
                         autocomplete="off"
                         autocapitalize="none"
                         spellcheck="false"
-                        inputmode="url"
                         maxlength="253"
+                        {{if eq .ErrorField "subscription_domain_ipv4"}}autofocus aria-invalid="true" aria-describedby="server-page-error"{{else}}aria-invalid="false"{{end}}
+                      >
+                    </label>
+                    <label class="field">
+                      <span>IPv6 domain <span class="field__optional">Optional</span></span>
+                      <input
+                        name="subscription_domain_ipv6"
+                        type="text"
+                        value="{{.Agent.SubscriptionDomainV6}}"
+                        placeholder="ipv6.proxy.example.com"
+                        autocomplete="off"
+                        autocapitalize="none"
+                        spellcheck="false"
+                        maxlength="253"
+                        {{if eq .ErrorField "subscription_domain_ipv6"}}autofocus aria-invalid="true" aria-describedby="server-page-error"{{else}}aria-invalid="false"{{end}}
                       >
                     </label>
                     <button class="button button--secondary button--full" type="submit" data-submit-button data-submit-label="Saving…">Save server settings</button>
