@@ -88,6 +88,9 @@ func TestRenderProfilesKeepNodesAndRulesSeparate(t *testing.T) {
 		!strings.Contains(string(singBox), `"auto_route": true`) ||
 		!strings.Contains(string(singBox), `"type": "local"`) ||
 		!strings.Contains(string(singBox), `"default_domain_resolver": "local-dns"`) ||
+		!strings.Contains(string(singBox), `"tag": "proxy-dns"`) ||
+		!strings.Contains(string(singBox), `"detour": "Proxy"`) ||
+		!strings.Contains(string(singBox), `"action": "hijack-dns"`) ||
 		!strings.Contains(string(singBox), `"external_controller": "127.0.0.1:9090"`) ||
 		!strings.Contains(string(singBox), `"cache_file"`) ||
 		!strings.Contains(string(singBox), `"action": "sniff"`) ||
@@ -99,6 +102,85 @@ func TestRenderProfilesKeepNodesAndRulesSeparate(t *testing.T) {
 	if !singBoxSelectorHasMembers(decoded, "Proxy", []string{"Cinema", "Stage", "Direct", "Reject"}) {
 		t.Fatalf("sing-box Proxy selector does not offer Direct and Reject after its Nodes:\n%s", singBox)
 	}
+}
+
+func TestSingBoxDNSFollowsDomainRoutingWithoutLocalResolutionLeak(t *testing.T) {
+	profile := Profile{
+		Default: proxynode.SubscriptionProxy,
+		Nodes:   []Node{{Name: "Cinema", Protocol: proxynode.ProtocolAnyTLS, Server: "203.0.113.8", Port: 443, Password: "secret", ServerName: "proxy.example.com"}},
+		Rules: []proxynode.SubscriptionRule{
+			{Match: proxynode.SubscriptionMatchGeosite, Values: []string{"geolocation-cn"}, Action: proxynode.SubscriptionDirect},
+			{Match: proxynode.SubscriptionMatchDomainSuffix, Values: []string{"internal.example"}, Action: proxynode.SubscriptionDirect},
+			{Match: proxynode.SubscriptionMatchDomain, Values: []string{"blocked.example"}, Action: proxynode.SubscriptionReject},
+			{Match: proxynode.SubscriptionMatchGeosite, Values: []string{"geolocation-!cn"}, Action: proxynode.SubscriptionProxy},
+		},
+	}
+	content, err := renderSingBox(profile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var root map[string]any
+	if err := json.Unmarshal(content, &root); err != nil {
+		t.Fatal(err)
+	}
+	dns, ok := root["dns"].(map[string]any)
+	if !ok || dns["final"] != "proxy-dns" {
+		t.Fatalf("sing-box DNS final = %#v, want proxy-dns:\n%s", dns["final"], content)
+	}
+	servers, ok := dns["servers"].([]any)
+	if !ok || len(servers) != 2 {
+		t.Fatalf("sing-box DNS servers = %#v, want local and proxied DoH", dns["servers"])
+	}
+	rules, ok := dns["rules"].([]any)
+	if !ok || len(rules) != 3 {
+		t.Fatalf("sing-box DNS rules = %#v, want two Direct and one Proxy domain rule", dns["rules"])
+	}
+	if !strings.Contains(string(content), `"server": "local-dns"`) ||
+		!strings.Contains(string(content), `"server": "proxy-dns"`) ||
+		dnsRulesContainValue(rules, "blocked.example") {
+		t.Fatalf("sing-box DNS rules do not preserve route intent:\n%s", content)
+	}
+	route, ok := root["route"].(map[string]any)
+	if !ok || !routeHasAction(route, "hijack-dns") {
+		t.Fatalf("sing-box route does not hijack TUN DNS:\n%s", content)
+	}
+}
+
+func TestSingBoxDNSFallsBackToLocalWithoutProxyNodes(t *testing.T) {
+	content, err := renderSingBox(Profile{Default: proxynode.SubscriptionProxy})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(content), `"tag": "proxy-dns"`) ||
+		!strings.Contains(string(content), `"final": "local-dns"`) {
+		t.Fatalf("node-less sing-box profile must retain usable local DNS:\n%s", content)
+	}
+}
+
+func routeHasAction(route map[string]any, action string) bool {
+	rules, _ := route["rules"].([]any)
+	for _, raw := range rules {
+		rule, _ := raw.(map[string]any)
+		if rule["action"] == action {
+			return true
+		}
+	}
+	return false
+}
+
+func dnsRulesContainValue(rules []any, value string) bool {
+	for _, raw := range rules {
+		rule, _ := raw.(map[string]any)
+		for _, field := range []string{"domain", "domain_suffix", "domain_keyword", "domain_regex"} {
+			values, _ := rule[field].([]any)
+			for _, candidate := range values {
+				if candidate == value {
+					return true
+				}
+			}
+		}
+	}
+	return false
 }
 
 func TestNoResolveIsExportedWithoutSingBoxResolveAction(t *testing.T) {

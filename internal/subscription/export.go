@@ -390,11 +390,26 @@ func renderSingBox(profile Profile) ([]byte, error) {
 	if len(ruleSets) > 0 {
 		route["rule_set"] = ruleSets
 	}
+	dnsServers := []any{map[string]any{
+		"type": "local", "tag": "local-dns",
+	}}
+	hasProxyDNS := len(profile.Nodes) > 0
+	if hasProxyDNS {
+		dnsServers = append(dnsServers, map[string]any{
+			"type": "https", "tag": "proxy-dns",
+			"server": "1.1.1.1", "server_port": 443, "path": "/dns-query",
+			"tls":    map[string]any{"enabled": true, "server_name": "cloudflare-dns.com"},
+			"detour": "Proxy",
+		})
+	}
+	dns := map[string]any{
+		"servers": dnsServers,
+		"rules":   singBoxDNSRules(profile.Rules, hasProxyDNS),
+		"final":   singBoxDNSServerForAction(profile.Default, hasProxyDNS),
+	}
 	root := map[string]any{
 		"log": map[string]any{"level": "info"},
-		"dns": map[string]any{"servers": []any{map[string]any{
-			"type": "local", "tag": "local-dns",
-		}}},
+		"dns": dns,
 		"inbounds": []any{
 			map[string]any{
 				"type": "tun", "tag": "tun-in",
@@ -424,8 +439,12 @@ type singBoxRouteRule struct {
 }
 
 func insertSingBoxRouteMetadataActions(rules []singBoxRouteRule) []map[string]any {
-	normalized := make([]map[string]any, 0, len(rules)+2)
-	seenSniff, seenResolve := false, false
+	normalized := make([]map[string]any, 0, len(rules)+3)
+	normalized = append(normalized,
+		map[string]any{"action": "sniff"},
+		map[string]any{"protocol": "dns", "action": "hijack-dns"},
+	)
+	seenSniff, seenResolve := true, false
 	for _, compiled := range rules {
 		rule := compiled.Rule
 		needsSniff, needsResolve := false, false
@@ -462,6 +481,44 @@ func insertSingBoxRouteMetadataActions(rules []singBoxRouteRule) []map[string]an
 		normalized = append(normalized, rule)
 	}
 	return normalized
+}
+
+func singBoxDNSRules(rules []proxynode.SubscriptionRule, hasProxy bool) []map[string]any {
+	dnsRules := make([]map[string]any, 0, len(rules))
+	for _, rule := range rules {
+		server := singBoxDNSServerForAction(rule.Action, hasProxy)
+		if rule.Action == proxynode.SubscriptionReject {
+			continue
+		}
+		dnsRule := map[string]any{"action": "route", "server": server}
+		switch rule.Match {
+		case proxynode.SubscriptionMatchDomain:
+			dnsRule["domain"] = slices.Clone(rule.Values)
+		case proxynode.SubscriptionMatchDomainSuffix:
+			dnsRule["domain_suffix"] = slices.Clone(rule.Values)
+		case proxynode.SubscriptionMatchDomainKeyword:
+			dnsRule["domain_keyword"] = slices.Clone(rule.Values)
+		case proxynode.SubscriptionMatchDomainRegex:
+			dnsRule["domain_regex"] = slices.Clone(rule.Values)
+		case proxynode.SubscriptionMatchGeosite:
+			tags := make([]string, 0, len(rule.Values))
+			for _, value := range rule.Values {
+				tags = append(tags, "geosite-"+strings.ToLower(value))
+			}
+			dnsRule["rule_set"] = tags
+		default:
+			continue
+		}
+		dnsRules = append(dnsRules, dnsRule)
+	}
+	return dnsRules
+}
+
+func singBoxDNSServerForAction(action proxynode.SubscriptionAction, hasProxy bool) string {
+	if action == proxynode.SubscriptionProxy && hasProxy {
+		return "proxy-dns"
+	}
+	return "local-dns"
 }
 
 func singBoxNode(node Node) (map[string]any, error) {
