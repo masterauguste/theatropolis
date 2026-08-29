@@ -53,6 +53,7 @@ printf '%s\n' \
 
 # Relocate every fixed system path so the installer cannot write to the host.
 sed \
+	-e "s#/usr/bin/setpriv#$MOCK_BIN/setpriv#g" \
 	-e "s#/usr/local/#$TEST_ROOT/usr/local/#g" \
 	-e "s#/usr/share/#$TEST_ROOT/usr/share/#g" \
 	-e "s#/var/lib/#$TEST_ROOT/var/lib/#g" \
@@ -273,6 +274,11 @@ cat >"$MOCK_BIN/flock" <<'EOF'
 exit 0
 EOF
 
+cat >"$MOCK_BIN/setpriv" <<'EOF'
+#!/bin/sh
+exit 0
+EOF
+
 cat >"$MOCK_BIN/mv" <<'EOF'
 #!/bin/sh
 set -eu
@@ -426,6 +432,22 @@ if find "$STATE_DIRECTORY" -maxdepth 1 \
 	-name '.enrollment-token.*' -print | grep -q .; then
 	fail "successful installation left a staged token behind"
 fi
+
+# Once an Agent identity exists, reinstalling Theatropolis must not download,
+# validate, or replace sing-box. Its independently managed release channel may
+# be temporarily unavailable or intentionally newer than the bootstrap pin.
+printf '%s\n' 'existing agent identity' >"$AGENT_STATE_DIRECTORY/identity.pem"
+SING_BOX_BEFORE_REINSTALL="$TEST_DIRECTORY/sing-box-before-reinstall"
+cp "$TEST_ROOT/usr/local/bin/sing-box" "$SING_BOX_BEFORE_REINSTALL"
+set +e
+REINSTALL_OUTPUT="$(run_installer yes 2>&1)"
+REINSTALL_STATUS="$?"
+set -e
+[ "$REINSTALL_STATUS" -eq 0 ] ||
+	fail "existing Agent reinstall was blocked by sing-box (status $REINSTALL_STATUS): $REINSTALL_OUTPUT"
+cmp -s "$SING_BOX_BEFORE_REINSTALL" "$TEST_ROOT/usr/local/bin/sing-box" ||
+	fail "existing Agent reinstall replaced independently managed sing-box"
+rm -f -- "$AGENT_STATE_DIRECTORY/identity.pem"
 
 set +e
 SING_BOX_SIGNATURE_OUTPUT="$(run_installer yes 2>&1)"

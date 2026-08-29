@@ -61,12 +61,13 @@ TTY_SETTINGS=""
 ENROLLMENT_TOKEN_TEMP=""
 AGENT_WAS_ACTIVE="no"
 AGENT_STOPPED="no"
+SING_BOX_BOOTSTRAP_REQUIRED="yes"
 
 usage() {
 	printf '%s\n' \
 		"Usage:" \
 		"  install.sh master [--version <tag>] [--admin-username <name> [--admin-password-file <path>]]" \
-		"  install.sh agent --master <host:port> [--token <token>] [--ca-file <path>]" \
+		"  install.sh agent --master <host:port> [--token <token>] [--ca-file <path>] [--version <tag>]" \
 		"  install.sh all --server <name> [--version <tag>] [--admin-username <name> [--admin-password-file <path>]]" \
 		"" \
 		"Master and all installations prompt for the public domain and Caddy HTTPS port." \
@@ -500,6 +501,12 @@ agent | all)
 		[ ! -f "$IDENTITY_FILE" ]; then
 		prompt_for_enrollment_token
 	fi
+	if [ -f "$IDENTITY_FILE" ]; then
+		# Reinstallation updates Theatropolis binaries and systemd units only.
+		# sing-box has its own signed update plane and an old bootstrap release
+		# must never block an Agent repair or upgrade.
+		SING_BOX_BOOTSTRAP_REQUIRED="no"
+	fi
 	if [ -n "$CA_FILE" ]; then
 		if [ ! -f "$CA_FILE" ] || [ -L "$CA_FILE" ]; then
 			fail "--ca-file must be a regular file"
@@ -708,7 +715,11 @@ EOF
 }
 
 case "$ROLE" in
-agent | all) prepare_sing_box ;;
+agent | all)
+	if [ "$SING_BOX_BOOTSTRAP_REQUIRED" = "yes" ]; then
+		prepare_sing_box
+	fi
+	;;
 esac
 
 case "$ROLE" in
@@ -1170,7 +1181,9 @@ install_agent() {
 		AGENT_STOPPED="yes"
 		systemctl stop theatropolis-agent
 	fi
-	install_sing_box
+	if [ "$SING_BOX_BOOTSTRAP_REQUIRED" = "yes" ]; then
+		install_sing_box
+	fi
 	install_binary agent
 	install_update_helper
 	install -d -o root -g root -m 0755 "$STATE_DIRECTORY"
