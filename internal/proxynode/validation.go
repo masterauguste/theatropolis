@@ -252,6 +252,9 @@ func validateSubscriptionPolicy(policy SubscriptionPolicy) error {
 		if rule.Provider != "" || len(rule.Values) == 0 || len(rule.Values) > 256 {
 			return errors.New("subscription rule values are invalid")
 		}
+		if rule.NoResolve && rule.Match != SubscriptionMatchIPCIDR && rule.Match != SubscriptionMatchGeoIP {
+			return errors.New("subscription no-resolve is only valid for destination IP/CIDR and GeoIP rules")
+		}
 		for _, value := range rule.Values {
 			if strings.TrimSpace(value) != value || value == "" || len(value) > maxValueBytes || strings.ContainsRune(value, '\x00') {
 				return errors.New("subscription rule value is invalid")

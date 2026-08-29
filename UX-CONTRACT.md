@@ -36,11 +36,14 @@ Security and domain rules in the Go implementation remain authoritative.
   Chinese navigation and page label is `配置订阅`; generic subscription fields
   such as link and expiry retain their context-specific wording.
 - The Web UI supports English and Simplified Chinese (`zh-CN`). Simplified
-  Chinese is used when no explicit preference exists; the language control stores
-  a one-year, host-scoped preference that takes precedence afterward. The switch
-  returns to the current same-origin route; an untrusted referrer is never used
-  as a redirect target. Navigation, document titles, validation, status text,
-  authored controls, and client-generated feedback follow the active locale.
+  Chinese or English is selected from the browser's preferred languages on the
+  first visit, with English as the fallback when neither language matches. That
+  negotiated locale is stored as a one-year, host-scoped preference and takes
+  precedence on later visits. The language control updates the same preference
+  and returns to the current same-origin route; an untrusted referrer is never
+  used as a redirect target. Navigation, document titles, validation, status
+  text, authored controls, and client-generated feedback follow the active
+  locale.
 
 ## Actions and forms
 
@@ -88,10 +91,13 @@ Security and domain rules in the Go implementation remain authoritative.
   whose quota is exhausted remain visible with their stable credential while
   entrance authentication is disabled; they resume without re-import after the
   quota reset. Expired Nodes remain omitted. The
-  universal Subscription Rules are explicitly ordered and use only Proxy,
-  Direct, or Reject; Proxy is each export's generated group of active Nodes with
-  Direct and Reject as its final manual choices. An empty group exposes Direct
-  followed by Reject, so Direct is the default.
+  universal Subscription Rules are explicitly ordered as draggable cards and
+  use only Proxy, Direct, or Reject. Dropping a card atomically saves the complete
+  order without reloading; its handle also supports Arrow Up/Down as the
+  non-drag alternative. `FINAL（未匹配规则）` selects the exported default action.
+  Proxy is each export's generated group of active Nodes with Direct and Reject
+  as its final manual choices. An empty group exposes Direct followed by Reject,
+  so Direct is the default.
   Each Proxy Node owns a configuration-subscription address selector with
   IPv4-and-IPv6, IPv4-only, and IPv6-only choices. Existing and newly created
   Nodes default to both families. For each selected family, an Agent's optional
@@ -101,8 +107,12 @@ Security and domain rules in the Go implementation remain authoritative.
   the exported SNI and is never replaced by this address metadata. An unavailable
   family with neither domain nor IP is omitted.
   Changing this selector updates subscription output without deploying topology.
-  Geosite is selected directly as a Rule match through the shared searchable
-  catalog selector; no provider-management or free-text Geosite surface exists.
+  Geosite and GeoIP are selected directly as Rule matches through the shared
+  searchable catalog selector; neither uses a provider-management or free-text
+  surface.
+  `No Resolve` is available only for destination IP/CIDR and GeoIP Rules. It
+  emits the native flag for Clash and Surge and suppresses the matching
+  sing-box pre-resolution action; domain-only Geosite Rules never expose it.
 - Proxy Node topology Rules use the same searchable catalog selector for
   single-value Geosite and GeoIP matches; all other match types keep their
   established value editor.

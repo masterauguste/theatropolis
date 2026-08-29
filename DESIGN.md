@@ -123,8 +123,9 @@ compact sticky top bar with horizontal navigation and document scrolling.
   without turning the map canvas into a user-management dashboard.
 - User subscription pages contain only a stable bearer-link surface and the
   read-only projection of that user's active Node roles. The global
-  Subscriptions destination owns one compact ordered Rule ledger and the
-  default Proxy/Direct/Reject outcome for every exported user profile.
+  Subscriptions destination owns one compact ordered Rule ledger rendered as
+  draggable cards, with the drag handle retaining keyboard reordering, and the
+  FINAL Proxy/Direct/Reject outcome for every exported user profile.
 - Search uses one canonical control: magnifier leading icon, white bordered
   surface, cobalt focus halo, and a trailing clear action that appears only
   when a query exists.

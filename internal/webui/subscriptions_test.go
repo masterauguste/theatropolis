@@ -112,13 +112,16 @@ func TestPublicSurgeGeoIPRuleSetConvertsCIDRs(t *testing.T) {
 			return &http.Response{StatusCode: http.StatusOK, Body: io.NopCloser(strings.NewReader("10.0.0.0/8\nfd00::/8\ninvalid\n")), Header: make(http.Header)}, nil
 		})},
 	}
-	request := httptest.NewRequest(http.MethodGet, "/subscription-rule-sets/geoip/private", nil)
+	request := httptest.NewRequest(http.MethodGet, "/subscription-rule-sets/geoip/private?no-resolve=1", nil)
 	request.SetPathValue("kind", "geoip")
 	request.SetPathValue("name", "private")
 	response := httptest.NewRecorder()
 	handler.publicSurgeRuleSet(response, request)
 	if response.Code != http.StatusOK || response.Body.String() != "IP-CIDR,10.0.0.0/8,no-resolve\nIP-CIDR6,fd00::/8,no-resolve\n" {
 		t.Fatalf("GeoIP response = %d body %q", response.Code, response.Body.String())
+	}
+	if got := string(surgeIPRuleSet([]byte("10.0.0.0/8\n"), false)); got != "IP-CIDR,10.0.0.0/8\n" {
+		t.Fatalf("resolving GeoIP rule set = %q", got)
 	}
 }
 

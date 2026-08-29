@@ -372,7 +372,7 @@ func TestProtectedPagesRequireAuthenticationAndConfiguredHost(t *testing.T) {
 	assertSecurityHeaders(t, response.Header())
 }
 
-func TestWebUIDefaultsToChineseAndHonorsLanguagePreference(t *testing.T) {
+func TestWebUINegotiatesPersistsAndHonorsLanguagePreference(t *testing.T) {
 	t.Parallel()
 
 	fixture := newWebFixture(t)
@@ -381,36 +381,38 @@ func TestWebUIDefaultsToChineseAndHonorsLanguagePreference(t *testing.T) {
 	response := httptest.NewRecorder()
 	fixture.handler.ServeHTTP(response, request)
 	if response.Code != http.StatusOK {
-		t.Fatalf("Chinese login status = %d, body = %s", response.Code, response.Body.String())
+		t.Fatalf("English login status = %d, body = %s", response.Code, response.Body.String())
 	}
 	body := response.Body.String()
 	for _, expected := range []string{
-		`<html lang="zh-CN">`,
-		`<title>登录 · Theatropolis</title>`,
-		"管理员访问",
-		"登录以继续",
-		`href="/language/en"`,
-		`lang="en" data-language-option="en">English</a>`,
+		`<html lang="en">`,
+		`<title>Sign in · Theatropolis</title>`,
+		"Operator access",
+		"Sign in to continue",
+		`href="/language/zh-CN"`,
+		`lang="zh-CN" data-language-option="zh-CN">中文</a>`,
 	} {
 		if !strings.Contains(body, expected) {
-			t.Errorf("Chinese login omitted %q", expected)
+			t.Errorf("English login omitted %q", expected)
 		}
 	}
-	if got := response.Header().Get("Content-Language"); got != localeSimplifiedChinese {
-		t.Errorf("Chinese Content-Language = %q", got)
+	if got := response.Header().Get("Content-Language"); got != localeEnglish {
+		t.Errorf("English Content-Language = %q", got)
 	}
+	assertLanguagePreferenceCookie(t, response, localeEnglish, fixture.now)
 
 	request = fixture.mutationRequestWithoutLocale(
 		http.MethodPost,
 		"/login",
 		url.Values{"username": {fixture.username}, "password": {"incorrect"}}.Encode(),
 	)
-	request.Header.Set("Accept-Language", "en-US")
+	request.Header.Set("Accept-Language", "en-US;q=0.4, zh-CN;q=0.9")
 	response = httptest.NewRecorder()
 	fixture.handler.ServeHTTP(response, request)
 	if response.Code != http.StatusUnauthorized || !strings.Contains(response.Body.String(), "用户名或密码不正确。") {
 		t.Fatalf("Chinese login validation = %d %q", response.Code, response.Body.String())
 	}
+	assertLanguagePreferenceCookie(t, response, localeSimplifiedChinese, fixture.now)
 
 	request = fixture.authenticatedRequest(http.MethodGet, "/servers", "")
 	request.Header.Set("Accept-Language", "zh-CN")
@@ -419,6 +421,34 @@ func TestWebUIDefaultsToChineseAndHonorsLanguagePreference(t *testing.T) {
 	if body := response.Body.String(); !strings.Contains(body, `<html lang="en">`) ||
 		!strings.Contains(body, ">Servers<") || strings.Contains(body, ">服务器<") {
 		t.Fatalf("English preference did not override browser language: %s", body)
+	}
+	for _, header := range []string{"fr-FR, de;q=0.8", "zh-CN;q=0, en;q=0.7", "zh-CN;q=bogus"} {
+		request = fixture.requestWithoutLocale(http.MethodGet, "/login", "")
+		request.Header.Set("Accept-Language", header)
+		response = httptest.NewRecorder()
+		fixture.handler.ServeHTTP(response, request)
+		if got := response.Header().Get("Content-Language"); got != localeEnglish {
+			t.Errorf("Accept-Language %q selected %q, want English", header, got)
+		}
+		assertLanguagePreferenceCookie(t, response, localeEnglish, fixture.now)
+	}
+
+	request = fixture.requestWithoutLocale(http.MethodGet, "/assets/app.css", "")
+	request.Header.Set("Accept-Language", "zh-CN")
+	response = httptest.NewRecorder()
+	fixture.handler.ServeHTTP(response, request)
+	if response.Code != http.StatusOK || response.Header().Get("Set-Cookie") != "" {
+		t.Fatalf("static asset response = %d cookie %q", response.Code, response.Header().Get("Set-Cookie"))
+	}
+}
+
+func assertLanguagePreferenceCookie(t *testing.T, response *httptest.ResponseRecorder, locale string, now time.Time) {
+	t.Helper()
+	cookies := response.Result().Cookies()
+	if len(cookies) != 1 || cookies[0].Name != languageCookieName || cookies[0].Value != locale ||
+		cookies[0].HttpOnly || !cookies[0].Secure || cookies[0].SameSite != http.SameSiteLaxMode || cookies[0].Path != "/" ||
+		cookies[0].MaxAge != int(languageCookieLifetime.Seconds()) || !cookies[0].Expires.Equal(now.Add(languageCookieLifetime).Truncate(time.Second)) {
+		t.Fatalf("language preference cookie = %+v", cookies)
 	}
 }
 
@@ -462,6 +492,15 @@ func TestLanguageSwitchPersistsOnlySupportedLocaleAndRedirectsSafely(t *testing.
 		t.Fatalf("language preference cookie = %#v", cookies)
 	}
 
+	request = fixture.requestWithoutLocale(http.MethodGet, "/language/zh-CN", "")
+	request.Header.Set("Accept-Language", "en-US")
+	response = httptest.NewRecorder()
+	fixture.handler.ServeHTTP(response, request)
+	if response.Code != http.StatusSeeOther || response.Header().Get("Location") != "/login" {
+		t.Fatalf("first-visit language switch response = %d %q", response.Code, response.Header().Get("Location"))
+	}
+	assertLanguagePreferenceCookie(t, response, localeSimplifiedChinese, fixture.now)
+
 	request = fixture.authenticatedRequest(http.MethodGet, "/language/en", "")
 	request.Header.Set("Referer", "https://attacker.example/steal")
 	response = httptest.NewRecorder()
@@ -491,7 +530,7 @@ func TestSimplifiedChineseCoversPrimaryWebUIRoutes(t *testing.T) {
 		{path: "/servers/new", want: []string{"安全注册", "服务器身份", "注册有效期"}},
 		{path: "/proxy-nodes", want: []string{"代理服务", "代理节点", "路由拓扑"}},
 		{path: "/users", want: []string{"用户管理", "用户列表", "创建用户"}},
-		{path: "/subscriptions", want: []string{"配置订阅", "通用导出策略", "默认路由", "添加规则"}},
+		{path: "/subscriptions", want: []string{"配置订阅", "通用导出策略", "FINAL（未匹配规则）", "添加规则"}},
 		{path: "/settings", want: []string{"系统设置", "主控端", "流量统计错误"}},
 	} {
 		request := fixture.authenticatedRequestWithLocale(http.MethodGet, test.path, "", localeSimplifiedChinese)
@@ -2060,7 +2099,7 @@ func TestUserSubscriptionLinksExportActiveNodesAndOrderedRules(t *testing.T) {
 
 	request = fixture.authenticatedMutationRequest(http.MethodPost, "/subscriptions/rules", url.Values{
 		"csrf_token": {fixture.session.CSRFToken}, "match": {"domain_suffix"}, "values": {"example.com"},
-		"action": {"direct"},
+		"action": {"direct"}, "no_resolve": {"no"},
 	}.Encode())
 	response = httptest.NewRecorder()
 	fixture.handler.ServeHTTP(response, request)
@@ -2072,7 +2111,12 @@ func TestUserSubscriptionLinksExportActiveNodesAndOrderedRules(t *testing.T) {
 	fixture.handler.ServeHTTP(response, request)
 	if response.Code != http.StatusOK || !strings.Contains(response.Body.String(), "Domain suffix") ||
 		!strings.Contains(response.Body.String(), "example.com") || !strings.Contains(response.Body.String(), `<option value="geosite">Geosite</option>`) ||
-		!strings.Contains(response.Body.String(), `data-subscription-geosite`) ||
+		!strings.Contains(response.Body.String(), `data-subscription-rule-set-field`) ||
+		!strings.Contains(response.Body.String(), `data-subscription-rule-set`) ||
+		!strings.Contains(response.Body.String(), `data-subscription-rule-card`) ||
+		!strings.Contains(response.Body.String(), `data-reorder-url="/subscriptions/rules/reorder"`) ||
+		!strings.Contains(response.Body.String(), `FINAL (Unmatched Rules)`) ||
+		!strings.Contains(response.Body.String(), `data-subscription-no-resolve`) ||
 		!strings.Contains(response.Body.String(), `/assets/subscription-rules.js`) || strings.Contains(response.Body.String(), "Rule providers") {
 		t.Fatalf("subscription Rules page = %d %q", response.Code, response.Body.String())
 	}
@@ -3378,6 +3422,39 @@ func TestSubscriptionRuleSetOptionsEndpoint(t *testing.T) {
 	}
 }
 
+func TestSubscriptionRuleReorderEndpoint(t *testing.T) {
+	t.Parallel()
+	fixture := newWebFixture(t)
+	first, err := fixture.proxyNodes.AddSubscriptionRule(proxynode.SubscriptionRuleInput{
+		Match: proxynode.SubscriptionMatchDomainSuffix, Values: []string{"first.example"}, Action: proxynode.SubscriptionProxy,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, err := fixture.proxyNodes.AddSubscriptionRule(proxynode.SubscriptionRuleInput{
+		Match: proxynode.SubscriptionMatchDomainSuffix, Values: []string{"second.example"}, Action: proxynode.SubscriptionDirect,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	request := fixture.authenticatedMutationRequest(http.MethodPost, "/subscriptions/rules/reorder", url.Values{
+		"csrf_token": {fixture.session.CSRFToken},
+		"rule_ids":   {second.ID + "," + first.ID},
+	}.Encode())
+	request.Header.Set("Accept", "application/json")
+	response := httptest.NewRecorder()
+	fixture.handler.ServeHTTP(response, request)
+	if response.Code != http.StatusNoContent || response.Header().Get("Location") != "" {
+		t.Fatalf("subscription Rule reorder = %d location %q body %q", response.Code, response.Header().Get("Location"), response.Body.String())
+	}
+	policy := fixture.proxyNodes.SubscriptionPolicy()
+	if len(policy.Rules) != 2 || policy.Rules[0].ID != second.ID || policy.Rules[0].Order != 0 ||
+		policy.Rules[1].ID != first.ID || policy.Rules[1].Order != 1 {
+		t.Fatalf("subscription Rule order = %#v", policy.Rules)
+	}
+}
+
 func TestServerPageRendersAgentUpdateForm(t *testing.T) {
 	t.Parallel()
 
@@ -4067,6 +4144,20 @@ func TestAssetsAreSelfHostedAndSecurityHeadersApplyToErrors(t *testing.T) {
 			} {
 				if !strings.Contains(asset, expected) {
 					t.Errorf("config editor scope-only routing does not contain %q", expected)
+				}
+			}
+		}
+		if path == "/assets/subscription-rules.js" {
+			asset := response.Body.String()
+			for _, expected := range []string{
+				`ruleList.addEventListener("dragstart"`,
+				`ruleList.addEventListener("dragover"`,
+				`ruleList.addEventListener("drop"`,
+				`ruleList.addEventListener("keydown"`,
+				`rule_ids: ruleOrder()`,
+			} {
+				if !strings.Contains(asset, expected) {
+					t.Errorf("subscription Rule drag ordering does not contain %q", expected)
 				}
 			}
 		}

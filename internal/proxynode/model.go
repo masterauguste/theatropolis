@@ -6,7 +6,7 @@ import "time"
 
 const (
 	SchemaID      = "theatropolis/proxy-node-state"
-	SchemaVersion = 13
+	SchemaVersion = 14
 )
 
 type Protocol string
@@ -141,18 +141,19 @@ type SubscriptionPolicy struct {
 	DefaultAction SubscriptionAction `json:"default_action,omitempty"`
 	Rules         []SubscriptionRule `json:"rules,omitempty"`
 	// Providers is retained only to decode and migrate schema v12 preview
-	// state. Schema v13 validation requires it to be empty.
+	// state. Schema v14 validation requires it to be empty.
 	Providers []SubscriptionProvider `json:"providers,omitempty"`
 	UpdatedAt time.Time              `json:"updated_at,omitempty"`
 }
 
 type SubscriptionRule struct {
-	ID     string            `json:"id"`
-	Order  int               `json:"order"`
-	Match  SubscriptionMatch `json:"match"`
-	Values []string          `json:"values,omitempty"`
+	ID        string            `json:"id"`
+	Order     int               `json:"order"`
+	Match     SubscriptionMatch `json:"match"`
+	Values    []string          `json:"values,omitempty"`
+	NoResolve bool              `json:"no_resolve,omitempty"`
 	// Provider is retained only to decode and migrate schema v12 preview
-	// state. Schema v13 validation requires it to be empty.
+	// state. Schema v14 validation requires it to be empty.
 	Provider string             `json:"provider,omitempty"`
 	Action   SubscriptionAction `json:"action"`
 }

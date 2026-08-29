@@ -192,7 +192,11 @@ func clashRuleLines(rule proxynode.SubscriptionRule) ([]string, error) {
 		if rule.Match == proxynode.SubscriptionMatchIPCIDR && strings.Contains(value, ":") {
 			currentKind = "IP-CIDR6"
 		}
-		lines = append(lines, currentKind+","+csvField(value)+","+target)
+		line := currentKind + "," + csvField(value) + "," + target
+		if rule.NoResolve {
+			line += ",no-resolve"
+		}
+		lines = append(lines, line)
 	}
 	return lines, nil
 }
@@ -283,6 +287,9 @@ func surgeRuleLines(rule proxynode.SubscriptionRule, ruleSetBaseURL string) ([]s
 				prefix = "RULE-SET"
 			}
 			setURL := base + "/" + kind + "/" + url.PathEscape(strings.ToLower(value))
+			if rule.Match == proxynode.SubscriptionMatchGeoIP && rule.NoResolve {
+				setURL += "?no-resolve=1"
+			}
 			lines = append(lines, prefix+","+surgeField(setURL)+","+target+",update-interval=86400")
 		}
 		return lines, nil
@@ -308,7 +315,11 @@ func surgeRuleLines(rule proxynode.SubscriptionRule, ruleSetBaseURL string) ([]s
 		if rule.Match == proxynode.SubscriptionMatchNetwork {
 			currentValue = strings.ToUpper(value)
 		}
-		lines = append(lines, currentKind+","+surgeField(currentValue)+","+target)
+		line := currentKind + "," + surgeField(currentValue) + "," + target
+		if rule.NoResolve {
+			line += ",no-resolve"
+		}
+		lines = append(lines, line)
 	}
 	return lines, nil
 }
@@ -335,14 +346,14 @@ func renderSingBox(profile Profile) ([]byte, error) {
 		selectorMembers = append(selectorMembers, "Direct", "Reject")
 	}
 	outbounds = append(outbounds, map[string]any{"type": "selector", "tag": "Proxy", "outbounds": selectorMembers})
-	rules := make([]map[string]any, 0, len(profile.Rules)+2)
+	compiledRules := make([]singBoxRouteRule, 0, len(profile.Rules)+2)
 	geoRuleSets := make(map[string]string)
 	for _, rule := range profile.Rules {
 		rendered, err := singBoxRule(rule)
 		if err != nil {
 			return nil, err
 		}
-		rules = append(rules, rendered)
+		compiledRules = append(compiledRules, singBoxRouteRule{Rule: rendered, NoResolve: rule.NoResolve})
 		if rule.Match == proxynode.SubscriptionMatchGeoIP {
 			for _, value := range rule.Values {
 				name := strings.ToLower(value)
@@ -369,7 +380,7 @@ func renderSingBox(profile Profile) ([]byte, error) {
 			"update_interval": "1d",
 		})
 	}
-	rules = insertSingBoxRouteMetadataActions(rules)
+	rules := insertSingBoxRouteMetadataActions(compiledRules)
 	route := map[string]any{
 		"rules":                   rules,
 		"final":                   actionName(profile.Default),
@@ -407,10 +418,16 @@ func renderSingBox(profile Profile) ([]byte, error) {
 	return append(content, '\n'), nil
 }
 
-func insertSingBoxRouteMetadataActions(rules []map[string]any) []map[string]any {
+type singBoxRouteRule struct {
+	Rule      map[string]any
+	NoResolve bool
+}
+
+func insertSingBoxRouteMetadataActions(rules []singBoxRouteRule) []map[string]any {
 	normalized := make([]map[string]any, 0, len(rules)+2)
 	seenSniff, seenResolve := false, false
-	for _, rule := range rules {
+	for _, compiled := range rules {
+		rule := compiled.Rule
 		needsSniff, needsResolve := false, false
 		for _, field := range []string{"domain", "domain_suffix", "domain_keyword", "domain_regex"} {
 			if _, exists := rule[field]; exists {
@@ -430,6 +447,9 @@ func insertSingBoxRouteMetadataActions(rules []map[string]any) []map[string]any 
 					needsSniff = true
 				}
 			}
+		}
+		if compiled.NoResolve {
+			needsResolve = false
 		}
 		if needsResolve && !seenResolve {
 			normalized = append(normalized, map[string]any{"action": "resolve"})

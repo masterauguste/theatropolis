@@ -8,6 +8,7 @@ import (
 	"net/url"
 	"regexp"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -141,7 +142,7 @@ var simplifiedChinese = map[string]string{
 	"Create Proxy Node": "创建代理节点", "Create replacement command": "创建替换命令", "Create subscription": "创建订阅",
 	"Create user": "创建用户", "Create your first Proxy Node": "创建第一个代理节点", "Credential": "凭据",
 	"Current version": "当前版本", "Custom domains": "自定义域名", "Custom Rule Set": "自定义规则集", "Custom Rule Sets": "自定义规则集",
-	"Days": "天", "Default route": "默认路由", "Delete": "删除",
+	"Days": "天", "Default route": "默认路由", "FINAL (Unmatched Rules)": "FINAL（未匹配规则）", "Delete": "删除",
 	"Delete and apply": "删除并应用", "Delete Branch": "删除分支", "Delete Proxy Node": "删除代理节点",
 	"Delete rule": "删除规则", "Delete user": "删除用户", "Destination": "目标", "Destination port": "目标端口",
 	"Details": "详情", "Direct": "直连", "Disabled": "已禁用", "Disconnect and invalidate this identity": "断开连接并使此身份失效", "offline": "离线",
@@ -168,6 +169,7 @@ var simplifiedChinese = map[string]string{
 	"Multiplex": "多路复用", "Name": "名称", "Needs attention": "需要处理", "Network": "网络", "New logical service": "新建逻辑服务",
 	"New Proxy Node": "新建代理节点", "New": "新建", "No expiration": "永不过期", "No manual entries yet.": "尚无手动条目。",
 	"No node access": "无节点访问权限", "No Nodes available.": "没有可用节点。", "No Proxy Nodes exist yet": "尚未创建代理节点",
+	"No Resolve":         "不解析域名",
 	"No Proxy Nodes yet": "尚无代理节点", "No rules": "尚无规则", "No servers enrolled yet": "尚无已注册服务器",
 	"No subscription link": "无订阅链接", "No users assigned": "尚未分配用户", "No users available.": "没有可用用户。",
 	"No users have been created.": "尚未创建用户。", "Node role": "节点访问权限", "Node roles": "节点访问权限", "Nodes": "节点",
@@ -229,7 +231,7 @@ var simplifiedChinese = map[string]string{
 	"Duplicate Branch": "复制分支", "Add Rule": "添加规则", "Rule branch": "规则分支", "Reject branch": "拒绝分支",
 	"New Branch from": "新分支，来源", "Reachability depends on runtime DNS or Rule Set data": "可达性取决于运行时 DNS 或规则集数据",
 	"Runtime-dependent path": "依赖运行时数据的路径", "Drag to change priority": "拖动以更改优先级", "View": "查看",
-	"Move Rule up": "上移规则", "Move Rule down": "下移规则", "Delete branch": "删除分支",
+	"Move Rule up": "上移规则", "Move Rule down": "下移规则", "Reorder Rule": "调整规则顺序", "Delete branch": "删除分支",
 	"custom": "自定义", "exit": "出口", "user": "用户", "Link": "链路", "Links": "链路",
 	"Create install command": "创建安装命令", "Server": "服务器", "ACME email": "ACME 邮箱",
 	"IPv4 override": "IPv4 覆盖", "IPv6 override": "IPv6 覆盖", "TLS-secured gRPC": "TLS 加密的 gRPC",
@@ -463,13 +465,60 @@ func normalizeLocale(locale string) string {
 	return localeEnglish
 }
 
-func localeForRequest(request *http.Request) string {
+func localeForRequest(request *http.Request) (string, bool) {
 	if cookie, err := request.Cookie(languageCookieName); err == nil {
-		if locale := normalizeLocale(cookie.Value); locale == localeSimplifiedChinese || cookie.Value == localeEnglish {
-			return locale
+		switch cookie.Value {
+		case localeEnglish, localeSimplifiedChinese:
+			return cookie.Value, true
 		}
 	}
-	return localeSimplifiedChinese
+	return localeFromAcceptLanguage(request.Header.Get("Accept-Language")), false
+}
+
+func localeFromAcceptLanguage(header string) string {
+	bestLocale := localeEnglish
+	bestQuality := -1.0
+	for _, preference := range strings.Split(header, ",") {
+		parts := strings.Split(preference, ";")
+		tag := strings.ToLower(strings.TrimSpace(parts[0]))
+		quality := 1.0
+		valid := tag != ""
+		for _, parameter := range parts[1:] {
+			name, value, found := strings.Cut(strings.TrimSpace(parameter), "=")
+			if !found || !strings.EqualFold(strings.TrimSpace(name), "q") {
+				continue
+			}
+			parsed, err := strconv.ParseFloat(strings.TrimSpace(value), 64)
+			if err != nil || parsed < 0 || parsed > 1 {
+				valid = false
+				break
+			}
+			quality = parsed
+		}
+		if !valid || quality == 0 {
+			continue
+		}
+		locale := ""
+		switch {
+		case tag == "zh" || strings.HasPrefix(tag, "zh-"):
+			locale = localeSimplifiedChinese
+		case tag == "en" || strings.HasPrefix(tag, "en-"), tag == "*":
+			locale = localeEnglish
+		}
+		if locale != "" && quality > bestQuality {
+			bestLocale = locale
+			bestQuality = quality
+		}
+	}
+	return bestLocale
+}
+
+func (h *Handler) languagePreferenceCookie(locale string) *http.Cookie {
+	return &http.Cookie{
+		Name: languageCookieName, Value: normalizeLocale(locale), Path: "/",
+		MaxAge: int(languageCookieLifetime.Seconds()), Expires: h.currentTime().Add(languageCookieLifetime),
+		Secure: h.publicScheme == "https" && !isLocalDevelopmentHost(h.publicHost), SameSite: http.SameSiteLaxMode,
+	}
 }
 
 func (h *Handler) changeLanguage(response http.ResponseWriter, request *http.Request) {
@@ -479,12 +528,7 @@ func (h *Handler) changeLanguage(response http.ResponseWriter, request *http.Req
 		http.NotFound(response, request)
 		return
 	}
-	http.SetCookie(response, &http.Cookie{
-		Name: languageCookieName, Value: locale, Path: "/", MaxAge: int(languageCookieLifetime.Seconds()),
-		Expires:  h.currentTime().Add(languageCookieLifetime),
-		Secure:   h.publicScheme == "https" && !isLocalDevelopmentHost(h.publicHost),
-		SameSite: http.SameSiteLaxMode,
-	})
+	http.SetCookie(response, h.languagePreferenceCookie(locale))
 	target := "/servers"
 	if _, ok := h.sessionToken(request); !ok {
 		target = "/login"

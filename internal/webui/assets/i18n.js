@@ -85,6 +85,8 @@
     "Type a rule-set tag and press Enter…": "输入规则集标签并按 Enter…",
     "Press Enter after each value. Multiple values in one rule use OR semantics.": "每个值输入后按 Enter；同一规则中的多个值按 OR 匹配。",
     "Choose one rule set.": "请选择一个规则集。",
+    "Rule moved to position {position}.": "规则已移至第 {position} 位。",
+    "Rule order could not be saved. Previous order restored.": "规则顺序保存失败，已恢复原顺序。",
     "Choose one or more values. Multiple values in one rule use OR semantics.": "请选择一个或多个值；同一规则中的多个值按 OR 匹配。",
     "Inbound": "入站",
     "User": "用户",

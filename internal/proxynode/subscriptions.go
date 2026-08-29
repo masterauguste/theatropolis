@@ -9,9 +9,10 @@ import (
 )
 
 type SubscriptionRuleInput struct {
-	Match  SubscriptionMatch
-	Values []string
-	Action SubscriptionAction
+	Match     SubscriptionMatch
+	Values    []string
+	NoResolve bool
+	Action    SubscriptionAction
 }
 
 func EffectiveSubscriptionAddressMode(mode SubscriptionAddressMode) SubscriptionAddressMode {
@@ -195,7 +196,7 @@ func (s *Store) AddSubscriptionRule(input SubscriptionRuleInput) (SubscriptionRu
 	err = s.updateSubscriptionPolicy(func(policy *SubscriptionPolicy) error {
 		created = SubscriptionRule{
 			ID: ruleID, Order: len(policy.Rules), Match: input.Match,
-			Values: input.Values, Action: input.Action,
+			Values: input.Values, NoResolve: input.NoResolve, Action: input.Action,
 		}
 		candidate := *policy
 		candidate.Rules = append(slices.Clone(policy.Rules), created)
@@ -219,6 +220,7 @@ func (s *Store) UpdateSubscriptionRule(ruleID string, input SubscriptionRuleInpu
 		candidate.Rules = slices.Clone(policy.Rules)
 		candidate.Rules[index].Match = input.Match
 		candidate.Rules[index].Values = input.Values
+		candidate.Rules[index].NoResolve = input.NoResolve
 		candidate.Rules[index].Action = input.Action
 		if err := validateSubscriptionPolicy(candidate); err != nil {
 			return err
@@ -256,6 +258,33 @@ func (s *Store) MoveSubscriptionRule(ruleID string, direction int) error {
 		}
 		policy.Rules[index], policy.Rules[target] = policy.Rules[target], policy.Rules[index]
 		reorderSubscriptionRules(policy.Rules)
+		return nil
+	})
+}
+
+func (s *Store) ReorderSubscriptionRules(ruleIDs []string) error {
+	return s.updateSubscriptionPolicy(func(policy *SubscriptionPolicy) error {
+		if len(ruleIDs) != len(policy.Rules) {
+			return ErrInvalidState
+		}
+		byID := make(map[string]SubscriptionRule, len(policy.Rules))
+		for _, rule := range policy.Rules {
+			byID[rule.ID] = rule
+		}
+		reordered := make([]SubscriptionRule, 0, len(ruleIDs))
+		for _, ruleID := range ruleIDs {
+			rule, exists := byID[ruleID]
+			if !exists {
+				return ErrInvalidState
+			}
+			delete(byID, ruleID)
+			reordered = append(reordered, rule)
+		}
+		if len(byID) != 0 {
+			return ErrInvalidState
+		}
+		reorderSubscriptionRules(reordered)
+		policy.Rules = reordered
 		return nil
 	})
 }

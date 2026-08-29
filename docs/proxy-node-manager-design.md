@@ -294,7 +294,7 @@ pruning. The master adds each authenticated control frame exactly once to the
 matching Membership's current-period usage in a private SQLite/WAL database,
 keeps a bounded non-sensitive accounting-failure history there, and remains the
 sole durable accounting authority. Topology and user policy remain in the
-schema-v13 JSON store; SQL is authoritative for high-frequency totals and reset
+schema-v14 JSON store; SQL is authoritative for high-frequency totals and reset
 boundaries. Schema-v7 JSON accounting values are imported once during upgrade,
 and a corrupt accounting database fails closed instead of becoming an empty
 ledger.

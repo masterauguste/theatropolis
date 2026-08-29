@@ -71,6 +71,45 @@ func TestUserSubscriptionLifecycleIsDurableAndIndependent(t *testing.T) {
 	}
 }
 
+func TestSubscriptionRuleReorderIsAtomic(t *testing.T) {
+	store, err := Open(filepath.Join(t.TempDir(), "proxy-node-state.json"), testBuild())
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = store.accounting.db.Close() })
+
+	rules := make([]SubscriptionRule, 0, 3)
+	for _, value := range []string{"one.example", "two.example", "three.example"} {
+		rule, err := store.AddSubscriptionRule(SubscriptionRuleInput{
+			Match: SubscriptionMatchDomainSuffix, Values: []string{value}, Action: SubscriptionProxy,
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		rules = append(rules, rule)
+	}
+
+	if err := store.ReorderSubscriptionRules([]string{rules[2].ID, rules[0].ID, rules[1].ID}); err != nil {
+		t.Fatal(err)
+	}
+	policy := store.SubscriptionPolicy()
+	for index, expectedID := range []string{rules[2].ID, rules[0].ID, rules[1].ID} {
+		if policy.Rules[index].ID != expectedID || policy.Rules[index].Order != index {
+			t.Fatalf("reordered subscription Rules = %#v", policy.Rules)
+		}
+	}
+
+	if err := store.ReorderSubscriptionRules([]string{rules[0].ID, rules[0].ID, rules[1].ID}); err == nil {
+		t.Fatal("duplicate Rule order was accepted")
+	}
+	unchanged := store.SubscriptionPolicy()
+	for index := range policy.Rules {
+		if unchanged.Rules[index].ID != policy.Rules[index].ID || unchanged.Rules[index].Order != policy.Rules[index].Order {
+			t.Fatalf("invalid reorder changed subscription Rules: before=%#v after=%#v", policy.Rules, unchanged.Rules)
+		}
+	}
+}
+
 func TestProxyNodeSubscriptionAddressModeIsUserPlaneMetadata(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "proxy-node-state.json")
 	store, err := Open(path, testBuild())
@@ -118,6 +157,40 @@ func TestProxyNodeSubscriptionAddressModeIsUserPlaneMetadata(t *testing.T) {
 	}
 	if err := reloaded.SetProxyNodeSubscriptionAddressMode(node.ID, "invalid"); err == nil {
 		t.Fatal("invalid subscription address mode was accepted")
+	}
+}
+
+func TestSubscriptionNoResolveIsValidatedAndPersisted(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "proxy-node-state.json")
+	store, err := Open(path, testBuild())
+	if err != nil {
+		t.Fatal(err)
+	}
+	rule, err := store.AddSubscriptionRule(SubscriptionRuleInput{
+		Match: SubscriptionMatchGeoIP, Values: []string{"CN"}, NoResolve: true, Action: SubscriptionDirect,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !rule.NoResolve {
+		t.Fatal("created rule did not retain no-resolve")
+	}
+	if _, err := store.AddSubscriptionRule(SubscriptionRuleInput{
+		Match: SubscriptionMatchDomainSuffix, Values: []string{"example.com"}, NoResolve: true, Action: SubscriptionDirect,
+	}); err == nil {
+		t.Fatal("domain rule accepted no-resolve")
+	}
+	if err := store.accounting.db.Close(); err != nil {
+		t.Fatal(err)
+	}
+	reloaded, err := Open(path, testBuild())
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = reloaded.accounting.db.Close() })
+	policy := reloaded.SubscriptionPolicy()
+	if len(policy.Rules) != 1 || !policy.Rules[0].NoResolve {
+		t.Fatalf("reloaded policy = %#v", policy)
 	}
 }
 

@@ -101,6 +101,41 @@ func TestRenderProfilesKeepNodesAndRulesSeparate(t *testing.T) {
 	}
 }
 
+func TestNoResolveIsExportedWithoutSingBoxResolveAction(t *testing.T) {
+	profile := Profile{
+		Default: proxynode.SubscriptionDirect, RuleSetBaseURL: "https://master.example/subscription-rule-sets",
+		Rules: []proxynode.SubscriptionRule{
+			{ID: "sru_012345678901234567890123", Order: 0, Match: proxynode.SubscriptionMatchIPCIDR, Values: []string{"203.0.113.0/24"}, NoResolve: true, Action: proxynode.SubscriptionDirect},
+			{ID: "sru_112345678901234567890123", Order: 1, Match: proxynode.SubscriptionMatchGeoIP, Values: []string{"CN"}, NoResolve: true, Action: proxynode.SubscriptionDirect},
+		},
+	}
+	clash, _, err := Render(FormatClash, profile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{"IP-CIDR,203.0.113.0/24,Direct,no-resolve", "GEOIP,CN,Direct,no-resolve"} {
+		if !strings.Contains(string(clash), want) {
+			t.Fatalf("Clash profile missing %q:\n%s", want, clash)
+		}
+	}
+	surge, _, err := Render(FormatSurge, profile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{"IP-CIDR,203.0.113.0/24,Direct,no-resolve", "geoip/cn?no-resolve=1"} {
+		if !strings.Contains(string(surge), want) {
+			t.Fatalf("Surge profile missing %q:\n%s", want, surge)
+		}
+	}
+	singBox, _, err := Render(FormatSingBox, profile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(singBox), `"action": "resolve"`) {
+		t.Fatalf("sing-box profile resolved a no-resolve rule:\n%s", singBox)
+	}
+}
+
 func singBoxSelectorHasMembers(root map[string]any, tag string, want []string) bool {
 	outbounds, ok := root["outbounds"].([]any)
 	if !ok {

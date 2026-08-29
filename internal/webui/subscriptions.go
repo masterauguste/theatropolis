@@ -54,6 +54,7 @@ type subscriptionRuleView struct {
 	Summary     string
 	Action      string
 	ActionLabel string
+	NoResolve   bool
 	CanMoveUp   bool
 	CanMoveDown bool
 }
@@ -164,7 +165,7 @@ func (h *Handler) updateSubscriptionDefault(response http.ResponseWriter, reques
 }
 
 func (h *Handler) addSubscriptionRule(response http.ResponseWriter, request *http.Request) {
-	_, form, ok := h.authorizeProxyMutation(response, request, "match", "values", "action")
+	_, form, ok := h.authorizeProxyMutation(response, request, "match", "values", "action", "no_resolve")
 	if !ok {
 		return
 	}
@@ -176,7 +177,7 @@ func (h *Handler) addSubscriptionRule(response http.ResponseWriter, request *htt
 }
 
 func (h *Handler) updateSubscriptionRule(response http.ResponseWriter, request *http.Request) {
-	_, form, ok := h.authorizeProxyMutation(response, request, "match", "values", "action")
+	_, form, ok := h.authorizeProxyMutation(response, request, "match", "values", "action", "no_resolve")
 	if !ok {
 		return
 	}
@@ -213,6 +214,22 @@ func (h *Handler) moveSubscriptionRule(response http.ResponseWriter, request *ht
 	}
 	if err := h.proxyNodes.MoveSubscriptionRule(request.PathValue("rule_id"), direction); err != nil {
 		handleProxyMutationError(response, err)
+		return
+	}
+	http.Redirect(response, request, "/subscriptions", http.StatusSeeOther)
+}
+
+func (h *Handler) reorderSubscriptionRules(response http.ResponseWriter, request *http.Request) {
+	_, form, ok := h.authorizeProxyMutation(response, request, "rule_ids")
+	if !ok {
+		return
+	}
+	if err := h.proxyNodes.ReorderSubscriptionRules(splitProxyValues(form.Get("rule_ids"))); err != nil {
+		handleProxyMutationError(response, err)
+		return
+	}
+	if strings.Contains(request.Header.Get("Accept"), "application/json") {
+		response.WriteHeader(http.StatusNoContent)
 		return
 	}
 	http.Redirect(response, request, "/subscriptions", http.StatusSeeOther)
@@ -282,8 +299,13 @@ func (h *Handler) publicSurgeRuleSet(response http.ResponseWriter, request *http
 		http.NotFound(response, request)
 		return
 	}
-	converted, status, err := h.ruleSetCache.get(request.Context(), kind+"/"+name, h.now(), func(ctx context.Context) ([]byte, int, error) {
-		return h.fetchSurgeRuleSet(ctx, kind, name)
+	noResolve := kind == "geoip" && request.URL.Query().Get("no-resolve") == "1"
+	cacheKey := kind + "/" + name
+	if kind == "geoip" {
+		cacheKey += fmt.Sprintf("?no-resolve=%t", noResolve)
+	}
+	converted, status, err := h.ruleSetCache.get(request.Context(), cacheKey, h.now(), func(ctx context.Context) ([]byte, int, error) {
+		return h.fetchSurgeRuleSet(ctx, kind, name, noResolve)
 	})
 	if err != nil {
 		http.Error(response, "Rule set is unavailable", http.StatusBadGateway)
@@ -323,7 +345,7 @@ func publicClientIdentity(request *http.Request) string {
 	return loginClientIdentity(request)
 }
 
-func (h *Handler) fetchSurgeRuleSet(ctx context.Context, kind, name string) ([]byte, int, error) {
+func (h *Handler) fetchSurgeRuleSet(ctx context.Context, kind, name string, noResolve bool) ([]byte, int, error) {
 	upstream := &url.URL{
 		Scheme: "https", Host: "raw.githubusercontent.com",
 		Path: "/MetaCubeX/meta-rules-dat/meta/geo/" + kind + "/" + name + ".list",
@@ -349,7 +371,7 @@ func (h *Handler) fetchSurgeRuleSet(ctx context.Context, kind, name string) ([]b
 	}
 	converted := surgeDomainSet(content)
 	if kind == "geoip" {
-		converted = surgeIPRuleSet(content)
+		converted = surgeIPRuleSet(content, noResolve)
 	}
 	if len(converted) == 0 {
 		return nil, 0, errRuleSetUnavailable
@@ -357,7 +379,7 @@ func (h *Handler) fetchSurgeRuleSet(ctx context.Context, kind, name string) ([]b
 	return converted, http.StatusOK, nil
 }
 
-func surgeIPRuleSet(content []byte) []byte {
+func surgeIPRuleSet(content []byte, noResolve bool) []byte {
 	var converted bytes.Buffer
 	for _, raw := range bytes.Split(content, []byte{'\n'}) {
 		line := strings.TrimSpace(string(raw))
@@ -379,7 +401,10 @@ func surgeIPRuleSet(content []byte) []byte {
 		converted.WriteString(kind)
 		converted.WriteByte(',')
 		converted.WriteString(prefix.Masked().String())
-		converted.WriteString(",no-resolve\n")
+		if noResolve {
+			converted.WriteString(",no-resolve")
+		}
+		converted.WriteByte('\n')
 	}
 	return converted.Bytes()
 }
@@ -508,6 +533,7 @@ func subscriptionPolicyViewFor(policy proxynode.SubscriptionPolicy) *subscriptio
 			ID: rule.ID, Position: index + 1, Match: string(rule.Match), MatchLabel: subscriptionMatchLabel(rule.Match),
 			Values: strings.Join(rule.Values, "\n"), Summary: summary,
 			Action: string(rule.Action), ActionLabel: subscriptionActionLabel(rule.Action),
+			NoResolve: rule.NoResolve,
 			CanMoveUp: index > 0, CanMoveDown: index+1 < len(rules),
 		})
 	}
@@ -558,7 +584,8 @@ func subscriptionRuleInput(form url.Values) proxynode.SubscriptionRuleInput {
 	values := strings.FieldsFunc(strings.ReplaceAll(form.Get("values"), "\r\n", "\n"), func(character rune) bool { return character == '\n' })
 	return proxynode.SubscriptionRuleInput{
 		Match: proxynode.SubscriptionMatch(form.Get("match")), Values: values,
-		Action: proxynode.SubscriptionAction(form.Get("action")),
+		NoResolve: form.Get("no_resolve") == "yes",
+		Action:    proxynode.SubscriptionAction(form.Get("action")),
 	}
 }
 

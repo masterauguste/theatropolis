@@ -147,6 +147,9 @@ func Open(path string, build BuildInfo) (*Store, error) {
 		migrateSchemaV12(&stored.Data)
 		stored.SchemaVersion = 13
 	}
+	if stored.SchemaVersion == 13 {
+		stored.SchemaVersion = 14
+	}
 	if stored.SchemaVersion != SchemaVersion {
 		return nil, fmt.Errorf("%w: unsupported schema version %d", ErrInvalidState, stored.SchemaVersion)
 	}

@@ -507,6 +507,7 @@ func (h *Handler) routes() {
 	h.mux.HandleFunc("POST /subscriptions/rules/{rule_id}", h.updateSubscriptionRule)
 	h.mux.HandleFunc("POST /subscriptions/rules/{rule_id}/delete", h.deleteSubscriptionRule)
 	h.mux.HandleFunc("POST /subscriptions/rules/{rule_id}/move", h.moveSubscriptionRule)
+	h.mux.HandleFunc("POST /subscriptions/rules/reorder", h.reorderSubscriptionRules)
 	h.mux.HandleFunc("GET /subscription-rule-sets/{kind}/{name}", h.publicSurgeRuleSet)
 	h.mux.HandleFunc("GET /subscriptions/{token}/{format}", h.publicUserSubscription)
 	h.mux.HandleFunc("GET /servers/content", h.serversContent)
@@ -562,12 +563,62 @@ func (h *Handler) routes() {
 
 func (h *Handler) ServeHTTP(response http.ResponseWriter, request *http.Request) {
 	setSecurityHeaders(response.Header())
-	response.Header().Set("Content-Language", localeForRequest(request))
 	if request.URL.Path != "/healthz" && !h.validRequestHost(request.Host) {
 		http.Error(response, "request host is not configured", http.StatusMisdirectedRequest)
 		return
 	}
+	locale, hasPreference := localeForRequest(request)
+	response.Header().Set("Content-Language", locale)
+	if request.URL.Path != "/healthz" && !hasPreference {
+		response = &languagePreferenceResponseWriter{
+			ResponseWriter: response,
+			cookie:         h.languagePreferenceCookie(locale),
+		}
+	}
 	h.mux.ServeHTTP(response, request)
+}
+
+type languagePreferenceResponseWriter struct {
+	http.ResponseWriter
+	cookie      *http.Cookie
+	wroteHeader bool
+}
+
+func (w *languagePreferenceResponseWriter) Unwrap() http.ResponseWriter {
+	return w.ResponseWriter
+}
+
+func (w *languagePreferenceResponseWriter) WriteHeader(status int) {
+	if w.wroteHeader {
+		return
+	}
+	w.wroteHeader = true
+	w.persistForHTML()
+	w.ResponseWriter.WriteHeader(status)
+}
+
+func (w *languagePreferenceResponseWriter) Write(body []byte) (int, error) {
+	if !w.wroteHeader {
+		w.WriteHeader(http.StatusOK)
+	}
+	return w.ResponseWriter.Write(body)
+}
+
+func (w *languagePreferenceResponseWriter) persistForHTML() {
+	if strings.HasPrefix(strings.ToLower(w.Header().Get("Content-Type")), "text/html") &&
+		!responseHasCookie(w.Header(), languageCookieName) {
+		http.SetCookie(w.ResponseWriter, w.cookie)
+	}
+}
+
+func responseHasCookie(header http.Header, name string) bool {
+	prefix := name + "="
+	for _, value := range header.Values("Set-Cookie") {
+		if strings.HasPrefix(strings.TrimSpace(value), prefix) {
+			return true
+		}
+	}
+	return false
 }
 
 func (h *Handler) root(response http.ResponseWriter, request *http.Request) {
