@@ -7,6 +7,7 @@ import (
 	"os/exec"
 	"regexp"
 	"strconv"
+	"strings"
 	"time"
 )
 
@@ -16,15 +17,21 @@ var singBoxVersionPattern = regexp.MustCompile(
 	`(?m)^sing-box version ([0-9]+)\.([0-9]+)\.([0-9]+)(?:[-+][0-9A-Za-z.-]+)?\r?$`,
 )
 
-// CheckSupportedExecutable verifies that binaryPath is a runnable sing-box
-// 1.14+ executable without returning any of its output to callers.
+var requiredBuildTags = [...]string{
+	"with_v2ray_api",
+	"with_theatropolis_managed_users",
+}
+
+// CheckSupportedExecutable verifies that binaryPath is a runnable patched
+// sing-box 1.14+ executable without returning any of its output to callers.
 func CheckSupportedExecutable(ctx context.Context, binaryPath string) error {
 	_, err := ExecutableVersion(ctx, binaryPath)
 	return err
 }
 
-// ExecutableVersion verifies binaryPath and returns its canonical v-prefixed
-// version for status reporting and exact-version update decisions.
+// ExecutableVersion verifies binaryPath, including the managed-user patch tags,
+// and returns its canonical v-prefixed version for status reporting and
+// exact-version update decisions.
 func ExecutableVersion(ctx context.Context, binaryPath string) (string, error) {
 	info, err := os.Stat(binaryPath)
 	if err != nil {
@@ -50,6 +57,11 @@ func ExecutableVersion(ctx context.Context, binaryPath string) (string, error) {
 	if major < 1 || major == 1 && minor < 14 {
 		return "", errors.New("sing-box 1.14 or newer is required")
 	}
+	for _, tag := range requiredBuildTags {
+		if !versionOutputHasTag(output.String(), tag) {
+			return "", errors.New("sing-box lacks required managed-user support")
+		}
+	}
 	versionMatch := regexp.MustCompile(
 		`(?m)^sing-box version ([0-9]+\.[0-9]+\.[0-9]+(?:[-+][0-9A-Za-z.-]+)?)\r?$`,
 	).FindStringSubmatch(output.String())
@@ -57,6 +69,21 @@ func ExecutableVersion(ctx context.Context, binaryPath string) (string, error) {
 		return "", errors.New("sing-box returned an unrecognized version")
 	}
 	return "v" + versionMatch[1], nil
+}
+
+func versionOutputHasTag(output, expected string) bool {
+	for _, line := range strings.Split(output, "\n") {
+		value, found := strings.CutPrefix(strings.TrimSpace(line), "Tags:")
+		if !found {
+			continue
+		}
+		for _, tag := range strings.Split(value, ",") {
+			if strings.TrimSpace(tag) == expected {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 func parseSingBoxVersion(output string) (major int, minor int, ok bool) {

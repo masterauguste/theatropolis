@@ -155,6 +155,41 @@ func TestVersionOutputHasTagRequiresExactBuildTag(t *testing.T) {
 	}
 }
 
+func TestVerifyCandidateVersionOutputExplainsMismatch(t *testing.T) {
+	t.Parallel()
+	const target = "v1.14.0-rc.2.theatropolis.2"
+	valid := "sing-box version 1.14.0-rc.2.theatropolis.2\n\n" +
+		"Tags: with_v2ray_api,with_theatropolis_managed_users\n"
+	if err := verifyCandidateVersionOutput(valid, target); err != nil {
+		t.Fatal(err)
+	}
+	for name, output := range map[string]string{
+		"version": strings.Replace(valid, "rc.2", "rc.1", 1),
+		"v2ray":   strings.Replace(valid, "with_v2ray_api,", "", 1),
+		"users":   strings.Replace(valid, ",with_theatropolis_managed_users", "", 1),
+	} {
+		t.Run(name, func(t *testing.T) {
+			if err := verifyCandidateVersionOutput(output, target); err == nil {
+				t.Fatal("invalid version output was accepted")
+			}
+		})
+	}
+}
+
+func TestBoundedCandidateDiagnosticRemovesControlsAndLimitsOutput(t *testing.T) {
+	t.Parallel()
+	diagnostic := boundedCandidateDiagnostic(append(
+		[]byte("loader failed\x00\x1b"),
+		bytes.Repeat([]byte("x"), 2048)...,
+	))
+	if strings.ContainsRune(diagnostic, '\x00') || strings.ContainsRune(diagnostic, '\x1b') {
+		t.Fatalf("diagnostic retained control characters: %q", diagnostic)
+	}
+	if len(diagnostic) > 1024 {
+		t.Fatalf("diagnostic length = %d, want at most 1024", len(diagnostic))
+	}
+}
+
 func TestSchedulerUsesIndependentSecureStateFiles(t *testing.T) {
 	t.Parallel()
 	directory := t.TempDir()

@@ -1,6 +1,12 @@
 package singbox
 
-import "testing"
+import (
+	"context"
+	"os"
+	"path/filepath"
+	"runtime"
+	"testing"
+)
 
 func TestParseSingBoxVersionAndMinimum(t *testing.T) {
 	t.Parallel()
@@ -52,5 +58,36 @@ func TestParseSingBoxVersionAndMinimum(t *testing.T) {
 				)
 			}
 		})
+	}
+}
+
+func TestExecutableVersionRequiresManagedUserBuildTags(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("shell fixture is not portable to Windows")
+	}
+	directory := t.TempDir()
+	writeFixture := func(name, tags string) string {
+		t.Helper()
+		path := filepath.Join(directory, name)
+		contents := "#!/bin/sh\nprintf '%s\\n' 'sing-box version 1.14.0-rc.2.theatropolis.2' 'Tags: " + tags + "'\n"
+		if err := os.WriteFile(path, []byte(contents), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		return path
+	}
+	valid := writeFixture("valid", "with_v2ray_api,with_theatropolis_managed_users")
+	if _, err := ExecutableVersion(context.Background(), valid); err != nil {
+		t.Fatal(err)
+	}
+	for name, tags := range map[string]string{
+		"stock":    "with_quic,with_clash_api",
+		"no-users": "with_v2ray_api,with_quic",
+	} {
+		if _, err := ExecutableVersion(
+			context.Background(),
+			writeFixture(name, tags),
+		); err == nil {
+			t.Fatalf("%s sing-box fixture was accepted", name)
+		}
 	}
 }

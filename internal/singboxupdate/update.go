@@ -657,12 +657,22 @@ func installComponents(
 		return err
 	}
 	output, err := command.CombinedOutput()
-	if err != nil || !strings.Contains(
-		string(output),
-		"sing-box version "+strings.TrimPrefix(targetVersion, "v"),
-	) || !versionOutputHasTag(string(output), "with_v2ray_api") ||
-		!versionOutputHasTag(string(output), "with_theatropolis_managed_users") {
-		return errors.New("candidate sing-box executable failed version verification")
+	if err != nil {
+		diagnostic := boundedCandidateDiagnostic(output)
+		if diagnostic != "" {
+			return fmt.Errorf(
+				"candidate sing-box executable failed in its unprivileged sandbox: %w: %s",
+				err,
+				diagnostic,
+			)
+		}
+		return fmt.Errorf(
+			"candidate sing-box executable failed in its unprivileged sandbox: %w",
+			err,
+		)
+	}
+	if err := verifyCandidateVersionOutput(string(output), targetVersion); err != nil {
+		return err
 	}
 	activeConfigPath := filepath.Join(
 		filepath.Clean(options.StateDirectory),
@@ -704,9 +714,31 @@ func installComponents(
 	)
 }
 
+func boundedCandidateDiagnostic(output []byte) string {
+	const limit = 1024
+	if len(output) > limit {
+		output = output[:limit]
+	}
+	return sanitizeDiagnostic(string(output))
+}
+
+func verifyCandidateVersionOutput(output, targetVersion string) error {
+	match := regexp.MustCompile(`(?m)^sing-box version ([^\r\n]+)\r?$`).FindStringSubmatch(output)
+	if len(match) != 2 || "v"+strings.TrimSpace(match[1]) != targetVersion {
+		return errors.New("candidate sing-box executable reported an unexpected version")
+	}
+	if !versionOutputHasTag(output, "with_v2ray_api") {
+		return errors.New("candidate sing-box executable is missing the V2Ray API build tag")
+	}
+	if !versionOutputHasTag(output, "with_theatropolis_managed_users") {
+		return errors.New("candidate sing-box executable is missing the managed-user build tag")
+	}
+	return nil
+}
+
 func versionOutputHasTag(output, expected string) bool {
 	for _, line := range strings.Split(output, "\n") {
-		value, exists := strings.CutPrefix(strings.TrimSuffix(line, "\r"), "Tags: ")
+		value, exists := strings.CutPrefix(strings.TrimSpace(line), "Tags:")
 		if !exists {
 			continue
 		}
