@@ -19,6 +19,11 @@ const (
 	managedUserAuthorityVersion  = 1
 	maxManagedAuthorityBytes     = 8 << 20
 	maxManagedAuthorityVariants  = 8
+
+	// ManagedUserAuthorityTopologyMismatchDiagnostic is deliberately stable so
+	// the master can distinguish a stale Agent topology from a generic runtime
+	// failure and immediately replay its retained authoritative profile.
+	ManagedUserAuthorityTopologyMismatchDiagnostic = "managed-user authority does not describe the active topology"
 )
 
 // ManagedUserAuthorityUser is one end-user identity. Link credentials are

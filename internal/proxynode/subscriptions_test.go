@@ -126,8 +126,11 @@ func TestProxyNodeSubscriptionAddressModeIsUserPlaneMetadata(t *testing.T) {
 		t.Fatal(err)
 	}
 	before := store.Snapshot()
-	if EffectiveSubscriptionAddressMode(node.SubscriptionAddressMode) != SubscriptionAddressDual {
-		t.Fatalf("legacy/default mode = %q, want dual", node.SubscriptionAddressMode)
+	if node.SubscriptionAddressMode != SubscriptionAddressIPv4 || EffectiveSubscriptionAddressMode(node.SubscriptionAddressMode) != SubscriptionAddressIPv4 {
+		t.Fatalf("new Proxy Node mode = %q, want IPv4", node.SubscriptionAddressMode)
+	}
+	if EffectiveSubscriptionAddressMode("") != SubscriptionAddressDual {
+		t.Fatalf("legacy empty mode = %q, want dual", EffectiveSubscriptionAddressMode(""))
 	}
 	if err := store.SetProxyNodeSubscriptionAddressMode(node.ID, SubscriptionAddressIPv6); err != nil {
 		t.Fatal(err)

@@ -267,6 +267,15 @@ credentials follow the newly applied shape. If an entrance protocol change
 requires a different credential shape, the replacement credential remains
 pending until the new listener topology is active.
 
+An authority-capable Agent must never treat an authority/topology digest
+mismatch as a successful user synchronization. It immediately stops the
+sing-box data plane while keeping its control connection available, persists
+the newest authority, and reports the fixed non-sensitive mismatch diagnostic.
+The master responds by replaying its retained applied profile as a topology
+deployment; the Agent overlays the persisted authority before validation and
+only then restarts sing-box. Startup follows the same fail-closed rule, so an
+old active file cannot briefly restore revoked credentials during reconnection.
+
 Topology deployment is a fleet transaction. Before the first Agent is touched,
 the master writes a private atomic journal containing every affected Agent's
 exact last-applied profile. Each Agent is marked before delivery. Any validation,
@@ -762,8 +771,9 @@ leave application state untouched.
 - Subscription Nodes are derived rather than stored: each enabled Membership
   whose topology is applied and whose entrance has a routable address becomes
   one or two exported nodes. Each Proxy Node chooses IPv4 and IPv6, IPv4 only,
-  or IPv6 only; legacy and newly created Nodes default to both families, and an
-  unavailable selected family is omitted. This is master-side subscription
+  or IPv6 only. Newly created Nodes default to IPv4 only; legacy Nodes without
+  a saved choice retain the historical dual-stack behavior, and an unavailable
+  selected family is omitted. This is master-side subscription
   metadata and never deploys topology. A quota-disabled Membership remains in
   the subscription with its stable credential, while the independent user plane
   removes that credential from the live entrance authority until reset. Expired

@@ -14,6 +14,13 @@ import (
 // Agent with no deployment receives a no-listener profile, which prevents a
 // configuration inherited from another master from remaining active.
 func (s *Server) syncProfileOnConnect(ctx context.Context, agentID string) error {
+	return s.queueAuthoritativeProfile(ctx, agentID, "Agent connected")
+}
+
+// queueAuthoritativeProfile replays the master's retained applied profile. It
+// is used both on connection establishment and when an Agent reports that its
+// active topology cannot accept the newest independent user authority.
+func (s *Server) queueAuthoritativeProfile(ctx context.Context, agentID, reason string) error {
 	if !s.CanDeployProxyNodeConfiguration(agentID) {
 		// An Agent without a configuration manager cannot have a managed
 		// profile running, and cannot apply either a restore or a wipe.
@@ -50,13 +57,12 @@ func (s *Server) syncProfileOnConnect(ctx context.Context, agentID string) error
 	if err != nil {
 		return fmt.Errorf("create profile synchronization revision: %w", err)
 	}
-	if deployment.ClassifyRevision(appliedRevision) == deployment.RevisionPlaneProxyNodeUsers &&
-		s.Sessions.Supports(agentID, ManagedUserAuthorityCapability) {
-		// A replacement Agent has no persisted user-authority sidecar yet. Replay
-		// an older full users-plane record as topology so the Agent first strips
-		// every unproven Membership, then accepts the fresh independent authority
-		// queued by the reconnect hook. This prevents a stale retained record from
-		// briefly resurrecting a revoked user on replacement hardware.
+	if s.Sessions.Supports(agentID, ManagedUserAuthorityCapability) {
+		// Every authoritative replay to an authority-capable Agent is classified as
+		// topology. The Agent can then overlay its persisted authority or strip every
+		// unproven Membership before activation. This covers replacement hardware,
+		// legacy generic/users-plane records, and topology-mismatch repair without
+		// briefly resurrecting a stale or revoked credential.
 		revisionID = deployment.ProxyNodeTopologyRevisionPrefix + revisionID
 	} else {
 		revisionID = deployment.RevisionWithSamePlane(appliedRevision, revisionID)
@@ -73,10 +79,11 @@ func (s *Server) syncProfileOnConnect(ctx context.Context, agentID string) error
 		return fmt.Errorf("queue authoritative Agent profile: %w", err)
 	}
 	s.Logger.Info(
-		"authoritative Agent profile queued on connect",
+		"authoritative Agent profile queued",
 		"agent_id", agentID,
 		"deployment_id", record.ID,
 		"restored_previous_profile", previous.ID != "",
+		"reason", reason,
 	)
 	return nil
 }

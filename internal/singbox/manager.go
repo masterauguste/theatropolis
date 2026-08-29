@@ -401,7 +401,10 @@ func (m *Manager) Start(ctx context.Context) (StartupResult, error) {
 			// control plane alive so the master can replace it, but do not start
 			// sing-box with credentials that may have been revoked meanwhile.
 			authorityOverlayErr = overlayErr
-		} else if matched && !bytes.Equal(activeConfig, overlaid) {
+		} else if !matched {
+			clear(overlaid)
+			authorityOverlayErr = errors.New(ManagedUserAuthorityTopologyMismatchDiagnostic)
+		} else if !bytes.Equal(activeConfig, overlaid) {
 			if restoreErr := m.restoreConfig(overlaid, true); restoreErr != nil {
 				clear(activeConfig)
 				clear(overlaid)
@@ -838,7 +841,16 @@ func (m *Manager) applyCandidate(
 				Diagnostic: "managed-user authority could not be applied safely",
 			}, nil
 		}
-		if !matched || bytes.Equal(overlaid, state.activeConfig) {
+		if !matched {
+			clear(overlaid)
+			_ = m.suspendForAuthorityMismatch(state)
+			return ApplyResult{
+				Status: ApplyStatusInternalError, ValidationStatus: ValidationInternalError,
+				CheckedAt: m.now().UTC(), Active: state.child != nil,
+				Diagnostic: ManagedUserAuthorityTopologyMismatchDiagnostic,
+			}, nil
+		}
+		if bytes.Equal(overlaid, state.activeConfig) {
 			clear(overlaid)
 			return ApplyResult{
 				Status: ApplyStatusApplied, ValidationStatus: ValidationValid,
@@ -1130,6 +1142,40 @@ func (m *Manager) applyCandidate(
 		)
 	}
 	return result, nil
+}
+
+// suspendForAuthorityMismatch immediately removes the data plane when the
+// newest user authority cannot be mapped onto the active topology. Continuing
+// to run would leave stale or revoked credentials usable while the master
+// believes the user revision was applied. The active file is intentionally
+// retained so the master's authoritative profile replay can repair it.
+func (m *Manager) suspendForAuthorityMismatch(state *supervisorState) error {
+	m.stopRetryTimer(state)
+	state.restart = false
+	child := state.child
+	if child == nil {
+		return nil
+	}
+	stopContext, cancel := context.WithTimeout(
+		context.Background(),
+		m.processStopTimeout+m.reapTimeout(),
+	)
+	defer cancel()
+	if err := m.stopProcess(stopContext, child); err != nil {
+		m.emitRuntimeEvent(
+			RuntimeStatusStopFailed,
+			state.activeConfig,
+			"sing-box could not be stopped after a managed-user authority mismatch",
+		)
+		return err
+	}
+	state.child = nil
+	m.emitRuntimeEvent(
+		RuntimeStatusValidationFailed,
+		state.activeConfig,
+		ManagedUserAuthorityTopologyMismatchDiagnostic,
+	)
+	return nil
 }
 
 func (m *Manager) restartPreviousConfig(

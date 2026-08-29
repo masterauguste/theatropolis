@@ -381,9 +381,10 @@ func (s *Store) CreateProxyNode(input CreateProxyNodeInput) (ProxyNode, error) {
 	}
 	now := s.now().UTC()
 	created := ProxyNode{
-		ID:       proxyID,
-		Name:     input.Name,
-		Entrance: Entrance{HopID: hopID, Endpoint: input.Entrance},
+		ID:                      proxyID,
+		Name:                    input.Name,
+		SubscriptionAddressMode: SubscriptionAddressIPv4,
+		Entrance:                Entrance{HopID: hopID, Endpoint: input.Entrance},
 		Hops: []Hop{{
 			ID: hopID, Name: input.RootAgent, AgentID: input.RootAgent,
 			Final: input.Final, CreatedAt: now, UpdatedAt: now,

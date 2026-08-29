@@ -384,7 +384,8 @@
 .proxy-map__link .proxy-map__condition { width: 100%; }
 .proxy-map__link .proxy-map__condition b { color: var(--accent-700); }
 
-.proxy-map__link::after {
+.proxy-map__link::after,
+.proxy-map__route-label::after {
   position: absolute;
   top: 50%;
   left: 100%;

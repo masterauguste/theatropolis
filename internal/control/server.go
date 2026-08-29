@@ -902,6 +902,16 @@ func (s *Server) QueueManagedUserAuthority(
 			if diagnostic == "" {
 				diagnostic = "Agent rejected managed-user authority"
 			}
+			if diagnostic == singbox.ManagedUserAuthorityTopologyMismatchDiagnostic {
+				if repairErr := s.queueAuthoritativeProfile(
+					ctx,
+					agentID,
+					"managed-user authority did not match the active topology",
+				); repairErr != nil {
+					return fmt.Errorf("%s; authoritative profile repair failed: %w", diagnostic, repairErr)
+				}
+				return errors.New("Agent topology was stale; authoritative profile repair queued")
+			}
 			return errors.New(diagnostic)
 		}
 		return nil

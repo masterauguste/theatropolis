@@ -430,6 +430,87 @@ func TestManagedUserAuthorityUsesIndependentRequestReportPath(t *testing.T) {
 	}
 }
 
+func TestManagedUserAuthorityMismatchQueuesAuthoritativeProfileRepair(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	store := deployment.NewMemoryStore()
+	server := newTestServer(store, nil)
+	const agentID = "edge-stale-topology"
+	enrollTestIdentity(t, server.Identities, agentID)
+	authoritative := []byte(`{"inbounds":[],"outbounds":[{"type":"block","tag":"reject"}],"route":{"final":"reject"}}`)
+	previous, err := deployment.New(
+		"previous-stable", agentID, deployment.ProxyNodeTopologyRevisionPrefix+"stable",
+		authoritative, time.Now().UTC(),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.Create(ctx, previous); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.Transition(ctx, previous.ID, deployment.StatusDeploying, "", time.Now().UTC()); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.Transition(ctx, previous.ID, deployment.StatusApplied, "", time.Now().UTC()); err != nil {
+		t.Fatal(err)
+	}
+
+	session := newSession(agentID)
+	session.capabilities[ManagedUserAuthorityCapability] = struct{}{}
+	session.capabilities[ProxyNodeDeployCapability] = struct{}{}
+	if err := server.Sessions.Register(session); err != nil {
+		t.Fatal(err)
+	}
+	defer server.Sessions.Unregister(session)
+	digest := sha256.Sum256([]byte("stale-topology"))
+	result := make(chan error, 1)
+	go func() {
+		result <- server.QueueManagedUserAuthority(ctx, agentID, 23, []singbox.ManagedUserAuthorityVariant{{
+			TopologySHA256: digest,
+		}})
+	}()
+
+	var request *controlv1.ManagedUserAuthorityCommand
+	select {
+	case frame := <-session.commands:
+		request = frame.GetManagedUserAuthority()
+		if request == nil {
+			t.Fatalf("first recovery frame = %#v, want managed-user authority", frame)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("managed-user authority command was not queued")
+	}
+	if err := server.handleAgentFrame(ctx, agentID, &controlv1.AgentFrame{
+		Payload: &controlv1.AgentFrame_ManagedUserAuthorityReport{
+			ManagedUserAuthorityReport: &controlv1.ManagedUserAuthorityReport{
+				RequestId: request.GetRequestId(), UserRevision: 23,
+				Status:          controlv1.ManagedUserAuthorityStatus_MANAGED_USER_AUTHORITY_STATUS_INTERNAL_ERROR,
+				Diagnostic:      singbox.ManagedUserAuthorityTopologyMismatchDiagnostic,
+				CompletedAtUnix: time.Now().Unix(),
+			},
+		},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case frame := <-session.commands:
+		deploymentCommand := frame.GetDeployConfig()
+		if deploymentCommand == nil || !bytes.Equal(deploymentCommand.GetConfigJson(), authoritative) {
+			t.Fatalf("authoritative repair frame = %#v", frame)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("topology mismatch did not queue authoritative profile repair")
+	}
+	select {
+	case err := <-result:
+		if err == nil || !strings.Contains(err.Error(), "authoritative profile repair queued") {
+			t.Fatalf("authority mismatch result = %v", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("managed-user authority request did not finish")
+	}
+}
+
 func TestQueueDeploymentRequiresCapabilityAndAppliesMatchingReport(t *testing.T) {
 	t.Parallel()
 

@@ -1,6 +1,7 @@
 package singbox
 
 import (
+	"bytes"
 	"context"
 	"crypto/sha256"
 	"errors"
@@ -324,6 +325,97 @@ func TestManagerManagedUserAuthorityRejectsStaleRevision(t *testing.T) {
 	defer stopCancel()
 	if err := manager.Stop(stopContext); err != nil {
 		t.Fatal(err)
+	}
+}
+
+func TestManagerManagedUserAuthorityMismatchStopsStaleDataPlaneAndRecovers(t *testing.T) {
+	factory := &fakeProcessFactory{}
+	manager := newTestManager(t, factory, nil)
+	active := managedUserTestConfig(`[
+		{"name":"cinema-old-m-AAAAAAAAAAAA","password":"old-secret"}
+	]`)
+	writeActiveConfig(t, manager, active)
+	runContext, cancelRun := context.WithCancel(context.Background())
+	defer cancelRun()
+	startup, err := manager.Start(runContext)
+	if err != nil || startup.Status != StartupRunning {
+		t.Fatalf("Start() = %+v, %v", startup, err)
+	}
+	defer stopTestManager(t, manager)
+
+	repaired := []byte(strings.ReplaceAll(string(managedUserTestConfig(`[
+		{"name":"cinema-current-m-BBBBBBBBBBBB","password":"current-secret"}
+	]`)), `"listen_port":443`, `"listen_port":444`))
+	variant, err := BuildManagedUserAuthorityVariant(repaired)
+	if err != nil {
+		t.Fatal(err)
+	}
+	result, err := manager.ApplyManagedUserAuthority(
+		context.Background(), 2, []ManagedUserAuthorityVariant{variant},
+	)
+	if err != nil || result.Status != ApplyStatusInternalError || result.Active ||
+		result.Diagnostic != ManagedUserAuthorityTopologyMismatchDiagnostic {
+		t.Fatalf("mismatched authority result = %+v, %v", result, err)
+	}
+	processes, _ := factory.snapshot()
+	if len(processes) != 1 || processes[0].signalCount() == 0 {
+		t.Fatalf("stale data plane was not stopped: processes=%d", len(processes))
+	}
+	persisted, exists, err := manager.loadManagedUserAuthority()
+	if err != nil || !exists || persisted.Revision != 2 {
+		t.Fatalf("persisted mismatched authority = %+v, exists=%v, err=%v", persisted, exists, err)
+	}
+	stillActive, err := os.ReadFile(manager.ActiveConfigPath())
+	if err != nil || !bytes.Equal(stillActive, active) {
+		t.Fatalf("stale topology file changed before repair: %v", err)
+	}
+
+	digest := sha256.Sum256(repaired)
+	recovery, err := manager.ApplyWithMode(
+		context.Background(), repaired, digest[:], ApplyModeProxyNodeTopology,
+	)
+	if err != nil || recovery.Status != ApplyStatusApplied || !recovery.Active {
+		t.Fatalf("authoritative topology recovery = %+v, %v", recovery, err)
+	}
+	updated, err := os.ReadFile(manager.ActiveConfigPath())
+	if err != nil || !bytes.Contains(updated, []byte("current-secret")) ||
+		bytes.Contains(updated, []byte("old-secret")) {
+		t.Fatalf("recovered topology did not apply current authority: %v", err)
+	}
+}
+
+func TestManagerStartupFailsClosedWhenAuthorityHasNoTopologyVariant(t *testing.T) {
+	factory := &fakeProcessFactory{}
+	manager := newTestManager(t, factory, nil)
+	active := managedUserTestConfig(`[
+		{"name":"cinema-old-m-AAAAAAAAAAAA","password":"old-secret"}
+	]`)
+	writeActiveConfig(t, manager, active)
+	different := []byte(strings.ReplaceAll(string(active), `"listen_port":443`, `"listen_port":444`))
+	variant, err := BuildManagedUserAuthorityVariant(different)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := manager.persistManagedUserAuthority(managedUserAuthorityState{
+		Version: managedUserAuthorityVersion, Revision: 2,
+		Variants: []ManagedUserAuthorityVariant{variant},
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	runContext, cancelRun := context.WithCancel(context.Background())
+	defer cancelRun()
+	startup, err := manager.Start(runContext)
+	if err != nil {
+		t.Fatalf("Start() blocked control-plane repair: %v", err)
+	}
+	defer stopTestManager(t, manager)
+	if startup.Status != StartupValidationFailed ||
+		startup.Diagnostic != "persisted configuration is incompatible with managed-user authority" {
+		t.Fatalf("mismatched startup = %+v", startup)
+	}
+	if processes, _ := factory.snapshot(); len(processes) != 0 {
+		t.Fatalf("startup ran %d processes with stale credentials", len(processes))
 	}
 }
 

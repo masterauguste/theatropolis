@@ -2072,7 +2072,7 @@ func TestUserSubscriptionLinksExportActiveNodesAndOrderedRules(t *testing.T) {
 	fixture.handler.ServeHTTP(response, request)
 	if response.Code != http.StatusOK || !strings.Contains(response.Body.String(), `data-dialog-open="proxy-node-subscription-addresses"`) ||
 		!strings.Contains(response.Body.String(), `action="/proxy-nodes/`+node.ID+`/subscription-addresses"`) ||
-		!strings.Contains(response.Body.String(), `<option value="dual" selected>IPv4 and IPv6</option>`) {
+		!strings.Contains(response.Body.String(), `<option value="ipv4" selected>IPv4 Only</option>`) {
 		t.Fatalf("Proxy Node subscription address controls = %d %q", response.Code, response.Body.String())
 	}
 
@@ -2136,13 +2136,14 @@ func TestUserSubscriptionLinksExportActiveNodesAndOrderedRules(t *testing.T) {
 	request = fixture.request(http.MethodGet, "/subscriptions/"+updatedUser.Subscription.Token+"/clash", "")
 	response = httptest.NewRecorder()
 	fixture.handler.ServeHTTP(response, request)
-	if response.Code != http.StatusOK || !strings.Contains(response.Body.String(), "Cinema - IPv4") ||
-		!strings.Contains(response.Body.String(), "Cinema - IPv6") || !strings.Contains(response.Body.String(), "2001:db8::42") {
-		t.Fatalf("dual-stack Clash subscription = %d %q", response.Code, response.Body.String())
+	if response.Code != http.StatusOK || !strings.Contains(response.Body.String(), `name: "Cinema"`) ||
+		!strings.Contains(response.Body.String(), `server: "203.0.113.42"`) ||
+		strings.Contains(response.Body.String(), "Cinema - IPv6") || strings.Contains(response.Body.String(), "2001:db8::42") {
+		t.Fatalf("default IPv4-only Clash subscription = %d %q", response.Code, response.Body.String())
 	}
 	beforeModeChange := fixture.proxyNodes.Snapshot()
 	request = fixture.authenticatedMutationRequest(http.MethodPost, "/proxy-nodes/"+node.ID+"/subscription-addresses", url.Values{
-		"csrf_token": {fixture.session.CSRFToken}, "mode": {"ipv4"},
+		"csrf_token": {fixture.session.CSRFToken}, "mode": {"dual"},
 	}.Encode())
 	response = httptest.NewRecorder()
 	fixture.handler.ServeHTTP(response, request)
@@ -2157,8 +2158,16 @@ func TestUserSubscriptionLinksExportActiveNodesAndOrderedRules(t *testing.T) {
 	response = httptest.NewRecorder()
 	fixture.handler.ServeHTTP(response, request)
 	if response.Code != http.StatusOK || !strings.Contains(response.Body.String(), `server: "203.0.113.42"`) ||
-		strings.Contains(response.Body.String(), "2001:db8::42") || strings.Contains(response.Body.String(), "Cinema - IPv6") {
-		t.Fatalf("IPv4-only Clash subscription = %d %q", response.Code, response.Body.String())
+		!strings.Contains(response.Body.String(), "2001:db8::42") || !strings.Contains(response.Body.String(), "Cinema - IPv6") {
+		t.Fatalf("explicit dual-stack Clash subscription = %d %q", response.Code, response.Body.String())
+	}
+	request = fixture.authenticatedMutationRequest(http.MethodPost, "/proxy-nodes/"+node.ID+"/subscription-addresses", url.Values{
+		"csrf_token": {fixture.session.CSRFToken}, "mode": {"ipv4"},
+	}.Encode())
+	response = httptest.NewRecorder()
+	fixture.handler.ServeHTTP(response, request)
+	if response.Code != http.StatusSeeOther {
+		t.Fatalf("restore IPv4 subscription address mode = %d %q", response.Code, response.Body.String())
 	}
 	if err := registry.SetOverrides("edge-online", "", "2001:db8::42"); err != nil {
 		t.Fatal(err)
@@ -4170,6 +4179,21 @@ func TestAssetsAreSelfHostedAndSecurityHeadersApplyToErrors(t *testing.T) {
 		t.Fatalf("unknown route status = %d, want %d", response.Code, http.StatusNotFound)
 	}
 	assertSecurityHeaders(t, response.Header())
+}
+
+func TestProxyTreeFallbackTerminalsShareConnectorStyle(t *testing.T) {
+	t.Parallel()
+
+	fixture := newWebFixture(t)
+	request := fixture.request(http.MethodGet, "/assets/app.css", "")
+	response := httptest.NewRecorder()
+	fixture.handler.ServeHTTP(response, request)
+	if response.Code != http.StatusOK {
+		t.Fatalf("GET app.css = %d %q", response.Code, response.Body.String())
+	}
+	if !strings.Contains(response.Body.String(), ".proxy-map__link::after,\n.proxy-map__route-label::after {") {
+		t.Fatal("fallback terminal labels do not share the Link-to-node connector style")
+	}
 }
 
 func newWebFixture(t *testing.T) webFixture {

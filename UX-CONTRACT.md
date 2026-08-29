@@ -101,13 +101,14 @@ Security and domain rules in the Go implementation remain authoritative.
   as its final manual choices. An empty group exposes Direct followed by Reject,
   so Direct is the default.
   Each Proxy Node owns a configuration-subscription address selector with
-  IPv4-and-IPv6, IPv4-only, and IPv6-only choices. Existing and newly created
-  Nodes default to both families. For each selected family, an Agent's optional
-  family-specific subscription domain replaces its discovered IP; otherwise
-  the discovered IP remains the fallback. A configured domain may publish its
-  family even when no IP has been discovered. The entrance TLS identity remains
-  the exported SNI and is never replaced by this address metadata. An unavailable
-  family with neither domain nor IP is omitted.
+  IPv4-and-IPv6, IPv4-only, and IPv6-only choices. Newly created Nodes default
+  to IPv4 only; existing Nodes retain their saved choice, and legacy Nodes with
+  no saved choice retain the historical dual-stack behavior. For each selected
+  family, an Agent's optional family-specific subscription domain replaces its
+  discovered IP; otherwise the discovered IP remains the fallback. A configured
+  domain may publish its family even when no IP has been discovered. The entrance
+  TLS identity remains the exported SNI and is never replaced by this address
+  metadata. An unavailable family with neither domain nor IP is omitted.
   Changing this selector updates subscription output without deploying topology.
   Geosite and GeoIP are selected directly as Rule matches through the shared
   searchable catalog selector; neither uses a provider-management or free-text
