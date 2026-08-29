@@ -1276,7 +1276,7 @@ Type=oneshot
 User=root
 Group=root
 UMask=0077
-ExecStart=${UPDATE_HELPER_PATH} apply-sing-box --state-dir=${AGENT_STATE_DIRECTORY} --install-path=${INSTALL_DIRECTORY}/sing-box --library-path=${SING_BOX_LIBRARY_DIRECTORY}/libcronet.so --validation-user=${AGENT_USER}
+ExecStart=${UPDATE_HELPER_PATH} apply-sing-box --state-dir=${AGENT_STATE_DIRECTORY} --install-path=${INSTALL_DIRECTORY}/sing-box --library-path=${SING_BOX_LIBRARY_DIRECTORY}/libcronet.so
 NoNewPrivileges=true
 PrivateTmp=true
 ProtectSystem=strict
@@ -1290,7 +1290,7 @@ LockPersonality=true
 MemoryDenyWriteExecute=true
 RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
 RestrictRealtime=true
-CapabilityBoundingSet=CAP_DAC_OVERRIDE CAP_FOWNER CAP_SETGID CAP_SETUID
+CapabilityBoundingSet=CAP_DAC_OVERRIDE CAP_FOWNER
 ReadWritePaths=${INSTALL_DIRECTORY} ${SING_BOX_LIBRARY_DIRECTORY} ${AGENT_STATE_DIRECTORY}
 EOF
 	cat >"$SING_BOX_UPDATE_PATH_FILE" <<EOF

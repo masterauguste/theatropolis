@@ -158,7 +158,6 @@ type ApplyOptions struct {
 	LibraryPath    string
 	Architecture   string
 	RunningVersion string
-	ValidationUser string
 	HTTPClient     *http.Client
 	Restart        func(context.Context) error
 }
@@ -168,9 +167,6 @@ func Apply(ctx context.Context, options ApplyOptions) error {
 		strings.TrimSpace(options.InstallPath) == "" ||
 		strings.TrimSpace(options.LibraryPath) == "" {
 		return errors.New("sing-box update paths are required")
-	}
-	if strings.TrimSpace(options.ValidationUser) == "" {
-		return errors.New("sing-box validation user is required")
 	}
 	architecture := options.Architecture
 	if architecture == "" {
@@ -403,7 +399,7 @@ func applyRelease(
 	if err != nil {
 		return err
 	}
-	return installComponents(ctx, options, request.TargetVersion, binary, library)
+	return installComponents(options, binary, library)
 }
 
 func selectReleaseAsset(
@@ -611,12 +607,7 @@ func extractArchive(archive []byte, version, architecture string) ([]byte, []byt
 	return binary, library, nil
 }
 
-func installComponents(
-	ctx context.Context,
-	options ApplyOptions,
-	targetVersion string,
-	binary, library []byte,
-) error {
+func installComponents(options ApplyOptions, binary, library []byte) error {
 	binaryPath := filepath.Clean(options.InstallPath)
 	libraryPath := filepath.Clean(options.LibraryPath)
 	if err := os.MkdirAll(filepath.Dir(binaryPath), 0o755); err != nil {
@@ -625,98 +616,12 @@ func installComponents(
 	if err := os.MkdirAll(filepath.Dir(libraryPath), 0o755); err != nil {
 		return fmt.Errorf("create sing-box library directory: %w", err)
 	}
-	tempDirectory, err := os.MkdirTemp(filepath.Dir(binaryPath), ".sing-box-update-*")
-	if err != nil {
-		return fmt.Errorf("create sing-box update directory: %w", err)
-	}
-	defer os.RemoveAll(tempDirectory)
-	if err := os.Chmod(tempDirectory, 0o755); err != nil {
-		return fmt.Errorf("make sing-box update directory traversable: %w", err)
-	}
-	tempBinary := filepath.Join(tempDirectory, "sing-box")
-	tempLibrary := filepath.Join(tempDirectory, "libcronet.so")
-	if err := os.WriteFile(tempBinary, binary, 0o755); err != nil {
-		return fmt.Errorf("write candidate sing-box binary: %w", err)
-	}
-	if err := os.Chmod(tempBinary, 0o755); err != nil {
-		return fmt.Errorf("make candidate sing-box executable: %w", err)
-	}
-	if err := os.WriteFile(tempLibrary, library, 0o644); err != nil {
-		return fmt.Errorf("write candidate sing-box library: %w", err)
-	}
-	if err := os.Chmod(tempLibrary, 0o644); err != nil {
-		return fmt.Errorf("make candidate sing-box library readable: %w", err)
-	}
-	command := exec.CommandContext(ctx, tempBinary, "version")
-	if err := configureUnprivilegedCommand(
-		command,
-		options.ValidationUser,
-		filepath.Clean(options.StateDirectory),
-		tempDirectory,
-	); err != nil {
-		return err
-	}
-	output, err := command.CombinedOutput()
-	if err != nil || !strings.Contains(
-		string(output),
-		"sing-box version "+strings.TrimPrefix(targetVersion, "v"),
-	) || !versionOutputHasTag(string(output), "with_v2ray_api") ||
-		!versionOutputHasTag(string(output), "with_theatropolis_managed_users") {
-		return errors.New("candidate sing-box executable failed version verification")
-	}
-	activeConfigPath := filepath.Join(
-		filepath.Clean(options.StateDirectory),
-		"sing-box",
-		"active.json",
-	)
-	if info, statErr := os.Lstat(activeConfigPath); statErr == nil {
-		if !info.Mode().IsRegular() || info.Size() > 4<<20 {
-			return errors.New("active sing-box configuration is not a valid regular file")
-		}
-		checkCommand := exec.CommandContext(
-			ctx,
-			tempBinary,
-			"check",
-			"-c",
-			activeConfigPath,
-		)
-		if err := configureUnprivilegedCommand(
-			checkCommand,
-			options.ValidationUser,
-			filepath.Clean(options.StateDirectory),
-			tempDirectory,
-		); err != nil {
-			return err
-		}
-		checkCommand.Stdout = io.Discard
-		checkCommand.Stderr = io.Discard
-		if err := checkCommand.Run(); err != nil {
-			return errors.New("selected sing-box version rejected the active configuration")
-		}
-	} else if !errors.Is(statErr, os.ErrNotExist) {
-		return errors.New("active sing-box configuration could not be inspected")
-	}
 	return replaceComponents(
 		binaryPath,
 		libraryPath,
 		binary,
 		library,
 	)
-}
-
-func versionOutputHasTag(output, expected string) bool {
-	for _, line := range strings.Split(output, "\n") {
-		value, exists := strings.CutPrefix(strings.TrimSuffix(line, "\r"), "Tags: ")
-		if !exists {
-			continue
-		}
-		for _, tag := range strings.Split(value, ",") {
-			if strings.TrimSpace(tag) == expected {
-				return true
-			}
-		}
-	}
-	return false
 }
 
 func verifyBuildManifest(encoded []byte, targetVersion string) error {

@@ -139,22 +139,6 @@ func TestChecksumForAssetRejectsMalformedAndDuplicateEntries(t *testing.T) {
 	}
 }
 
-func TestVersionOutputHasTagRequiresExactBuildTag(t *testing.T) {
-	t.Parallel()
-	output := "sing-box version 1.14.0-rc.1.theatropolis.1\n\nEnvironment: go1.26 linux/amd64\nTags: with_quic, with_v2ray_api, with_theatropolis_managed_users, with_acme\n"
-	if !versionOutputHasTag(output, "with_v2ray_api") {
-		t.Fatal("expected V2Ray API build tag was not detected")
-	}
-	if !versionOutputHasTag(output, "with_theatropolis_managed_users") {
-		t.Fatal("expected managed-user build tag was not detected")
-	}
-	for _, tag := range []string{"v2ray_api", "with_v2ray", "with_v2ray_api_extra"} {
-		if versionOutputHasTag(output, tag) {
-			t.Fatalf("non-exact build tag %q was accepted", tag)
-		}
-	}
-}
-
 func TestSchedulerUsesIndependentSecureStateFiles(t *testing.T) {
 	t.Parallel()
 	directory := t.TempDir()
@@ -200,6 +184,38 @@ func TestExtractArchiveRequiresBinaryAndCronetLibrary(t *testing.T) {
 	}
 	if string(binary) != "binary" || string(library) != "library" {
 		t.Fatalf("unexpected extracted components %q %q", binary, library)
+	}
+}
+
+func TestInstallComponentsDoesNotExecuteReleaseCode(t *testing.T) {
+	t.Parallel()
+	directory := t.TempDir()
+	binaryPath := filepath.Join(directory, "bin", "sing-box")
+	libraryPath := filepath.Join(directory, "lib", "libcronet.so")
+	binary := []byte("signed-but-deliberately-not-executable-test-payload")
+	library := []byte("signed-library-test-payload")
+	if err := installComponents(ApplyOptions{
+		InstallPath: binaryPath,
+		LibraryPath: libraryPath,
+	}, binary, library); err != nil {
+		t.Fatal(err)
+	}
+	installedBinary, err := os.ReadFile(binaryPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	installedLibrary, err := os.ReadFile(libraryPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(installedBinary, binary) || !bytes.Equal(installedLibrary, library) {
+		t.Fatal("installed sing-box components differ from verified payloads")
+	}
+	if info, err := os.Stat(binaryPath); err != nil || info.Mode().Perm() != 0o755 {
+		t.Fatalf("installed binary mode = %v, %v", info, err)
+	}
+	if info, err := os.Stat(libraryPath); err != nil || info.Mode().Perm() != 0o644 {
+		t.Fatalf("installed library mode = %v, %v", info, err)
 	}
 }
 
