@@ -8,8 +8,9 @@ import (
 	"os/exec"
 	"os/user"
 	"strconv"
-	"syscall"
 )
+
+const setprivPath = "/usr/bin/setpriv"
 
 func configureUnprivilegedCommand(
 	command *exec.Cmd,
@@ -27,11 +28,26 @@ func configureUnprivilegedCommand(
 	if err != nil {
 		return errors.New("sing-box validation group is invalid")
 	}
-	command.SysProcAttr = &syscall.SysProcAttr{Credential: &syscall.Credential{
-		Uid:    uint32(uid),
-		Gid:    uint32(gid),
-		Groups: []uint32{},
-	}}
+	// Do not use SysProcAttr.Credential here. On Linux, os/exec performs
+	// setgroups, setgid, setuid, and execve in the fork child and reports any
+	// failure as the same opaque "fork/exec: operation not permitted" error.
+	// setpriv keeps the same privilege boundary while making the failed stage
+	// observable in its stderr. It is invoked by absolute path without a shell.
+	candidatePath := command.Path
+	candidateArgs := append([]string(nil), command.Args[1:]...)
+	command.Path = setprivPath
+	command.Args = []string{
+		setprivPath,
+		"--reuid=" + strconv.FormatUint(uid, 10),
+		"--regid=" + strconv.FormatUint(gid, 10),
+		"--clear-groups",
+		"--no-new-privs",
+		"--inh-caps=-all",
+		"--ambient-caps=-all",
+		"--",
+		candidatePath,
+	}
+	command.Args = append(command.Args, candidateArgs...)
 	command.Dir = stateDirectory
 	command.Env = []string{
 		"HOME=" + stateDirectory,

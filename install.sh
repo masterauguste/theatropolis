@@ -430,6 +430,7 @@ debian | ubuntu) ;;
 esac
 command -v systemctl >/dev/null 2>&1 || fail "systemd is required"
 command -v flock >/dev/null 2>&1 || fail "util-linux flock is required"
+[ -x /usr/bin/setpriv ] || fail "util-linux setpriv is required"
 exec 9>"$INSTALL_LOCK_FILE" ||
 	fail "could not open the installer lock file"
 flock -n 9 ||
