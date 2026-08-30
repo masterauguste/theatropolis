@@ -1,111 +1,362 @@
 # Theatropolis
 
-Theatropolis is a master-agent sing-box manager for securely managing servers, users, inbounds, routing, versions, and usage from a local web interface. It is under active development.
+Theatropolis is a web-based master–agent manager for sing-box fleets. It manages
+servers, proxy relay trees, end-user credentials, traffic quotas, configuration
+subscriptions, and software updates from one control panel.
 
-## Install
+The project is under active development. Back up the master before upgrading a
+production deployment.
 
-Debian/Ubuntu on amd64 or arm64:
+[English](#english) · [简体中文](#简体中文)
+
+## English
+
+### What Theatropolis manages
+
+- One **Master** provides the web UI and control plane.
+- Each server runs an unprivileged **Agent** and a supervised sing-box process.
+- A **Proxy Node** is a routing tree with one entrance, ordered matching rules,
+  relay Links, child Hops, and Direct or Reject terminal exits.
+- **Users** can receive access to multiple Proxy Nodes, each with an independent
+  quota and expiration time.
+- Every user receives Clash, Surge, and sing-box configuration-subscription
+  URLs.
+
+Relay Links support Shadowsocks 2022, AnyTLS, and Hysteria2. Compatible logical
+Links can share one physical listener while retaining separate credentials and
+authenticated-user routing identities.
+
+### Requirements
+
+- Debian or Ubuntu with systemd
+- Linux amd64 or arm64
+- Root access for installation
+- A public domain pointing to the Master
+- TCP port 80 and the selected HTTPS port available when using the bundled
+  Caddy setup
+- The required proxy listener ports open on Agent servers
+
+The installer downloads signed prebuilt releases. It does not install a Go
+toolchain or compile the project on the server.
+
+### 1. Install the Master
 
 ```sh
-curl --proto '=https' --tlsv1.2 -fsSL https://raw.githubusercontent.com/masterauguste/theatropolis/main/install.sh | sudo sh -s -- master
+curl --proto '=https' --tlsv1.2 -fsSL \
+  https://raw.githubusercontent.com/masterauguste/theatropolis/main/install.sh |
+sudo sh -s -- master
 ```
 
-The installer downloads the latest signed release and prompts for the master's public DNS name, the Caddy HTTPS port (`443` for standard HTTPS, default `8443`), and the local administrator credentials. After installation, sign in using the resulting HTTPS endpoint. Existing access-key installations keep working until they are explicitly migrated by rerunning the installer with `--admin-username operator` (or another lowercase username).
+The installer interactively asks for:
 
-Add a server in the web interface, then run its generated command. The equivalent manual flow is `sudo theatropolis-master create-enrollment --server edge-1`, followed by:
+1. The public domain name.
+2. The Caddy HTTPS port (`443` for normal HTTPS; the default is `8443`).
+3. The administrator username and password.
+
+After installation, open the displayed HTTPS address and sign in. The web UI
+uses the browser language on the first visit and remembers an explicit language
+choice in a cookie.
+
+For a Master and Agent on the same machine, use the all-in-one role:
 
 ```sh
-curl --proto '=https' --tlsv1.2 -fsSL https://raw.githubusercontent.com/masterauguste/theatropolis/main/install.sh | sudo sh -s -- agent --master master.example.com:8443 --token TOKEN
+curl --proto '=https' --tlsv1.2 -fsSL \
+  https://raw.githubusercontent.com/masterauguste/theatropolis/main/install.sh |
+sudo sh -s -- all --server edge-1
 ```
 
-The enrollment token identifies the server entry. The agent stores no server name or master-side ID: it sends its generated public key during enrollment, then proves possession of the corresponding private key whenever it reconnects. The master resolves that public key to its own private server record. After any successful enrollment, the agent removes its previous persisted sing-box profile and managed self-signed keys before starting. On the authenticated connection, the new master immediately deploys the profile retained for that server, or an explicit no-listener/reject profile when it has none. This prevents another master's profile from surviving a takeover.
+### 2. Add an Agent server
 
-To move an existing server record to replacement hardware, open that server's management dialog and create a replacement command. The existing agent remains authorized until the one-time token is redeemed; redemption swaps its public key, disconnects its old control session, and retains the master's last deployment for immediate replay. The equivalent local command is `sudo theatropolis-master create-enrollment --server edge-1 --replace-agent`.
+1. Open **Servers** and select **Add Server**.
+2. Give the server an administrative name.
+3. Copy the generated one-time installation command.
+4. Run it as root on the Agent server.
+5. Wait for the server to show as connected.
 
-The installer verifies release archives against RSA-PSS-signed SHA-256 manifests—no compiler or Go toolchain is installed. Agent installations include a pinned sing-box 1.14 release-candidate build published by [sing-box-v2ray-api-builds](https://github.com/masterauguste/sing-box-v2ray-api-builds), with V2Ray API plus Theatropolis-managed live user updates for Shadowsocks 2022, AnyTLS, and Hysteria2. The master accepts only signed `theatropolis.N` builds whose capability manifest declares the required managed-user and session-revocation patches.
+The equivalent manual command is:
 
-The Servers page's Server settings dialog can update Agent software across the fleet or schedule one selected sing-box version across every connected compatible Agent. Offline Agents, Agents already running that version, and Agents with an update already pending are left unchanged and reported as skipped.
+```sh
+curl --proto '=https' --tlsv1.2 -fsSL \
+  https://raw.githubusercontent.com/masterauguste/theatropolis/main/install.sh |
+sudo sh -s -- agent \
+  --master master.example.com:443 \
+  --token 'ONE_TIME_TOKEN'
+```
 
-The master, agent, and sing-box all run as dedicated unprivileged users. A small root-only update helper has no listener and accepts updates only through fixed systemd units. Theatropolis releases must pass signature verification and cannot be downgraded; downloaded sing-box candidates are executed for validation only after dropping to the agent account. See [SECURITY.md](SECURITY.md) for the boundary and its limits.
+Use `host:port` for `--master`, without `https://`. Reinstalling an Agent with a
+token from another Master transfers control to that Master and clears the old
+Master's active profile before the new authoritative profile is applied.
 
-## Proxy Nodes
+To replace existing hardware without losing the server record or retained
+profile, open that server's settings and generate a replacement command. The
+old Agent remains authorized until the replacement token is redeemed.
 
-Configuration is modeled as logical Proxy Nodes instead of editable per-server
-sing-box files. Create a Proxy Node with one entrance, then create ordered
-branches from its Hops. The guided branch editor defines the matching Rule
-first, then atomically creates its relay Link and child Hop; a non-entrance Hop
-cannot exist without that parent Link. Each conditional Rule is a separately
-editable branch on the relay map. Every branch is its own logical Link, child routing context,
-generated credential, and sing-box authenticated user. Duplicating a branch
-copies its downstream chain and listener settings but creates fresh logical
-identities and credentials. Numbered Rule branches can be dragged vertically on
-the map to set their exact first-match priority without reloading the page. Links can
-independently use Shadowsocks 2022, AnyTLS, or Hysteria2. An optional fallback
-Link remains last, and otherwise traffic terminates as Direct or Reject on the
-current Hop.
-Compatible logical inbounds may share one Agent port across Proxy Nodes: the
-listener-level material is reused while every Membership and branch Link retains
-a distinct credential and authenticated-user routing identity.
+### 3. Create a Proxy Node
 
-Granting Proxy Node access from either the Node page or a global user's settings
-uses a searchable picker and generates a unique membership credential. Each
-grant has an independent monthly traffic allowance and calendar-month
-subscription; either can be unlimited. Usage resets after the grant's monthly
-anniversary, and an expiry date remains valid through that UTC day (for example,
-an April 4 end date is disabled at April 5 00:00 UTC). Quota exhaustion and
-expiration remove only that Node's credential, while end-of-day enforcement
-keeps retrying if its entrance Agent is temporarily offline. Assigned Nodes
-appear as compact tags whose detail dialogs reveal usage, allowance, and import
-URIs. Every connected Agent samples only listeners carrying entrance
-memberships, atomically reads and clears their per-user sing-box counters every
-15 seconds, and sends the interval deltas to the master. Child Link listeners
-are never sampled, and successful entrance results are retained even if another
-entrance fails. Before replacing a changed Agent that currently hosts an
-applied entrance, topology deployment requests and persists a final sample.
-The master increments durable per-membership totals in a private SQLite/WAL
-database and keeps a bounded, non-sensitive accounting-failure history. There
-is no Agent traffic ledger or replay; after a destructive sample fails, the next
-15-second poll is the next attempt, so a sing-box/Agent crash or an undelivered
-reset response may lose that interval by design. Rolling usage periods reset in
-a serialized SQL transaction at 00:10 UTC; subscription expiry is checked at
-00:00 UTC. User grants, revocations, allowance changes, renames,
-quota transitions, and subscription transitions synchronize automatically
-against the last applied topology; there is no separate user deployment step.
-Each completed topology operation—such as editing one Rule, Link, listener,
-Hop, terminal, or branch order—is validated against the complete topology and
-applied immediately; there is no separate topology Save step. A second
-topology edit is rejected while that fleet transaction is active. Topology
-comparison excludes end-user state. The agent
-treats its currently active Membership IDs as authoritative during topology
-activation, so a delayed topology payload can rotate an existing credential but
-cannot resurrect a user already removed by a newer user sync. Each operation
-journals the exact pre-change topology and last-applied profile for every
-affected Agent; a failure or interrupted master process restores both the UI
-topology and every touched Agent while preserving concurrent user-plane
-changes. Incompatible listener
-replacements retire the old listener before binding the new protocol while
-leaving unrelated listeners active. Changed receiver Hops are still applied
-before changed senders.
+1. Open **Proxy Nodes** and create a Node.
+2. Select the entrance Agent, inbound protocol, listener, and terminal exit.
+3. Select the entrance or a Hop and choose **Create Branch**.
+4. Define the matching rule first, then select the destination Agent and relay
+   protocol.
+5. Add more branches or child Hops as needed.
+6. Drag sibling rule cards to change first-match priority.
+7. Use an `ALL` branch to relay unmatched traffic, or leave the Hop's terminal
+   as Direct or Reject.
 
-The full architecture and old-format cutover policy are recorded in
+Topology changes are validated and deployed immediately. There is no separate
+topology Save step. Changing a Hop's Agent keeps its downstream subtree;
+replacing a Link's destination deletes that Link's old subtree and creates a new
+terminal Hop.
+
+When Shadowsocks multiplexing is enabled, Theatropolis explicitly uses `smux`
+with `max_connections: 4` and `min_streams: 4` on the relay outbound.
+
+### 4. Create users and grant access
+
+1. Open **Users** and create a user. The displayed name is the administrator's
+   internal management name.
+2. Generate the one-time registration link and send it to the user.
+3. The user opens the link and chooses a login username and password.
+4. From the user's page, select **Add Node** and configure the monthly quota and
+   subscription duration. Access can also be granted from a Proxy Node's Users
+   dialog.
+
+User-plane changes take effect immediately. Normal user additions, removals,
+credential resets, quota changes, and expiration changes use the patched
+sing-box live-user API without restarting sing-box. If that API fails, the Agent
+falls back to a full restart to restore authoritative state.
+
+A quota-reached Node remains visible in the user's subscription with the same
+credential, but the credential is removed from the live entrance until the
+quota resets. Expired Nodes are omitted. Resetting the traffic counter does not
+change the monthly reset date.
+
+### 5. Configuration subscriptions
+
+Every user automatically receives separate Clash, Surge, and sing-box URLs.
+The user can sign in through the same login page as the administrator and view:
+
+- subscription URLs;
+- accessible Nodes;
+- quota usage and reset time;
+- expiration time; and
+- daily traffic history.
+
+Open **Configuration Subscriptions** in the administrator UI to edit the one
+universal ordered rule policy used by every user. Rules can route to **Proxy**,
+**Direct**, or **Reject**. The Proxy group contains all Nodes available to that
+user plus Direct and Reject.
+
+### 6. Updates and migration
+
+- Open **Servers → Server Settings** to update all connected Agents or select a
+  patched sing-box version for the fleet.
+- Open **Settings** to update the Master.
+- Open **Settings → Master Migration** to export an encrypted data archive,
+  restore it on another Master, and switch connected Agents to the new control
+  address. The archive does not replace the destination Master's administrator
+  login.
+
+Agents that are offline during a Master cutover must be reinstalled manually
+against the new Master.
+
+### Useful service commands
+
+```sh
+# Master
+sudo systemctl status theatropolis-master --no-pager
+sudo journalctl -u theatropolis-master -n 100 --no-pager
+
+# Agent
+sudo systemctl status theatropolis-agent --no-pager
+sudo journalctl -u theatropolis-agent -n 100 --no-pager
+
+# Versions
+sudo /usr/local/bin/theatropolis-master version
+sudo /usr/local/bin/theatropolis-agent version
+sudo /usr/local/bin/sing-box version
+```
+
+## 简体中文
+
+### Theatropolis 管理什么
+
+- 一台**主控端（Master）**提供网页管理界面和控制平面。
+- 每台服务器运行一个非 root 的**代理端（Agent）**，并由其管理
+  sing-box 进程。
+- 一个**代理节点（Proxy Node）**是一棵路由树，包含一个入口、有序匹配
+  规则、中继链路、下游服务器，以及直连或拒绝终端。
+- 一个**用户**可以拥有多个代理节点的权限；每个节点权限都有独立的流量
+  配额和到期时间。
+- 每位用户都会自动获得 Clash、Surge 和 sing-box 三种配置订阅地址。
+
+中继链路支持 Shadowsocks 2022、AnyTLS 和 Hysteria2。兼容的逻辑链路可以
+共用同一个物理监听器，同时仍然使用各自独立的凭据和认证用户路由标识。
+
+### 安装要求
+
+- 使用 systemd 的 Debian 或 Ubuntu
+- Linux amd64 或 arm64
+- 安装时拥有 root 权限
+- 一个指向主控端的公网域名
+- 使用安装器自带的 Caddy 配置时，TCP 80 和选定的 HTTPS 端口可用
+- 代理端服务器已放行需要使用的代理监听端口
+
+安装器只下载经过签名的预编译版本，不会在服务器上安装 Go 工具链或现场
+编译程序。
+
+### 1. 安装主控端
+
+```sh
+curl --proto '=https' --tlsv1.2 -fsSL \
+  https://raw.githubusercontent.com/masterauguste/theatropolis/main/install.sh |
+sudo sh -s -- master
+```
+
+安装器会在终端中依次询问：
+
+1. 公网域名。
+2. Caddy HTTPS 端口（标准 HTTPS 使用 `443`，默认值为 `8443`）。
+3. 管理员用户名和密码。
+
+安装完成后，打开终端中显示的 HTTPS 地址并登录。网页首次打开时会跟随浏览
+器语言；手动切换语言后会通过 Cookie 记住选择。
+
+如果主控端和代理端安装在同一台服务器，可以使用一体化安装模式：
+
+```sh
+curl --proto '=https' --tlsv1.2 -fsSL \
+  https://raw.githubusercontent.com/masterauguste/theatropolis/main/install.sh |
+sudo sh -s -- all --server edge-1
+```
+
+### 2. 添加代理端服务器
+
+1. 打开**服务器**页面，点击**添加服务器**。
+2. 为服务器设置一个便于管理的名称。
+3. 复制网页生成的一次性安装命令。
+4. 在代理端服务器上以 root 身份运行该命令。
+5. 等待网页显示服务器已连接。
+
+等价的手动命令为：
+
+```sh
+curl --proto '=https' --tlsv1.2 -fsSL \
+  https://raw.githubusercontent.com/masterauguste/theatropolis/main/install.sh |
+sudo sh -s -- agent \
+  --master master.example.com:443 \
+  --token '一次性令牌'
+```
+
+`--master` 只填写 `主机名:端口`，不要添加 `https://`。如果使用另一个主控
+端签发的令牌重新安装代理端，控制权会转移到新主控端；旧主控端留下的活动
+配置会先被清除，再应用新主控端保存的权威配置。
+
+如果只是更换服务器硬件，可以打开该服务器的设置并生成替换命令。旧代理端
+会保持授权，直到新服务器兑换替换令牌；服务器记录和主控端保存的配置不会
+丢失。
+
+### 3. 创建代理节点
+
+1. 打开**代理节点**页面并创建节点。
+2. 选择入口服务器、入口协议、监听器和终端出口。
+3. 点击入口或某个下游服务器，然后选择**创建分支**。
+4. 先设置匹配规则，再选择目标服务器和中继协议。
+5. 按需要继续添加分支或下游服务器。
+6. 拖动同级规则卡片即可调整优先级；规则按照从上到下首次匹配执行。
+7. 使用 `ALL` 分支可以把未匹配流量继续中继；否则流量会使用当前服务器的
+   直连或拒绝终端。
+
+每次拓扑修改都会立即进行完整验证和部署，不需要另外点击保存。直接修改某个
+下游服务器所使用的 Agent 会保留其后续子树；从链路上替换目标服务器则会删
+除旧子树，并在新服务器上创建一个新的终端节点。
+
+启用 Shadowsocks 多路复用时，中继出口会明确使用 `smux`，并设置
+`max_connections: 4` 和 `min_streams: 4`。
+
+### 4. 创建用户并授予节点权限
+
+1. 打开**用户**页面并创建用户。这里填写的名称是供管理员识别的内部管理名
+   称。
+2. 生成一次性注册链接并发送给用户。
+3. 用户打开链接后自行设置登录用户名和密码。
+4. 在用户页面点击**添加节点**，设置每月流量配额和订阅时长。也可以从代理
+   节点的用户窗口授予权限。
+
+用户相关修改会立即生效。正常添加、删除用户，重置凭据，修改配额或到期时间
+时，Theatropolis 会通过 patched sing-box 的在线用户 API 更新，不会重启
+sing-box。如果该 API 异常，代理端会回退到完整重启，以恢复主控端保存的权
+威状态。
+
+用户流量用尽后，该节点仍会保留在配置订阅中，凭据也不会改变，但入口会暂时
+停用该凭据；流量重置后会自动恢复。已经到期的节点不会出现在配置订阅中。
+手动重置已用流量不会改变每月重置日期。
+
+### 5. 配置订阅
+
+每位用户都会自动获得 Clash、Surge 和 sing-box 三种订阅地址。用户和管理
+员使用同一个登录页面；系统会根据账号权限进入对应界面。用户登录后可以查看：
+
+- 配置订阅地址；
+- 已获得权限的节点；
+- 流量用量、配额和重置时间；
+- 到期时间；
+- 每日流量记录。
+
+管理员可以打开**配置订阅**页面，编辑应用于所有用户的通用有序规则。规则只
+会路由到**代理**、**直连**或**拒绝**。代理组包含该用户当前可用的全部节点，
+并始终提供直连和拒绝选项。
+
+### 6. 更新与迁移
+
+- 打开**服务器 → 服务器设置**，可以批量更新所有在线代理端，或为整个服务
+  器组选择 patched sing-box 版本。
+- 打开**设置**页面可以更新主控端。
+- 打开**设置 → 主控端迁移**，可以导出加密数据包，在另一台主控端恢复，然后
+  将在线代理端切换到新的控制地址。恢复数据不会替换新主控端的管理员登录凭
+  据。
+
+主控端切换时处于离线状态的代理端不会自动迁移，需要之后手动使用新主控端重
+新安装。
+
+### 常用服务命令
+
+```sh
+# 主控端
+sudo systemctl status theatropolis-master --no-pager
+sudo journalctl -u theatropolis-master -n 100 --no-pager
+
+# 代理端
+sudo systemctl status theatropolis-agent --no-pager
+sudo journalctl -u theatropolis-agent -n 100 --no-pager
+
+# 查看版本
+sudo /usr/local/bin/theatropolis-master version
+sudo /usr/local/bin/theatropolis-agent version
+sudo /usr/local/bin/sing-box version
+```
+
+## Security and further documentation / 安全与更多文档
+
+The Master, Agent, and sing-box run as dedicated unprivileged users. A small
+root-only update helper verifies signed releases and performs narrowly scoped
+binary replacement. See [SECURITY.md](SECURITY.md) for the security boundary and
+known limitations.
+
+主控端、代理端和 sing-box 都使用独立的非 root 用户运行。只有一个用途受限的
+root 更新助手负责验证签名并替换程序文件。安全边界和已知限制请参阅
+[SECURITY.md](SECURITY.md)。
+
+For the complete topology, persistence, deployment, and migration model, see
 [docs/proxy-node-manager-design.md](docs/proxy-node-manager-design.md).
 
-## User subscriptions
+完整的拓扑、持久化、部署和迁移设计请参阅
+[docs/proxy-node-manager-design.md](docs/proxy-node-manager-design.md)。
 
-Each global user automatically receives one rotatable bearer subscription link
-with Clash, Surge, and sing-box format endpoints. The feed derives its Proxy group from
-that user's currently active Proxy Node memberships; expired, quota-disabled,
-unapplied, and unreachable entrances are not exported. One universal ordered
-rule list applies to every user and routes to only `Proxy`, `Direct`, or `Reject`.
-Clash uses its native `GEOSITE` and `GEOIP` rules with auto-updating MetaCubeX
-data URLs. sing-box uses remote SagerNet binary rule sets. Surge receives
-read-only `DOMAIN-SET` and CIDR `RULE-SET` adapters sourced from
-[MetaCubeX/meta-rules-dat](https://github.com/MetaCubeX/meta-rules-dat).
-Resetting a subscription link atomically replaces the bearer URL and every
-Proxy Node credential owned by that user. Revoking only the bearer link leaves
-Node credentials unchanged. Both actions take effect through the immediate
-user plane without a topology deployment.
+The configuration-subscription workflow is inspired by
+[Sub-Store](https://github.com/sub-store-org/Sub-Store). The exporter is an
+independent implementation and does not copy Sub-Store source code.
 
-The subscription workflow and format coverage are inspired by
-[Sub-Store](https://github.com/sub-store-org/Sub-Store). Theatropolis' exporter
-is an independent implementation and does not copy Sub-Store source code.
+配置订阅的使用流程参考了
+[Sub-Store](https://github.com/sub-store-org/Sub-Store)；导出器为独立实现，未
+复制 Sub-Store 的源代码。
