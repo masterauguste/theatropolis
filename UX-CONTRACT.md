@@ -19,6 +19,18 @@ Security and domain rules in the Go implementation remain authoritative.
 
 - The primary destinations are Servers, Proxy Nodes, Users, Subscriptions, and
   Settings.
+- End users have a separate read-only portal at `/portal`. It is not part of
+  the operator navigation or operator session realm. The portal exposes only
+  that user's configuration-subscription links, Node access, quota, reset
+  time, and expiry state.
+  Both the operator user detail and portal show the newest 30 UTC+8 calendar
+  days of durable traffic history, grouped by day with a per-Node breakdown.
+- `/login` is the single sign-in entry for administrators and end users. One
+  role-tagged identity database owns the global username namespace, and one
+  credential lookup determines the persisted role before a realm-specific
+  session is issued. `/portal/login` redirects to this canonical entry. A
+  username collision fails closed during migration or account claim; login
+  never infers privilege by trying administrator and user verifiers in order.
 - The active destination is visible through text, background, and the connected
   route-rail marker; it is also exposed with `aria-current="page"`.
 - Breadcrumbs preserve ownership on detail and editor screens.
@@ -64,6 +76,17 @@ Security and domain rules in the Go implementation remain authoritative.
 - A submitted form keeps button geometry stable and prevents duplicate submit.
 - Credentials and tokens are masked by default and use the shared reveal
   control. Secrets never appear in URL state.
+- Creating an end user records an operator-facing management name against an
+  immutable hidden user ID. An operator may then generate a single-use,
+  24-hour registration link at `/claim/{token}`. It becomes invalid immediately
+  after successful registration or after its deadline. Before registration,
+  an operator may explicitly reset the token; the old link becomes invalid and
+  a fresh 24-hour link is generated. The token is exchanged into a short-lived,
+  HttpOnly claim cookie and the browser is redirected to a clean URL before
+  the user chooses a unique lowercase login name and password. The master
+  stores only the invitation digest and a salted memory-hard password
+  verifier. Public invitation claim can create only a `user` identity; the
+  administrator role is not a form field and cannot be changed by that flow.
 
 ## Lists, tables, and search
 
@@ -151,12 +174,32 @@ Security and domain rules in the Go implementation remain authoritative.
   an app-owned confirmation dialog naming its scope and consequence.
 - Per-Node credential rotation uses that same confirmation flow regardless of
   whether it was opened from the Proxy Node roster or the global user page.
+- User-portal authentication is independent from configuration-subscription
+  bearer tokens and Proxy Node credentials. Reset Login signs out all portal
+  sessions, invalidates the password, and creates a new invitation; it does not
+  rotate subscription URLs or Node credentials. User portal sessions use the
+  same rolling seven-day inactivity window as operator sessions. After the
+  shared credential entry has resolved the persisted role, administrator and
+  user sessions retain separate host-only cookies and CSRF secrets so neither
+  session realm is accepted by the other.
+- Routine administrator and end-user interaction refreshes rolling session
+  expiry in memory immediately. Activity snapshots are coalesced to at most one
+  background write per minute; login, logout, credential reset, and revocation
+  remain synchronous. This durability optimization does not impose a request
+  rate limit or reduce the existing seven-day inactivity window.
 - Async deployment/update state is shown in the existing stable inline region;
   errors remain recoverable and do not discard entered data.
 - Session expiry returns the user to sign-in. Routine authenticated interaction
   keeps the rolling session active.
 
 ## Accessibility and resilience
+
+Master restore is a staged pessimistic operation: validate the encrypted
+archive, preserve the destination administrator, then restart into the already
+validated state. It is available only on a fleet-empty destination and
+invalidates browser sessions. Online Agent cutover is a separate explicit
+action on the old Master; offline and incompatible Agents are reported as
+skipped and never receive a queued command.
 
 - Target WCAG 2.2 AA: native semantics, visible focus, labeled controls,
   meaningful status text, and keyboard alternatives for drag interactions.

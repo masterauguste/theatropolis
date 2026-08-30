@@ -313,6 +313,14 @@ func (r *Registry) now() time.Time {
 	return time.Now().UTC()
 }
 
+// MigrationSnapshot returns the exact logical pool state needed by a restored
+// Master, including address observations and subscription domains.
+func (r *Registry) MigrationSnapshot() ([]byte, error) {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	return r.marshalLocked()
+}
+
 // UpsertManual creates or replaces a manual outbound. Updating an existing
 // name keeps its original creation time. The pool version is bumped.
 func (r *Registry) UpsertManual(name string, outbound json.RawMessage) error {
@@ -1218,6 +1226,47 @@ type diskRender struct {
 // fsync + rename + directory fsync. The caller holds r.mu and owns in-memory
 // rollback on error.
 func (r *Registry) persistLocked() error {
+	encoded, err := r.marshalLocked()
+	if err != nil {
+		return err
+	}
+
+	directory := filepath.Dir(r.persistPath)
+	if err := os.MkdirAll(directory, 0o700); err != nil {
+		return fmt.Errorf("pool: create registry directory: %w", err)
+	}
+	tempFile, err := os.CreateTemp(directory, ".outbound-pool-*.tmp")
+	if err != nil {
+		return fmt.Errorf("pool: create temporary registry: %w", err)
+	}
+	tempPath := tempFile.Name()
+	installed := false
+	defer func() {
+		_ = tempFile.Close()
+		if !installed {
+			_ = os.Remove(tempPath)
+		}
+	}()
+	if err := tempFile.Chmod(0o600); err != nil {
+		return fmt.Errorf("pool: secure temporary registry: %w", err)
+	}
+	if _, err := tempFile.Write(encoded); err != nil {
+		return fmt.Errorf("pool: write temporary registry: %w", err)
+	}
+	if err := tempFile.Sync(); err != nil {
+		return fmt.Errorf("pool: flush temporary registry: %w", err)
+	}
+	if err := tempFile.Close(); err != nil {
+		return fmt.Errorf("pool: close temporary registry: %w", err)
+	}
+	if err := replaceFile(tempPath, r.persistPath); err != nil {
+		return fmt.Errorf("pool: replace registry: %w", err)
+	}
+	installed = true
+	return nil
+}
+
+func (r *Registry) marshalLocked() ([]byte, error) {
 	stored := diskRegistry{
 		Version:     diskRegistryVersion,
 		PoolVersion: r.poolVersion,
@@ -1262,41 +1311,8 @@ func (r *Registry) persistLocked() error {
 	}
 	encoded, err := json.MarshalIndent(stored, "", "  ")
 	if err != nil {
-		return fmt.Errorf("pool: encode registry: %w", err)
+		return nil, fmt.Errorf("pool: encode registry: %w", err)
 	}
 	encoded = append(encoded, '\n')
-
-	directory := filepath.Dir(r.persistPath)
-	if err := os.MkdirAll(directory, 0o700); err != nil {
-		return fmt.Errorf("pool: create registry directory: %w", err)
-	}
-	tempFile, err := os.CreateTemp(directory, ".outbound-pool-*.tmp")
-	if err != nil {
-		return fmt.Errorf("pool: create temporary registry: %w", err)
-	}
-	tempPath := tempFile.Name()
-	installed := false
-	defer func() {
-		_ = tempFile.Close()
-		if !installed {
-			_ = os.Remove(tempPath)
-		}
-	}()
-	if err := tempFile.Chmod(0o600); err != nil {
-		return fmt.Errorf("pool: secure temporary registry: %w", err)
-	}
-	if _, err := tempFile.Write(encoded); err != nil {
-		return fmt.Errorf("pool: write temporary registry: %w", err)
-	}
-	if err := tempFile.Sync(); err != nil {
-		return fmt.Errorf("pool: flush temporary registry: %w", err)
-	}
-	if err := tempFile.Close(); err != nil {
-		return fmt.Errorf("pool: close temporary registry: %w", err)
-	}
-	if err := replaceFile(tempPath, r.persistPath); err != nil {
-		return fmt.Errorf("pool: replace registry: %w", err)
-	}
-	installed = true
-	return nil
+	return encoded, nil
 }

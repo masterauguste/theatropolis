@@ -118,6 +118,16 @@ compact sticky top bar with horizontal navigation and document scrolling.
   Node name, entrance context, and a text status. The searchable role picker is
   the canonical assignment surface; the color is supporting identity, not
   permission or health meaning.
+- The end-user portal reuses the same tokens and system typography in a
+  focused, rail-free shell. Its sticky compact header owns identity, language,
+  and sign-out; the body presents configuration links and read-only Node cards
+  without operator controls. Administrators and end users share one canonical
+  auth card and one username/password entry; the server resolves the persisted
+  role and routes to the appropriate realm. Invitation claim uses that same
+  visual language without exposing role selection.
+- Daily traffic history uses the same compact semantic table in the operator
+  user detail and end-user portal. Each UTC+8 day shows its total first, with
+  restrained Node pills providing the per-Node breakdown.
 - Proxy Node membership management uses the relay map's wide Users dialog. Its
   searchable roster opens focused access, grant, and compensation dialogs
   without turning the map canvas into a user-management dashboard.
@@ -135,6 +145,11 @@ compact sticky top bar with horizontal navigation and document scrolling.
   treatment and retain forced-colors compatibility.
 
 ## Motion and accessibility
+
+The Settings migration helper uses one wide, three-stage dialog. Export,
+restore, and online-server cutover are visually separated cards; restore and
+cutover use danger intent and typed confirmation, while archive creation uses
+the neutral secondary action.
 
 Motion is limited to 120–160ms color, border, and small position transitions.
 No ambient animation is used. Reduced-motion preference collapses transitions

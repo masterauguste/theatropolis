@@ -87,6 +87,8 @@ func TestRenderProfilesKeepNodesAndRulesSeparate(t *testing.T) {
 		!strings.Contains(string(singBox), `"type": "tun"`) ||
 		!strings.Contains(string(singBox), `"auto_route": true`) ||
 		!strings.Contains(string(singBox), `"type": "local"`) ||
+		!strings.Contains(string(singBox), `"tag": "rule-set-http"`) ||
+		!strings.Contains(string(singBox), `"default_http_client": "rule-set-http"`) ||
 		!strings.Contains(string(singBox), `"default_domain_resolver": "local-dns"`) ||
 		!strings.Contains(string(singBox), `"tag": "proxy-dns"`) ||
 		!strings.Contains(string(singBox), `"detour": "Proxy"`) ||
@@ -98,6 +100,9 @@ func TestRenderProfilesKeepNodesAndRulesSeparate(t *testing.T) {
 		!strings.Contains(string(singBox), `"url": "https://raw.githubusercontent.com/SagerNet/sing-geosite/rule-set/geosite-openai.srs"`) ||
 		!strings.Contains(string(singBox), `"url": "https://raw.githubusercontent.com/SagerNet/sing-geoip/rule-set/geoip-cn.srs"`) {
 		t.Fatalf("sing-box profile is incomplete:\n%s", singBox)
+	}
+	if strings.Contains(string(singBox), `"download_detour"`) {
+		t.Fatalf("sing-box profile exported the deprecated rule-set download_detour field:\n%s", singBox)
 	}
 	if !singBoxSelectorHasMembers(decoded, "Proxy", []string{"Cinema", "Stage", "Direct", "Reject"}) {
 		t.Fatalf("sing-box Proxy selector does not offer Direct and Reject after its Nodes:\n%s", singBox)

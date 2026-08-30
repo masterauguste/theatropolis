@@ -571,7 +571,7 @@ fi
 # A fresh interactive install defaults the username to admin and reads the
 # password twice with terminal echo disabled. Force a later failure so the
 # remaining scenarios still begin without a credential.
-AUTH_FILE="$TEST_ROOT/etc/theatropolis/web-auth.json"
+AUTH_FILE="$TEST_ROOT/var/lib/theatropolis/master/web-auth.json"
 # Git for Windows exposes script(1), but its pseudo-terminal cannot reliably
 # drive this Linux installer prompt. Linux CI exercises the interactive path.
 if [ -z "${MSYSTEM:-}" ] && command -v script >/dev/null 2>&1; then
@@ -665,7 +665,7 @@ if [ -z "${MSYSTEM:-}" ] && command -v script >/dev/null 2>&1; then
 	fi
 	[ ! -e "$AUTH_FILE" ] ||
 		fail "failed interactive installation retained its new credential"
-	[ "$(grep -Fxc "$TEST_ROOT/etc/theatropolis|no|admin" "$INIT_STATE_LOG")" -eq 1 ] ||
+	[ "$(grep -Fxc "$TEST_ROOT/var/lib/theatropolis/master|no|admin" "$INIT_STATE_LOG")" -eq 1 ] ||
 		fail "interactive installation did not initialize the default admin username"
 fi
 
@@ -736,7 +736,7 @@ printf '%s' "$SECOND_OUTPUT" | grep -Fq 'existing web admin credential was prese
 AUTH_HASH_AFTER="$(sha256sum "$AUTH_FILE" | awk '{ print $1 }')"
 [ "$AUTH_HASH_AFTER" = "$AUTH_HASH_BEFORE" ] ||
 	fail "reinstallation replaced or modified the web access file"
-[ "$(grep -Fxc "$TEST_ROOT/etc/theatropolis|no|first-admin" "$INIT_STATE_LOG")" -eq 2 ] ||
+[ "$(grep -Fxc "$TEST_ROOT/var/lib/theatropolis/master|no|first-admin" "$INIT_STATE_LOG")" -eq 2 ] ||
 	fail "fresh-failure and successful initialization calls were not both exercised"
 
 set +e
@@ -755,7 +755,7 @@ fi
 AUTH_HASH_RESET="$(sha256sum "$AUTH_FILE" | awk '{ print $1 }')"
 [ "$AUTH_HASH_RESET" != "$AUTH_HASH_AFTER" ] ||
 	fail "explicit reset did not replace the web admin credential"
-[ "$(grep -Fxc "$TEST_ROOT/etc/theatropolis|yes|replacement-admin" "$INIT_STATE_LOG")" -eq 1 ] ||
+[ "$(grep -Fxc "$TEST_ROOT/var/lib/theatropolis/master|yes|replacement-admin" "$INIT_STATE_LOG")" -eq 1 ] ||
 	fail "explicit reset did not invoke the candidate in replacement mode"
 
 UNIT="$TEST_ROOT/etc/systemd/system/theatropolis-master.service"
@@ -882,6 +882,41 @@ grep -Fq -- \
 	"enable --now theatropolis-master-update.path" \
 	"$SYSTEMCTL_LOG" ||
 	fail "master update path unit was not enabled"
+
+# An installation that predates the writable master state path keeps its web
+# credential under /etc. Migration must retain that source until the full
+# install succeeds, remove a failed target copy during rollback, and delete the
+# obsolete source only after the new service has started successfully.
+LEGACY_AUTH_FILE="$TEST_ROOT/etc/theatropolis/web-auth.json"
+mv "$AUTH_FILE" "$LEGACY_AUTH_FILE"
+LEGACY_AUTH_HASH="$(sha256sum "$LEGACY_AUTH_FILE" | awk '{ print $1 }')"
+set +e
+MIGRATION_FAILURE_OUTPUT="$(run_installer yes 2>&1)"
+MIGRATION_FAILURE_STATUS="$?"
+set -e
+[ "$MIGRATION_FAILURE_STATUS" -ne 0 ] ||
+	fail "legacy credential migration unexpectedly succeeded when Caddy reload failed"
+[ ! -e "$AUTH_FILE" ] ||
+	fail "failed legacy credential migration retained its target copy"
+[ -f "$LEGACY_AUTH_FILE" ] ||
+	fail "failed legacy credential migration removed its rollback source"
+[ "$(sha256sum "$LEGACY_AUTH_FILE" | awk '{ print $1 }')" = "$LEGACY_AUTH_HASH" ] ||
+	fail "failed legacy credential migration changed its rollback source"
+
+set +e
+MIGRATION_OUTPUT="$(run_installer no 2>&1)"
+MIGRATION_STATUS="$?"
+set -e
+[ "$MIGRATION_STATUS" -eq 0 ] ||
+	fail "legacy credential migration failed (status $MIGRATION_STATUS): $MIGRATION_OUTPUT"
+[ -f "$AUTH_FILE" ] ||
+	fail "legacy credential migration did not create the writable state file"
+[ ! -e "$LEGACY_AUTH_FILE" ] ||
+	fail "successful legacy credential migration retained the obsolete /etc copy"
+[ "$(sha256sum "$AUTH_FILE" | awk '{ print $1 }')" = "$LEGACY_AUTH_HASH" ] ||
+	fail "legacy credential migration changed the credential"
+printf '%s' "$MIGRATION_OUTPUT" | grep -Fq 'existing web admin credential was preserved' ||
+	fail "legacy credential migration did not report credential preservation"
 
 SNIPPET="$TEST_ROOT/etc/caddy/conf.d/theatropolis.caddy"
 [ -f "$SNIPPET" ] ||

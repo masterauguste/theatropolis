@@ -1328,6 +1328,42 @@ svg {
   font-size: 0.88rem;
 }
 
+.panel__header-actions {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: .75rem;
+  flex-wrap: wrap;
+}
+
+.daily-usage-table td:nth-child(1),
+.daily-usage-table td:nth-child(2) {
+  width: 10rem;
+  white-space: nowrap;
+}
+
+.daily-usage-nodes {
+  display: flex;
+  flex-wrap: wrap;
+  gap: .45rem;
+}
+
+.daily-usage-nodes > span {
+  display: inline-flex;
+  align-items: baseline;
+  gap: .45rem;
+  padding: .3rem .55rem;
+  border: 1px solid var(--ink-200);
+  border-radius: 999px;
+  background: var(--surface-sunken);
+  color: var(--ink-500);
+}
+
+.daily-usage-nodes strong {
+  color: var(--ink-900);
+  font-variant-numeric: tabular-nums;
+}
+
 .panel__count,
 .resource-summary__count {
   font-variant-numeric: lining-nums tabular-nums;
@@ -1559,6 +1595,12 @@ tbody tr:last-child td {
 .server-link:hover {
   color: var(--accent-700);
   text-decoration: underline;
+}
+
+.server-version {
+  color: var(--ink-700);
+  font-size: 0.78rem;
+  white-space: nowrap;
 }
 
 /* ---------- Empty state ---------- */
@@ -3537,6 +3579,26 @@ dialog.fleet-settings-dialog {
   margin-top: 0.75rem;
 }
 
+.migration-actions {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 1.25rem;
+}
+
+.migration-action {
+  min-width: 0;
+  padding: 1.25rem;
+  border: 1px solid var(--ink-200);
+  border-radius: var(--radius-lg);
+  background: var(--surface-sunken);
+}
+
+.migration-action h3 { margin: 0 0 1rem; }
+
+@media (max-width: 960px) {
+  .migration-actions { grid-template-columns: 1fr; }
+}
+
 .update-progress {
   max-width: 560px;
   margin: 3rem auto 0;
@@ -4247,6 +4309,128 @@ dialog.fleet-settings-dialog {
 .resize-none { resize: none; }
 .modal__danger-action { position: absolute; left: 1.25rem; bottom: 1.25rem; z-index: 1; margin: 0; }
 
+/* ---------- End-user access ---------- */
+
+.user-login-panel > form,
+.user-login-panel > .panel__actions {
+  padding: 1.25rem;
+}
+
+.user-login-panel > form {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  flex-wrap: wrap;
+}
+
+.user-invitation-result {
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  border-bottom: 1px solid var(--ink-200);
+}
+
+.user-invitation-result small {
+  grid-column: 2 / -1;
+  color: var(--ink-500);
+}
+
+.portal-page {
+  min-height: 100vh;
+  color: var(--ink-900);
+  background: var(--paper);
+}
+
+.portal-header {
+  position: sticky;
+  z-index: 30;
+  top: 0;
+  border-bottom: 1px solid var(--ink-200);
+  background: rgb(255 255 255 / 94%);
+  backdrop-filter: blur(16px);
+}
+
+.portal-header__inner {
+  display: flex;
+  width: min(calc(100% - 2rem), var(--workspace-narrow-max-width));
+  min-height: 4.75rem;
+  margin: 0 auto;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+}
+
+.portal-header__account {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  gap: 0.65rem;
+}
+
+.portal-header__account > span {
+  overflow: hidden;
+  max-width: 18rem;
+  color: var(--ink-500);
+  font-family: var(--font-mono);
+  font-size: 0.8rem;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.portal-header__account .language-switch {
+  min-height: auto;
+  margin: 0;
+  padding: 0.45rem 0.65rem;
+}
+
+.portal-header__account form { margin: 0; }
+
+.portal-main {
+  display: grid;
+  width: min(calc(100% - 2rem), var(--workspace-narrow-max-width));
+  margin: 0 auto;
+  padding: 2.25rem 0 4rem;
+  gap: 1.25rem;
+}
+
+.portal-main > .page-header { margin-bottom: 0.25rem; }
+
+.portal-node-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(24rem, 100%), 1fr));
+  gap: 1rem;
+  padding: 1.25rem;
+}
+
+.portal-node-card {
+  overflow: hidden;
+  border: 1px solid var(--ink-200);
+  border-radius: var(--radius-md);
+  background: var(--surface);
+}
+
+.portal-node-card > header {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 0.75rem;
+  padding: 1rem;
+  border-bottom: 1px solid var(--ink-200);
+}
+
+.portal-node-card > header > span:nth-child(2) {
+  display: grid;
+  min-width: 0;
+  gap: 0.1rem;
+}
+
+.portal-node-card > header small {
+  overflow: hidden;
+  color: var(--ink-500);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.portal-node-card .membership-facts { border: 0; border-radius: 0; }
+
 @media (max-width: 720px) {
   .subscription-link-grid article { grid-template-columns: 1fr auto; }
   .subscription-link-grid code { grid-column: 1 / -1; grid-row: 2; }
@@ -4259,6 +4443,15 @@ dialog.fleet-settings-dialog {
   .subscription-action { grid-column: 3; }
   .subscription-rule__actions { grid-column: 4; grid-row: 1 / span 2; }
   .modal__danger-action { position: static; padding: 0 1.25rem 1.25rem; }
+  .portal-header__inner { min-height: 4.25rem; }
+  .portal-header__account > span { display: none; }
+  .portal-main { padding-top: 1.5rem; }
+  .portal-node-grid { padding: 1rem; }
+  .portal-node-card > header { grid-template-columns: auto minmax(0, 1fr); }
+  .portal-node-card > header .membership-status { grid-column: 2; justify-self: start; }
+  .user-invitation-result { grid-template-columns: auto minmax(0, 1fr); }
+  .user-invitation-result .button { grid-column: 2; }
+  .user-invitation-result small { grid-column: 2; }
 }
 
 @media (prefers-reduced-motion: reduce) {

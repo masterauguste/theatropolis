@@ -256,6 +256,43 @@ func (s *Store) Snapshot() State {
 	return cloneState(s.state)
 }
 
+// MigrationSnapshot returns a mutually consistent copy of the Proxy Node
+// document and accounting database. The checkpoint runs while the Store write
+// lock is held, so no membership or accounting mutation can land between the
+// JSON snapshot and the SQLite snapshot.
+func (s *Store) MigrationSnapshot() ([]byte, []byte, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.accounting == nil || s.accounting.db == nil {
+		return nil, nil, errors.New("proxy node accounting storage is unavailable")
+	}
+	if _, err := s.accounting.db.Exec(`PRAGMA wal_checkpoint(TRUNCATE)`); err != nil {
+		return nil, nil, fmt.Errorf("checkpoint accounting database: %w", err)
+	}
+	state, err := os.ReadFile(s.path)
+	if err != nil {
+		return nil, nil, fmt.Errorf("read proxy node migration state: %w", err)
+	}
+	accounting, err := os.ReadFile(s.accounting.path)
+	if err != nil {
+		return nil, nil, fmt.Errorf("read proxy node migration accounting: %w", err)
+	}
+	return state, accounting, nil
+}
+
+// Close releases the accounting database. Production owns one Store for the
+// process lifetime; migration validation uses this to close staged snapshots.
+func (s *Store) Close() error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.accounting == nil || s.accounting.db == nil {
+		return nil
+	}
+	err := s.accounting.db.Close()
+	s.accounting = nil
+	return err
+}
+
 func (s *Store) User(id string) (User, bool) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()

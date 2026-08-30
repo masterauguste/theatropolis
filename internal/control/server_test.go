@@ -664,6 +664,42 @@ func TestQueueAgentUpdateSendsExactVersionAndAcceptsMatchingReport(t *testing.T)
 	}
 }
 
+func TestQueueOnlineMasterMigrationTargetsOnlyCompatibleOnlineAgents(t *testing.T) {
+	t.Parallel()
+	server := newTestServer(deployment.NewMemoryStore(), nil)
+	for _, agentID := range []string{"online-compatible", "online-old", "offline-compatible"} {
+		enrollTestIdentity(t, server.Identities, agentID)
+	}
+	compatible := newSession("online-compatible")
+	compatible.capabilities[MasterMigrationCapability] = struct{}{}
+	if err := server.Sessions.Register(compatible); err != nil {
+		t.Fatal(err)
+	}
+	defer server.Sessions.Unregister(compatible)
+	old := newSession("online-old")
+	if err := server.Sessions.Register(old); err != nil {
+		t.Fatal(err)
+	}
+	defer server.Sessions.Unregister(old)
+
+	queued, skipped, err := server.QueueOnlineMasterMigration(context.Background(), "migration_test", "new.example:443")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if queued != 1 || skipped != 2 {
+		t.Fatalf("queued=%d skipped=%d", queued, skipped)
+	}
+	command := <-compatible.commands
+	if got := command.GetMigrateMaster(); got.GetMigrationId() != "migration_test" || got.GetMasterAddress() != "new.example:443" {
+		t.Fatalf("command = %#v", got)
+	}
+	select {
+	case unexpected := <-old.commands:
+		t.Fatalf("old Agent received command: %#v", unexpected)
+	default:
+	}
+}
+
 func TestAgentUpdateAcceptsStaleTerminalReportAfterMasterRestart(t *testing.T) {
 	t.Parallel()
 

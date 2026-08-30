@@ -178,10 +178,13 @@ type proxyBlockRuleView struct {
 }
 
 type endUserListView struct {
-	ID          string
-	Name        string
-	URL         string
-	Memberships int
+	ID            string
+	Name          string
+	URL           string
+	Memberships   int
+	LoginUsername string
+	LoginStatus   string
+	LoginClass    string
 }
 
 type endUserDetailView struct {
@@ -191,6 +194,32 @@ type endUserDetailView struct {
 	AssignedAccess  []userProxyAccessView
 	AvailableAccess []userProxyOptionView
 	DefaultPlan     membershipPlanView
+	Login           endUserLoginAccessView
+	DailyUsage      []dailyUsageDayView
+}
+
+type dailyUsageDayView struct {
+	Date       time.Time
+	DateLabel  string
+	Total      uint64
+	TotalLabel string
+	Nodes      []dailyUsageNodeView
+}
+
+type dailyUsageNodeView struct {
+	ProxyNodeID string
+	Name        string
+	UsageLabel  string
+}
+
+type endUserLoginAccessView struct {
+	Claimed         bool
+	LoginUsername   string
+	StatusLabel     string
+	StatusClass     string
+	InvitationReady bool
+	InviteExpiresAt string
+	Invitation      *endUserInvitationView
 }
 
 type userProxyAccessView struct {
@@ -1018,7 +1047,17 @@ func (h *Handler) endUsersPage(response http.ResponseWriter, request *http.Reque
 	}
 	views := make([]endUserListView, 0, len(state.Users))
 	for _, user := range state.Users {
-		views = append(views, endUserListView{ID: user.ID, Name: user.Name, URL: "/users/" + url.PathEscape(user.ID), Memberships: counts[user.ID]})
+		view := endUserListView{ID: user.ID, Name: user.Name, URL: "/users/" + url.PathEscape(user.ID), Memberships: counts[user.ID], LoginStatus: "Not registered", LoginClass: "disabled"}
+		if h.endUserAccess != nil {
+			status := h.endUserAccess.Status(user.ID)
+			view.LoginUsername = status.LoginUsername
+			if status.Claimed {
+				view.LoginStatus, view.LoginClass = "Registered", "active"
+			} else if status.InvitationReady {
+				view.LoginStatus, view.LoginClass = "Invitation ready", "warning"
+			}
+		}
+		views = append(views, view)
 	}
 	sort.Slice(views, func(left, right int) bool {
 		return strings.ToLower(views[left].Name) < strings.ToLower(views[right].Name)
@@ -1051,6 +1090,27 @@ func (h *Handler) endUserPage(response http.ResponseWriter, request *http.Reques
 	}
 	state := h.proxyNodes.Snapshot()
 	detail := &endUserDetailView{ID: user.ID, Name: user.Name, ProxyNodeCount: len(state.ProxyNodes), DefaultPlan: defaultMembershipPlanView()}
+	daily, err := h.proxyNodes.UserDailyUsage(user.ID, 30)
+	if err != nil {
+		h.logger.Error("read user daily traffic", "user_id", user.ID, "error", err)
+		http.Error(response, "daily traffic could not be loaded", http.StatusInternalServerError)
+		return
+	}
+	detail.DailyUsage = dailyUsageViews(daily)
+	detail.Login = endUserLoginAccessView{StatusLabel: "Not registered", StatusClass: "disabled"}
+	if h.endUserAccess != nil {
+		status := h.endUserAccess.Status(user.ID)
+		detail.Login.Claimed = status.Claimed
+		detail.Login.LoginUsername = status.LoginUsername
+		detail.Login.InvitationReady = status.InvitationReady
+		if status.Claimed {
+			detail.Login.StatusLabel, detail.Login.StatusClass = "Registered", "active"
+		} else if status.InvitationReady {
+			detail.Login.StatusLabel, detail.Login.StatusClass = "Invitation ready", "warning"
+			detail.Login.InviteExpiresAt = status.InviteExpiresAt.In(proxynode.BillingLocation()).Format("Jan 2, 2006 15:04") + " (UTC+8)"
+		}
+		detail.Login.Invitation = h.endUserInvitationResult(request, user.ID)
+	}
 	for _, node := range state.ProxyNodes {
 		activeNode, active := h.proxyNodes.AppliedProxyNode(node.ID)
 		if !active {
@@ -1093,6 +1153,38 @@ func (h *Handler) endUserPage(response http.ResponseWriter, request *http.Reques
 	h.render(response, http.StatusOK, "user.html", pageData{
 		Title: user.Name, ActiveNav: "users", CSRFToken: session.CSRFToken, EndUser: detail,
 	})
+}
+
+func dailyUsageViews(records []proxynode.DailyUsage) []dailyUsageDayView {
+	var days []dailyUsageDayView
+	dayIndex := make(map[string]int)
+	for _, record := range records {
+		key := record.Date.In(proxynode.BillingLocation()).Format("2006-01-02")
+		index, exists := dayIndex[key]
+		if !exists {
+			index = len(days)
+			dayIndex[key] = index
+			days = append(days, dailyUsageDayView{
+				Date: record.Date, DateLabel: record.Date.In(proxynode.BillingLocation()).Format("2 Jan 2006"),
+			})
+		}
+		day := &days[index]
+		if ^uint64(0)-day.Total < record.UsedBytes {
+			day.Total = ^uint64(0)
+		} else {
+			day.Total += record.UsedBytes
+		}
+		day.Nodes = append(day.Nodes, dailyUsageNodeView{
+			ProxyNodeID: record.ProxyNodeID, Name: record.ProxyNodeName, UsageLabel: formatByteCount(record.UsedBytes),
+		})
+	}
+	for index := range days {
+		days[index].TotalLabel = formatByteCount(days[index].Total)
+		sort.Slice(days[index].Nodes, func(left, right int) bool {
+			return strings.ToLower(days[index].Nodes[left].Name) < strings.ToLower(days[index].Nodes[right].Name)
+		})
+	}
+	return days
 }
 
 func (h *Handler) addUserProxyAccess(response http.ResponseWriter, request *http.Request) {
@@ -1370,6 +1462,11 @@ func (h *Handler) deleteEndUser(response http.ResponseWriter, request *http.Requ
 	if err := h.proxyNodes.DeleteUser(request.PathValue("user_id")); err != nil {
 		handleProxyMutationError(response, err)
 		return
+	}
+	if h.endUserAccess != nil {
+		if err := h.endUserAccess.RemoveUser(request.PathValue("user_id")); err != nil {
+			h.logger.Error("remove end-user web access", "user_id", request.PathValue("user_id"), "error", err)
+		}
 	}
 	h.triggerProxyUserSync()
 	http.Redirect(response, request, "/users", http.StatusSeeOther)

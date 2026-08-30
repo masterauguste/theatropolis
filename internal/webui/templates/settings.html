@@ -12,6 +12,9 @@
         <h1>Master</h1>
       </div>
     </header>
+    {{if .Error}}<div class="notice notice--error" role="alert">{{.Error}}</div>{{end}}
+    {{if .Notice}}<div class="notice notice--success" role="status">{{.Notice}}</div>{{end}}
+    {{if .MigrationNotice}}<div class="notice notice--success" role="status">{{.MigrationNotice}}</div>{{end}}
     <section class="panel settings-panel">
       <div class="panel__header">
         <h2>Master software</h2>
@@ -38,10 +41,52 @@
       </form>
       <div class="notice" data-master-update-progress hidden aria-live="polite"></div>
     </section>
+    <section class="panel settings-panel" aria-labelledby="migration-heading">
+      <div class="panel__header">
+        <h2 id="migration-heading">Master Migration</h2>
+        <button class="button button--secondary button--small" type="button" data-dialog-open="master-migration-dialog" aria-haspopup="dialog">Open Migration Helper</button>
+      </div>
+    </section>
+    <dialog class="modal resource-modal" id="master-migration-dialog" aria-labelledby="master-migration-title">
+      <div class="modal__surface">
+        <header class="modal__header"><div><p class="eyebrow">Master Migration</p><h2 id="master-migration-title">Migration Helper</h2></div><button class="button button--secondary button--icon-only" type="button" data-dialog-close aria-label="Close Master migration">×</button></header>
+        <div class="modal__body migration-actions">
+          <section class="migration-action">
+            <h3>1. Export</h3>
+            <form class="stack" action="/settings/migration/export" method="post" novalidate>
+              <input type="hidden" name="csrf_token" value="{{.CSRFToken}}">
+              <label class="field"><span>Passphrase</span><span class="secret-input"><input id="migration-export-passphrase" type="password" name="passphrase" minlength="15" maxlength="512" autocomplete="new-password" required><button type="button" data-reveal-secret data-secret-label="passphrase" aria-label="Show passphrase" aria-controls="migration-export-passphrase" aria-pressed="false">Show</button></span></label>
+              <label class="field"><span>Confirm Passphrase</span><span class="secret-input"><input id="migration-export-confirm" type="password" name="passphrase_confirm" minlength="15" maxlength="512" autocomplete="new-password" required><button type="button" data-reveal-secret data-secret-label="passphrase" aria-label="Show passphrase" aria-controls="migration-export-confirm" aria-pressed="false">Show</button></span></label>
+              <button class="button button--secondary" type="submit" data-submit-button data-submit-label="Exporting…">Download Archive</button>
+            </form>
+          </section>
+          <section class="migration-action">
+            <h3>2. Restore</h3>
+            <form class="stack" action="/settings/migration/restore" method="post" enctype="multipart/form-data" novalidate>
+              <input type="hidden" name="csrf_token" value="{{.CSRFToken}}">
+              <label class="field"><span>Archive</span><input type="file" name="archive" accept=".zip,application/zip" required></label>
+              <label class="field"><span>Passphrase</span><span class="secret-input"><input id="migration-restore-passphrase" type="password" name="passphrase" minlength="15" maxlength="512" autocomplete="current-password" required><button type="button" data-reveal-secret data-secret-label="passphrase" aria-label="Show passphrase" aria-controls="migration-restore-passphrase" aria-pressed="false">Show</button></span></label>
+              <label class="field"><span>Confirmation</span><input type="text" name="confirmation" autocomplete="off" placeholder="RESTORE" required></label>
+              <button class="button button--danger" type="submit" data-submit-button data-submit-label="Restoring…">Restore And Restart</button>
+            </form>
+          </section>
+          <section class="migration-action">
+            <h3>3. Switch Online Servers</h3>
+            <form class="stack" action="/settings/migration/cutover" method="post" novalidate>
+              <input type="hidden" name="csrf_token" value="{{.CSRFToken}}">
+              <label class="field"><span>New Master</span><input type="text" name="master_address" placeholder="master.example.com:443" autocomplete="off" required></label>
+              <label class="field"><span>Confirmation</span><input type="text" name="confirmation" autocomplete="off" placeholder="MIGRATE" required></label>
+              <button class="button button--danger" type="submit" data-submit-button data-submit-label="Switching…">Switch Online Servers</button>
+            </form>
+          </section>
+        </div>
+        <footer class="modal__footer"><button class="button button--secondary" type="button" data-dialog-close>Close</button></footer>
+      </div>
+    </dialog>
     <section class="panel settings-panel" aria-labelledby="accounting-errors-heading">
       <div class="panel__header">
         <h2 id="accounting-errors-heading">Accounting errors</h2>
-        <span class="panel__count">{{.AccountingFailureTotal}} recorded</span>
+        <div class="panel__header-actions"><span class="panel__count">{{.AccountingFailureTotal}} recorded</span>{{if .AccountingFailureTotal}}<button class="button button--danger button--small" type="button" data-dialog-open="clear-accounting-errors">Clear Log</button>{{end}}</div>
       </div>
       {{if .AccountingFailures}}
       <div class="table-wrap">
@@ -63,6 +108,7 @@
       <div class="panel__empty"><p>No accounting errors have been recorded.</p></div>
       {{end}}
     </section>
+    {{if .AccountingFailureTotal}}<dialog class="modal" id="clear-accounting-errors"><div class="modal__surface modal__surface--compact"><header class="modal__header"><div><p class="eyebrow">Accounting Errors</p><h2>Clear Error Log?</h2></div><button class="button button--secondary button--icon-only" type="button" data-dialog-close aria-label="Close">×</button></header><div class="modal__body"><p>This permanently deletes the complete accounting error log.</p></div><footer class="modal__footer"><button class="button button--secondary" type="button" data-dialog-close autofocus>Cancel</button><form action="/settings/accounting-errors/clear" method="post" novalidate><input type="hidden" name="csrf_token" value="{{.CSRFToken}}"><input type="hidden" name="confirmation" value="clear"><button class="button button--danger" type="submit">Clear Log</button></form></footer></div></dialog>{{end}}
   </main>
   <script src="/assets/app.js?v={{.AssetVersion}}" defer></script>
 </body>

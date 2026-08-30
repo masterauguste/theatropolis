@@ -381,6 +381,28 @@ func (r *Registry) Snapshot(now time.Time) []AgentSnapshot {
 	return records
 }
 
+// MigrationSnapshot exports enrolled Agent public keys without pending
+// enrollment-token digests. Existing Agent private keys therefore remain able
+// to authenticate to a restored Master, while unused invitations do not cross
+// the migration boundary.
+func (r *Registry) MigrationSnapshot() ([]byte, error) {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	stored := diskRegistry{
+		Version:  1,
+		Pending:  map[string]diskPending{},
+		Enrolled: make(map[string]string, len(r.enrolled)),
+	}
+	for agentID, publicKey := range r.enrolled {
+		stored.Enrolled[agentID] = base64.RawURLEncoding.EncodeToString(publicKey)
+	}
+	encoded, err := json.MarshalIndent(stored, "", "  ")
+	if err != nil {
+		return nil, fmt.Errorf("encode migration identity registry: %w", err)
+	}
+	return append(encoded, '\n'), nil
+}
+
 func NewChallenge() ([]byte, error) {
 	nonce := make([]byte, ChallengeNonceBytes)
 	if _, err := rand.Read(nonce); err != nil {

@@ -30,7 +30,7 @@ const (
 	// accessFileVersion is retained for the legacy access-key document format.
 	accessFileVersion      = 1
 	adminAccessFileVersion = 2
-	accessFileMaxBytes     = 8 << 10
+	accessFileMaxBytes     = 16 << 20
 	sessionFileVersion     = 1
 	sessionFileMaxBytes    = 128 << 10
 
@@ -146,6 +146,7 @@ type AccessManager struct {
 	mode CredentialMode
 
 	accessKeyDigest [sha256.Size]byte
+	username        string
 	usernameDigest  [sha256.Size]byte
 	passwordSalt    [passwordSaltBytes]byte
 	passwordHash    [passwordHashBytes]byte
@@ -268,6 +269,11 @@ func replaceAdminAccessWithPasswordDeriver(
 	if err != nil {
 		return err
 	}
+	existingEncoded, err := io.ReadAll(io.LimitReader(existing, accessFileMaxBytes+1))
+	if err != nil || len(existingEncoded) == 0 || len(existingEncoded) > accessFileMaxBytes {
+		_ = existing.Close()
+		return errors.New("read existing access file")
+	}
 	if err := existing.Close(); err != nil {
 		return fmt.Errorf("close existing access file: %w", err)
 	}
@@ -276,7 +282,7 @@ func replaceAdminAccessWithPasswordDeriver(
 	if err != nil {
 		return err
 	}
-	encoded, err := marshalAccessDocument(document)
+	encoded, err := replacementAdminAccessDocument(existingEncoded, document)
 	if err != nil {
 		return err
 	}
@@ -322,6 +328,56 @@ func replaceAdminAccessWithPasswordDeriver(
 		return err
 	}
 	return nil
+}
+
+func replacementAdminAccessDocument(
+	existing []byte,
+	password passwordAccessDocument,
+) ([]byte, error) {
+	var header struct {
+		Version int `json:"version"`
+	}
+	if err := json.Unmarshal(existing, &header); err != nil || header.Version != unifiedIdentityFileVersion {
+		return marshalAccessDocument(password)
+	}
+	var document unifiedIdentityDocument
+	if err := decodeStrictJSON(existing, &document); err != nil {
+		return nil, err
+	}
+	for _, identity := range document.Identities {
+		if identity.Role == identityRoleUser && strings.EqualFold(identity.LoginUsername, password.Username) {
+			return nil, errors.New("administrator username is already used by an end user")
+		}
+	}
+	replaced := false
+	for index := range document.Identities {
+		identity := &document.Identities[index]
+		if identity.Role != identityRoleAdministrator {
+			continue
+		}
+		if replaced {
+			return nil, errors.New("identity file contains multiple administrators")
+		}
+		identity.ID = administratorIdentityID
+		identity.CredentialType = credentialTypePassword
+		identity.LoginUsername = password.Username
+		identity.AuthRevision++
+		if identity.AuthRevision == 0 {
+			identity.AuthRevision = 1
+		}
+		identity.AccessKeySHA256 = ""
+		identity.PasswordSalt = password.Salt
+		identity.PasswordHash = password.PasswordHash
+		identity.InviteSHA256 = ""
+		identity.InviteExpiresAt = time.Time{}
+		identity.ClaimedAt = time.Time{}
+		identity.UpdatedAt = time.Now().UTC()
+		replaced = true
+	}
+	if !replaced {
+		return nil, errors.New("identity file does not contain an administrator")
+	}
+	return marshalAccessDocument(document)
 }
 
 func newPasswordAccessDocument(
@@ -555,6 +611,10 @@ func loadAccessWithPasswordDeriverAndSessions(
 		if err := loadPasswordCredential(manager, fields, derive); err != nil {
 			return nil, fmt.Errorf("decode access file: %w", err)
 		}
+	case unifiedIdentityFileVersion:
+		if err := loadUnifiedAdministratorCredential(manager, encoded, derive); err != nil {
+			return nil, fmt.Errorf("decode access file: %w", err)
+		}
 	default:
 		return nil, fmt.Errorf("unsupported access file version %d", version)
 	}
@@ -565,6 +625,63 @@ func loadAccessWithPasswordDeriverAndSessions(
 		}
 	}
 	return manager, nil
+}
+
+func loadUnifiedAdministratorCredential(
+	manager *AccessManager,
+	encoded []byte,
+	derive passwordDeriver,
+) error {
+	var document unifiedIdentityDocument
+	if err := decodeStrictJSON(encoded, &document); err != nil {
+		return err
+	}
+	var stored *persistedUnifiedIdentity
+	for index := range document.Identities {
+		identity := &document.Identities[index]
+		if identity.Role == identityRoleAdministrator {
+			if stored != nil {
+				return errors.New("identity file contains multiple administrators")
+			}
+			stored = identity
+		}
+	}
+	if stored == nil || stored.ID != administratorIdentityID {
+		return errors.New("identity file does not contain an administrator")
+	}
+	admin, err := decodeAdministratorIdentity(*stored)
+	if err != nil {
+		return err
+	}
+	manager.mode = admin.Mode
+	manager.username = admin.LoginUsername
+	manager.usernameDigest = sha256.Sum256([]byte(admin.LoginUsername))
+	manager.accessKeyDigest = admin.AccessKeyDigest
+	manager.passwordSalt = admin.PasswordSalt
+	manager.passwordHash = admin.PasswordHash
+	manager.derivePassword = derive
+	manager.passwordKDFGate = globalPasswordKDFGate
+	binding := struct {
+		ID              string       `json:"id"`
+		Role            identityRole `json:"role"`
+		CredentialType  string       `json:"credential_type"`
+		LoginUsername   string       `json:"login_username,omitempty"`
+		AuthRevision    uint64       `json:"auth_revision"`
+		AccessKeySHA256 string       `json:"access_key_sha256,omitempty"`
+		PasswordSalt    string       `json:"password_salt,omitempty"`
+		PasswordHash    string       `json:"password_hash,omitempty"`
+	}{
+		ID: stored.ID, Role: stored.Role, CredentialType: stored.CredentialType,
+		LoginUsername: stored.LoginUsername, AuthRevision: stored.AuthRevision,
+		AccessKeySHA256: stored.AccessKeySHA256, PasswordSalt: stored.PasswordSalt,
+		PasswordHash: stored.PasswordHash,
+	}
+	canonical, err := json.Marshal(binding)
+	if err != nil {
+		return err
+	}
+	manager.credentialBinding = sha256.Sum256(canonical)
+	return nil
 }
 
 func openVerifiedAccessFile(path string) (*os.File, os.FileInfo, error) {
@@ -759,6 +876,7 @@ func loadPasswordCredential(
 	defer clear(hash)
 
 	manager.mode = UsernamePassword
+	manager.username = document.Username
 	manager.usernameDigest = sha256.Sum256([]byte(document.Username))
 	copy(manager.passwordSalt[:], salt)
 	copy(manager.passwordHash[:], hash)
@@ -1010,7 +1128,16 @@ func (m *AccessManager) LoginForClient(client, username, password string) (Sessi
 	if !authenticated {
 		return Session{}, ErrAuthenticationFailed
 	}
+	return m.createAuthenticatedSession(now, clientDigest)
+}
 
+// createAuthenticatedSession is intentionally unexported: the unified
+// identity verifier calls it only after a role-tagged administrator credential
+// has already been verified exactly once.
+func (m *AccessManager) createAuthenticatedSession(
+	now time.Time,
+	clientDigest [sha256.Size]byte,
+) (Session, error) {
 	var token [credentialBytes]byte
 	var csrf [credentialBytes]byte
 	if _, err := io.ReadFull(m.random, token[:]); err != nil {

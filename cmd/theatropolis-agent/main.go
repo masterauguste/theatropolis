@@ -88,7 +88,21 @@ func run(arguments []string) error {
 		return errors.New("--master is required")
 	}
 
-	host, _, err := net.SplitHostPort(*masterAddress)
+	controlTarget := agent.NewControlTargetStore(*stateDirectory)
+	if strings.TrimSpace(*tokenFile) != "" {
+		if _, err := os.Lstat(*tokenFile); err == nil {
+			if err := controlTarget.ResetForEnrollment(); err != nil {
+				return fmt.Errorf("reset migrated Master target: %w", err)
+			}
+		} else if !errors.Is(err, os.ErrNotExist) {
+			return err
+		}
+	}
+	resolvedMaster, err := controlTarget.Load(*masterAddress)
+	if err != nil {
+		return err
+	}
+	host, _, err := net.SplitHostPort(resolvedMaster)
 	if err != nil || strings.TrimSpace(host) == "" {
 		return errors.New("--master must be a host:port pair")
 	}
@@ -97,7 +111,7 @@ func run(arguments []string) error {
 		return err
 	}
 	connection, err := grpc.NewClient(
-		"dns:///"+*masterAddress,
+		"dns:///"+resolvedMaster,
 		grpc.WithTransportCredentials(credentials.NewTLS(tlsConfig)),
 		grpc.WithConnectParams(grpc.ConnectParams{
 			Backoff: backoff.Config{
@@ -162,6 +176,7 @@ func run(arguments []string) error {
 		SingBoxVersion: singBoxVersion,
 		PrivateKey:     privateKey,
 		Validator:      validator,
+		MasterMigrator: controlTarget,
 	}
 	updater, err := agentupdate.NewScheduler(*stateDirectory)
 	if err != nil {
@@ -202,7 +217,7 @@ func run(arguments []string) error {
 	slog.Info(
 		"theatropolis agent starting",
 		"version", version,
-		"master", *masterAddress,
+		"master", resolvedMaster,
 	)
 	return runner.Run(ctx, client)
 }

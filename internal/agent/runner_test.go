@@ -276,10 +276,12 @@ func TestRuntimeReportMapsEveryManagerStatus(t *testing.T) {
 type probeCommandServer struct {
 	controlv1.UnimplementedAgentControlServiceServer
 
-	hello           chan *controlv1.AgentHello
-	agentFrames     chan *controlv1.AgentFrame
-	commands        chan *controlv1.ProbeAddresses
-	trafficCommands chan *controlv1.ManagedUserTrafficRequest
+	hello                 chan *controlv1.AgentHello
+	agentFrames           chan *controlv1.AgentFrame
+	commands              chan *controlv1.ProbeAddresses
+	trafficCommands       chan *controlv1.ManagedUserTrafficRequest
+	migrationCommands     chan *controlv1.MigrateMasterCommand
+	disconnectOnMigration bool
 }
 
 func (s *probeCommandServer) Connect(
@@ -335,6 +337,10 @@ func (s *probeCommandServer) Connect(
 			}
 			select {
 			case s.agentFrames <- frame:
+				if s.disconnectOnMigration && frame.GetMasterMigrationReport() != nil {
+					recvDone <- errors.New("migration accepted")
+					return
+				}
 			case <-stream.Context().Done():
 				recvDone <- stream.Context().Err()
 				return
@@ -363,10 +369,78 @@ func (s *probeCommandServer) Connect(
 			}); err != nil {
 				return err
 			}
+		case command := <-s.migrationCommands:
+			masterSequence++
+			if err := stream.Send(&controlv1.MasterFrame{Sequence: masterSequence, Payload: &controlv1.MasterFrame_MigrateMaster{MigrateMaster: command}}); err != nil {
+				return err
+			}
 		case err := <-recvDone:
 			return err
 		case <-stream.Context().Done():
 			return stream.Context().Err()
+		}
+	}
+}
+
+type recordingMasterMigrator struct{ migrationID, address string }
+
+func (m *recordingMasterMigrator) StageMasterMigration(migrationID, address string) error {
+	m.migrationID, m.address = migrationID, address
+	return nil
+}
+
+func TestRunnerPersistsMasterMigrationBeforeReconnect(t *testing.T) {
+	t.Parallel()
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	listener := bufconn.Listen(1 << 20)
+	fake := &probeCommandServer{
+		hello: make(chan *controlv1.AgentHello, 1), agentFrames: make(chan *controlv1.AgentFrame, 8),
+		migrationCommands: make(chan *controlv1.MigrateMasterCommand), disconnectOnMigration: true,
+	}
+	grpcServer := grpc.NewServer()
+	controlv1.RegisterAgentControlServiceServer(grpcServer, fake)
+	go func() { _ = grpcServer.Serve(listener) }()
+	defer grpcServer.Stop()
+	connection, err := grpc.NewClient("passthrough:///migration-test",
+		grpc.WithContextDialer(func(context.Context, string) (net.Conn, error) { return listener.Dial() }),
+		grpc.WithTransportCredentials(insecure.NewCredentials()))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer connection.Close()
+	_, privateKey, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	migrator := &recordingMasterMigrator{}
+	runner := &Runner{AgentVersion: "test", PrivateKey: privateKey, MasterMigrator: migrator,
+		HeartbeatPeriod: time.Hour, MasterMigrationExitDelay: 100 * time.Millisecond,
+		Prober: &ProbeScheduler{Interval: -1}}
+	result := make(chan error, 1)
+	go func() { result <- runner.Run(ctx, controlv1.NewAgentControlServiceClient(connection)) }()
+	hello := <-fake.hello
+	if !slices.Contains(hello.GetCapabilities(), control.MasterMigrationCapability) {
+		t.Fatalf("capabilities = %v", hello.GetCapabilities())
+	}
+	fake.migrationCommands <- &controlv1.MigrateMasterCommand{MigrationId: "migration_test", MasterAddress: "new.example:443"}
+	for {
+		select {
+		case frame := <-fake.agentFrames:
+			if report := frame.GetMasterMigrationReport(); report != nil {
+				if !report.GetAccepted() || report.GetMigrationId() != "migration_test" {
+					t.Fatalf("report = %#v", report)
+				}
+				if migrator.migrationID != "migration_test" || migrator.address != "new.example:443" {
+					t.Fatalf("migrator = %#v", migrator)
+				}
+				if err := <-result; !errors.Is(err, ErrMasterMigrationRequested) {
+					t.Fatalf("runner = %v", err)
+				}
+				return
+			}
+		case <-ctx.Done():
+			t.Fatal("timed out waiting for migration report")
 		}
 	}
 }

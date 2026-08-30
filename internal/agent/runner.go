@@ -36,6 +36,10 @@ const (
 	defaultTrafficPeriod   = 15 * time.Second
 )
 
+type MasterMigrationManager interface {
+	StageMasterMigration(migrationID, masterAddress string) error
+}
+
 type ConfigurationManager interface {
 	ResetForEnrollment() error
 	Start(context.Context) (singbox.StartupResult, error)
@@ -64,8 +68,13 @@ type Runner struct {
 	Manager         ConfigurationManager
 	Updater         *agentupdate.Scheduler
 	SingBoxUpdater  *singboxupdate.Scheduler
+	MasterMigrator  MasterMigrationManager
 	HeartbeatPeriod time.Duration
-	Now             func() time.Time
+	// MasterMigrationExitDelay is a test seam. Production waits long enough
+	// for the old Master to process the acceptance report and acknowledge it
+	// by closing the authenticated stream.
+	MasterMigrationExitDelay time.Duration
+	Now                      func() time.Time
 	// Prober drives periodic public-address probing for families without a
 	// globally routable interface address. Nil means a fresh default
 	// ProbeScheduler per control session (production); tests substitute a
@@ -137,6 +146,9 @@ func (r *Runner) Run(
 	for {
 		connectedAt := r.now()
 		sessionErr := r.runControlSession(ctx, client)
+		if errors.Is(sessionErr, ErrMasterMigrationRequested) {
+			return sessionErr
+		}
 		if err := ctx.Err(); err != nil {
 			return err
 		}
@@ -221,6 +233,9 @@ func (r *Runner) runControlSession(
 			hello.Capabilities,
 			control.SingBoxUpdateCapability,
 		)
+	}
+	if r.MasterMigrator != nil {
+		hello.Capabilities = append(hello.Capabilities, control.MasterMigrationCapability)
 	}
 	hello.Capabilities = append(
 		hello.Capabilities,
@@ -315,6 +330,8 @@ func (r *Runner) runControlSession(
 	trafficReports := make(chan trafficCollectionResult, 1)
 	trafficCollecting := false
 	trafficRequestIDs := make([]string, 0, 1)
+	var migrationExit <-chan time.Time
+	migrationStaged := false
 	if reportsTraffic {
 		trafficTicker = time.NewTicker(defaultTrafficPeriod)
 		defer trafficTicker.Stop()
@@ -328,9 +345,15 @@ func (r *Runner) runControlSession(
 			return ctx.Err()
 		case received := <-incoming:
 			if errors.Is(received.err, io.EOF) {
+				if migrationStaged {
+					return ErrMasterMigrationRequested
+				}
 				return errors.New("master closed the control stream")
 			}
 			if received.err != nil {
+				if migrationStaged {
+					return ErrMasterMigrationRequested
+				}
 				return fmt.Errorf("receive master command: %w", received.err)
 			}
 			frame := received.frame
@@ -423,6 +446,31 @@ func (r *Runner) runControlSession(
 					trafficCollecting = true
 					go collectManagedUserTraffic(sessionContext, trafficCollector, trafficReports)
 				}
+			case *controlv1.MasterFrame_MigrateMaster:
+				migrationCommand := command.MigrateMaster
+				migrationID := ""
+				masterAddress := ""
+				if migrationCommand != nil {
+					migrationID = migrationCommand.GetMigrationId()
+					masterAddress = migrationCommand.GetMasterAddress()
+				}
+				err := errors.New("Master migration is unavailable")
+				if r.MasterMigrator != nil && migrationCommand != nil {
+					err = r.MasterMigrator.StageMasterMigration(migrationID, masterAddress)
+				}
+				report := &controlv1.MasterMigrationReport{MigrationId: migrationID, Accepted: err == nil}
+				if err != nil {
+					report.ErrorCode = "invalid_target"
+				} else {
+					migrationStaged = true
+					// A current Master closes this authenticated stream after it
+					// receives the acceptance report. The timeout is only a
+					// compatibility escape hatch; it prevents a persisted cutover
+					// from remaining dormant forever if the old Master disappears
+					// immediately after issuing the command.
+					migrationExit = time.After(r.masterMigrationExitDelay())
+				}
+				response.Payload = &controlv1.AgentFrame_MasterMigrationReport{MasterMigrationReport: report}
 			default:
 				return errors.New("master sent an unsupported command")
 			}
@@ -432,6 +480,8 @@ func (r *Runner) runControlSession(
 			if err := stream.Send(response); err != nil {
 				return fmt.Errorf("send configuration report: %w", err)
 			}
+		case <-migrationExit:
+			return ErrMasterMigrationRequested
 		case report := <-probeReports:
 			agentSequence++
 			if err := stream.Send(&controlv1.AgentFrame{
@@ -1088,4 +1138,11 @@ func (r *Runner) heartbeatPeriod() time.Duration {
 		return defaultHeartbeatPeriod
 	}
 	return r.HeartbeatPeriod
+}
+
+func (r *Runner) masterMigrationExitDelay() time.Duration {
+	if r.MasterMigrationExitDelay > 0 {
+		return r.MasterMigrationExitDelay
+	}
+	return 10 * time.Second
 }

@@ -9,6 +9,8 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
+	"mime/multipart"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -65,6 +67,9 @@ func (s testSessions) AgentInfo(agentID string) (control.AgentInfo, bool) {
 		OperatingSystem: "linux",
 		Architecture:    "amd64",
 	}
+	if agentID == "edge-managed-version" {
+		info.SingBoxVersion = "v1.14.0-rc.2.theatropolis.2"
+	}
 	if agentID == "edge-online" {
 		info.ObservedAddress = "203.0.113.10"
 	}
@@ -93,6 +98,33 @@ type testAgentController struct {
 	probeRequests       []probeRequest
 	trafficRequests     []string
 	autoApply           bool
+	migrationAddress    string
+	migrationQueued     int
+	migrationSkipped    int
+}
+
+func (c *testAgentController) QueueOnlineMasterMigration(_ context.Context, _ string, address string) (int, int, error) {
+	c.migrationAddress = address
+	return c.migrationQueued, c.migrationSkipped, c.queueErr
+}
+
+type testMasterMigrationService struct {
+	exportPassphrase  string
+	restorePassphrase string
+	restoredArchive   []byte
+	exportErr         error
+	restoreErr        error
+}
+
+func (s *testMasterMigrationService) Export(_ context.Context, passphrase string) (string, []byte, error) {
+	s.exportPassphrase = passphrase
+	return "migration.zip", []byte("migration-archive"), s.exportErr
+}
+
+func (s *testMasterMigrationService) StageRestore(_ context.Context, archive []byte, passphrase string) (string, int, int, int, error) {
+	s.restorePassphrase = passphrase
+	s.restoredArchive = append([]byte(nil), archive...)
+	return "migration_test", 3, 4, 2, s.restoreErr
 }
 
 type testProxyUserSync struct {
@@ -316,10 +348,13 @@ type webFixture struct {
 	controller *testAgentController
 	proxyNodes *proxynode.Store
 	access     *AccessManager
+	endUsers   *EndUserAccessManager
 	username   string
 	password   string
 	session    Session
 	now        time.Time
+	migration  *testMasterMigrationService
+	restarts   chan struct{}
 }
 
 func TestProtectedPagesRequireAuthenticationAndConfiguredHost(t *testing.T) {
@@ -698,6 +733,54 @@ func TestUsernamePasswordLoginFormIsAccessibleAndDoesNotReflectSecrets(t *testin
 	}
 }
 
+func TestUnifiedLoginRoutesPersistedRolesWithoutAuthenticationFallback(t *testing.T) {
+	fixture := newWebFixture(t)
+	fixture.endUsers.mu.Lock()
+	fixture.endUsers.unified = true
+	fixture.endUsers.admin = administratorIdentity{
+		Mode: UsernamePassword, LoginUsername: fixture.access.username, AuthRevision: 1,
+		PasswordSalt: fixture.access.passwordSalt, PasswordHash: fixture.access.passwordHash,
+		UpdatedAt: fixture.now,
+	}
+	fixture.endUsers.mu.Unlock()
+
+	request := fixture.request(http.MethodGet, "/portal/login", "")
+	response := httptest.NewRecorder()
+	fixture.handler.ServeHTTP(response, request)
+	if response.Code != http.StatusSeeOther || response.Header().Get("Location") != "/login" {
+		t.Fatalf("portal login redirect = %d %q", response.Code, response.Header().Get("Location"))
+	}
+
+	form := url.Values{"username": {fixture.username}, "password": {fixture.password}}.Encode()
+	request = fixture.mutationRequest(http.MethodPost, "/login", form)
+	response = httptest.NewRecorder()
+	fixture.handler.ServeHTTP(response, request)
+	if response.Code != http.StatusSeeOther || response.Header().Get("Location") != "/servers" {
+		t.Fatalf("administrator unified login = %d %q", response.Code, response.Header().Get("Location"))
+	}
+	if cookies := response.Result().Cookies(); len(cookies) != 1 || cookies[0].Name != SessionCookieName {
+		t.Fatalf("administrator unified cookies = %+v", cookies)
+	}
+
+	token, _, err := fixture.endUsers.IssueInvitation("usr_portal", defaultUserInviteLifetime)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := fixture.endUsers.ClaimInvitation(token, "portal.user", testEndUserPassword); err != nil {
+		t.Fatal(err)
+	}
+	form = url.Values{"username": {"portal.user"}, "password": {testEndUserPassword}}.Encode()
+	request = fixture.mutationRequest(http.MethodPost, "/login", form)
+	response = httptest.NewRecorder()
+	fixture.handler.ServeHTTP(response, request)
+	if response.Code != http.StatusSeeOther || response.Header().Get("Location") != "/portal" {
+		t.Fatalf("user unified login = %d %q", response.Code, response.Header().Get("Location"))
+	}
+	if cookies := response.Result().Cookies(); len(cookies) != 1 || cookies[0].Name != EndUserSessionCookieName {
+		t.Fatalf("user unified cookies = %+v", cookies)
+	}
+}
+
 func TestUsernamePasswordLoginRequiresExactBoundedFields(t *testing.T) {
 	t.Parallel()
 
@@ -1047,6 +1130,10 @@ func TestServersPageUsesRealEnrollmentAndConnectionState(t *testing.T) {
 		"edge-offline",
 		"Established",
 		"Not established",
+		"Agent version",
+		"v0.0.9",
+		"sing-box version",
+		"v1.14.0-beta.2",
 		"4 total",
 	} {
 		if !strings.Contains(body, expected) {
@@ -1069,6 +1156,58 @@ func TestServersPageUsesRealEnrollmentAndConnectionState(t *testing.T) {
 	}
 	if response.Header().Get("Cache-Control") != "no-store" {
 		t.Fatalf("servers Cache-Control = %q", response.Header().Get("Cache-Control"))
+	}
+}
+
+func TestServersPageHidesManagedSingBoxPatchSuffix(t *testing.T) {
+	t.Parallel()
+
+	fixture := newWebFixture(t)
+	enrollAgent(t, fixture.registry, "edge-managed-version")
+	fixture.controller.sessions["edge-managed-version"] = true
+
+	request := fixture.authenticatedRequest(http.MethodGet, "/servers/content", "")
+	response := httptest.NewRecorder()
+	fixture.handler.ServeHTTP(response, request)
+	body := response.Body.String()
+	if response.Code != http.StatusOK || !strings.Contains(body, "v1.14.0-rc.2") {
+		t.Fatalf("servers content omitted simplified sing-box version: %d %q", response.Code, body)
+	}
+	if strings.Contains(body, "v1.14.0-rc.2.theatropolis.2") {
+		t.Fatal("servers content exposed the managed sing-box patch suffix")
+	}
+
+	request = fixture.authenticatedRequestWithLocale(
+		http.MethodGet,
+		"/servers/content",
+		"",
+		localeSimplifiedChinese,
+	)
+	response = httptest.NewRecorder()
+	fixture.handler.ServeHTTP(response, request)
+	body = response.Body.String()
+	for _, expected := range []string{"Agent 版本", "sing-box 版本"} {
+		if response.Code != http.StatusOK || !strings.Contains(body, expected) {
+			t.Errorf("Chinese servers content omitted %q: %d %q", expected, response.Code, body)
+		}
+	}
+}
+
+func TestDisplaySingBoxVersionRemovesOnlyManagedBuildSuffix(t *testing.T) {
+	t.Parallel()
+
+	for _, test := range []struct {
+		input string
+		want  string
+	}{
+		{input: "v1.14.0-rc.2.theatropolis.2", want: "v1.14.0-rc.2"},
+		{input: "1.14.0-theatropolis.12", want: "1.14.0"},
+		{input: "  v1.14.0-beta.2  ", want: "v1.14.0-beta.2"},
+		{input: "development", want: "development"},
+	} {
+		if got := displaySingBoxVersion(test.input); got != test.want {
+			t.Errorf("displaySingBoxVersion(%q) = %q, want %q", test.input, got, test.want)
+		}
 	}
 }
 
@@ -1129,10 +1268,106 @@ func TestSettingsPageOwnsMasterSoftwareManagement(t *testing.T) {
 		`data-master-version-refresh`,
 		`data-version-catalog-url="/settings/versions"`,
 		`href="/settings" class="is-active"`,
+		"Master Migration",
+		`action="/settings/migration/export"`,
+		`action="/settings/migration/restore"`,
+		`action="/settings/migration/cutover"`,
 	} {
 		if !strings.Contains(body, expected) {
 			t.Errorf("settings page does not contain %q", expected)
 		}
+	}
+}
+
+func TestMasterMigrationExportRequiresMatchingPassphraseAndDownloadsArchive(t *testing.T) {
+	t.Parallel()
+	fixture := newWebFixture(t)
+	form := url.Values{
+		"csrf_token":         {fixture.session.CSRFToken},
+		"passphrase":         {"correct horse battery staple"},
+		"passphrase_confirm": {"correct horse battery staple"},
+	}.Encode()
+	request := fixture.authenticatedMutationRequest(http.MethodPost, "/settings/migration/export", form)
+	response := httptest.NewRecorder()
+	fixture.handler.ServeHTTP(response, request)
+	if response.Code != http.StatusOK {
+		t.Fatalf("export status = %d, body = %s", response.Code, response.Body.String())
+	}
+	if response.Body.String() != "migration-archive" || fixture.migration.exportPassphrase != "correct horse battery staple" {
+		t.Fatalf("export = %q, passphrase = %q", response.Body.String(), fixture.migration.exportPassphrase)
+	}
+	if disposition := response.Header().Get("Content-Disposition"); !strings.Contains(disposition, "migration.zip") {
+		t.Fatalf("Content-Disposition = %q", disposition)
+	}
+	if response.Header().Get("Cache-Control") != "no-store" {
+		t.Fatalf("Cache-Control = %q", response.Header().Get("Cache-Control"))
+	}
+}
+
+func TestMasterMigrationRestoreStagesArchiveAndRequestsRestart(t *testing.T) {
+	t.Parallel()
+	fixture := newWebFixture(t)
+	var body bytes.Buffer
+	writer := multipart.NewWriter(&body)
+	for name, value := range map[string]string{
+		"csrf_token":   fixture.session.CSRFToken,
+		"passphrase":   "correct horse battery staple",
+		"confirmation": "RESTORE",
+	} {
+		if err := writer.WriteField(name, value); err != nil {
+			t.Fatal(err)
+		}
+	}
+	part, err := writer.CreateFormFile("archive", "migration.zip")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := part.Write([]byte("encrypted-migration")); err != nil {
+		t.Fatal(err)
+	}
+	if err := writer.Close(); err != nil {
+		t.Fatal(err)
+	}
+	request := fixture.authenticatedMutationRequest(http.MethodPost, "/settings/migration/restore", "")
+	request.Body = io.NopCloser(bytes.NewReader(body.Bytes()))
+	request.ContentLength = int64(body.Len())
+	request.Header.Set("Content-Type", writer.FormDataContentType())
+	response := httptest.NewRecorder()
+	fixture.handler.ServeHTTP(response, request)
+	if response.Code != http.StatusAccepted {
+		t.Fatalf("restore status = %d, body = %s", response.Code, response.Body.String())
+	}
+	if string(fixture.migration.restoredArchive) != "encrypted-migration" || fixture.migration.restorePassphrase != "correct horse battery staple" {
+		t.Fatalf("restore archive = %q, passphrase = %q", fixture.migration.restoredArchive, fixture.migration.restorePassphrase)
+	}
+	select {
+	case <-fixture.restarts:
+	case <-time.After(2 * time.Second):
+		t.Fatal("restore did not request a Master restart")
+	}
+}
+
+func TestMasterMigrationCutoverTargetsOnlyTheEnteredAddress(t *testing.T) {
+	t.Parallel()
+	fixture := newWebFixture(t)
+	fixture.controller.migrationQueued = 2
+	fixture.controller.migrationSkipped = 1
+	form := url.Values{
+		"csrf_token":     {fixture.session.CSRFToken},
+		"master_address": {"new-master.example:443"},
+		"confirmation":   {"MIGRATE"},
+	}.Encode()
+	request := fixture.authenticatedMutationRequest(http.MethodPost, "/settings/migration/cutover", form)
+	response := httptest.NewRecorder()
+	fixture.handler.ServeHTTP(response, request)
+	if response.Code != http.StatusOK {
+		t.Fatalf("cutover status = %d, body = %s", response.Code, response.Body.String())
+	}
+	if fixture.controller.migrationAddress != "new-master.example:443" {
+		t.Fatalf("migration address = %q", fixture.controller.migrationAddress)
+	}
+	if !strings.Contains(response.Body.String(), "2 online servers") || !strings.Contains(response.Body.String(), "1 offline") {
+		t.Fatalf("cutover notice missing counts: %s", response.Body.String())
 	}
 }
 
@@ -1196,6 +1431,89 @@ func TestSettingsPageShowsAccountingFailureHistory(t *testing.T) {
 	}
 	if strings.Index(body, "Master could not persist usage") > strings.Index(body, "Entrance sample collection failed") {
 		t.Fatal("settings accounting history is not newest-first")
+	}
+}
+
+func TestSettingsCanClearAccountingFailureHistory(t *testing.T) {
+	t.Parallel()
+	fixture := newWebFixture(t)
+	user, _ := fixture.proxyNodes.CreateUser("Alice")
+	node, _ := fixture.proxyNodes.CreateProxyNode(proxynode.CreateProxyNodeInput{
+		Name: "Cinema", RootAgent: "edge-online",
+		Entrance: proxynode.Endpoint{
+			Protocol: proxynode.ProtocolAnyTLS, Listen: "::", ListenPort: 443, Family: "auto",
+			TLS: proxynode.TLSConfig{Mode: proxynode.TLSModeSelfSigned, ServerName: "cinema.example"},
+		},
+	})
+	if _, err := fixture.proxyNodes.AddMembership(node.ID, user.ID); err != nil {
+		t.Fatal(err)
+	}
+	if err := fixture.proxyNodes.MarkTopologyApplied(fixture.proxyNodes.Snapshot().Revision, []string{"edge-online"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := fixture.proxyNodes.RecordAccountingFailure("edge-online", proxynode.AccountingFailureCollection, fixture.now); err != nil {
+		t.Fatal(err)
+	}
+	form := url.Values{"csrf_token": {fixture.session.CSRFToken}, "confirmation": {"clear"}}
+	request := fixture.authenticatedMutationRequest(http.MethodPost, "/settings/accounting-errors/clear", form.Encode())
+	response := httptest.NewRecorder()
+	fixture.handler.ServeHTTP(response, request)
+	if response.Code != http.StatusOK || !strings.Contains(response.Body.String(), "Accounting error log cleared.") {
+		t.Fatalf("clear accounting history = %d %q", response.Code, response.Body.String())
+	}
+	if failures := fixture.proxyNodes.Snapshot().AccountingFailures; len(failures) != 0 {
+		t.Fatalf("accounting failures remain: %#v", failures)
+	}
+}
+
+func TestAdminAndPortalShowDailyUserTraffic(t *testing.T) {
+	t.Parallel()
+	fixture := newWebFixture(t)
+	user, _ := fixture.proxyNodes.CreateUser("Alice")
+	node, _ := fixture.proxyNodes.CreateProxyNode(proxynode.CreateProxyNodeInput{
+		Name: "Cinema", RootAgent: "edge-online",
+		Entrance: proxynode.Endpoint{
+			Protocol: proxynode.ProtocolAnyTLS, Listen: "::", ListenPort: 443, Family: "auto",
+			TLS: proxynode.TLSConfig{Mode: proxynode.TLSModeSelfSigned, ServerName: "cinema.example"},
+		},
+	})
+	if _, err := fixture.proxyNodes.AddMembership(node.ID, user.ID); err != nil {
+		t.Fatal(err)
+	}
+	if err := fixture.proxyNodes.MarkTopologyApplied(fixture.proxyNodes.Snapshot().Revision, []string{"edge-online"}); err != nil {
+		t.Fatal(err)
+	}
+	listenerID := proxynode.ListenerPresetID("edge-online", node.Entrance.Endpoint)
+	if _, err := fixture.proxyNodes.ApplyTrafficDeltaReport("edge-online", fixture.now, []proxynode.UserTraffic{{
+		InboundPath: "/tp-in-" + strings.TrimPrefix(listenerID, "listener-"),
+		Username:    "Cinema-Alice", UplinkBytes: 3 << 20, DownlinkBytes: 2 << 20,
+	}}); err != nil {
+		t.Fatal(err)
+	}
+
+	request := fixture.authenticatedRequest(http.MethodGet, "/users/"+url.PathEscape(user.ID), "")
+	response := httptest.NewRecorder()
+	fixture.handler.ServeHTTP(response, request)
+	if response.Code != http.StatusOK || !strings.Contains(response.Body.String(), "Daily Traffic") ||
+		!strings.Contains(response.Body.String(), "5.00 MiB") || !strings.Contains(response.Body.String(), "Cinema") {
+		t.Fatalf("admin daily traffic = %d %q", response.Code, response.Body.String())
+	}
+
+	invitation, _, err := fixture.endUsers.IssueInvitation(user.ID, defaultUserInviteLifetime)
+	if err != nil {
+		t.Fatal(err)
+	}
+	portalSession, err := fixture.endUsers.ClaimInvitation(invitation, "alice.daily", testEndUserPassword)
+	if err != nil {
+		t.Fatal(err)
+	}
+	request = fixture.request(http.MethodGet, "/portal", "")
+	request.AddCookie(NewEndUserSessionCookie(portalSession.Token, portalSession.ExpiresAt))
+	response = httptest.NewRecorder()
+	fixture.handler.ServeHTTP(response, request)
+	if response.Code != http.StatusOK || !strings.Contains(response.Body.String(), "Daily Traffic") ||
+		!strings.Contains(response.Body.String(), "5.00 MiB") || !strings.Contains(response.Body.String(), "Cinema") {
+		t.Fatalf("portal daily traffic = %d %q", response.Code, response.Body.String())
 	}
 }
 
@@ -1415,7 +1733,8 @@ func TestProxyNodePagesUseLinkOwnedRulesAndMembershipCredentials(t *testing.T) {
 		`action="/proxy-nodes/` + node.ID + `/entrance"`, "Listener and protocol",
 		"Move Hop", "Create Branch", `class="proxy-inspector__editor-card-body"`, `data-dialog-open="proxy-add-link-` + node.Entrance.HopID + `"`, "ALL — fallback",
 		"Fallback", "Route ALL", `data-proxy-match-default="none"`,
-		"Relay Branch", "Private branch credential and auth_user", "Duplicate Branch", "Edit Relay", "Save Relay", "Replace Destination",
+		"Relay Branch", "Duplicate Branch", "Edit Relay", "Save Relay", "Replace Destination",
+		"To keep the subtree, move the child Hop instead.",
 		`action="` + proxyLinkURL(node.ID, link.ID) + `/destination"`,
 		`data-proxy-rule-branch="` + firstRule.ID + `"`,
 		`data-proxy-rule-set`, `data-rule-set-kind`,
@@ -1427,9 +1746,40 @@ func TestProxyNodePagesUseLinkOwnedRulesAndMembershipCredentials(t *testing.T) {
 			t.Errorf("Proxy Node tree does not contain %q", expected)
 		}
 	}
-	for _, removed := range []string{"Every configured path reaches an exit", `class="proxy-map__health"`, "Deploy fleet", `name="scope"`, `name="scope_type"`, `name="scope_value"`, `name="auth_user"`, `proxy-map__node--direct`, "Terminal on edge-exit", `id="proxy-hop-manager"`, `data-proxy-hop-manage`, `data-proxy-hop-manager-view`, "Ordered child Links", "Mux padding", "TCP Brutal"} {
+	for _, removed := range []string{"Every configured path reaches an exit", `class="proxy-map__health"`, "Deploy fleet", `name="scope"`, `name="scope_type"`, `name="scope_value"`, `name="auth_user"`, `proxy-map__node--direct`, "Terminal on edge-exit", `id="proxy-hop-manager"`, `data-proxy-hop-manage`, `data-proxy-hop-manager-view`, "Ordered child Links", "Mux padding", "TCP Brutal", "Private branch credential and auth_user", "Branch settings", "<dt>Isolation</dt>"} {
 		if strings.Contains(body, removed) {
 			t.Errorf("Proxy Node tree contains removed control or Direct terminal marker %q", removed)
+		}
+	}
+	ruleInspectorStart := strings.Index(body, `data-proxy-inspector-view="rule-`+firstRule.ID+`"`)
+	if ruleInspectorStart < 0 {
+		t.Fatal("Proxy Node tree omitted the first Rule inspector")
+	}
+	ruleInspectorEnd := strings.Index(body[ruleInspectorStart:], "</section>")
+	if ruleInspectorEnd < 0 {
+		t.Fatal("Proxy Node Rule inspector has no closing section")
+	}
+	ruleInspector := body[ruleInspectorStart : ruleInspectorStart+ruleInspectorEnd]
+	for _, expected := range []string{
+		`data-dialog-open="proxy-edit-link-` + link.ID + `"`,
+		`data-dialog-open="proxy-replace-link-` + link.ID + `"`,
+	} {
+		if !strings.Contains(ruleInspector, expected) {
+			t.Errorf("Rule inspector does not expose Link action %q", expected)
+		}
+	}
+	request = fixture.authenticatedRequestWithLocale(
+		http.MethodGet,
+		proxyNodeURL(node.ID),
+		"",
+		localeSimplifiedChinese,
+	)
+	response = httptest.NewRecorder()
+	fixture.handler.ServeHTTP(response, request)
+	chineseBody := response.Body.String()
+	for _, expected := range []string{"编辑中继", "替换目标", "替换目标会删除", "如需保留子树"} {
+		if response.Code != http.StatusOK || !strings.Contains(chineseBody, expected) {
+			t.Errorf("Chinese Link editor omitted %q: %d %q", expected, response.Code, chineseBody)
 		}
 	}
 	if strings.Contains(body, `/rule-sets`) || strings.Contains(body, `>Rule Sets<`) {
@@ -1549,8 +1899,8 @@ func TestProxyNodePagesUseLinkOwnedRulesAndMembershipCredentials(t *testing.T) {
 		t.Fatalf("GET Proxy Node destinations = %d %q", response.Code, response.Body.String())
 	}
 	body = response.Body.String()
-	if strings.Contains(body, `name="target_link_id"`) || !strings.Contains(body, "Private branch credential and auth_user") {
-		t.Fatalf("Rule editor still exposes shared Link destinations or omits isolation: %q", body)
+	if strings.Contains(body, `name="target_link_id"`) || strings.Contains(body, "Private branch credential and auth_user") {
+		t.Fatalf("Rule editor still exposes shared Link destinations or internal isolation wording: %q", body)
 	}
 
 	form = url.Values{
@@ -4196,6 +4546,227 @@ func TestProxyTreeFallbackTerminalsShareConnectorStyle(t *testing.T) {
 	}
 }
 
+func TestEndUserInvitationClaimPortalAndLoginReset(t *testing.T) {
+	t.Parallel()
+
+	fixture := newWebFixture(t)
+	user, err := fixture.proxyNodes.CreateUser("Alice-Customer")
+	if err != nil {
+		t.Fatal(err)
+	}
+	originalSubscriptionToken := user.Subscription.Token
+
+	form := url.Values{
+		"csrf_token":    {fixture.session.CSRFToken},
+		"confirm_reset": {""},
+	}
+	request := fixture.authenticatedMutationRequest(
+		http.MethodPost,
+		"/users/"+url.PathEscape(user.ID)+"/login/invitation",
+		form.Encode(),
+	)
+	response := httptest.NewRecorder()
+	fixture.handler.ServeHTTP(response, request)
+	if response.Code != http.StatusSeeOther {
+		t.Fatalf("issue invitation = %d %q", response.Code, response.Body.String())
+	}
+
+	request = fixture.authenticatedRequest(http.MethodGet, "/users/"+url.PathEscape(user.ID), "")
+	response = httptest.NewRecorder()
+	fixture.handler.ServeHTTP(response, request)
+	if response.Code != http.StatusOK || !strings.Contains(response.Body.String(), "Invitation ready") {
+		t.Fatalf("user page after invitation = %d %q", response.Code, response.Body.String())
+	}
+	match := regexp.MustCompile(`/claim/([A-Za-z0-9_-]{43})`).FindStringSubmatch(response.Body.String())
+	if len(match) != 2 {
+		t.Fatalf("user page did not reveal the session-bound invitation URL: %q", response.Body.String())
+	}
+	invitationToken := match[1]
+
+	form = url.Values{
+		"csrf_token":    {fixture.session.CSRFToken},
+		"confirm_reset": {""},
+	}
+	request = fixture.authenticatedMutationRequest(
+		http.MethodPost,
+		"/users/"+url.PathEscape(user.ID)+"/login/invitation",
+		form.Encode(),
+	)
+	response = httptest.NewRecorder()
+	fixture.handler.ServeHTTP(response, request)
+	if response.Code != http.StatusBadRequest || !fixture.endUsers.InvitationValid(invitationToken) {
+		t.Fatalf("unconfirmed registration reset = %d, invitation valid = %t", response.Code, fixture.endUsers.InvitationValid(invitationToken))
+	}
+
+	form.Set("confirm_reset", "yes")
+	request = fixture.authenticatedMutationRequest(
+		http.MethodPost,
+		"/users/"+url.PathEscape(user.ID)+"/login/invitation",
+		form.Encode(),
+	)
+	response = httptest.NewRecorder()
+	fixture.handler.ServeHTTP(response, request)
+	if response.Code != http.StatusSeeOther {
+		t.Fatalf("confirmed registration reset = %d %q", response.Code, response.Body.String())
+	}
+	if fixture.endUsers.InvitationValid(invitationToken) {
+		t.Fatal("registration reset left the previous token valid")
+	}
+	request = fixture.authenticatedRequest(http.MethodGet, "/users/"+url.PathEscape(user.ID), "")
+	response = httptest.NewRecorder()
+	fixture.handler.ServeHTTP(response, request)
+	match = regexp.MustCompile(`/claim/([A-Za-z0-9_-]{43})`).FindStringSubmatch(response.Body.String())
+	if len(match) != 2 {
+		t.Fatalf("registration reset did not reveal the new invitation URL: %q", response.Body.String())
+	}
+	invitationToken = match[1]
+
+	request = fixture.request(http.MethodGet, "/claim/"+invitationToken, "")
+	response = httptest.NewRecorder()
+	fixture.handler.ServeHTTP(response, request)
+	if response.Code != http.StatusSeeOther || response.Header().Get("Location") != "/claim" {
+		t.Fatalf("claim token exchange = %d %q", response.Code, response.Header().Get("Location"))
+	}
+	claimCookie := response.Result().Cookies()[0]
+	if claimCookie.Name != EndUserClaimCookieName || !claimCookie.HttpOnly || !claimCookie.Secure {
+		t.Fatalf("claim cookie = %+v", claimCookie)
+	}
+
+	form = url.Values{
+		"username":              {"alice.portal"},
+		"password":              {testEndUserPassword},
+		"password_confirmation": {testEndUserPassword},
+	}
+	request = fixture.mutationRequest(http.MethodPost, "/claim", form.Encode())
+	request.AddCookie(claimCookie)
+	response = httptest.NewRecorder()
+	fixture.handler.ServeHTTP(response, request)
+	if response.Code != http.StatusSeeOther || response.Header().Get("Location") != "/portal" {
+		t.Fatalf("claim invitation = %d %q", response.Code, response.Body.String())
+	}
+	var portalCookie *http.Cookie
+	for _, cookie := range response.Result().Cookies() {
+		if cookie.Name == EndUserSessionCookieName && cookie.MaxAge >= 0 {
+			portalCookie = cookie
+			break
+		}
+	}
+	if portalCookie == nil || !portalCookie.HttpOnly || !portalCookie.Secure {
+		t.Fatalf("portal session cookie was not issued: %+v", response.Result().Cookies())
+	}
+
+	request = fixture.request(http.MethodGet, "/portal", "")
+	request.AddCookie(portalCookie)
+	response = httptest.NewRecorder()
+	fixture.handler.ServeHTTP(response, request)
+	if response.Code != http.StatusOK ||
+		!strings.Contains(response.Body.String(), "My Access") ||
+		!strings.Contains(response.Body.String(), "alice.portal") ||
+		!strings.Contains(response.Body.String(), "Configuration Subscriptions") ||
+		!strings.Contains(response.Body.String(), "No Node Access") {
+		t.Fatalf("end-user portal = %d %q", response.Code, response.Body.String())
+	}
+
+	request = fixture.authenticatedRequest(http.MethodGet, "/users/"+url.PathEscape(user.ID), "")
+	response = httptest.NewRecorder()
+	fixture.handler.ServeHTTP(response, request)
+	if response.Code != http.StatusOK || !strings.Contains(response.Body.String(), "alice.portal") ||
+		!strings.Contains(response.Body.String(), "Registered") {
+		t.Fatalf("operator user page after claim = %d %q", response.Code, response.Body.String())
+	}
+
+	form = url.Values{
+		"csrf_token":    {fixture.session.CSRFToken},
+		"confirm_reset": {"yes"},
+	}
+	request = fixture.authenticatedMutationRequest(
+		http.MethodPost,
+		"/users/"+url.PathEscape(user.ID)+"/login/invitation",
+		form.Encode(),
+	)
+	response = httptest.NewRecorder()
+	fixture.handler.ServeHTTP(response, request)
+	if response.Code != http.StatusSeeOther {
+		t.Fatalf("reset end-user login = %d %q", response.Code, response.Body.String())
+	}
+	currentUser, exists := fixture.proxyNodes.User(user.ID)
+	if !exists || currentUser.Subscription.Token != originalSubscriptionToken {
+		t.Fatalf("login reset changed subscription identity: %+v", currentUser)
+	}
+
+	request = fixture.request(http.MethodGet, "/portal", "")
+	request.AddCookie(portalCookie)
+	response = httptest.NewRecorder()
+	fixture.handler.ServeHTTP(response, request)
+	if response.Code != http.StatusSeeOther || response.Header().Get("Location") != "/portal/login" {
+		t.Fatalf("old portal session after reset = %d %q", response.Code, response.Header().Get("Location"))
+	}
+}
+
+func TestEndUserClaimHasIndependentRateLimit(t *testing.T) {
+	t.Parallel()
+	fixture := newWebFixture(t)
+	user, err := fixture.proxyNodes.CreateUser("Rate-Limited-Customer")
+	if err != nil {
+		t.Fatal(err)
+	}
+	token, _, err := fixture.endUsers.IssueInvitation(user.ID, defaultUserInviteLifetime)
+	if err != nil {
+		t.Fatal(err)
+	}
+	request := fixture.request(http.MethodGet, "/claim/"+token, "")
+	response := httptest.NewRecorder()
+	fixture.handler.ServeHTTP(response, request)
+	if response.Code != http.StatusSeeOther {
+		t.Fatalf("claim token exchange = %d", response.Code)
+	}
+	claimCookie := response.Result().Cookies()[0]
+	claimHandler := fixture.handler.(*Handler)
+	claimHandler.claimLimiter = newFixedWindowLimiter(1, time.Minute)
+	form := url.Values{
+		"username":              {"rate.user"},
+		"password":              {testEndUserPassword},
+		"password_confirmation": {"different-password-long-enough"},
+	}
+	request = fixture.mutationRequest(http.MethodPost, "/claim", form.Encode())
+	request.AddCookie(claimCookie)
+	response = httptest.NewRecorder()
+	fixture.handler.ServeHTTP(response, request)
+	if response.Code != http.StatusBadRequest {
+		t.Fatalf("first claim attempt = %d %q", response.Code, response.Body.String())
+	}
+	request = fixture.mutationRequest(http.MethodPost, "/claim", form.Encode())
+	request.AddCookie(claimCookie)
+	response = httptest.NewRecorder()
+	fixture.handler.ServeHTTP(response, request)
+	if response.Code != http.StatusTooManyRequests || response.Header().Get("Retry-After") != "60" {
+		t.Fatalf("limited claim attempt = %d retry-after=%q", response.Code, response.Header().Get("Retry-After"))
+	}
+}
+
+func TestEndUserPortalLanguageSwitchReturnsToPortalRealm(t *testing.T) {
+	t.Parallel()
+
+	fixture := newWebFixture(t)
+	request := fixture.requestWithLocale(http.MethodGet, "/portal/login", "", localeSimplifiedChinese)
+	response := httptest.NewRecorder()
+	fixture.handler.ServeHTTP(response, request)
+	if response.Code != http.StatusOK ||
+		!strings.Contains(response.Body.String(), `<html lang="zh-CN">`) ||
+		!strings.Contains(response.Body.String(), "用户中心") ||
+		!strings.Contains(response.Body.String(), "用户登录") ||
+		!strings.Contains(response.Body.String(), "return_to=%2fportal%2flogin") {
+		t.Fatalf("localized portal login = %d %q", response.Code, response.Body.String())
+	}
+
+	request = fixture.request(http.MethodGet, "/language/zh-CN?return_to=/portal/login", "")
+	response = httptest.NewRecorder()
+	fixture.handler.ServeHTTP(response, request)
+	if response.Code != http.StatusSeeOther || response.Header().Get("Location") != "/portal/login" {
+		t.Fatalf("portal language redirect = %d %q", response.Code, response.Header().Get("Location"))
+	}
+}
+
 func newWebFixture(t *testing.T) webFixture {
 	t.Helper()
 	return newWebFixtureWithRegistry(t, identity.NewRegistry())
@@ -4257,6 +4828,25 @@ func newWebFixtureWithAccess(
 	if err != nil {
 		t.Fatal(err)
 	}
+	endUserDirectory := t.TempDir()
+	endUsers, err := openEndUserAccessWithPasswordDeriver(
+		filepath.Join(endUserDirectory, "end-user-auth.json"),
+		filepath.Join(endUserDirectory, "end-user-sessions.json"),
+		fastTestPasswordDeriver,
+		nilSafeRandomReader{},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		if err := endUsers.Close(); err != nil {
+			t.Errorf("close end-user access: %v", err)
+		}
+	})
+	endUsers.now = func() time.Time { return now }
+	endUsers.passwordKDFGate = make(chan struct{}, 1)
+	migration := &testMasterMigrationService{}
+	restarts := make(chan struct{}, 1)
 	handler, err := New(Options{
 		Registry:   registry,
 		Sessions:   sessions,
@@ -4265,10 +4855,18 @@ func newWebFixtureWithAccess(
 		Releases: testReleaseCatalog{releases: []AgentRelease{
 			{Tag: "v1.14.0-beta.7", Prerelease: true},
 		}},
-		PublicURL:  testPublicURL,
-		Version:    "test",
-		Now:        func() time.Time { return now },
-		ProxyNodes: proxyNodes,
+		PublicURL:       testPublicURL,
+		Version:         "test",
+		Now:             func() time.Time { return now },
+		ProxyNodes:      proxyNodes,
+		EndUserAccess:   endUsers,
+		MasterMigration: migration,
+		RequestRestart: func() {
+			select {
+			case restarts <- struct{}{}:
+			default:
+			}
+		},
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -4279,10 +4877,13 @@ func newWebFixtureWithAccess(
 		controller: controller,
 		proxyNodes: proxyNodes,
 		access:     access,
+		endUsers:   endUsers,
 		username:   username,
 		password:   password,
 		session:    session,
 		now:        now,
+		migration:  migration,
+		restarts:   restarts,
 	}
 }
 

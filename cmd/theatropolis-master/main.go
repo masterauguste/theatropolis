@@ -17,6 +17,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 
@@ -25,6 +26,7 @@ import (
 	"github.com/masterauguste/theatropolis/internal/control"
 	"github.com/masterauguste/theatropolis/internal/deployment"
 	"github.com/masterauguste/theatropolis/internal/identity"
+	"github.com/masterauguste/theatropolis/internal/mastermigration"
 	"github.com/masterauguste/theatropolis/internal/pool"
 	"github.com/masterauguste/theatropolis/internal/proxynode"
 	"github.com/masterauguste/theatropolis/internal/webui"
@@ -41,6 +43,8 @@ const (
 	controlKeepaliveTimeout = 10 * time.Second
 	controlKeepaliveMinTime = 20 * time.Second
 	controlMaxStreams       = 128
+	legacyInstalledWebAuth  = "/etc/theatropolis/web-auth.json"
+	webAuthMigrationMaxSize = 16 << 20
 )
 
 var (
@@ -48,8 +52,21 @@ var (
 	commit    = "unknown"
 	buildDate = "unknown"
 
-	effectiveUserID = os.Geteuid
+	effectiveUserID           = os.Geteuid
+	errMasterRestartRequested = errors.New("Master restart requested")
 )
+
+type migrationUIAdapter struct{ service *mastermigration.Service }
+
+func (a migrationUIAdapter) Export(ctx context.Context, passphrase string) (string, []byte, error) {
+	result, err := a.service.Export(ctx, passphrase)
+	return result.Filename, result.Data, err
+}
+
+func (a migrationUIAdapter) StageRestore(ctx context.Context, archive []byte, passphrase string) (string, int, int, int, error) {
+	result, err := a.service.StageRestore(ctx, archive, passphrase)
+	return result.MigrationID, result.Agents, result.Users, result.ProxyNodes, err
+}
 
 func main() {
 	if err := run(os.Args[1:]); err != nil {
@@ -111,6 +128,11 @@ func serve(arguments []string) error {
 	}
 	if flags.NArg() != 0 {
 		return errors.New("unexpected positional arguments")
+	}
+	if backupPath, applied, err := mastermigration.ApplyPendingRestore(*stateDirectory); err != nil {
+		return fmt.Errorf("apply staged Master migration: %w", err)
+	} else if applied {
+		slog.Info("Master migration restored", "backup_path", backupPath)
 	}
 	ctx, stop := signal.NotifyContext(
 		context.Background(),
@@ -225,16 +247,30 @@ func serve(arguments []string) error {
 		return changed, err
 	})
 	server.SetManagedUserTrafficFailureHandler(proxyNodes.RecordAccountingFailure)
-	accessPath := strings.TrimSpace(*webAuthFile)
-	if accessPath == "" {
-		accessPath = filepath.Join(*stateDirectory, "web-auth.json")
+	accessPath, err := resolveWebAccessPath(*stateDirectory, *webAuthFile)
+	if err != nil {
+		return fmt.Errorf("prepare unified web identity path: %w", err)
 	}
-	access, err := webui.LoadAccessWithSessions(
+	access, endUserAccess, err := webui.OpenUnifiedWebAccess(
 		accessPath,
+		filepath.Join(*stateDirectory, "end-user-auth.json"),
 		filepath.Join(*stateDirectory, "web-sessions.json"),
+		filepath.Join(*stateDirectory, "end-user-sessions.json"),
 	)
 	if err != nil {
-		return fmt.Errorf("load web operator access: %w", err)
+		return fmt.Errorf("load unified web identities: %w", err)
+	}
+	defer func() {
+		if err := endUserAccess.Close(); err != nil {
+			logger.Error("close end-user web access", "error", err)
+		}
+	}()
+	validEndUsers := make(map[string]struct{})
+	for _, user := range proxyNodes.Snapshot().Users {
+		validEndUsers[user.ID] = struct{}{}
+	}
+	if err := endUserAccess.ReconcileUsers(validEndUsers); err != nil {
+		return fmt.Errorf("reconcile end-user web access: %w", err)
 	}
 	masterUpdater, err := agentupdate.NewScheduler(*stateDirectory)
 	if err != nil {
@@ -251,6 +287,13 @@ func serve(arguments []string) error {
 	)
 	geositeRuleSets.Start(ctx)
 	geoipRuleSets.Start(ctx)
+	restartRequests := make(chan struct{})
+	var restartOnce sync.Once
+	migrationService := &mastermigration.Service{
+		StateDirectory: *stateDirectory, Version: version,
+		Build:      proxynode.BuildInfo{Component: "master", Version: version, Commit: commit},
+		ProxyNodes: proxyNodes, Identities: identities, Deployments: deployments, Pool: poolRegistry,
+	}
 	webHandler, err := webui.New(webui.Options{
 		Registry:        identities,
 		Sessions:        server.Sessions,
@@ -267,6 +310,9 @@ func serve(arguments []string) error {
 		ProxyNodes:      proxyNodes,
 		ProxyDeployer:   proxyDeployer,
 		ProxyUserSync:   billingEnforcer,
+		EndUserAccess:   endUserAccess,
+		MasterMigration: migrationUIAdapter{service: migrationService},
+		RequestRestart:  func() { restartOnce.Do(func() { close(restartRequests) }) },
 	})
 	if err != nil {
 		return fmt.Errorf("configure web interface: %w", err)
@@ -333,6 +379,8 @@ func serve(arguments []string) error {
 	var serveErr error
 	select {
 	case <-ctx.Done():
+	case <-restartRequests:
+		serveErr = errMasterRestartRequested
 	case serveErr = <-errorsChannel:
 		if errors.Is(serveErr, http.ErrServerClosed) ||
 			errors.Is(serveErr, grpc.ErrServerStopped) {
@@ -358,6 +406,96 @@ func serve(arguments []string) error {
 		grpcServer.Stop()
 	}
 	return serveErr
+}
+
+// resolveWebAccessPath preserves arbitrary explicitly configured credential
+// paths. The one exception is the legacy installer-owned /etc path: release
+// self-updates cannot rewrite the old systemd unit, so the unprivileged master
+// copies that readable credential into its writable private state directory
+// before the unified identity migration runs. The installer later removes the
+// obsolete /etc copy only after a successful service restart.
+func resolveWebAccessPath(stateDirectory, configuredPath string) (string, error) {
+	targetPath := filepath.Join(stateDirectory, "web-auth.json")
+	configuredPath = strings.TrimSpace(configuredPath)
+	if configuredPath == "" {
+		return targetPath, nil
+	}
+	configuredPath = filepath.Clean(configuredPath)
+	if configuredPath != filepath.Clean(legacyInstalledWebAuth) {
+		return configuredPath, nil
+	}
+	if _, err := os.Lstat(targetPath); err == nil {
+		return targetPath, nil
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return "", err
+	}
+	if err := copyLegacyWebAccess(configuredPath, targetPath); err != nil {
+		return "", err
+	}
+	return targetPath, nil
+}
+
+func copyLegacyWebAccess(sourcePath, targetPath string) error {
+	info, err := os.Lstat(sourcePath)
+	if err != nil {
+		return fmt.Errorf("inspect legacy web identity file: %w", err)
+	}
+	if info.Mode()&os.ModeSymlink != 0 || !info.Mode().IsRegular() {
+		return errors.New("legacy web identity path is not a regular file")
+	}
+	if permissions := info.Mode().Perm(); permissions != 0o600 && permissions != 0o640 {
+		return fmt.Errorf("legacy web identity permissions are %04o, want 0600 or 0640", permissions)
+	}
+	source, err := os.Open(sourcePath)
+	if err != nil {
+		return fmt.Errorf("open legacy web identity file: %w", err)
+	}
+	defer source.Close()
+	encoded, err := io.ReadAll(io.LimitReader(source, webAuthMigrationMaxSize+1))
+	if err != nil {
+		return fmt.Errorf("read legacy web identity file: %w", err)
+	}
+	if len(encoded) == 0 || len(encoded) > webAuthMigrationMaxSize {
+		return errors.New("legacy web identity file has an invalid size")
+	}
+	directory := filepath.Dir(targetPath)
+	temporary, err := os.CreateTemp(directory, ".web-auth-migrate-*")
+	if err != nil {
+		return fmt.Errorf("create web identity migration file: %w", err)
+	}
+	temporaryPath := temporary.Name()
+	committed := false
+	defer func() {
+		_ = temporary.Close()
+		if !committed {
+			_ = os.Remove(temporaryPath)
+		}
+	}()
+	if err := temporary.Chmod(0o600); err != nil {
+		return fmt.Errorf("secure web identity migration file: %w", err)
+	}
+	if _, err := temporary.Write(encoded); err != nil {
+		return fmt.Errorf("write web identity migration file: %w", err)
+	}
+	if err := temporary.Sync(); err != nil {
+		return fmt.Errorf("synchronize web identity migration file: %w", err)
+	}
+	if err := temporary.Close(); err != nil {
+		return fmt.Errorf("close web identity migration file: %w", err)
+	}
+	if err := os.Rename(temporaryPath, targetPath); err != nil {
+		return fmt.Errorf("install migrated web identity file: %w", err)
+	}
+	committed = true
+	directoryHandle, err := os.Open(directory)
+	if err != nil {
+		return fmt.Errorf("open web identity directory: %w", err)
+	}
+	defer directoryHandle.Close()
+	if err := directoryHandle.Sync(); err != nil {
+		return fmt.Errorf("synchronize web identity directory: %w", err)
+	}
+	return nil
 }
 
 func setWebAdmin(arguments []string) error {

@@ -156,6 +156,24 @@ func (s *DiskStore) List(_ context.Context) ([]Record, error) {
 	return records, nil
 }
 
+// MigrationSnapshot returns validated on-disk deployment documents keyed by
+// filename. Keeping the logical last-applied record preserves manually managed
+// Agent profiles as well as Proxy Node generated profiles.
+func (s *DiskStore) MigrationSnapshot() (map[string][]byte, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	result := make(map[string][]byte, len(s.latest))
+	for agentID := range s.latest {
+		name := deploymentFilename(agentID)
+		encoded, err := os.ReadFile(filepath.Join(s.directory, name))
+		if err != nil {
+			return nil, fmt.Errorf("read deployment migration snapshot for %q: %w", agentID, err)
+		}
+		result[name] = encoded
+	}
+	return result, nil
+}
+
 func (s *DiskStore) SetRenderedDigest(_ context.Context, id string, digest [sha256.Size]byte) (Record, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()

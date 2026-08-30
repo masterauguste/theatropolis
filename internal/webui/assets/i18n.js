@@ -16,6 +16,7 @@
     "Copied": "已复制",
     "Show": "显示",
     "Hide": "隐藏",
+    "password": "密码",
     "Done": "完成",
     "Edit": "编辑",
     "Checking…": "正在检查…",

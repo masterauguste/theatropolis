@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"math"
 	"slices"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -16,6 +17,7 @@ const (
 	maxSubscriptionMonths  = 1200
 	maxTrafficReportUsers  = 100000
 	maxAccountingFailures  = 256
+	maxDailyUsageDays      = 366
 )
 
 var billingLocation = time.FixedZone("UTC+8", 8*60*60)
@@ -102,6 +104,91 @@ func (s *Store) RecordAccountingFailure(agentID, reason string, occurredAt time.
 		}
 		return false, nil
 	})
+}
+
+// ClearAccountingFailures removes the complete bounded accounting error log.
+// It does not change topology, user authority, or traffic usage.
+func (s *Store) ClearAccountingFailures() error {
+	return s.mutateBilling(func(state *State) (bool, error) {
+		state.AccountingFailures = nil
+		return false, nil
+	})
+}
+
+// DailyUsage is one UTC+8 calendar day's traffic for one Proxy Node grant.
+type DailyUsage struct {
+	Date          time.Time
+	ProxyNodeID   string
+	ProxyNodeName string
+	UsedBytes     uint64
+}
+
+type dailyUsageDelta struct {
+	Date              string
+	BytesByMembership map[string]uint64
+}
+
+// UserDailyUsage returns up to maxDailyUsageDays of durable per-Membership
+// traffic history. Days are calendar days in the product's fixed UTC+8 clock.
+func (s *Store) UserDailyUsage(userID string, days int) ([]DailyUsage, error) {
+	userID = strings.TrimSpace(userID)
+	if !validID(userID, "usr_") || days <= 0 || days > maxDailyUsageDays {
+		return nil, fmt.Errorf("%w: invalid daily usage query", ErrInvalidState)
+	}
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	if _, exists := s.userIndex[userID]; !exists {
+		return nil, ErrNotFound
+	}
+	if s.accounting == nil {
+		return nil, errors.New("accounting database is unavailable")
+	}
+	type membershipNode struct{ id, name string }
+	memberships := make(map[string]membershipNode)
+	for _, node := range s.state.ProxyNodes {
+		for _, membership := range node.Memberships {
+			if membership.UserID == userID {
+				memberships[membership.ID] = membershipNode{id: node.ID, name: node.Name}
+			}
+		}
+	}
+	if len(memberships) == 0 {
+		return nil, nil
+	}
+	start := billingDate(s.now()).AddDate(0, 0, -(days - 1)).Format("2006-01-02")
+	end := billingDate(s.now()).Format("2006-01-02")
+	rows, err := s.accounting.db.Query(
+		`SELECT membership_id, usage_date, used_bytes
+		 FROM daily_membership_usage WHERE usage_date >= ? AND usage_date <= ?
+		 ORDER BY usage_date DESC, membership_id`, start, end,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("read daily usage: %w", err)
+	}
+	defer rows.Close()
+	var result []DailyUsage
+	for rows.Next() {
+		var membershipID, dateText, usedText string
+		if err := rows.Scan(&membershipID, &dateText, &usedText); err != nil {
+			return nil, fmt.Errorf("decode daily usage: %w", err)
+		}
+		node, exists := memberships[membershipID]
+		if !exists {
+			continue
+		}
+		date, dateErr := time.ParseInLocation("2006-01-02", dateText, billingLocation)
+		used, usedErr := strconv.ParseUint(usedText, 10, 64)
+		if dateErr != nil || usedErr != nil {
+			return nil, fmt.Errorf("%w: invalid daily usage row", ErrInvalidState)
+		}
+		result = append(result, DailyUsage{
+			Date: date, ProxyNodeID: node.id, ProxyNodeName: node.name, UsedBytes: used,
+		})
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("read daily usage rows: %w", err)
+	}
+	return result, nil
 }
 
 func agentHasActiveEntranceMembership(state State, agentID string) bool {
@@ -272,7 +359,8 @@ func (s *Store) ApplyTrafficDeltaReport(agentID string, observedAt time.Time, us
 	}
 
 	configurationChanged := false
-	err := s.mutateBilling(func(state *State) (bool, error) {
+	daily := &dailyUsageDelta{Date: observedAt.In(billingLocation).Format("2006-01-02"), BytesByMembership: make(map[string]uint64)}
+	err := s.mutateBillingWithDaily(daily, func(state *State) (bool, error) {
 		targets, aliases, err := trafficMemberships(state, agentID)
 		if err != nil {
 			return false, err
@@ -296,6 +384,7 @@ func (s *Store) ApplyTrafficDeltaReport(agentID string, observedAt time.Time, us
 			}
 			delta := saturatingAdd(usage.UplinkBytes, usage.DownlinkBytes)
 			membership.UsedBytes = saturatingAdd(membership.UsedBytes, delta)
+			daily.BytesByMembership[membership.ID] = saturatingAdd(daily.BytesByMembership[membership.ID], delta)
 			if membership.DisabledReason == MembershipEnabled && membership.MonthlyQuotaBytes > 0 &&
 				membership.UsedBytes >= membership.MonthlyQuotaBytes {
 				membership.DisabledReason = MembershipQuotaReached
@@ -325,7 +414,8 @@ func (s *Store) ApplyTrafficReport(agentID, epoch string, observedAt time.Time, 
 	}
 
 	configurationChanged := false
-	err := s.mutateBilling(func(state *State) (bool, error) {
+	daily := &dailyUsageDelta{Date: observedAt.In(billingLocation).Format("2006-01-02"), BytesByMembership: make(map[string]uint64)}
+	err := s.mutateBillingWithDaily(daily, func(state *State) (bool, error) {
 		targets, aliases, err := trafficMemberships(state, agentID)
 		if err != nil {
 			return false, err
@@ -358,10 +448,12 @@ func (s *Store) ApplyTrafficReport(agentID, epoch string, observedAt time.Time, 
 			}
 			observation := observationFor(state, agentID, usage.InboundPath, usage.Username)
 			delta := saturatingAdd(usage.UplinkBytes, usage.DownlinkBytes)
+			dailyDelta := delta
 			if observation != nil && observation.Epoch == epoch {
 				uplink := counterDelta(observation.UplinkBytes, usage.UplinkBytes)
 				downlink := counterDelta(observation.DownlinkBytes, usage.DownlinkBytes)
 				delta = saturatingAdd(uplink, downlink)
+				dailyDelta = delta
 				delta = trafficInsideCurrentPeriod(
 					delta, observation.ObservedAt, observedAt, membership.QuotaPeriodStartedOn,
 				)
@@ -377,6 +469,7 @@ func (s *Store) ApplyTrafficReport(agentID, epoch string, observedAt time.Time, 
 			observation.DownlinkBytes = usage.DownlinkBytes
 			observation.ObservedAt = observedAt.UTC()
 			membership.UsedBytes = saturatingAdd(membership.UsedBytes, delta)
+			daily.BytesByMembership[membership.ID] = saturatingAdd(daily.BytesByMembership[membership.ID], dailyDelta)
 			if membership.DisabledReason == MembershipEnabled && membership.MonthlyQuotaBytes > 0 &&
 				membership.UsedBytes >= membership.MonthlyQuotaBytes {
 				membership.DisabledReason = MembershipQuotaReached
@@ -443,6 +536,10 @@ func (s *Store) advanceBilling(now time.Time, resetTraffic, expireSubscriptions 
 }
 
 func (s *Store) mutateBilling(mutation func(*State) (bool, error)) error {
+	return s.mutateBillingWithDaily(nil, mutation)
+}
+
+func (s *Store) mutateBillingWithDaily(daily *dailyUsageDelta, mutation func(*State) (bool, error)) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	next := cloneState(s.state)
@@ -459,7 +556,7 @@ func (s *Store) mutateBilling(mutation func(*State) (bool, error)) error {
 	if s.accounting == nil {
 		return errors.New("accounting database is unavailable")
 	}
-	if err := s.accounting.persistChanges(s.state, next); err != nil {
+	if err := s.accounting.persistChanges(s.state, next, daily); err != nil {
 		return err
 	}
 	s.state = next

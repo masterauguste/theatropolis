@@ -38,6 +38,7 @@ import (
 const (
 	maxLoginBodyBytes             = 8 << 10
 	maxEnrollmentBodyBytes        = 4 << 10
+	maxMigrationArchiveBytes      = 128 << 20
 	maxConfigurationBytes         = 4 << 20
 	maxConfigurationFormBytes     = 3*maxConfigurationBytes + 8<<10
 	maxConfigurationJSONDepth     = 128
@@ -53,8 +54,9 @@ var (
 	//go:embed assets/* templates/*
 	webFiles embed.FS
 
-	domainLabelPattern = regexp.MustCompile(`\A[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?\z`)
-	allowedTTLs        = map[int64]time.Duration{
+	domainLabelPattern          = regexp.MustCompile(`\A[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?\z`)
+	managedSingBoxDisplaySuffix = regexp.MustCompile(`(?i)[.-]theatropolis\.\d+\z`)
+	allowedTTLs                 = map[int64]time.Duration{
 		900:   15 * time.Minute,
 		3600:  time.Hour,
 		86400: 24 * time.Hour,
@@ -104,6 +106,12 @@ type AgentController interface {
 	// RequestManagedUserTraffic persists and clears the entrance Agent's
 	// current accounting interval before an administrator resets usage.
 	RequestManagedUserTraffic(context.Context, string) error
+	QueueOnlineMasterMigration(context.Context, string, string) (int, int, error)
+}
+
+type MasterMigrationService interface {
+	Export(context.Context, string) (string, []byte, error)
+	StageRestore(context.Context, []byte, string) (string, int, int, int, error)
 }
 
 type Options struct {
@@ -124,6 +132,9 @@ type Options struct {
 	ProxyNodes      *proxynode.Store
 	ProxyDeployer   *proxynode.Deployer
 	ProxyUserSync   ProxyUserSynchronizer
+	EndUserAccess   *EndUserAccessManager
+	MasterMigration MasterMigrationService
+	RequestRestart  func()
 }
 
 type Handler struct {
@@ -149,6 +160,10 @@ type Handler struct {
 	proxyNodes           *proxynode.Store
 	proxyDeployer        *proxynode.Deployer
 	proxyUserSync        ProxyUserSynchronizer
+	endUserAccess        *EndUserAccessManager
+	masterMigration      MasterMigrationService
+	requestRestart       func()
+	claimLimiter         *fixedWindowLimiter
 	ruleSetCache         *ruleSetCache
 	ruleSetLimiter       *fixedWindowLimiter
 	ruleSetGlobalLimiter *fixedWindowLimiter
@@ -163,6 +178,9 @@ type Handler struct {
 
 	resultMu sync.Mutex
 	results  map[string]enrollmentResult
+
+	userInviteMu      sync.Mutex
+	userInviteResults map[[sha256.Size]byte]map[string]endUserInvitationView
 
 	updateViewMu       sync.Mutex
 	sessionAgentUpdate map[[sha256.Size]byte]map[string]string
@@ -207,6 +225,7 @@ type pageData struct {
 	Notice                 string
 	Username               string
 	LegacyLogin            bool
+	UnifiedLogin           bool
 	AgentID                string
 	TTLSeconds             int64
 	Stats                  fleetStats
@@ -233,12 +252,15 @@ type pageData struct {
 	EndUser                *endUserDetailView
 	UserSubscription       *userSubscriptionView
 	SubscriptionPolicy     *subscriptionPolicyView
+	EndUserLogin           *endUserLoginView
+	EndUserPortal          *endUserPortalView
 	AgentOptions           []agentOptionView
 	Endpoint               endpointView
 	ListenerOptions        []listenerOptionView
 	ProxyDeployment        *proxyDeploymentView
 	AccountingFailures     []accountingFailureView
 	AccountingFailureTotal int
+	MigrationNotice        string
 }
 
 type accountingFailureView struct {
@@ -264,6 +286,8 @@ type agentView struct {
 	URL             string
 	IPv4            string
 	IPv6            string
+	AgentVersion    string
+	SingBoxVersion  string
 }
 
 type agentDetailView struct {
@@ -409,6 +433,10 @@ func New(options Options) (http.Handler, error) {
 		proxyNodes:           options.ProxyNodes,
 		proxyDeployer:        options.ProxyDeployer,
 		proxyUserSync:        options.ProxyUserSync,
+		endUserAccess:        options.EndUserAccess,
+		masterMigration:      options.MasterMigration,
+		requestRestart:       options.RequestRestart,
+		claimLimiter:         newFixedWindowLimiter(endUserClaimRequestsPerMinute, time.Minute),
 		ruleSetCache:         newRuleSetCache(),
 		ruleSetLimiter:       newFixedWindowLimiter(publicRuleSetRequestsPerMinute, time.Minute),
 		ruleSetGlobalLimiter: newFixedWindowLimiter(publicRuleSetGlobalPerMinute, time.Minute),
@@ -416,6 +444,7 @@ func New(options Options) (http.Handler, error) {
 		templates:            templates,
 		mux:                  http.NewServeMux(),
 		results:              make(map[string]enrollmentResult),
+		userInviteResults:    make(map[[sha256.Size]byte]map[string]endUserInvitationView),
 		sessionAgentUpdate: make(
 			map[[sha256.Size]byte]map[string]string,
 		),
@@ -494,6 +523,7 @@ func (h *Handler) routes() {
 	h.mux.HandleFunc("POST /users/{user_id}/credentials/reset", h.resetEndUserCredentials)
 	h.mux.HandleFunc("POST /users/{user_id}/rename", h.renameEndUser)
 	h.mux.HandleFunc("POST /users/{user_id}/delete", h.deleteEndUser)
+	h.mux.HandleFunc("POST /users/{user_id}/login/invitation", h.issueEndUserInvitation)
 	h.mux.HandleFunc("GET /users/{user_id}/subscription", h.userSubscriptionRoot)
 	h.mux.HandleFunc("GET /users/{user_id}/subscription/nodes", h.userSubscriptionNodesPage)
 	h.mux.HandleFunc("GET /users/{user_id}/subscription/rules", h.userSubscriptionRulesPage)
@@ -510,6 +540,13 @@ func (h *Handler) routes() {
 	h.mux.HandleFunc("POST /subscriptions/rules/reorder", h.reorderSubscriptionRules)
 	h.mux.HandleFunc("GET /subscription-rule-sets/{kind}/{name}", h.publicSurgeRuleSet)
 	h.mux.HandleFunc("GET /subscriptions/{token}/{format}", h.publicUserSubscription)
+	h.mux.HandleFunc("GET /portal/login", h.endUserLoginPage)
+	h.mux.HandleFunc("POST /portal/login", h.endUserLogin)
+	h.mux.HandleFunc("POST /portal/logout", h.endUserLogout)
+	h.mux.HandleFunc("GET /claim/{token}", h.endUserClaimLink)
+	h.mux.HandleFunc("GET /claim", h.endUserClaimPage)
+	h.mux.HandleFunc("POST /claim", h.endUserClaim)
+	h.mux.HandleFunc("GET /portal", h.endUserPortal)
 	h.mux.HandleFunc("GET /servers/content", h.serversContent)
 	h.mux.HandleFunc("GET /pool", h.poolPage)
 	h.mux.HandleFunc("GET /pool/content", h.poolContent)
@@ -518,6 +555,10 @@ func (h *Handler) routes() {
 	h.mux.HandleFunc("GET /settings", h.settingsPage)
 	h.mux.HandleFunc("GET /settings/versions", h.masterVersions)
 	h.mux.HandleFunc("GET /settings/update-status", h.masterUpdateStatus)
+	h.mux.HandleFunc("POST /settings/migration/export", h.exportMasterMigration)
+	h.mux.HandleFunc("POST /settings/migration/restore", h.restoreMasterMigration)
+	h.mux.HandleFunc("POST /settings/migration/cutover", h.cutoverMasterMigration)
+	h.mux.HandleFunc("POST /settings/accounting-errors/clear", h.clearAccountingErrors)
 	h.mux.HandleFunc("GET /servers/new", h.newServerPage)
 	h.mux.HandleFunc("GET /servers/enrollment-result", h.enrollmentResultPage)
 	h.mux.HandleFunc(
@@ -656,11 +697,19 @@ func (h *Handler) loginPage(response http.ResponseWriter, request *http.Request)
 		http.Redirect(response, request, "/servers", http.StatusSeeOther)
 		return
 	}
+	if h.endUserAccess != nil && h.endUserAccess.Unified() {
+		if _, ok := h.authenticateEndUser(request); ok {
+			http.Redirect(response, request, "/portal", http.StatusSeeOther)
+			return
+		}
+	}
+	data := loginPageData(h.access.Mode(), "")
+	data.UnifiedLogin = h.endUserAccess != nil && h.endUserAccess.Unified()
 	h.render(
 		response,
 		http.StatusOK,
 		"login.html",
-		loginPageData(h.access.Mode(), ""),
+		data,
 	)
 }
 
@@ -669,6 +718,10 @@ func (h *Handler) login(response http.ResponseWriter, request *http.Request) {
 		return
 	}
 	mode := h.access.Mode()
+	if h.endUserAccess != nil && h.endUserAccess.Unified() {
+		h.unifiedLogin(response, request, mode)
+		return
+	}
 	var (
 		username string
 		password string
@@ -735,6 +788,52 @@ func (h *Handler) login(response http.ResponseWriter, request *http.Request) {
 	}
 	http.SetCookie(response, NewSessionCookie(session.Token, session.ExpiresAt))
 	http.Redirect(response, request, "/servers", http.StatusSeeOther)
+}
+
+func (h *Handler) unifiedLogin(
+	response http.ResponseWriter,
+	request *http.Request,
+	mode CredentialMode,
+) {
+	form, err := readExactForm(response, request, maxLoginBodyBytes, "password", "username")
+	if err != nil {
+		http.Error(response, "invalid request", http.StatusBadRequest)
+		return
+	}
+	username := strings.TrimSpace(strings.ToLower(form.Get("username")))
+	client := loginClientIdentity(request)
+	identity, err := h.endUserAccess.LoginIdentityForClient(client, username, form.Get("password"))
+	if err == nil {
+		switch identity.Role {
+		case identityRoleAdministrator:
+			session, sessionErr := h.access.createAuthenticatedSession(h.currentTime(), sha256.Sum256([]byte(client)))
+			if sessionErr != nil {
+				h.logger.Error("create administrator session", "error", sessionErr)
+				http.Error(response, "interface could not authenticate", http.StatusInternalServerError)
+				return
+			}
+			http.SetCookie(response, NewSessionCookie(session.Token, session.ExpiresAt))
+			http.Redirect(response, request, "/servers", http.StatusSeeOther)
+			return
+		case identityRoleUser:
+			http.SetCookie(response, NewEndUserSessionCookie(identity.UserSession.Token, identity.UserSession.ExpiresAt))
+			http.Redirect(response, request, "/portal", http.StatusSeeOther)
+			return
+		default:
+			err = ErrAuthenticationFailed
+		}
+	}
+	status := http.StatusUnauthorized
+	message := "The username or password was not accepted."
+	if errors.Is(err, ErrLoginRateLimited) {
+		status = http.StatusTooManyRequests
+		message = "Too many attempts. Wait one minute and try again."
+		response.Header().Set("Retry-After", "60")
+	}
+	data := loginPageData(mode, username)
+	data.UnifiedLogin = true
+	data.Error = message
+	h.render(response, status, "login.html", data)
 }
 
 func loginPageData(mode CredentialMode, username string) pageData {
@@ -808,6 +907,10 @@ func (h *Handler) serversPageData(session Session) pageData {
 		view := agentViewFor(snapshot, now, online)
 		if snapshot.State == identity.AgentStateEnrolled {
 			view.IPv4, view.IPv6 = h.poolAddresses(snapshot.ID)
+		}
+		if info, exists := h.sessions.AgentInfo(snapshot.ID); exists {
+			view.AgentVersion = strings.TrimSpace(info.Version)
+			view.SingBoxVersion = displaySingBoxVersion(info.SingBoxVersion)
 		}
 		agents = append(agents, view)
 		switch {
@@ -886,6 +989,157 @@ func (h *Handler) settingsPageData(session Session) pageData {
 	}
 }
 
+func (h *Handler) renderSettingsError(response http.ResponseWriter, status int, session Session, message string) {
+	data := h.settingsPageData(session)
+	data.Error = message
+	h.render(response, status, "settings.html", data)
+}
+
+func (h *Handler) exportMasterMigration(response http.ResponseWriter, request *http.Request) {
+	sessionToken, ok := h.sessionToken(request)
+	if !ok {
+		h.redirectToLogin(response, request)
+		return
+	}
+	if h.rejectInvalidMutationOrigin(response, request) {
+		return
+	}
+	form, err := readExactForm(response, request, 4<<10, "csrf_token", "passphrase", "passphrase_confirm")
+	if err != nil || !h.authorizeCSRF(response, sessionToken, form.Get("csrf_token")) {
+		http.Error(response, "request was not authorized", http.StatusForbidden)
+		return
+	}
+	session, err := h.authenticateSession(response, sessionToken)
+	if err != nil {
+		h.redirectToLogin(response, request)
+		return
+	}
+	if h.masterMigration == nil {
+		h.renderSettingsError(response, http.StatusConflict, session, "Master migration is unavailable.")
+		return
+	}
+	passphrase := form.Get("passphrase")
+	if passphrase == "" || passphrase != form.Get("passphrase_confirm") {
+		h.renderSettingsError(response, http.StatusBadRequest, session, "Enter the same migration passphrase twice.")
+		return
+	}
+	filename, encoded, err := h.masterMigration.Export(request.Context(), passphrase)
+	if err != nil {
+		h.logger.Warn("export Master migration", "error", err)
+		h.renderSettingsError(response, http.StatusBadRequest, session, "The migration archive could not be created.")
+		return
+	}
+	response.Header().Set("Content-Type", "application/zip")
+	response.Header().Set("Content-Disposition", mime.FormatMediaType("attachment", map[string]string{"filename": filename}))
+	response.Header().Set("Cache-Control", "no-store")
+	response.Header().Set("X-Content-Type-Options", "nosniff")
+	response.WriteHeader(http.StatusOK)
+	_, _ = response.Write(encoded)
+}
+
+func (h *Handler) restoreMasterMigration(response http.ResponseWriter, request *http.Request) {
+	sessionToken, ok := h.sessionToken(request)
+	if !ok {
+		h.redirectToLogin(response, request)
+		return
+	}
+	if h.rejectInvalidMutationOrigin(response, request) {
+		return
+	}
+	request.Body = http.MaxBytesReader(response, request.Body, maxMigrationArchiveBytes+(1<<20))
+	if err := request.ParseMultipartForm(maxMigrationArchiveBytes); err != nil {
+		http.Error(response, "migration archive is too large or malformed", http.StatusBadRequest)
+		return
+	}
+	if request.MultipartForm != nil {
+		defer request.MultipartForm.RemoveAll()
+	}
+	if !h.authorizeCSRF(response, sessionToken, request.FormValue("csrf_token")) {
+		http.Error(response, "request was not authorized", http.StatusForbidden)
+		return
+	}
+	session, err := h.authenticateSession(response, sessionToken)
+	if err != nil {
+		h.redirectToLogin(response, request)
+		return
+	}
+	if h.masterMigration == nil || h.requestRestart == nil {
+		h.renderSettingsError(response, http.StatusConflict, session, "Master migration is unavailable.")
+		return
+	}
+	if request.FormValue("confirmation") != "RESTORE" {
+		h.renderSettingsError(response, http.StatusBadRequest, session, "Type RESTORE to confirm the migration.")
+		return
+	}
+	file, _, err := request.FormFile("archive")
+	if err != nil {
+		h.renderSettingsError(response, http.StatusBadRequest, session, "Choose a migration archive.")
+		return
+	}
+	defer file.Close()
+	encoded, err := io.ReadAll(io.LimitReader(file, maxMigrationArchiveBytes+1))
+	if err != nil || len(encoded) > maxMigrationArchiveBytes {
+		h.renderSettingsError(response, http.StatusBadRequest, session, "The migration archive is too large or unreadable.")
+		return
+	}
+	migrationID, agents, users, nodes, err := h.masterMigration.StageRestore(request.Context(), encoded, request.FormValue("passphrase"))
+	if err != nil {
+		h.logger.Warn("stage Master migration restore", "error", err)
+		h.renderSettingsError(response, http.StatusBadRequest, session, "The migration archive could not be restored. Check the passphrase and make sure this Master has no fleet data.")
+		return
+	}
+	h.logger.Info("Master migration restore staged", "migration_id", migrationID, "agents", agents, "users", users, "proxy_nodes", nodes)
+	h.render(response, http.StatusAccepted, "master-restoring.html", pageData{
+		Title: "Restoring Master", ActiveNav: "settings", CSRFToken: session.CSRFToken,
+		MigrationNotice: fmt.Sprintf("%d servers, %d users, and %d Proxy Nodes were validated.", agents, users, nodes),
+	})
+	go func() { time.Sleep(750 * time.Millisecond); h.requestRestart() }()
+}
+
+func (h *Handler) cutoverMasterMigration(response http.ResponseWriter, request *http.Request) {
+	sessionToken, ok := h.sessionToken(request)
+	if !ok {
+		h.redirectToLogin(response, request)
+		return
+	}
+	if h.rejectInvalidMutationOrigin(response, request) {
+		return
+	}
+	form, err := readExactForm(response, request, 8<<10, "csrf_token", "master_address", "confirmation")
+	if err != nil || !h.authorizeCSRF(response, sessionToken, form.Get("csrf_token")) {
+		http.Error(response, "request was not authorized", http.StatusForbidden)
+		return
+	}
+	session, err := h.authenticateSession(response, sessionToken)
+	if err != nil {
+		h.redirectToLogin(response, request)
+		return
+	}
+	if form.Get("confirmation") != "MIGRATE" {
+		h.renderSettingsError(response, http.StatusBadRequest, session, "Type MIGRATE to confirm the Agent cutover.")
+		return
+	}
+	address := strings.TrimSpace(form.Get("master_address"))
+	host, port, splitErr := net.SplitHostPort(address)
+	if splitErr != nil || strings.TrimSpace(host) == "" || strings.TrimSpace(port) == "" {
+		h.renderSettingsError(response, http.StatusBadRequest, session, "Enter the new Master as host:port.")
+		return
+	}
+	migrationID, err := randomOpaqueID("migration")
+	if err != nil {
+		h.renderSettingsError(response, http.StatusInternalServerError, session, "The Agent cutover could not be prepared.")
+		return
+	}
+	queued, skipped, err := h.controller.QueueOnlineMasterMigration(request.Context(), migrationID, net.JoinHostPort(host, port))
+	if err != nil {
+		h.renderSettingsError(response, http.StatusConflict, session, "The Agent cutover could not be queued.")
+		return
+	}
+	data := h.settingsPageData(session)
+	data.MigrationNotice = fmt.Sprintf("Migration command sent to %d online servers; %d offline or incompatible servers were left unchanged.", queued, skipped)
+	h.render(response, http.StatusOK, "settings.html", data)
+}
+
 func accountingFailureLabel(reason string) string {
 	switch reason {
 	case proxynode.AccountingFailureCollection:
@@ -895,6 +1149,43 @@ func accountingFailureLabel(reason string) string {
 	default:
 		return "Accounting failure"
 	}
+}
+
+func (h *Handler) clearAccountingErrors(response http.ResponseWriter, request *http.Request) {
+	sessionToken, ok := h.sessionToken(request)
+	if !ok {
+		h.redirectToLogin(response, request)
+		return
+	}
+	if h.rejectInvalidMutationOrigin(response, request) {
+		return
+	}
+	form, err := readExactForm(response, request, 4<<10, "csrf_token", "confirmation")
+	if err != nil || !h.authorizeCSRF(response, sessionToken, form.Get("csrf_token")) {
+		http.Error(response, "request was not authorized", http.StatusForbidden)
+		return
+	}
+	session, err := h.authenticateSession(response, sessionToken)
+	if err != nil {
+		h.redirectToLogin(response, request)
+		return
+	}
+	if form.Get("confirmation") != "clear" {
+		h.renderSettingsError(response, http.StatusBadRequest, session, "Confirm that you want to clear the error log.")
+		return
+	}
+	if h.proxyNodes == nil {
+		h.renderSettingsError(response, http.StatusConflict, session, "Accounting is unavailable.")
+		return
+	}
+	if err := h.proxyNodes.ClearAccountingFailures(); err != nil {
+		h.logger.Error("clear accounting error log", "error", err)
+		h.renderSettingsError(response, http.StatusInternalServerError, session, "The error log could not be cleared.")
+		return
+	}
+	data := h.settingsPageData(session)
+	data.Notice = "Accounting error log cleared."
+	h.render(response, http.StatusOK, "settings.html", data)
 }
 
 func (h *Handler) masterVersions(response http.ResponseWriter, request *http.Request) {
@@ -2524,6 +2815,10 @@ func agentViewFor(snapshot identity.AgentSnapshot, now time.Time, online bool) a
 		}
 	}
 	return view
+}
+
+func displaySingBoxVersion(version string) string {
+	return managedSingBoxDisplaySuffix.ReplaceAllString(strings.TrimSpace(version), "")
 }
 
 func deploymentViewFor(record deployment.Record) *deploymentView {

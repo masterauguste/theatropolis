@@ -385,6 +385,7 @@ func renderSingBox(profile Profile) ([]byte, error) {
 		"rules":                   rules,
 		"final":                   actionName(profile.Default),
 		"auto_detect_interface":   true,
+		"default_http_client":     "rule-set-http",
 		"default_domain_resolver": "local-dns",
 	}
 	if len(ruleSets) > 0 {
@@ -409,6 +410,9 @@ func renderSingBox(profile Profile) ([]byte, error) {
 	}
 	root := map[string]any{
 		"log": map[string]any{"level": "info"},
+		"http_clients": []any{
+			map[string]any{"tag": "rule-set-http", "detour": "Proxy"},
+		},
 		"dns": dns,
 		"inbounds": []any{
 			map[string]any{

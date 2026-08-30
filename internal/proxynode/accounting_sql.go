@@ -15,7 +15,7 @@ import (
 	_ "modernc.org/sqlite"
 )
 
-const accountingSchemaVersion = 2
+const accountingSchemaVersion = 3
 
 type accountingDB struct {
 	db   *sql.DB
@@ -104,6 +104,13 @@ func (a *accountingDB) initialize(state *State) error {
 			resets_after INTEGER NOT NULL,
 			updated_at INTEGER NOT NULL
 		) STRICT`,
+		`CREATE TABLE IF NOT EXISTS daily_membership_usage (
+			membership_id TEXT NOT NULL REFERENCES membership_usage(membership_id) ON DELETE CASCADE,
+			usage_date TEXT NOT NULL,
+			used_bytes TEXT NOT NULL,
+			updated_at INTEGER NOT NULL,
+			PRIMARY KEY (membership_id, usage_date)
+		) STRICT`,
 		`CREATE TABLE IF NOT EXISTS legacy_observations (
 			agent_id TEXT NOT NULL,
 			inbound_path TEXT NOT NULL,
@@ -142,6 +149,15 @@ func (a *accountingDB) initialize(state *State) error {
 			return err
 		}
 		version = 2
+		fallthrough
+	case version == 2:
+		if _, err := transaction.Exec(
+			`UPDATE accounting_meta SET value = ? WHERE key = 'schema_version'`,
+			strconv.Itoa(accountingSchemaVersion),
+		); err != nil {
+			return fmt.Errorf("record accounting schema migration: %w", err)
+		}
+		version = accountingSchemaVersion
 	case version != accountingSchemaVersion:
 		return fmt.Errorf("%w: unsupported accounting schema version %d", ErrInvalidState, version)
 	}
@@ -505,7 +521,7 @@ func (a *accountingDB) loadIntoState(state *State) error {
 // topology remains the authority for membership identity and policy, while
 // SQLite is the durable authority for high-frequency usage, reset boundaries,
 // legacy rolling-upgrade baselines, and accounting failures.
-func (a *accountingDB) persistChanges(before, after State) error {
+func (a *accountingDB) persistChanges(before, after State, daily *dailyUsageDelta) error {
 	transaction, err := a.db.BeginTx(context.Background(), nil)
 	if err != nil {
 		return fmt.Errorf("begin accounting update: %w", err)
@@ -583,6 +599,12 @@ func (a *accountingDB) persistChanges(before, after State) error {
 		}
 	}
 
+	if daily != nil && len(daily.BytesByMembership) > 0 {
+		if err := persistDailyUsage(transaction, daily, now); err != nil {
+			return err
+		}
+	}
+
 	if err := ensureAccountingMemberships(transaction, &after); err != nil {
 		return err
 	}
@@ -597,6 +619,37 @@ func (a *accountingDB) persistChanges(before, after State) error {
 	}
 	if err := a.secureFiles(); err != nil {
 		return err
+	}
+	return nil
+}
+
+func persistDailyUsage(transaction *sql.Tx, daily *dailyUsageDelta, updatedAt int64) error {
+	for membershipID, delta := range daily.BytesByMembership {
+		if delta == 0 {
+			continue
+		}
+		var currentText string
+		err := transaction.QueryRow(
+			`SELECT used_bytes FROM daily_membership_usage WHERE membership_id = ? AND usage_date = ?`,
+			membershipID, daily.Date,
+		).Scan(&currentText)
+		current := uint64(0)
+		if err == nil {
+			current, err = strconv.ParseUint(currentText, 10, 64)
+		}
+		if err != nil && !errors.Is(err, sql.ErrNoRows) {
+			return fmt.Errorf("read daily membership usage: %w", err)
+		}
+		if _, err := transaction.Exec(
+			`INSERT INTO daily_membership_usage(membership_id, usage_date, used_bytes, updated_at)
+			 VALUES (?, ?, ?, ?)
+			 ON CONFLICT(membership_id, usage_date) DO UPDATE SET
+				used_bytes = excluded.used_bytes,
+				updated_at = excluded.updated_at`,
+			membershipID, daily.Date, strconv.FormatUint(saturatingAdd(current, delta), 10), updatedAt,
+		); err != nil {
+			return fmt.Errorf("update daily membership usage: %w", err)
+		}
 	}
 	return nil
 }

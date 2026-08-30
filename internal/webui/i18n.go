@@ -11,6 +11,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/masterauguste/theatropolis/internal/proxynode"
 )
 
 const (
@@ -21,6 +23,8 @@ const (
 )
 
 var simplifiedChinese = map[string]string{
+	"Account access":                                                                              "账户登录",
+	"Password or access key":                                                                      "密码或访问密钥",
 	"The username or password was not accepted.":                                                  "用户名或密码不正确。",
 	"The access key was not accepted.":                                                            "访问密钥不正确。",
 	"Too many attempts. Wait one minute and try again.":                                           "尝试次数过多。请等待一分钟后重试。",
@@ -84,6 +88,68 @@ var simplifiedChinese = map[string]string{
 	"Copied":                                                                      "已复制",
 	"Show":                                                                        "显示",
 	"Hide":                                                                        "隐藏",
+	"Show password":                                                               "显示密码",
+	"Hide password":                                                               "隐藏密码",
+	"Theatropolis user portal":                                                    "Theatropolis 用户中心",
+	"The passwords do not match.":                                                 "两次输入的密码不一致。",
+	"This invitation is invalid or has expired.":                                  "邀请链接无效或已过期。",
+	"This login username is already in use.":                                      "该登录名已被使用。",
+	"Account setup is busy. Try again in a moment.":                               "账户设置繁忙，请稍后重试。",
+	"Too many account setup attempts. Wait one minute and try again.": "账户设置尝试过多，请等待一分钟后重试。",
+	"The account could not be created.":                               "无法创建账户。",
+	"username must contain between 1 and 64 ASCII characters":         "登录名须包含 1 至 64 个 ASCII 字符。",
+	"username must match [a-z0-9][a-z0-9._-]{0,63}":                   "登录名只能使用小写字母、数字、点、下划线和连字符，且必须以字母或数字开头。",
+	"password must not exceed 512 bytes":                              "密码不得超过 512 字节。",
+	"password must be valid UTF-8":                                    "密码必须是有效的 UTF-8 文本。",
+	"password must contain between 15 and 128 Unicode characters":     "密码须包含 15 至 128 个字符。",
+	"password must not contain control characters":                    "密码不能包含控制字符。",
+	"password is too common or too closely related to the username":   "密码过于常见，或与登录名过于相似。",
+	"Create Account":              "创建账户",
+	"Create Registration Link":    "创建注册链接",
+	"Go to Sign In":               "前往登录",
+	"Invitation ready":            "邀请待使用",
+	"Invite":                      "邀请",
+	"Login username":              "登录名",
+	"Management name":             "管理名称",
+	"No Node Access":              "暂无节点权限",
+	"Not registered":              "未注册",
+	"Registered":                  "已注册",
+	"Reset Login":                 "重置登录",
+	"Reset Registration Token":    "重置注册令牌",
+	"Set Up Account":              "设置账户",
+	"User Sign In":                "用户登录",
+	"User login":                  "用户登录",
+	"User portal":                 "用户中心",
+	"My Access":                   "我的权限",
+	"Traffic Used":                "已用流量",
+	"Monthly Quota":               "每月配额",
+	"Reset Time":                  "重置时间",
+	"Expiration":                  "到期时间",
+	"Node Access":                 "节点权限",
+	"Configuration Subscriptions": "配置订阅",
+	"Available":                   "可用",
+	"Configuration subscriptions are unavailable.": "配置订阅暂不可用。",
+	"Daily Traffic": "每日流量",
+	"Date":          "日期",
+	"Total":         "合计",
+	"Last 30 Days":  "最近 30 天",
+	"No traffic recorded in the last 30 days.": "最近 30 天暂无流量记录。",
+	"Clear Log":        "清空日志",
+	"Clear Error Log?": "清空错误日志？",
+	"This permanently deletes the complete accounting error log.": "此操作会永久删除全部流量统计错误日志。",
+	"Accounting error log cleared.":                               "流量统计错误日志已清空。",
+	"Accounting Errors":                                           "流量统计错误",
+	"Confirm that you want to clear the error log.":               "请确认要清空错误日志。",
+	"The error log could not be cleared.":                         "无法清空错误日志。",
+	"Accounting is unavailable.":                                  "流量统计服务不可用。",
+	"Confirm password":                                            "确认密码",
+	"User Portal":                                                 "用户中心",
+	"Reset Login?":                                                "重置用户登录？",
+	"Reset Registration Token?":                                   "重置注册令牌？",
+	"Registration link expires":                                   "注册链接到期时间：",
+	"Expires":                                                     "到期时间：",
+	" will be signed out everywhere. The current password will stop working and a new invitation will be created.":           " 将从所有设备退出登录，当前密码立即失效，并生成新的邀请链接。",
+	"The current registration link will stop working immediately. A new single-use link valid for 24 hours will be created.": "当前注册链接将立即失效，并生成一个有效期为 24 小时的新一次性链接。",
 
 	"Access is active, but no routable entrance address is available yet.":                                                                 "访问已启用，但目前没有可路由的入口地址。",
 	"After installation, return to Servers and refresh to see its authenticated connection state.":                                         "安装后返回“服务器”并刷新，即可查看其认证连接状态。",
@@ -129,10 +195,10 @@ var simplifiedChinese = map[string]string{
 	"Add or replace": "添加或替换", "Add rule": "添加规则", "Add server": "添加服务器", "Add user": "添加用户",
 	"Add your first server": "添加第一台服务器", "Address family": "地址族", "Address overrides": "地址覆盖",
 	"Affected subscriptions": "受影响的订阅", "Agent": "服务器", "Agent diagnostic": "Agent 诊断",
-	"Agent software": "Agent 程序", "Agent version": "Agent 版本", "Applying topology change…": "正在应用拓扑…",
+	"Agent software": "Agent 程序", "Agent version": "Agent 版本", "sing-box version": "sing-box 版本", "Applying topology change…": "正在应用拓扑…",
 	"Assign a Node": "添加节点", "Assign role": "确认添加", "Authenticated sessions": "登录会话",
 	"Authenticated user": "认证用户", "Automatic": "自动", "Automatic IP addresses": "自动使用 IP 地址", "Awaiting installation": "等待安装",
-	"Bandwidth": "带宽", "Branch": "分支", "Branch settings": "分支设置", "Calendar months": "自然月",
+	"Bandwidth": "带宽", "Branch": "分支", "Calendar months": "自然月",
 	"Cancel": "取消", "Certificate identity": "证书标识", "Certificate mode": "证书模式", "Certificate path": "证书路径",
 	"Change sing-box version": "更改 sing-box 版本", "Check again": "重新检查", "Checking for updates…": "正在检查更新…",
 	"Child exit": "子节点默认出口", "Choose a Node": "选择节点", "Close": "关闭", "Command lifetime": "命令有效期",
@@ -158,7 +224,7 @@ var simplifiedChinese = map[string]string{
 	"Global settings": "系统设置", "Global user": "用户", "Grant access": "添加权限", "Hop": "节点",
 	"Hops": "节点", "Hours": "小时", "HTTPS SRS URL": "HTTPS SRS URL", "Import credentials": "导入凭据",
 	"Inactive": "未启用", "Inbound": "入站", "Infrastructure": "服务器管理", "Install selected sing-box version": "安装所选 sing-box 版本",
-	"IP addresses": "IP 地址", "IPv4 domain": "IPv4 域名", "IPv6 domain": "IPv6 域名", "Isolation": "隔离", "Known to this master": "已被主控端识别", "Last update": "最近更新",
+	"IP addresses": "IP 地址", "IPv4 domain": "IPv4 域名", "IPv6 domain": "IPv6 域名", "Known to this master": "已被主控端识别", "Last update": "最近更新",
 	"Latest available": "最新可用版本", "Latest deployment": "最近部署", "Legacy sign-in": "旧版登录",
 	"Link multiplex": "链路多路复用", "Listen address": "监听地址", "Listen port": "监听端口", "Listener": "监听器",
 	"Loading fleet outbounds…": "正在加载舰队出口…", "Loading releases…": "正在加载版本…", "Loading servers…": "正在加载服务器…",
@@ -178,13 +244,15 @@ var simplifiedChinese = map[string]string{
 	"Optional": "可选", "Outage ended (UTC+8)": "故障结束时间（UTC+8）", "Outage started (UTC+8)": "故障开始时间（UTC+8）",
 	"Outbound JSON": "出口 JSON", "Outbound pool": "出口池", "Password": "密码", "Pending": "待处理",
 	"Physical listener": "物理监听器", "Port": "端口", "Port 80 remains reserved for ACME.": "端口 80 保留给 ACME。",
-	"Private branch credential and auth_user": "分支专用凭据和 auth_user", "Private-key path": "私钥路径", "Process name": "进程名称",
+	"Private-key path": "私钥路径", "Process name": "进程名称",
 	"Protocol": "协议", "Proxy Node name": "代理节点名称", "Proxy Node readiness": "代理节点状态", "Proxy Node roles": "代理节点访问权限",
 	"Proxy Node settings": "代理节点设置", "Proxy Nodes": "代理节点", "Proxy Node": "代理节点", "Proxy runtime": "代理运行时",
 	"Proxy URI or outbound JSON": "代理 URI 或出口 JSON", "Proxy": "代理", "Quota (GiB)": "配额（GiB）", "Ready": "就绪",
 	"Reject": "拒绝", "Relay address family": "中继地址族", "Relay Branch": "中继分支", "Relay map": "路由拓扑", "Relay": "中继",
 	"Remark": "备注", "Rename or delete this Proxy Node": "重命名或删除此代理节点", "Rename Proxy Node": "编辑节点名称", "Rename": "保存名称",
 	"Replace Agent": "替换代理端", "Replace Destination": "替换目标", "Reported running": "报告为运行中",
+	"Replacing the destination deletes":                                                   "替换目标会删除",
+	"and its entire downstream subtree. To keep the subtree, move the child Hop instead.": "及其全部下游分支。如需保留子树，请改为在子 Hop 上更换服务器。",
 	"Reset ": "重置 ", " credential?": " 的凭据？", "Reset all credentials": "重置全部凭据", "Reset all credentials?": "重置全部凭据？", "Reset credential": "重置凭据",
 	"Reset link and credentials": "重置链接和凭据", "Reset subscription link": "重置订阅链接", "Reset subscription link?": "重置订阅链接？",
 	"Reset traffic": "重置流量", "Resets after": "下次重置", "Return to servers": "返回服务器", "Return to settings": "返回设置",
@@ -225,6 +293,13 @@ var simplifiedChinese = map[string]string{
 	"assigned": "已分配", "available": "可用", "total": "总计", "on port": "端口", "selected": "已选择",
 	"Established": "已建立", "Not established": "未建立", "Refresh server status": "刷新服务器状态",
 	"Refresh": "刷新", "Fleet summary": "服务器概览", "Close server settings": "关闭服务器设置", "Queuing…": "正在排队…",
+	"Master Migration": "主控端迁移", "Open Migration Helper": "打开迁移助手", "Migration Helper": "迁移助手",
+	"Close Master migration": "关闭主控端迁移", "1. Export": "1. 导出", "2. Restore": "2. 恢复", "3. Switch Online Servers": "3. 切换在线服务器",
+	"Passphrase": "加密口令", "Confirm Passphrase": "确认加密口令", "Download Archive": "下载迁移包", "Exporting…": "正在导出…",
+	"Show passphrase": "显示加密口令",
+	"Archive":         "迁移包", "Confirmation": "确认文字", "Restore And Restart": "恢复并重启", "Restoring…": "正在恢复…",
+	"New Master": "新主控端", "Switch Online Servers": "切换在线服务器", "Switching…": "正在切换…",
+	"Restoring Master": "正在恢复主控端", "Restarting Master": "正在重启主控端", "Return To Settings": "返回设置",
 	"Scheduling…": "正在安排…", "Pool": "出口池", "recorded": "条记录", "Access and allowances": "用户与配额",
 	"Topology change": "拓扑更新", "Left-to-right relay tree": "从左到右的路由拓扑", "Close details": "关闭详情",
 	"Relay Hop": "中继节点", "Unmatched Traffic": "未匹配流量", "Yes": "是", "No": "否", "Auto": "自动",
@@ -533,6 +608,10 @@ func (h *Handler) changeLanguage(response http.ResponseWriter, request *http.Req
 	if _, ok := h.sessionToken(request); !ok {
 		target = "/login"
 	}
+	switch request.URL.Query().Get("return_to") {
+	case "/portal", "/portal/login", "/claim":
+		target = request.URL.Query().Get("return_to")
+	}
 	if referer := request.Referer(); referer != "" {
 		if parsed, err := url.Parse(referer); err == nil && parsed.Scheme == h.publicScheme && parsed.Hostname() == h.publicHost && effectiveURLPort(parsed) == h.publicPort && strings.HasPrefix(parsed.Path, "/") && !strings.HasPrefix(parsed.Path, "//") {
 			target = parsed.RequestURI()
@@ -597,6 +676,7 @@ func localizePageData(locale string, data *pageData) {
 	data.Title = localizedText(locale, data.Title)
 	data.Error = localizedText(locale, data.Error)
 	data.Notice = localizedText(locale, data.Notice)
+	data.MigrationNotice = localizedText(locale, data.MigrationNotice)
 	data.ReleaseCatalogWarning = localizedText(locale, data.ReleaseCatalogWarning)
 	data.SingBoxCatalogWarning = localizedText(locale, data.SingBoxCatalogWarning)
 	for index := range data.Agents {
@@ -616,6 +696,9 @@ func localizePageData(locale string, data *pageData) {
 	for index := range data.ProxyNodes {
 		data.ProxyNodes[index].Entrance = localizedText(locale, data.ProxyNodes[index].Entrance)
 	}
+	for index := range data.EndUsers {
+		data.EndUsers[index].LoginStatus = localizedText(locale, data.EndUsers[index].LoginStatus)
+	}
 	for index := range data.ListenerOptions {
 		option := &data.ListenerOptions[index]
 		option.Label = fmt.Sprintf("%s · %s:%d · %s", option.ProtocolLabel, option.Listen, option.ListenPort, localizedCount(locale, option.ReferenceCount, "reference"))
@@ -625,6 +708,21 @@ func localizePageData(locale string, data *pageData) {
 	}
 	if data.EndUser != nil {
 		localizeEndUserDetail(locale, data.EndUser)
+	}
+	if data.EndUserPortal != nil {
+		localizeDailyUsage(locale, data.EndUserPortal.DailyUsage)
+		for index := range data.EndUserPortal.Nodes {
+			node := &data.EndUserPortal.Nodes[index]
+			plan := membershipPlanView{
+				QuotaLabel: node.QuotaLabel, ResetLabel: node.ResetLabel,
+				ExpirationLabel: node.ExpirationLabel, StatusLabel: node.StatusLabel,
+			}
+			localizeMembershipPlan(locale, &plan)
+			node.QuotaLabel = plan.QuotaLabel
+			node.ResetLabel = plan.ResetLabel
+			node.ExpirationLabel = plan.ExpirationLabel
+			node.StatusLabel = plan.StatusLabel
+		}
 	}
 	if data.UserSubscription != nil {
 		for index := range data.UserSubscription.Nodes {
@@ -677,13 +775,24 @@ func localizeMembershipPlan(locale string, view *membershipPlanView) {
 }
 
 func localizeEndUserDetail(locale string, view *endUserDetailView) {
+	view.Login.StatusLabel = localizedText(locale, view.Login.StatusLabel)
 	localizeMembershipPlan(locale, &view.DefaultPlan)
+	localizeDailyUsage(locale, view.DailyUsage)
 	for index := range view.AssignedAccess {
 		view.AssignedAccess[index].EntranceLabel = localizedText(locale, view.AssignedAccess[index].EntranceLabel)
 		localizeMembershipPlan(locale, &view.AssignedAccess[index].Plan)
 	}
 	for index := range view.AvailableAccess {
 		view.AvailableAccess[index].EntranceLabel = localizedText(locale, view.AvailableAccess[index].EntranceLabel)
+	}
+}
+
+func localizeDailyUsage(locale string, days []dailyUsageDayView) {
+	if normalizeLocale(locale) != localeSimplifiedChinese {
+		return
+	}
+	for index := range days {
+		days[index].DateLabel = days[index].Date.In(proxynode.BillingLocation()).Format("2006 年 1 月 2 日")
 	}
 }
 

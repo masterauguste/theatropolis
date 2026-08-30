@@ -19,6 +19,19 @@
 </div>
 {{end}}
 
+{{define "daily-usage-table"}}
+{{if .}}
+<div class="table-wrap daily-usage-table">
+  <table>
+    <thead><tr><th>Date</th><th>Total</th><th>Nodes</th></tr></thead>
+    <tbody>{{range .}}<tr><td data-label="Date"><time datetime="{{.Date.Format "2006-01-02"}}">{{.DateLabel}}</time></td><td data-label="Total"><strong>{{.TotalLabel}}</strong></td><td data-label="Nodes"><div class="daily-usage-nodes">{{range .Nodes}}<span><span>{{.Name}}</span><strong>{{.UsageLabel}}</strong></span>{{end}}</div></td></tr>{{end}}</tbody>
+  </table>
+</div>
+{{else}}
+<div class="panel__empty"><strong>No traffic recorded in the last 30 days.</strong></div>
+{{end}}
+{{end}}
+
 {{define "brand"}}
 <a class="brand" href="/servers" aria-label="Theatropolis servers">
   <span class="brand__mark" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="5" cy="12" r="2"/><circle cx="19" cy="6" r="2"/><circle cx="19" cy="18" r="2"/><path d="M7 12h3.5c4.5 0 3.5-6 6.5-6M10.5 12H13c3 0 2 6 4 6"/></svg></span>

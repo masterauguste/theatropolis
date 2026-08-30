@@ -39,6 +39,7 @@ const (
 	ManagedUserTrafficDeltaCapability   = "managed-user-traffic-delta-v1"
 	ManagedUserTrafficRequestCapability = "managed-user-traffic-request-v1"
 	ManagedUserAuthorityCapability      = "managed-user-authority-v1"
+	MasterMigrationCapability           = "master-migration-v1"
 	DefaultChallengeTTL                 = 30 * time.Second
 	DefaultHelloTimeout                 = 10 * time.Second
 	DefaultCommandQueue                 = 16
@@ -852,9 +853,55 @@ func (s *Server) handleAgentFrame(
 			}
 		}
 		return nil
+	case *controlv1.AgentFrame_MasterMigrationReport:
+		report := payload.MasterMigrationReport
+		if !s.Sessions.Supports(agentID, MasterMigrationCapability) || report == nil ||
+			strings.TrimSpace(report.GetMigrationId()) == "" || len(report.GetMigrationId()) > 128 || len(report.GetErrorCode()) > 128 {
+			return status.Error(codes.InvalidArgument, "invalid Master migration report")
+		}
+		level := slog.LevelInfo
+		if !report.GetAccepted() {
+			level = slog.LevelWarn
+		}
+		s.Logger.Log(ctx, level, "Agent processed Master migration", "agent_id", agentID,
+			"migration_id", report.GetMigrationId(), "accepted", report.GetAccepted(), "error_code", report.GetErrorCode())
+		if report.GetAccepted() {
+			// Closing only after the report is processed is the migration
+			// acknowledgement. The Agent then exits and systemd restarts it
+			// against its durably staged new control address.
+			s.Sessions.Disconnect(agentID)
+		}
+		return nil
 	default:
 		return status.Error(codes.InvalidArgument, "unexpected agent frame")
 	}
+}
+
+// QueueOnlineMasterMigration sends a non-persistent cutover command only to
+// Agents that are connected and advertise support. Offline and older Agents
+// remain untouched and can be reinstalled manually.
+func (s *Server) QueueOnlineMasterMigration(ctx context.Context, migrationID, address string) (queued, skipped int, err error) {
+	migrationID = strings.TrimSpace(migrationID)
+	address = strings.TrimSpace(address)
+	if migrationID == "" || len(migrationID) > 128 || address == "" || len(address) > 512 {
+		return 0, 0, errors.New("invalid Master migration command")
+	}
+	for _, snapshot := range s.Identities.Snapshot(s.now()) {
+		if snapshot.State != identity.AgentStateEnrolled || !s.Sessions.IsOnline(snapshot.ID) ||
+			!s.Sessions.Supports(snapshot.ID, MasterMigrationCapability) {
+			skipped++
+			continue
+		}
+		frame := &controlv1.MasterFrame{Payload: &controlv1.MasterFrame_MigrateMaster{
+			MigrateMaster: &controlv1.MigrateMasterCommand{MigrationId: migrationID, MasterAddress: address},
+		}}
+		if sendErr := s.Sessions.Send(ctx, snapshot.ID, frame); sendErr != nil {
+			skipped++
+			continue
+		}
+		queued++
+	}
+	return queued, skipped, nil
 }
 
 // QueueManagedUserAuthority sends a revisioned end-user authority command

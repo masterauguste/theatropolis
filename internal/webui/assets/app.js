@@ -918,9 +918,10 @@ for (const button of document.querySelectorAll("[data-reveal-secret]")) {
     }
     const revealing = input.type === "password";
     const secretLabel = button.dataset.secretLabel || "password";
+    const localizedSecretLabel = t(secretLabel);
     input.type = revealing ? "text" : "password";
     button.textContent = revealing ? t("Hide") : t("Show");
-    button.setAttribute("aria-label", `${revealing ? t("Hide") : t("Show")} ${secretLabel}`);
+    button.setAttribute("aria-label", `${revealing ? t("Hide") : t("Show")} ${localizedSecretLabel}`);
     button.setAttribute("aria-pressed", revealing ? "true" : "false");
   });
 }
@@ -939,8 +940,10 @@ let formValidationSequence = 0;
 
 const fieldValidationLabel = (control) => {
   const field = control.closest(".field");
-  const visible = field?.querySelector(":scope > span")?.textContent.trim()
-    || control.labels?.[0]?.textContent.trim();
+  const label = control.labels?.[0];
+  const visible = label?.querySelector(":scope > span")?.textContent.trim()
+    || label?.textContent.trim()
+    || field?.querySelector(":scope > span:not(.secret-input)")?.textContent.trim();
   return visible || control.name || (window.theatropolisLocale === "zh-CN" ? "此项" : "This field");
 };
 

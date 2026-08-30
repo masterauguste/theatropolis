@@ -35,6 +35,8 @@
         <tr>
           <th scope="col">Server</th>
           <th scope="col">Connection</th>
+          <th scope="col">Agent version</th>
+          <th scope="col">sing-box version</th>
           <th scope="col">IP addresses</th>
         </tr>
       </thead>
@@ -48,6 +50,12 @@
             <span class="status status--{{.ConnectionClass}}">
               <span aria-hidden="true"></span>{{if eq .ConnectionClass "online"}}Established{{else}}Not established{{end}}
             </span>
+          </td>
+          <td data-label="Agent version">
+            {{if .AgentVersion}}<code class="server-version">{{.AgentVersion}}</code>{{else}}<span class="muted">—</span>{{end}}
+          </td>
+          <td data-label="sing-box version">
+            {{if .SingBoxVersion}}<code class="server-version">{{.SingBoxVersion}}</code>{{else}}<span class="muted">—</span>{{end}}
           </td>
           <td data-label="IP addresses">
             {{if or .IPv4 .IPv6}}

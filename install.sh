@@ -18,7 +18,8 @@ MASTER_STATE_DIRECTORY="${STATE_DIRECTORY}/master"
 AGENT_STATE_DIRECTORY="${STATE_DIRECTORY}/agent"
 CONFIG_DIRECTORY="/etc/theatropolis"
 MASTER_ADMIN_SOCKET="/run/theatropolis/master-admin.sock"
-WEB_AUTH_FILE="${CONFIG_DIRECTORY}/web-auth.json"
+LEGACY_WEB_AUTH_FILE="${CONFIG_DIRECTORY}/web-auth.json"
+WEB_AUTH_FILE="${MASTER_STATE_DIRECTORY}/web-auth.json"
 MASTER_UNIT_FILE="/etc/systemd/system/theatropolis-master.service"
 MASTER_UPDATE_SERVICE_FILE="/etc/systemd/system/theatropolis-master-update.service"
 MASTER_UPDATE_PATH_FILE="/etc/systemd/system/theatropolis-master-update.path"
@@ -49,6 +50,8 @@ WEB_AUTH_CREATED="no"
 WEB_AUTH_CREATED_ID=""
 WEB_AUTH_RESET_APPLIED="no"
 WEB_AUTH_BACKUP=""
+WEB_AUTH_MIGRATED="no"
+LEGACY_WEB_AUTH_PRESENT="no"
 MASTER_UNIT_BACKUP=""
 MASTER_UNIT_HAD="no"
 MASTER_UNIT_TOUCHED="no"
@@ -115,6 +118,11 @@ cleanup() {
 	fi
 
 	if [ "$INSTALL_SUCCEEDED" != "yes" ] &&
+		[ "$WEB_AUTH_MIGRATED" = "yes" ] &&
+		[ -f "$WEB_AUTH_FILE" ] &&
+		[ ! -L "$WEB_AUTH_FILE" ]; then
+		rm -f -- "$WEB_AUTH_FILE"
+	elif [ "$INSTALL_SUCCEEDED" != "yes" ] &&
 		[ "$WEB_AUTH_RESET_APPLIED" = "yes" ] &&
 		[ -n "$WEB_AUTH_BACKUP" ]; then
 		AUTH_RESTORE="${WEB_AUTH_FILE}.restore.$$"
@@ -737,13 +745,18 @@ master | all)
 		[ -L "$COMPATIBILITY_STATE/web-auth.json" ]; then
 		fail "the selected release did not create a valid web admin credential"
 	fi
-	if [ -e "$WEB_AUTH_FILE" ] || [ -L "$WEB_AUTH_FILE" ]; then
-		if [ -L "$WEB_AUTH_FILE" ] || [ ! -f "$WEB_AUTH_FILE" ]; then
+	COMPATIBILITY_AUTH_FILE="$WEB_AUTH_FILE"
+	if [ ! -e "$COMPATIBILITY_AUTH_FILE" ] && [ ! -L "$COMPATIBILITY_AUTH_FILE" ] &&
+		{ [ -e "$LEGACY_WEB_AUTH_FILE" ] || [ -L "$LEGACY_WEB_AUTH_FILE" ]; }; then
+		COMPATIBILITY_AUTH_FILE="$LEGACY_WEB_AUTH_FILE"
+	fi
+	if [ -e "$COMPATIBILITY_AUTH_FILE" ] || [ -L "$COMPATIBILITY_AUTH_FILE" ]; then
+		if [ -L "$COMPATIBILITY_AUTH_FILE" ] || [ ! -f "$COMPATIBILITY_AUTH_FILE" ]; then
 			fail "the web access file exists but is not a regular file"
 		fi
 		COMPATIBILITY_EXISTING="$TEMP_DIRECTORY/master-existing-compatibility"
 		mkdir "$COMPATIBILITY_EXISTING"
-		cp -a "$WEB_AUTH_FILE" "$COMPATIBILITY_EXISTING/web-auth.json"
+		cp -a "$COMPATIBILITY_AUTH_FILE" "$COMPATIBILITY_EXISTING/web-auth.json"
 		if ! printf '%s\n' 'theatropolis-compatibility-password' |
 			"$TEMP_DIRECTORY/extracted/theatropolis-master" set-web-admin \
 				--state-dir "$COMPATIBILITY_EXISTING" \
@@ -919,14 +932,14 @@ run_set_web_admin() {
 			fail "the admin password file was not securely snapshotted"
 		if [ "$REPLACE_ADMIN" = "yes" ]; then
 			"$ADMIN_BINARY" set-web-admin \
-				--state-dir "$CONFIG_DIRECTORY" \
+				--state-dir "$MASTER_STATE_DIRECTORY" \
 				--username "$ADMIN_USERNAME" \
 				--password-stdin \
 				--replace <"$ADMIN_PASSWORD_SNAPSHOT" ||
 				ADMIN_STATUS="$?"
 		else
 			"$ADMIN_BINARY" set-web-admin \
-				--state-dir "$CONFIG_DIRECTORY" \
+				--state-dir "$MASTER_STATE_DIRECTORY" \
 				--username "$ADMIN_USERNAME" \
 				--password-stdin <"$ADMIN_PASSWORD_SNAPSHOT" ||
 				ADMIN_STATUS="$?"
@@ -935,7 +948,7 @@ run_set_web_admin() {
 		if [ "$REPLACE_ADMIN" = "yes" ]; then
 			printf '%s\n' "$WEB_ADMIN_PASSWORD" |
 				"$ADMIN_BINARY" set-web-admin \
-					--state-dir "$CONFIG_DIRECTORY" \
+					--state-dir "$MASTER_STATE_DIRECTORY" \
 					--username "$ADMIN_USERNAME" \
 					--password-stdin \
 					--replace ||
@@ -943,7 +956,7 @@ run_set_web_admin() {
 		else
 			printf '%s\n' "$WEB_ADMIN_PASSWORD" |
 				"$ADMIN_BINARY" set-web-admin \
-					--state-dir "$CONFIG_DIRECTORY" \
+					--state-dir "$MASTER_STATE_DIRECTORY" \
 					--username "$ADMIN_USERNAME" \
 					--password-stdin ||
 				ADMIN_STATUS="$?"
@@ -962,10 +975,24 @@ install_master() {
 	install -d -o root -g root -m 0755 "$STATE_DIRECTORY"
 	ensure_service_user "$MASTER_USER" "$MASTER_STATE_DIRECTORY"
 	install -d -o root -g "$MASTER_USER" -m 0750 "$CONFIG_DIRECTORY"
+	if [ -e "$LEGACY_WEB_AUTH_FILE" ] || [ -L "$LEGACY_WEB_AUTH_FILE" ]; then
+		if [ -L "$LEGACY_WEB_AUTH_FILE" ] || [ ! -f "$LEGACY_WEB_AUTH_FILE" ]; then
+			fail "the legacy web access file exists but is not a regular file"
+		fi
+		LEGACY_WEB_AUTH_PRESENT="yes"
+	fi
 	if [ -e "$WEB_AUTH_FILE" ] || [ -L "$WEB_AUTH_FILE" ]; then
 		if [ -L "$WEB_AUTH_FILE" ] || [ ! -f "$WEB_AUTH_FILE" ]; then
 			fail "the web access file exists but is not a regular file"
 		fi
+		WEB_AUTH_EXISTED="yes"
+	elif [ "$LEGACY_WEB_AUTH_PRESENT" = "yes" ]; then
+		WEB_AUTH_CREATED="yes"
+		WEB_AUTH_MIGRATED="yes"
+		install -o "$MASTER_USER" -g "$MASTER_USER" -m 0600 \
+			"$LEGACY_WEB_AUTH_FILE" "$WEB_AUTH_FILE"
+		WEB_AUTH_CREATED_ID="$(stat -c '%d:%i' "$WEB_AUTH_FILE")" ||
+			fail "could not inspect the migrated web admin credential"
 		WEB_AUTH_EXISTED="yes"
 	else
 		WEB_AUTH_EXISTED="no"
@@ -1032,8 +1059,8 @@ install_master() {
 	install_update_helper
 	if [ "$WEB_AUTH_CREATED" = "yes" ] ||
 		[ "$WEB_AUTH_RESET_APPLIED" = "yes" ]; then
-		chown "root:$MASTER_USER" "$WEB_AUTH_FILE"
-		chmod 0640 "$WEB_AUTH_FILE"
+		chown "$MASTER_USER:$MASTER_USER" "$WEB_AUTH_FILE"
+		chmod 0600 "$WEB_AUTH_FILE"
 	fi
 	MASTER_UNIT_TEMP="$(mktemp "${MASTER_UNIT_FILE}.tmp.XXXXXX")" ||
 		fail "could not create a temporary master service unit"
@@ -1351,7 +1378,7 @@ if [ "$ROLE" = "master" ] || [ "$ROLE" = "all" ]; then
 	if [ "$HTTPS_PORT" != "443" ]; then
 		printf 'Port 443 remains available for a sing-box inbound.\n'
 	fi
-	if [ "$WEB_AUTH_CREATED" = "yes" ] ||
+	if { [ "$WEB_AUTH_CREATED" = "yes" ] && [ "$WEB_AUTH_MIGRATED" != "yes" ]; } ||
 		[ "$WEB_AUTH_RESET_APPLIED" = "yes" ]; then
 		printf 'Web admin username: %s\n' "$ADMIN_USERNAME"
 		printf '%s\n' \
@@ -1362,3 +1389,9 @@ if [ "$ROLE" = "master" ] || [ "$ROLE" = "all" ]; then
 	fi
 fi
 INSTALL_SUCCEEDED="yes"
+if [ "$LEGACY_WEB_AUTH_PRESENT" = "yes" ]; then
+	if ! rm -f -- "$LEGACY_WEB_AUTH_FILE"; then
+		printf '%s\n' \
+			'theatropolis installer: warning: the obsolete web credential copy could not be removed' >&2
+	fi
+fi

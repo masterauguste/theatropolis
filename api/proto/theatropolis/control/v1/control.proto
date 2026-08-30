@@ -42,6 +42,7 @@ message AgentFrame {
     AddressProbeReport address_probe_report = 18;
     ManagedUserTrafficReport managed_user_traffic_report = 19;
     ManagedUserAuthorityReport managed_user_authority_report = 20;
+    MasterMigrationReport master_migration_report = 21;
   }
 }
 
@@ -59,7 +60,19 @@ message MasterFrame {
     ManagedUserAuthorityCommand managed_user_authority = 17;
     ManagedUserTrafficAck managed_user_traffic_ack = 18;
     ManagedUserTrafficRequest managed_user_traffic_request = 19;
+    MigrateMasterCommand migrate_master = 20;
   }
+}
+
+message MigrateMasterCommand {
+  string migration_id = 1;
+  string master_address = 2;
+}
+
+message MasterMigrationReport {
+  string migration_id = 1;
+  bool accepted = 2;
+  string error_code = 3;
 }
 
 message AgentHello {

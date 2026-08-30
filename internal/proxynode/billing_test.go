@@ -276,6 +276,106 @@ func TestAccountingPersistsInSQLiteWithoutRewritingTopologyJSON(t *testing.T) {
 	}
 }
 
+func TestDailyUsageUsesUTCPlusEightAndSurvivesTrafficReset(t *testing.T) {
+	store, err := Open(filepath.Join(t.TempDir(), "proxy-node-state.json"), testBuild())
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Date(2028, time.February, 3, 2, 0, 0, 0, time.UTC)
+	store.now = func() time.Time { return now }
+	user, _ := store.CreateUser("alice")
+	node, _ := store.CreateProxyNode(CreateProxyNodeInput{
+		Name: "cinema", RootAgent: "edge-a", Entrance: testTLSEndpoint(ProtocolAnyTLS, 443),
+	})
+	membership, err := store.AddMembership(node.ID, user.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.MarkTopologyApplied(store.Snapshot().Revision, []string{"edge-a"}); err != nil {
+		t.Fatal(err)
+	}
+	key, _, _ := listenerKeys("edge-a", node.Entrance.Endpoint)
+	path := "/tp-in-" + shortDigest(key)
+	report := func(at time.Time, bytes uint64) {
+		t.Helper()
+		if _, err := store.ApplyTrafficDeltaReport("edge-a", at, []UserTraffic{{
+			InboundPath: path, Username: "cinema-alice", UplinkBytes: bytes,
+		}}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	report(time.Date(2028, time.February, 2, 15, 59, 0, 0, time.UTC), 100)
+	report(time.Date(2028, time.February, 2, 16, 1, 0, 0, time.UTC), 200)
+	report(time.Date(2028, time.February, 2, 18, 0, 0, 0, time.UTC), 50)
+
+	usage, err := store.UserDailyUsage(user.ID, 30)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(usage) != 2 || usage[0].Date.Day() != 3 || usage[0].UsedBytes != 250 ||
+		usage[1].Date.Day() != 2 || usage[1].UsedBytes != 100 {
+		t.Fatalf("daily usage = %#v", usage)
+	}
+	if _, err := store.ResetMembershipTraffic(node.ID, user.ID); err != nil {
+		t.Fatal(err)
+	}
+	usage, err = store.UserDailyUsage(user.ID, 30)
+	if err != nil || len(usage) != 2 || usage[0].UsedBytes != 250 {
+		t.Fatalf("daily usage after reset = %#v err=%v", usage, err)
+	}
+	if err := store.RemoveMembership(node.ID, user.ID); err != nil {
+		t.Fatal(err)
+	}
+	var rows int
+	if err := store.accounting.db.QueryRow(
+		`SELECT COUNT(*) FROM daily_membership_usage WHERE membership_id = ?`, membership.ID,
+	).Scan(&rows); err != nil {
+		t.Fatal(err)
+	}
+	if rows != 0 {
+		t.Fatalf("retired membership retained %d daily rows", rows)
+	}
+}
+
+func TestClearAccountingFailuresIsDurableAndRevisionNeutral(t *testing.T) {
+	statePath := filepath.Join(t.TempDir(), "proxy-node-state.json")
+	store, err := Open(statePath, testBuild())
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Date(2028, time.February, 2, 12, 0, 0, 0, time.UTC)
+	user, _ := store.CreateUser("alice")
+	node, _ := store.CreateProxyNode(CreateProxyNodeInput{
+		Name: "cinema", RootAgent: "edge-a", Entrance: testTLSEndpoint(ProtocolAnyTLS, 443),
+	})
+	if _, err := store.AddMembership(node.ID, user.ID); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.MarkTopologyApplied(store.Snapshot().Revision, []string{"edge-a"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.RecordAccountingFailure("edge-a", AccountingFailureCollection, now); err != nil {
+		t.Fatal(err)
+	}
+	revision := store.Snapshot().UserRevision
+	if err := store.ClearAccountingFailures(); err != nil {
+		t.Fatal(err)
+	}
+	if snapshot := store.Snapshot(); len(snapshot.AccountingFailures) != 0 || snapshot.UserRevision != revision {
+		t.Fatalf("cleared accounting state = %#v", snapshot)
+	}
+	if err := store.accounting.db.Close(); err != nil {
+		t.Fatal(err)
+	}
+	reopened, err := Open(statePath, testBuild())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if failures := reopened.Snapshot().AccountingFailures; len(failures) != 0 {
+		t.Fatalf("cleared failures returned after reopen: %#v", failures)
+	}
+}
+
 func TestRemnawaveStyleTrafficResetRunsAtTenMinutesAfterMidnight(t *testing.T) {
 	store, err := Open(filepath.Join(t.TempDir(), "state.json"), testBuild())
 	if err != nil {

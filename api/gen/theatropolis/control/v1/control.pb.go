@@ -466,6 +466,7 @@ type AgentFrame struct {
 	//	*AgentFrame_AddressProbeReport
 	//	*AgentFrame_ManagedUserTrafficReport
 	//	*AgentFrame_ManagedUserAuthorityReport
+	//	*AgentFrame_MasterMigrationReport
 	Payload       isAgentFrame_Payload `protobuf_oneof:"payload"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
@@ -614,6 +615,15 @@ func (x *AgentFrame) GetManagedUserAuthorityReport() *ManagedUserAuthorityReport
 	return nil
 }
 
+func (x *AgentFrame) GetMasterMigrationReport() *MasterMigrationReport {
+	if x != nil {
+		if x, ok := x.Payload.(*AgentFrame_MasterMigrationReport); ok {
+			return x.MasterMigrationReport
+		}
+	}
+	return nil
+}
+
 type isAgentFrame_Payload interface {
 	isAgentFrame_Payload()
 }
@@ -662,6 +672,10 @@ type AgentFrame_ManagedUserAuthorityReport struct {
 	ManagedUserAuthorityReport *ManagedUserAuthorityReport `protobuf:"bytes,20,opt,name=managed_user_authority_report,json=managedUserAuthorityReport,proto3,oneof"`
 }
 
+type AgentFrame_MasterMigrationReport struct {
+	MasterMigrationReport *MasterMigrationReport `protobuf:"bytes,21,opt,name=master_migration_report,json=masterMigrationReport,proto3,oneof"`
+}
+
 func (*AgentFrame_Hello) isAgentFrame_Payload() {}
 
 func (*AgentFrame_Proof) isAgentFrame_Payload() {}
@@ -684,6 +698,8 @@ func (*AgentFrame_ManagedUserTrafficReport) isAgentFrame_Payload() {}
 
 func (*AgentFrame_ManagedUserAuthorityReport) isAgentFrame_Payload() {}
 
+func (*AgentFrame_MasterMigrationReport) isAgentFrame_Payload() {}
+
 type MasterFrame struct {
 	state    protoimpl.MessageState `protogen:"open.v1"`
 	Sequence uint64                 `protobuf:"varint,1,opt,name=sequence,proto3" json:"sequence,omitempty"`
@@ -699,6 +715,7 @@ type MasterFrame struct {
 	//	*MasterFrame_ManagedUserAuthority
 	//	*MasterFrame_ManagedUserTrafficAck
 	//	*MasterFrame_ManagedUserTrafficRequest
+	//	*MasterFrame_MigrateMaster
 	Payload       isMasterFrame_Payload `protobuf_oneof:"payload"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
@@ -838,6 +855,15 @@ func (x *MasterFrame) GetManagedUserTrafficRequest() *ManagedUserTrafficRequest 
 	return nil
 }
 
+func (x *MasterFrame) GetMigrateMaster() *MigrateMasterCommand {
+	if x != nil {
+		if x, ok := x.Payload.(*MasterFrame_MigrateMaster); ok {
+			return x.MigrateMaster
+		}
+	}
+	return nil
+}
+
 type isMasterFrame_Payload interface {
 	isMasterFrame_Payload()
 }
@@ -882,6 +908,10 @@ type MasterFrame_ManagedUserTrafficRequest struct {
 	ManagedUserTrafficRequest *ManagedUserTrafficRequest `protobuf:"bytes,19,opt,name=managed_user_traffic_request,json=managedUserTrafficRequest,proto3,oneof"`
 }
 
+type MasterFrame_MigrateMaster struct {
+	MigrateMaster *MigrateMasterCommand `protobuf:"bytes,20,opt,name=migrate_master,json=migrateMaster,proto3,oneof"`
+}
+
 func (*MasterFrame_Challenge) isMasterFrame_Payload() {}
 
 func (*MasterFrame_AuthenticationResult) isMasterFrame_Payload() {}
@@ -901,6 +931,120 @@ func (*MasterFrame_ManagedUserAuthority) isMasterFrame_Payload() {}
 func (*MasterFrame_ManagedUserTrafficAck) isMasterFrame_Payload() {}
 
 func (*MasterFrame_ManagedUserTrafficRequest) isMasterFrame_Payload() {}
+
+func (*MasterFrame_MigrateMaster) isMasterFrame_Payload() {}
+
+type MigrateMasterCommand struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	MigrationId   string                 `protobuf:"bytes,1,opt,name=migration_id,json=migrationId,proto3" json:"migration_id,omitempty"`
+	MasterAddress string                 `protobuf:"bytes,2,opt,name=master_address,json=masterAddress,proto3" json:"master_address,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *MigrateMasterCommand) Reset() {
+	*x = MigrateMasterCommand{}
+	mi := &file_theatropolis_control_v1_control_proto_msgTypes[4]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *MigrateMasterCommand) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*MigrateMasterCommand) ProtoMessage() {}
+
+func (x *MigrateMasterCommand) ProtoReflect() protoreflect.Message {
+	mi := &file_theatropolis_control_v1_control_proto_msgTypes[4]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use MigrateMasterCommand.ProtoReflect.Descriptor instead.
+func (*MigrateMasterCommand) Descriptor() ([]byte, []int) {
+	return file_theatropolis_control_v1_control_proto_rawDescGZIP(), []int{4}
+}
+
+func (x *MigrateMasterCommand) GetMigrationId() string {
+	if x != nil {
+		return x.MigrationId
+	}
+	return ""
+}
+
+func (x *MigrateMasterCommand) GetMasterAddress() string {
+	if x != nil {
+		return x.MasterAddress
+	}
+	return ""
+}
+
+type MasterMigrationReport struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	MigrationId   string                 `protobuf:"bytes,1,opt,name=migration_id,json=migrationId,proto3" json:"migration_id,omitempty"`
+	Accepted      bool                   `protobuf:"varint,2,opt,name=accepted,proto3" json:"accepted,omitempty"`
+	ErrorCode     string                 `protobuf:"bytes,3,opt,name=error_code,json=errorCode,proto3" json:"error_code,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *MasterMigrationReport) Reset() {
+	*x = MasterMigrationReport{}
+	mi := &file_theatropolis_control_v1_control_proto_msgTypes[5]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *MasterMigrationReport) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*MasterMigrationReport) ProtoMessage() {}
+
+func (x *MasterMigrationReport) ProtoReflect() protoreflect.Message {
+	mi := &file_theatropolis_control_v1_control_proto_msgTypes[5]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use MasterMigrationReport.ProtoReflect.Descriptor instead.
+func (*MasterMigrationReport) Descriptor() ([]byte, []int) {
+	return file_theatropolis_control_v1_control_proto_rawDescGZIP(), []int{5}
+}
+
+func (x *MasterMigrationReport) GetMigrationId() string {
+	if x != nil {
+		return x.MigrationId
+	}
+	return ""
+}
+
+func (x *MasterMigrationReport) GetAccepted() bool {
+	if x != nil {
+		return x.Accepted
+	}
+	return false
+}
+
+func (x *MasterMigrationReport) GetErrorCode() string {
+	if x != nil {
+		return x.ErrorCode
+	}
+	return ""
+}
 
 type AgentHello struct {
 	state           protoimpl.MessageState `protogen:"open.v1"`
@@ -922,7 +1066,7 @@ type AgentHello struct {
 
 func (x *AgentHello) Reset() {
 	*x = AgentHello{}
-	mi := &file_theatropolis_control_v1_control_proto_msgTypes[4]
+	mi := &file_theatropolis_control_v1_control_proto_msgTypes[6]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -934,7 +1078,7 @@ func (x *AgentHello) String() string {
 func (*AgentHello) ProtoMessage() {}
 
 func (x *AgentHello) ProtoReflect() protoreflect.Message {
-	mi := &file_theatropolis_control_v1_control_proto_msgTypes[4]
+	mi := &file_theatropolis_control_v1_control_proto_msgTypes[6]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -947,7 +1091,7 @@ func (x *AgentHello) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use AgentHello.ProtoReflect.Descriptor instead.
 func (*AgentHello) Descriptor() ([]byte, []int) {
-	return file_theatropolis_control_v1_control_proto_rawDescGZIP(), []int{4}
+	return file_theatropolis_control_v1_control_proto_rawDescGZIP(), []int{6}
 }
 
 func (x *AgentHello) GetProtocolVersion() uint32 {
@@ -1016,7 +1160,7 @@ type AgentChallenge struct {
 
 func (x *AgentChallenge) Reset() {
 	*x = AgentChallenge{}
-	mi := &file_theatropolis_control_v1_control_proto_msgTypes[5]
+	mi := &file_theatropolis_control_v1_control_proto_msgTypes[7]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1028,7 +1172,7 @@ func (x *AgentChallenge) String() string {
 func (*AgentChallenge) ProtoMessage() {}
 
 func (x *AgentChallenge) ProtoReflect() protoreflect.Message {
-	mi := &file_theatropolis_control_v1_control_proto_msgTypes[5]
+	mi := &file_theatropolis_control_v1_control_proto_msgTypes[7]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1041,7 +1185,7 @@ func (x *AgentChallenge) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use AgentChallenge.ProtoReflect.Descriptor instead.
 func (*AgentChallenge) Descriptor() ([]byte, []int) {
-	return file_theatropolis_control_v1_control_proto_rawDescGZIP(), []int{5}
+	return file_theatropolis_control_v1_control_proto_rawDescGZIP(), []int{7}
 }
 
 func (x *AgentChallenge) GetNonce() []byte {
@@ -1067,7 +1211,7 @@ type AgentProof struct {
 
 func (x *AgentProof) Reset() {
 	*x = AgentProof{}
-	mi := &file_theatropolis_control_v1_control_proto_msgTypes[6]
+	mi := &file_theatropolis_control_v1_control_proto_msgTypes[8]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1079,7 +1223,7 @@ func (x *AgentProof) String() string {
 func (*AgentProof) ProtoMessage() {}
 
 func (x *AgentProof) ProtoReflect() protoreflect.Message {
-	mi := &file_theatropolis_control_v1_control_proto_msgTypes[6]
+	mi := &file_theatropolis_control_v1_control_proto_msgTypes[8]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1092,7 +1236,7 @@ func (x *AgentProof) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use AgentProof.ProtoReflect.Descriptor instead.
 func (*AgentProof) Descriptor() ([]byte, []int) {
-	return file_theatropolis_control_v1_control_proto_rawDescGZIP(), []int{6}
+	return file_theatropolis_control_v1_control_proto_rawDescGZIP(), []int{8}
 }
 
 func (x *AgentProof) GetSignature() []byte {
@@ -1112,7 +1256,7 @@ type AuthenticationResult struct {
 
 func (x *AuthenticationResult) Reset() {
 	*x = AuthenticationResult{}
-	mi := &file_theatropolis_control_v1_control_proto_msgTypes[7]
+	mi := &file_theatropolis_control_v1_control_proto_msgTypes[9]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1124,7 +1268,7 @@ func (x *AuthenticationResult) String() string {
 func (*AuthenticationResult) ProtoMessage() {}
 
 func (x *AuthenticationResult) ProtoReflect() protoreflect.Message {
-	mi := &file_theatropolis_control_v1_control_proto_msgTypes[7]
+	mi := &file_theatropolis_control_v1_control_proto_msgTypes[9]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1137,7 +1281,7 @@ func (x *AuthenticationResult) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use AuthenticationResult.ProtoReflect.Descriptor instead.
 func (*AuthenticationResult) Descriptor() ([]byte, []int) {
-	return file_theatropolis_control_v1_control_proto_rawDescGZIP(), []int{7}
+	return file_theatropolis_control_v1_control_proto_rawDescGZIP(), []int{9}
 }
 
 func (x *AuthenticationResult) GetAuthenticated() bool {
@@ -1168,7 +1312,7 @@ type AgentHeartbeat struct {
 
 func (x *AgentHeartbeat) Reset() {
 	*x = AgentHeartbeat{}
-	mi := &file_theatropolis_control_v1_control_proto_msgTypes[8]
+	mi := &file_theatropolis_control_v1_control_proto_msgTypes[10]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1180,7 +1324,7 @@ func (x *AgentHeartbeat) String() string {
 func (*AgentHeartbeat) ProtoMessage() {}
 
 func (x *AgentHeartbeat) ProtoReflect() protoreflect.Message {
-	mi := &file_theatropolis_control_v1_control_proto_msgTypes[8]
+	mi := &file_theatropolis_control_v1_control_proto_msgTypes[10]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1193,7 +1337,7 @@ func (x *AgentHeartbeat) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use AgentHeartbeat.ProtoReflect.Descriptor instead.
 func (*AgentHeartbeat) Descriptor() ([]byte, []int) {
-	return file_theatropolis_control_v1_control_proto_rawDescGZIP(), []int{8}
+	return file_theatropolis_control_v1_control_proto_rawDescGZIP(), []int{10}
 }
 
 func (x *AgentHeartbeat) GetObservedAtUnix() int64 {
@@ -1237,7 +1381,7 @@ type ValidateConfigCommand struct {
 
 func (x *ValidateConfigCommand) Reset() {
 	*x = ValidateConfigCommand{}
-	mi := &file_theatropolis_control_v1_control_proto_msgTypes[9]
+	mi := &file_theatropolis_control_v1_control_proto_msgTypes[11]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1249,7 +1393,7 @@ func (x *ValidateConfigCommand) String() string {
 func (*ValidateConfigCommand) ProtoMessage() {}
 
 func (x *ValidateConfigCommand) ProtoReflect() protoreflect.Message {
-	mi := &file_theatropolis_control_v1_control_proto_msgTypes[9]
+	mi := &file_theatropolis_control_v1_control_proto_msgTypes[11]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1262,7 +1406,7 @@ func (x *ValidateConfigCommand) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ValidateConfigCommand.ProtoReflect.Descriptor instead.
 func (*ValidateConfigCommand) Descriptor() ([]byte, []int) {
-	return file_theatropolis_control_v1_control_proto_rawDescGZIP(), []int{9}
+	return file_theatropolis_control_v1_control_proto_rawDescGZIP(), []int{11}
 }
 
 func (x *ValidateConfigCommand) GetDeploymentId() string {
@@ -1315,7 +1459,7 @@ type ConfigValidationReport struct {
 
 func (x *ConfigValidationReport) Reset() {
 	*x = ConfigValidationReport{}
-	mi := &file_theatropolis_control_v1_control_proto_msgTypes[10]
+	mi := &file_theatropolis_control_v1_control_proto_msgTypes[12]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1327,7 +1471,7 @@ func (x *ConfigValidationReport) String() string {
 func (*ConfigValidationReport) ProtoMessage() {}
 
 func (x *ConfigValidationReport) ProtoReflect() protoreflect.Message {
-	mi := &file_theatropolis_control_v1_control_proto_msgTypes[10]
+	mi := &file_theatropolis_control_v1_control_proto_msgTypes[12]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1340,7 +1484,7 @@ func (x *ConfigValidationReport) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ConfigValidationReport.ProtoReflect.Descriptor instead.
 func (*ConfigValidationReport) Descriptor() ([]byte, []int) {
-	return file_theatropolis_control_v1_control_proto_rawDescGZIP(), []int{10}
+	return file_theatropolis_control_v1_control_proto_rawDescGZIP(), []int{12}
 }
 
 func (x *ConfigValidationReport) GetDeploymentId() string {
@@ -1405,7 +1549,7 @@ type DeployConfigCommand struct {
 
 func (x *DeployConfigCommand) Reset() {
 	*x = DeployConfigCommand{}
-	mi := &file_theatropolis_control_v1_control_proto_msgTypes[11]
+	mi := &file_theatropolis_control_v1_control_proto_msgTypes[13]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1417,7 +1561,7 @@ func (x *DeployConfigCommand) String() string {
 func (*DeployConfigCommand) ProtoMessage() {}
 
 func (x *DeployConfigCommand) ProtoReflect() protoreflect.Message {
-	mi := &file_theatropolis_control_v1_control_proto_msgTypes[11]
+	mi := &file_theatropolis_control_v1_control_proto_msgTypes[13]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1430,7 +1574,7 @@ func (x *DeployConfigCommand) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use DeployConfigCommand.ProtoReflect.Descriptor instead.
 func (*DeployConfigCommand) Descriptor() ([]byte, []int) {
-	return file_theatropolis_control_v1_control_proto_rawDescGZIP(), []int{11}
+	return file_theatropolis_control_v1_control_proto_rawDescGZIP(), []int{13}
 }
 
 func (x *DeployConfigCommand) GetDeploymentId() string {
@@ -1483,7 +1627,7 @@ type ConfigDeploymentReport struct {
 
 func (x *ConfigDeploymentReport) Reset() {
 	*x = ConfigDeploymentReport{}
-	mi := &file_theatropolis_control_v1_control_proto_msgTypes[12]
+	mi := &file_theatropolis_control_v1_control_proto_msgTypes[14]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1495,7 +1639,7 @@ func (x *ConfigDeploymentReport) String() string {
 func (*ConfigDeploymentReport) ProtoMessage() {}
 
 func (x *ConfigDeploymentReport) ProtoReflect() protoreflect.Message {
-	mi := &file_theatropolis_control_v1_control_proto_msgTypes[12]
+	mi := &file_theatropolis_control_v1_control_proto_msgTypes[14]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1508,7 +1652,7 @@ func (x *ConfigDeploymentReport) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ConfigDeploymentReport.ProtoReflect.Descriptor instead.
 func (*ConfigDeploymentReport) Descriptor() ([]byte, []int) {
-	return file_theatropolis_control_v1_control_proto_rawDescGZIP(), []int{12}
+	return file_theatropolis_control_v1_control_proto_rawDescGZIP(), []int{14}
 }
 
 func (x *ConfigDeploymentReport) GetDeploymentId() string {
@@ -1572,7 +1716,7 @@ type ConfigRuntimeReport struct {
 
 func (x *ConfigRuntimeReport) Reset() {
 	*x = ConfigRuntimeReport{}
-	mi := &file_theatropolis_control_v1_control_proto_msgTypes[13]
+	mi := &file_theatropolis_control_v1_control_proto_msgTypes[15]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1584,7 +1728,7 @@ func (x *ConfigRuntimeReport) String() string {
 func (*ConfigRuntimeReport) ProtoMessage() {}
 
 func (x *ConfigRuntimeReport) ProtoReflect() protoreflect.Message {
-	mi := &file_theatropolis_control_v1_control_proto_msgTypes[13]
+	mi := &file_theatropolis_control_v1_control_proto_msgTypes[15]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1597,7 +1741,7 @@ func (x *ConfigRuntimeReport) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ConfigRuntimeReport.ProtoReflect.Descriptor instead.
 func (*ConfigRuntimeReport) Descriptor() ([]byte, []int) {
-	return file_theatropolis_control_v1_control_proto_rawDescGZIP(), []int{13}
+	return file_theatropolis_control_v1_control_proto_rawDescGZIP(), []int{15}
 }
 
 func (x *ConfigRuntimeReport) GetConfigSha256() []byte {
@@ -1638,7 +1782,7 @@ type AgentUpdateCommand struct {
 
 func (x *AgentUpdateCommand) Reset() {
 	*x = AgentUpdateCommand{}
-	mi := &file_theatropolis_control_v1_control_proto_msgTypes[14]
+	mi := &file_theatropolis_control_v1_control_proto_msgTypes[16]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1650,7 +1794,7 @@ func (x *AgentUpdateCommand) String() string {
 func (*AgentUpdateCommand) ProtoMessage() {}
 
 func (x *AgentUpdateCommand) ProtoReflect() protoreflect.Message {
-	mi := &file_theatropolis_control_v1_control_proto_msgTypes[14]
+	mi := &file_theatropolis_control_v1_control_proto_msgTypes[16]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1663,7 +1807,7 @@ func (x *AgentUpdateCommand) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use AgentUpdateCommand.ProtoReflect.Descriptor instead.
 func (*AgentUpdateCommand) Descriptor() ([]byte, []int) {
-	return file_theatropolis_control_v1_control_proto_rawDescGZIP(), []int{14}
+	return file_theatropolis_control_v1_control_proto_rawDescGZIP(), []int{16}
 }
 
 func (x *AgentUpdateCommand) GetRequestId() string {
@@ -1694,7 +1838,7 @@ type AgentUpdateReport struct {
 
 func (x *AgentUpdateReport) Reset() {
 	*x = AgentUpdateReport{}
-	mi := &file_theatropolis_control_v1_control_proto_msgTypes[15]
+	mi := &file_theatropolis_control_v1_control_proto_msgTypes[17]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1706,7 +1850,7 @@ func (x *AgentUpdateReport) String() string {
 func (*AgentUpdateReport) ProtoMessage() {}
 
 func (x *AgentUpdateReport) ProtoReflect() protoreflect.Message {
-	mi := &file_theatropolis_control_v1_control_proto_msgTypes[15]
+	mi := &file_theatropolis_control_v1_control_proto_msgTypes[17]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1719,7 +1863,7 @@ func (x *AgentUpdateReport) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use AgentUpdateReport.ProtoReflect.Descriptor instead.
 func (*AgentUpdateReport) Descriptor() ([]byte, []int) {
-	return file_theatropolis_control_v1_control_proto_rawDescGZIP(), []int{15}
+	return file_theatropolis_control_v1_control_proto_rawDescGZIP(), []int{17}
 }
 
 func (x *AgentUpdateReport) GetRequestId() string {
@@ -1774,7 +1918,7 @@ type SingBoxUpdateCommand struct {
 
 func (x *SingBoxUpdateCommand) Reset() {
 	*x = SingBoxUpdateCommand{}
-	mi := &file_theatropolis_control_v1_control_proto_msgTypes[16]
+	mi := &file_theatropolis_control_v1_control_proto_msgTypes[18]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1786,7 +1930,7 @@ func (x *SingBoxUpdateCommand) String() string {
 func (*SingBoxUpdateCommand) ProtoMessage() {}
 
 func (x *SingBoxUpdateCommand) ProtoReflect() protoreflect.Message {
-	mi := &file_theatropolis_control_v1_control_proto_msgTypes[16]
+	mi := &file_theatropolis_control_v1_control_proto_msgTypes[18]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1799,7 +1943,7 @@ func (x *SingBoxUpdateCommand) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use SingBoxUpdateCommand.ProtoReflect.Descriptor instead.
 func (*SingBoxUpdateCommand) Descriptor() ([]byte, []int) {
-	return file_theatropolis_control_v1_control_proto_rawDescGZIP(), []int{16}
+	return file_theatropolis_control_v1_control_proto_rawDescGZIP(), []int{18}
 }
 
 func (x *SingBoxUpdateCommand) GetRequestId() string {
@@ -1830,7 +1974,7 @@ type SingBoxUpdateReport struct {
 
 func (x *SingBoxUpdateReport) Reset() {
 	*x = SingBoxUpdateReport{}
-	mi := &file_theatropolis_control_v1_control_proto_msgTypes[17]
+	mi := &file_theatropolis_control_v1_control_proto_msgTypes[19]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1842,7 +1986,7 @@ func (x *SingBoxUpdateReport) String() string {
 func (*SingBoxUpdateReport) ProtoMessage() {}
 
 func (x *SingBoxUpdateReport) ProtoReflect() protoreflect.Message {
-	mi := &file_theatropolis_control_v1_control_proto_msgTypes[17]
+	mi := &file_theatropolis_control_v1_control_proto_msgTypes[19]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1855,7 +1999,7 @@ func (x *SingBoxUpdateReport) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use SingBoxUpdateReport.ProtoReflect.Descriptor instead.
 func (*SingBoxUpdateReport) Descriptor() ([]byte, []int) {
-	return file_theatropolis_control_v1_control_proto_rawDescGZIP(), []int{17}
+	return file_theatropolis_control_v1_control_proto_rawDescGZIP(), []int{19}
 }
 
 func (x *SingBoxUpdateReport) GetRequestId() string {
@@ -1910,7 +2054,7 @@ type ProbeAddresses struct {
 
 func (x *ProbeAddresses) Reset() {
 	*x = ProbeAddresses{}
-	mi := &file_theatropolis_control_v1_control_proto_msgTypes[18]
+	mi := &file_theatropolis_control_v1_control_proto_msgTypes[20]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1922,7 +2066,7 @@ func (x *ProbeAddresses) String() string {
 func (*ProbeAddresses) ProtoMessage() {}
 
 func (x *ProbeAddresses) ProtoReflect() protoreflect.Message {
-	mi := &file_theatropolis_control_v1_control_proto_msgTypes[18]
+	mi := &file_theatropolis_control_v1_control_proto_msgTypes[20]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1935,7 +2079,7 @@ func (x *ProbeAddresses) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ProbeAddresses.ProtoReflect.Descriptor instead.
 func (*ProbeAddresses) Descriptor() ([]byte, []int) {
-	return file_theatropolis_control_v1_control_proto_rawDescGZIP(), []int{18}
+	return file_theatropolis_control_v1_control_proto_rawDescGZIP(), []int{20}
 }
 
 func (x *ProbeAddresses) GetFamily() string {
@@ -1959,7 +2103,7 @@ type AddressProbeReport struct {
 
 func (x *AddressProbeReport) Reset() {
 	*x = AddressProbeReport{}
-	mi := &file_theatropolis_control_v1_control_proto_msgTypes[19]
+	mi := &file_theatropolis_control_v1_control_proto_msgTypes[21]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1971,7 +2115,7 @@ func (x *AddressProbeReport) String() string {
 func (*AddressProbeReport) ProtoMessage() {}
 
 func (x *AddressProbeReport) ProtoReflect() protoreflect.Message {
-	mi := &file_theatropolis_control_v1_control_proto_msgTypes[19]
+	mi := &file_theatropolis_control_v1_control_proto_msgTypes[21]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1984,7 +2128,7 @@ func (x *AddressProbeReport) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use AddressProbeReport.ProtoReflect.Descriptor instead.
 func (*AddressProbeReport) Descriptor() ([]byte, []int) {
-	return file_theatropolis_control_v1_control_proto_rawDescGZIP(), []int{19}
+	return file_theatropolis_control_v1_control_proto_rawDescGZIP(), []int{21}
 }
 
 func (x *AddressProbeReport) GetFamily() string {
@@ -2027,7 +2171,7 @@ type ManagedUserTrafficReport struct {
 
 func (x *ManagedUserTrafficReport) Reset() {
 	*x = ManagedUserTrafficReport{}
-	mi := &file_theatropolis_control_v1_control_proto_msgTypes[20]
+	mi := &file_theatropolis_control_v1_control_proto_msgTypes[22]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2039,7 +2183,7 @@ func (x *ManagedUserTrafficReport) String() string {
 func (*ManagedUserTrafficReport) ProtoMessage() {}
 
 func (x *ManagedUserTrafficReport) ProtoReflect() protoreflect.Message {
-	mi := &file_theatropolis_control_v1_control_proto_msgTypes[20]
+	mi := &file_theatropolis_control_v1_control_proto_msgTypes[22]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2052,7 +2196,7 @@ func (x *ManagedUserTrafficReport) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ManagedUserTrafficReport.ProtoReflect.Descriptor instead.
 func (*ManagedUserTrafficReport) Descriptor() ([]byte, []int) {
-	return file_theatropolis_control_v1_control_proto_rawDescGZIP(), []int{20}
+	return file_theatropolis_control_v1_control_proto_rawDescGZIP(), []int{22}
 }
 
 func (x *ManagedUserTrafficReport) GetEpoch() string {
@@ -2103,7 +2247,7 @@ type ManagedUserTraffic struct {
 
 func (x *ManagedUserTraffic) Reset() {
 	*x = ManagedUserTraffic{}
-	mi := &file_theatropolis_control_v1_control_proto_msgTypes[21]
+	mi := &file_theatropolis_control_v1_control_proto_msgTypes[23]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2115,7 +2259,7 @@ func (x *ManagedUserTraffic) String() string {
 func (*ManagedUserTraffic) ProtoMessage() {}
 
 func (x *ManagedUserTraffic) ProtoReflect() protoreflect.Message {
-	mi := &file_theatropolis_control_v1_control_proto_msgTypes[21]
+	mi := &file_theatropolis_control_v1_control_proto_msgTypes[23]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2128,7 +2272,7 @@ func (x *ManagedUserTraffic) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ManagedUserTraffic.ProtoReflect.Descriptor instead.
 func (*ManagedUserTraffic) Descriptor() ([]byte, []int) {
-	return file_theatropolis_control_v1_control_proto_rawDescGZIP(), []int{21}
+	return file_theatropolis_control_v1_control_proto_rawDescGZIP(), []int{23}
 }
 
 func (x *ManagedUserTraffic) GetInboundPath() string {
@@ -2171,7 +2315,7 @@ type ManagedUserTrafficAck struct {
 
 func (x *ManagedUserTrafficAck) Reset() {
 	*x = ManagedUserTrafficAck{}
-	mi := &file_theatropolis_control_v1_control_proto_msgTypes[22]
+	mi := &file_theatropolis_control_v1_control_proto_msgTypes[24]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2183,7 +2327,7 @@ func (x *ManagedUserTrafficAck) String() string {
 func (*ManagedUserTrafficAck) ProtoMessage() {}
 
 func (x *ManagedUserTrafficAck) ProtoReflect() protoreflect.Message {
-	mi := &file_theatropolis_control_v1_control_proto_msgTypes[22]
+	mi := &file_theatropolis_control_v1_control_proto_msgTypes[24]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2196,7 +2340,7 @@ func (x *ManagedUserTrafficAck) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ManagedUserTrafficAck.ProtoReflect.Descriptor instead.
 func (*ManagedUserTrafficAck) Descriptor() ([]byte, []int) {
-	return file_theatropolis_control_v1_control_proto_rawDescGZIP(), []int{22}
+	return file_theatropolis_control_v1_control_proto_rawDescGZIP(), []int{24}
 }
 
 func (x *ManagedUserTrafficAck) GetEpoch() string {
@@ -2224,7 +2368,7 @@ type ManagedUserTrafficRequest struct {
 
 func (x *ManagedUserTrafficRequest) Reset() {
 	*x = ManagedUserTrafficRequest{}
-	mi := &file_theatropolis_control_v1_control_proto_msgTypes[23]
+	mi := &file_theatropolis_control_v1_control_proto_msgTypes[25]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2236,7 +2380,7 @@ func (x *ManagedUserTrafficRequest) String() string {
 func (*ManagedUserTrafficRequest) ProtoMessage() {}
 
 func (x *ManagedUserTrafficRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_theatropolis_control_v1_control_proto_msgTypes[23]
+	mi := &file_theatropolis_control_v1_control_proto_msgTypes[25]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2249,7 +2393,7 @@ func (x *ManagedUserTrafficRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ManagedUserTrafficRequest.ProtoReflect.Descriptor instead.
 func (*ManagedUserTrafficRequest) Descriptor() ([]byte, []int) {
-	return file_theatropolis_control_v1_control_proto_rawDescGZIP(), []int{23}
+	return file_theatropolis_control_v1_control_proto_rawDescGZIP(), []int{25}
 }
 
 func (x *ManagedUserTrafficRequest) GetRequestId() string {
@@ -2273,7 +2417,7 @@ type ManagedUserAuthorityCommand struct {
 
 func (x *ManagedUserAuthorityCommand) Reset() {
 	*x = ManagedUserAuthorityCommand{}
-	mi := &file_theatropolis_control_v1_control_proto_msgTypes[24]
+	mi := &file_theatropolis_control_v1_control_proto_msgTypes[26]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2285,7 +2429,7 @@ func (x *ManagedUserAuthorityCommand) String() string {
 func (*ManagedUserAuthorityCommand) ProtoMessage() {}
 
 func (x *ManagedUserAuthorityCommand) ProtoReflect() protoreflect.Message {
-	mi := &file_theatropolis_control_v1_control_proto_msgTypes[24]
+	mi := &file_theatropolis_control_v1_control_proto_msgTypes[26]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2298,7 +2442,7 @@ func (x *ManagedUserAuthorityCommand) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ManagedUserAuthorityCommand.ProtoReflect.Descriptor instead.
 func (*ManagedUserAuthorityCommand) Descriptor() ([]byte, []int) {
-	return file_theatropolis_control_v1_control_proto_rawDescGZIP(), []int{24}
+	return file_theatropolis_control_v1_control_proto_rawDescGZIP(), []int{26}
 }
 
 func (x *ManagedUserAuthorityCommand) GetRequestId() string {
@@ -2332,7 +2476,7 @@ type ManagedUserAuthorityVariant struct {
 
 func (x *ManagedUserAuthorityVariant) Reset() {
 	*x = ManagedUserAuthorityVariant{}
-	mi := &file_theatropolis_control_v1_control_proto_msgTypes[25]
+	mi := &file_theatropolis_control_v1_control_proto_msgTypes[27]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2344,7 +2488,7 @@ func (x *ManagedUserAuthorityVariant) String() string {
 func (*ManagedUserAuthorityVariant) ProtoMessage() {}
 
 func (x *ManagedUserAuthorityVariant) ProtoReflect() protoreflect.Message {
-	mi := &file_theatropolis_control_v1_control_proto_msgTypes[25]
+	mi := &file_theatropolis_control_v1_control_proto_msgTypes[27]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2357,7 +2501,7 @@ func (x *ManagedUserAuthorityVariant) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ManagedUserAuthorityVariant.ProtoReflect.Descriptor instead.
 func (*ManagedUserAuthorityVariant) Descriptor() ([]byte, []int) {
-	return file_theatropolis_control_v1_control_proto_rawDescGZIP(), []int{25}
+	return file_theatropolis_control_v1_control_proto_rawDescGZIP(), []int{27}
 }
 
 func (x *ManagedUserAuthorityVariant) GetTopologySha256() []byte {
@@ -2384,7 +2528,7 @@ type ManagedUserAuthorityEndpoint struct {
 
 func (x *ManagedUserAuthorityEndpoint) Reset() {
 	*x = ManagedUserAuthorityEndpoint{}
-	mi := &file_theatropolis_control_v1_control_proto_msgTypes[26]
+	mi := &file_theatropolis_control_v1_control_proto_msgTypes[28]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2396,7 +2540,7 @@ func (x *ManagedUserAuthorityEndpoint) String() string {
 func (*ManagedUserAuthorityEndpoint) ProtoMessage() {}
 
 func (x *ManagedUserAuthorityEndpoint) ProtoReflect() protoreflect.Message {
-	mi := &file_theatropolis_control_v1_control_proto_msgTypes[26]
+	mi := &file_theatropolis_control_v1_control_proto_msgTypes[28]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2409,7 +2553,7 @@ func (x *ManagedUserAuthorityEndpoint) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ManagedUserAuthorityEndpoint.ProtoReflect.Descriptor instead.
 func (*ManagedUserAuthorityEndpoint) Descriptor() ([]byte, []int) {
-	return file_theatropolis_control_v1_control_proto_rawDescGZIP(), []int{26}
+	return file_theatropolis_control_v1_control_proto_rawDescGZIP(), []int{28}
 }
 
 func (x *ManagedUserAuthorityEndpoint) GetInboundPath() string {
@@ -2436,7 +2580,7 @@ type ManagedUserAuthorityUser struct {
 
 func (x *ManagedUserAuthorityUser) Reset() {
 	*x = ManagedUserAuthorityUser{}
-	mi := &file_theatropolis_control_v1_control_proto_msgTypes[27]
+	mi := &file_theatropolis_control_v1_control_proto_msgTypes[29]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2448,7 +2592,7 @@ func (x *ManagedUserAuthorityUser) String() string {
 func (*ManagedUserAuthorityUser) ProtoMessage() {}
 
 func (x *ManagedUserAuthorityUser) ProtoReflect() protoreflect.Message {
-	mi := &file_theatropolis_control_v1_control_proto_msgTypes[27]
+	mi := &file_theatropolis_control_v1_control_proto_msgTypes[29]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2461,7 +2605,7 @@ func (x *ManagedUserAuthorityUser) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ManagedUserAuthorityUser.ProtoReflect.Descriptor instead.
 func (*ManagedUserAuthorityUser) Descriptor() ([]byte, []int) {
-	return file_theatropolis_control_v1_control_proto_rawDescGZIP(), []int{27}
+	return file_theatropolis_control_v1_control_proto_rawDescGZIP(), []int{29}
 }
 
 func (x *ManagedUserAuthorityUser) GetUsername() string {
@@ -2491,7 +2635,7 @@ type ManagedUserAuthorityReport struct {
 
 func (x *ManagedUserAuthorityReport) Reset() {
 	*x = ManagedUserAuthorityReport{}
-	mi := &file_theatropolis_control_v1_control_proto_msgTypes[28]
+	mi := &file_theatropolis_control_v1_control_proto_msgTypes[30]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2503,7 +2647,7 @@ func (x *ManagedUserAuthorityReport) String() string {
 func (*ManagedUserAuthorityReport) ProtoMessage() {}
 
 func (x *ManagedUserAuthorityReport) ProtoReflect() protoreflect.Message {
-	mi := &file_theatropolis_control_v1_control_proto_msgTypes[28]
+	mi := &file_theatropolis_control_v1_control_proto_msgTypes[30]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2516,7 +2660,7 @@ func (x *ManagedUserAuthorityReport) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ManagedUserAuthorityReport.ProtoReflect.Descriptor instead.
 func (*ManagedUserAuthorityReport) Descriptor() ([]byte, []int) {
-	return file_theatropolis_control_v1_control_proto_rawDescGZIP(), []int{28}
+	return file_theatropolis_control_v1_control_proto_rawDescGZIP(), []int{30}
 }
 
 func (x *ManagedUserAuthorityReport) GetRequestId() string {
@@ -2564,7 +2708,7 @@ const file_theatropolis_control_v1_control_proto_rawDesc = "" +
 	"\n" +
 	"public_key\x18\x03 \x01(\fR\tpublicKeyJ\x04\b\x01\x10\x02R\bagent_id\"J\n" +
 	"\x0eEnrollResponse\x12(\n" +
-	"\x10enrolled_at_unix\x18\x02 \x01(\x03R\x0eenrolledAtUnixJ\x04\b\x01\x10\x02R\bagent_id\"\xc6\b\n" +
+	"\x10enrolled_at_unix\x18\x02 \x01(\x03R\x0eenrolledAtUnixJ\x04\b\x01\x10\x02R\bagent_id\"\xb0\t\n" +
 	"\n" +
 	"AgentFrame\x12\x1a\n" +
 	"\bsequence\x18\x01 \x01(\x04R\bsequence\x12;\n" +
@@ -2579,8 +2723,9 @@ const file_theatropolis_control_v1_control_proto_rawDesc = "" +
 	"\x16sing_box_update_report\x18\x11 \x01(\v2,.theatropolis.control.v1.SingBoxUpdateReportH\x00R\x13singBoxUpdateReport\x12_\n" +
 	"\x14address_probe_report\x18\x12 \x01(\v2+.theatropolis.control.v1.AddressProbeReportH\x00R\x12addressProbeReport\x12r\n" +
 	"\x1bmanaged_user_traffic_report\x18\x13 \x01(\v21.theatropolis.control.v1.ManagedUserTrafficReportH\x00R\x18managedUserTrafficReport\x12x\n" +
-	"\x1dmanaged_user_authority_report\x18\x14 \x01(\v23.theatropolis.control.v1.ManagedUserAuthorityReportH\x00R\x1amanagedUserAuthorityReportB\t\n" +
-	"\apayload\"\xe2\a\n" +
+	"\x1dmanaged_user_authority_report\x18\x14 \x01(\v23.theatropolis.control.v1.ManagedUserAuthorityReportH\x00R\x1amanagedUserAuthorityReport\x12h\n" +
+	"\x17master_migration_report\x18\x15 \x01(\v2..theatropolis.control.v1.MasterMigrationReportH\x00R\x15masterMigrationReportB\t\n" +
+	"\apayload\"\xba\b\n" +
 	"\vMasterFrame\x12\x1a\n" +
 	"\bsequence\x18\x01 \x01(\x04R\bsequence\x12G\n" +
 	"\tchallenge\x18\n" +
@@ -2593,8 +2738,17 @@ const file_theatropolis_control_v1_control_proto_rawDesc = "" +
 	"\x0fprobe_addresses\x18\x10 \x01(\v2'.theatropolis.control.v1.ProbeAddressesH\x00R\x0eprobeAddresses\x12l\n" +
 	"\x16managed_user_authority\x18\x11 \x01(\v24.theatropolis.control.v1.ManagedUserAuthorityCommandH\x00R\x14managedUserAuthority\x12i\n" +
 	"\x18managed_user_traffic_ack\x18\x12 \x01(\v2..theatropolis.control.v1.ManagedUserTrafficAckH\x00R\x15managedUserTrafficAck\x12u\n" +
-	"\x1cmanaged_user_traffic_request\x18\x13 \x01(\v22.theatropolis.control.v1.ManagedUserTrafficRequestH\x00R\x19managedUserTrafficRequestB\t\n" +
-	"\apayload\"\xd7\x02\n" +
+	"\x1cmanaged_user_traffic_request\x18\x13 \x01(\v22.theatropolis.control.v1.ManagedUserTrafficRequestH\x00R\x19managedUserTrafficRequest\x12V\n" +
+	"\x0emigrate_master\x18\x14 \x01(\v2-.theatropolis.control.v1.MigrateMasterCommandH\x00R\rmigrateMasterB\t\n" +
+	"\apayload\"`\n" +
+	"\x14MigrateMasterCommand\x12!\n" +
+	"\fmigration_id\x18\x01 \x01(\tR\vmigrationId\x12%\n" +
+	"\x0emaster_address\x18\x02 \x01(\tR\rmasterAddress\"u\n" +
+	"\x15MasterMigrationReport\x12!\n" +
+	"\fmigration_id\x18\x01 \x01(\tR\vmigrationId\x12\x1a\n" +
+	"\baccepted\x18\x02 \x01(\bR\baccepted\x12\x1d\n" +
+	"\n" +
+	"error_code\x18\x03 \x01(\tR\terrorCode\"\xd7\x02\n" +
 	"\n" +
 	"AgentHello\x12)\n" +
 	"\x10protocol_version\x18\x02 \x01(\rR\x0fprotocolVersion\x12#\n" +
@@ -2797,7 +2951,7 @@ func file_theatropolis_control_v1_control_proto_rawDescGZIP() []byte {
 }
 
 var file_theatropolis_control_v1_control_proto_enumTypes = make([]protoimpl.EnumInfo, 6)
-var file_theatropolis_control_v1_control_proto_msgTypes = make([]protoimpl.MessageInfo, 29)
+var file_theatropolis_control_v1_control_proto_msgTypes = make([]protoimpl.MessageInfo, 31)
 var file_theatropolis_control_v1_control_proto_goTypes = []any{
 	(ConfigValidationStatus)(0),          // 0: theatropolis.control.v1.ConfigValidationStatus
 	(ConfigDeploymentStatus)(0),          // 1: theatropolis.control.v1.ConfigDeploymentStatus
@@ -2809,74 +2963,78 @@ var file_theatropolis_control_v1_control_proto_goTypes = []any{
 	(*EnrollResponse)(nil),               // 7: theatropolis.control.v1.EnrollResponse
 	(*AgentFrame)(nil),                   // 8: theatropolis.control.v1.AgentFrame
 	(*MasterFrame)(nil),                  // 9: theatropolis.control.v1.MasterFrame
-	(*AgentHello)(nil),                   // 10: theatropolis.control.v1.AgentHello
-	(*AgentChallenge)(nil),               // 11: theatropolis.control.v1.AgentChallenge
-	(*AgentProof)(nil),                   // 12: theatropolis.control.v1.AgentProof
-	(*AuthenticationResult)(nil),         // 13: theatropolis.control.v1.AuthenticationResult
-	(*AgentHeartbeat)(nil),               // 14: theatropolis.control.v1.AgentHeartbeat
-	(*ValidateConfigCommand)(nil),        // 15: theatropolis.control.v1.ValidateConfigCommand
-	(*ConfigValidationReport)(nil),       // 16: theatropolis.control.v1.ConfigValidationReport
-	(*DeployConfigCommand)(nil),          // 17: theatropolis.control.v1.DeployConfigCommand
-	(*ConfigDeploymentReport)(nil),       // 18: theatropolis.control.v1.ConfigDeploymentReport
-	(*ConfigRuntimeReport)(nil),          // 19: theatropolis.control.v1.ConfigRuntimeReport
-	(*AgentUpdateCommand)(nil),           // 20: theatropolis.control.v1.AgentUpdateCommand
-	(*AgentUpdateReport)(nil),            // 21: theatropolis.control.v1.AgentUpdateReport
-	(*SingBoxUpdateCommand)(nil),         // 22: theatropolis.control.v1.SingBoxUpdateCommand
-	(*SingBoxUpdateReport)(nil),          // 23: theatropolis.control.v1.SingBoxUpdateReport
-	(*ProbeAddresses)(nil),               // 24: theatropolis.control.v1.ProbeAddresses
-	(*AddressProbeReport)(nil),           // 25: theatropolis.control.v1.AddressProbeReport
-	(*ManagedUserTrafficReport)(nil),     // 26: theatropolis.control.v1.ManagedUserTrafficReport
-	(*ManagedUserTraffic)(nil),           // 27: theatropolis.control.v1.ManagedUserTraffic
-	(*ManagedUserTrafficAck)(nil),        // 28: theatropolis.control.v1.ManagedUserTrafficAck
-	(*ManagedUserTrafficRequest)(nil),    // 29: theatropolis.control.v1.ManagedUserTrafficRequest
-	(*ManagedUserAuthorityCommand)(nil),  // 30: theatropolis.control.v1.ManagedUserAuthorityCommand
-	(*ManagedUserAuthorityVariant)(nil),  // 31: theatropolis.control.v1.ManagedUserAuthorityVariant
-	(*ManagedUserAuthorityEndpoint)(nil), // 32: theatropolis.control.v1.ManagedUserAuthorityEndpoint
-	(*ManagedUserAuthorityUser)(nil),     // 33: theatropolis.control.v1.ManagedUserAuthorityUser
-	(*ManagedUserAuthorityReport)(nil),   // 34: theatropolis.control.v1.ManagedUserAuthorityReport
+	(*MigrateMasterCommand)(nil),         // 10: theatropolis.control.v1.MigrateMasterCommand
+	(*MasterMigrationReport)(nil),        // 11: theatropolis.control.v1.MasterMigrationReport
+	(*AgentHello)(nil),                   // 12: theatropolis.control.v1.AgentHello
+	(*AgentChallenge)(nil),               // 13: theatropolis.control.v1.AgentChallenge
+	(*AgentProof)(nil),                   // 14: theatropolis.control.v1.AgentProof
+	(*AuthenticationResult)(nil),         // 15: theatropolis.control.v1.AuthenticationResult
+	(*AgentHeartbeat)(nil),               // 16: theatropolis.control.v1.AgentHeartbeat
+	(*ValidateConfigCommand)(nil),        // 17: theatropolis.control.v1.ValidateConfigCommand
+	(*ConfigValidationReport)(nil),       // 18: theatropolis.control.v1.ConfigValidationReport
+	(*DeployConfigCommand)(nil),          // 19: theatropolis.control.v1.DeployConfigCommand
+	(*ConfigDeploymentReport)(nil),       // 20: theatropolis.control.v1.ConfigDeploymentReport
+	(*ConfigRuntimeReport)(nil),          // 21: theatropolis.control.v1.ConfigRuntimeReport
+	(*AgentUpdateCommand)(nil),           // 22: theatropolis.control.v1.AgentUpdateCommand
+	(*AgentUpdateReport)(nil),            // 23: theatropolis.control.v1.AgentUpdateReport
+	(*SingBoxUpdateCommand)(nil),         // 24: theatropolis.control.v1.SingBoxUpdateCommand
+	(*SingBoxUpdateReport)(nil),          // 25: theatropolis.control.v1.SingBoxUpdateReport
+	(*ProbeAddresses)(nil),               // 26: theatropolis.control.v1.ProbeAddresses
+	(*AddressProbeReport)(nil),           // 27: theatropolis.control.v1.AddressProbeReport
+	(*ManagedUserTrafficReport)(nil),     // 28: theatropolis.control.v1.ManagedUserTrafficReport
+	(*ManagedUserTraffic)(nil),           // 29: theatropolis.control.v1.ManagedUserTraffic
+	(*ManagedUserTrafficAck)(nil),        // 30: theatropolis.control.v1.ManagedUserTrafficAck
+	(*ManagedUserTrafficRequest)(nil),    // 31: theatropolis.control.v1.ManagedUserTrafficRequest
+	(*ManagedUserAuthorityCommand)(nil),  // 32: theatropolis.control.v1.ManagedUserAuthorityCommand
+	(*ManagedUserAuthorityVariant)(nil),  // 33: theatropolis.control.v1.ManagedUserAuthorityVariant
+	(*ManagedUserAuthorityEndpoint)(nil), // 34: theatropolis.control.v1.ManagedUserAuthorityEndpoint
+	(*ManagedUserAuthorityUser)(nil),     // 35: theatropolis.control.v1.ManagedUserAuthorityUser
+	(*ManagedUserAuthorityReport)(nil),   // 36: theatropolis.control.v1.ManagedUserAuthorityReport
 }
 var file_theatropolis_control_v1_control_proto_depIdxs = []int32{
-	10, // 0: theatropolis.control.v1.AgentFrame.hello:type_name -> theatropolis.control.v1.AgentHello
-	12, // 1: theatropolis.control.v1.AgentFrame.proof:type_name -> theatropolis.control.v1.AgentProof
-	14, // 2: theatropolis.control.v1.AgentFrame.heartbeat:type_name -> theatropolis.control.v1.AgentHeartbeat
-	16, // 3: theatropolis.control.v1.AgentFrame.config_validation_report:type_name -> theatropolis.control.v1.ConfigValidationReport
-	18, // 4: theatropolis.control.v1.AgentFrame.config_deployment_report:type_name -> theatropolis.control.v1.ConfigDeploymentReport
-	19, // 5: theatropolis.control.v1.AgentFrame.config_runtime_report:type_name -> theatropolis.control.v1.ConfigRuntimeReport
-	21, // 6: theatropolis.control.v1.AgentFrame.agent_update_report:type_name -> theatropolis.control.v1.AgentUpdateReport
-	23, // 7: theatropolis.control.v1.AgentFrame.sing_box_update_report:type_name -> theatropolis.control.v1.SingBoxUpdateReport
-	25, // 8: theatropolis.control.v1.AgentFrame.address_probe_report:type_name -> theatropolis.control.v1.AddressProbeReport
-	26, // 9: theatropolis.control.v1.AgentFrame.managed_user_traffic_report:type_name -> theatropolis.control.v1.ManagedUserTrafficReport
-	34, // 10: theatropolis.control.v1.AgentFrame.managed_user_authority_report:type_name -> theatropolis.control.v1.ManagedUserAuthorityReport
-	11, // 11: theatropolis.control.v1.MasterFrame.challenge:type_name -> theatropolis.control.v1.AgentChallenge
-	13, // 12: theatropolis.control.v1.MasterFrame.authentication_result:type_name -> theatropolis.control.v1.AuthenticationResult
-	15, // 13: theatropolis.control.v1.MasterFrame.validate_config:type_name -> theatropolis.control.v1.ValidateConfigCommand
-	17, // 14: theatropolis.control.v1.MasterFrame.deploy_config:type_name -> theatropolis.control.v1.DeployConfigCommand
-	20, // 15: theatropolis.control.v1.MasterFrame.update_agent:type_name -> theatropolis.control.v1.AgentUpdateCommand
-	22, // 16: theatropolis.control.v1.MasterFrame.update_sing_box:type_name -> theatropolis.control.v1.SingBoxUpdateCommand
-	24, // 17: theatropolis.control.v1.MasterFrame.probe_addresses:type_name -> theatropolis.control.v1.ProbeAddresses
-	30, // 18: theatropolis.control.v1.MasterFrame.managed_user_authority:type_name -> theatropolis.control.v1.ManagedUserAuthorityCommand
-	28, // 19: theatropolis.control.v1.MasterFrame.managed_user_traffic_ack:type_name -> theatropolis.control.v1.ManagedUserTrafficAck
-	29, // 20: theatropolis.control.v1.MasterFrame.managed_user_traffic_request:type_name -> theatropolis.control.v1.ManagedUserTrafficRequest
-	0,  // 21: theatropolis.control.v1.ConfigValidationReport.status:type_name -> theatropolis.control.v1.ConfigValidationStatus
-	1,  // 22: theatropolis.control.v1.ConfigDeploymentReport.status:type_name -> theatropolis.control.v1.ConfigDeploymentStatus
-	2,  // 23: theatropolis.control.v1.ConfigRuntimeReport.status:type_name -> theatropolis.control.v1.ConfigRuntimeStatus
-	3,  // 24: theatropolis.control.v1.AgentUpdateReport.status:type_name -> theatropolis.control.v1.AgentUpdateStatus
-	4,  // 25: theatropolis.control.v1.SingBoxUpdateReport.status:type_name -> theatropolis.control.v1.SingBoxUpdateStatus
-	27, // 26: theatropolis.control.v1.ManagedUserTrafficReport.users:type_name -> theatropolis.control.v1.ManagedUserTraffic
-	27, // 27: theatropolis.control.v1.ManagedUserTrafficAck.users:type_name -> theatropolis.control.v1.ManagedUserTraffic
-	31, // 28: theatropolis.control.v1.ManagedUserAuthorityCommand.variants:type_name -> theatropolis.control.v1.ManagedUserAuthorityVariant
-	32, // 29: theatropolis.control.v1.ManagedUserAuthorityVariant.endpoints:type_name -> theatropolis.control.v1.ManagedUserAuthorityEndpoint
-	33, // 30: theatropolis.control.v1.ManagedUserAuthorityEndpoint.users:type_name -> theatropolis.control.v1.ManagedUserAuthorityUser
-	5,  // 31: theatropolis.control.v1.ManagedUserAuthorityReport.status:type_name -> theatropolis.control.v1.ManagedUserAuthorityStatus
-	6,  // 32: theatropolis.control.v1.AgentControlService.Enroll:input_type -> theatropolis.control.v1.EnrollRequest
-	8,  // 33: theatropolis.control.v1.AgentControlService.Connect:input_type -> theatropolis.control.v1.AgentFrame
-	7,  // 34: theatropolis.control.v1.AgentControlService.Enroll:output_type -> theatropolis.control.v1.EnrollResponse
-	9,  // 35: theatropolis.control.v1.AgentControlService.Connect:output_type -> theatropolis.control.v1.MasterFrame
-	34, // [34:36] is the sub-list for method output_type
-	32, // [32:34] is the sub-list for method input_type
-	32, // [32:32] is the sub-list for extension type_name
-	32, // [32:32] is the sub-list for extension extendee
-	0,  // [0:32] is the sub-list for field type_name
+	12, // 0: theatropolis.control.v1.AgentFrame.hello:type_name -> theatropolis.control.v1.AgentHello
+	14, // 1: theatropolis.control.v1.AgentFrame.proof:type_name -> theatropolis.control.v1.AgentProof
+	16, // 2: theatropolis.control.v1.AgentFrame.heartbeat:type_name -> theatropolis.control.v1.AgentHeartbeat
+	18, // 3: theatropolis.control.v1.AgentFrame.config_validation_report:type_name -> theatropolis.control.v1.ConfigValidationReport
+	20, // 4: theatropolis.control.v1.AgentFrame.config_deployment_report:type_name -> theatropolis.control.v1.ConfigDeploymentReport
+	21, // 5: theatropolis.control.v1.AgentFrame.config_runtime_report:type_name -> theatropolis.control.v1.ConfigRuntimeReport
+	23, // 6: theatropolis.control.v1.AgentFrame.agent_update_report:type_name -> theatropolis.control.v1.AgentUpdateReport
+	25, // 7: theatropolis.control.v1.AgentFrame.sing_box_update_report:type_name -> theatropolis.control.v1.SingBoxUpdateReport
+	27, // 8: theatropolis.control.v1.AgentFrame.address_probe_report:type_name -> theatropolis.control.v1.AddressProbeReport
+	28, // 9: theatropolis.control.v1.AgentFrame.managed_user_traffic_report:type_name -> theatropolis.control.v1.ManagedUserTrafficReport
+	36, // 10: theatropolis.control.v1.AgentFrame.managed_user_authority_report:type_name -> theatropolis.control.v1.ManagedUserAuthorityReport
+	11, // 11: theatropolis.control.v1.AgentFrame.master_migration_report:type_name -> theatropolis.control.v1.MasterMigrationReport
+	13, // 12: theatropolis.control.v1.MasterFrame.challenge:type_name -> theatropolis.control.v1.AgentChallenge
+	15, // 13: theatropolis.control.v1.MasterFrame.authentication_result:type_name -> theatropolis.control.v1.AuthenticationResult
+	17, // 14: theatropolis.control.v1.MasterFrame.validate_config:type_name -> theatropolis.control.v1.ValidateConfigCommand
+	19, // 15: theatropolis.control.v1.MasterFrame.deploy_config:type_name -> theatropolis.control.v1.DeployConfigCommand
+	22, // 16: theatropolis.control.v1.MasterFrame.update_agent:type_name -> theatropolis.control.v1.AgentUpdateCommand
+	24, // 17: theatropolis.control.v1.MasterFrame.update_sing_box:type_name -> theatropolis.control.v1.SingBoxUpdateCommand
+	26, // 18: theatropolis.control.v1.MasterFrame.probe_addresses:type_name -> theatropolis.control.v1.ProbeAddresses
+	32, // 19: theatropolis.control.v1.MasterFrame.managed_user_authority:type_name -> theatropolis.control.v1.ManagedUserAuthorityCommand
+	30, // 20: theatropolis.control.v1.MasterFrame.managed_user_traffic_ack:type_name -> theatropolis.control.v1.ManagedUserTrafficAck
+	31, // 21: theatropolis.control.v1.MasterFrame.managed_user_traffic_request:type_name -> theatropolis.control.v1.ManagedUserTrafficRequest
+	10, // 22: theatropolis.control.v1.MasterFrame.migrate_master:type_name -> theatropolis.control.v1.MigrateMasterCommand
+	0,  // 23: theatropolis.control.v1.ConfigValidationReport.status:type_name -> theatropolis.control.v1.ConfigValidationStatus
+	1,  // 24: theatropolis.control.v1.ConfigDeploymentReport.status:type_name -> theatropolis.control.v1.ConfigDeploymentStatus
+	2,  // 25: theatropolis.control.v1.ConfigRuntimeReport.status:type_name -> theatropolis.control.v1.ConfigRuntimeStatus
+	3,  // 26: theatropolis.control.v1.AgentUpdateReport.status:type_name -> theatropolis.control.v1.AgentUpdateStatus
+	4,  // 27: theatropolis.control.v1.SingBoxUpdateReport.status:type_name -> theatropolis.control.v1.SingBoxUpdateStatus
+	29, // 28: theatropolis.control.v1.ManagedUserTrafficReport.users:type_name -> theatropolis.control.v1.ManagedUserTraffic
+	29, // 29: theatropolis.control.v1.ManagedUserTrafficAck.users:type_name -> theatropolis.control.v1.ManagedUserTraffic
+	33, // 30: theatropolis.control.v1.ManagedUserAuthorityCommand.variants:type_name -> theatropolis.control.v1.ManagedUserAuthorityVariant
+	34, // 31: theatropolis.control.v1.ManagedUserAuthorityVariant.endpoints:type_name -> theatropolis.control.v1.ManagedUserAuthorityEndpoint
+	35, // 32: theatropolis.control.v1.ManagedUserAuthorityEndpoint.users:type_name -> theatropolis.control.v1.ManagedUserAuthorityUser
+	5,  // 33: theatropolis.control.v1.ManagedUserAuthorityReport.status:type_name -> theatropolis.control.v1.ManagedUserAuthorityStatus
+	6,  // 34: theatropolis.control.v1.AgentControlService.Enroll:input_type -> theatropolis.control.v1.EnrollRequest
+	8,  // 35: theatropolis.control.v1.AgentControlService.Connect:input_type -> theatropolis.control.v1.AgentFrame
+	7,  // 36: theatropolis.control.v1.AgentControlService.Enroll:output_type -> theatropolis.control.v1.EnrollResponse
+	9,  // 37: theatropolis.control.v1.AgentControlService.Connect:output_type -> theatropolis.control.v1.MasterFrame
+	36, // [36:38] is the sub-list for method output_type
+	34, // [34:36] is the sub-list for method input_type
+	34, // [34:34] is the sub-list for extension type_name
+	34, // [34:34] is the sub-list for extension extendee
+	0,  // [0:34] is the sub-list for field type_name
 }
 
 func init() { file_theatropolis_control_v1_control_proto_init() }
@@ -2896,6 +3054,7 @@ func file_theatropolis_control_v1_control_proto_init() {
 		(*AgentFrame_AddressProbeReport)(nil),
 		(*AgentFrame_ManagedUserTrafficReport)(nil),
 		(*AgentFrame_ManagedUserAuthorityReport)(nil),
+		(*AgentFrame_MasterMigrationReport)(nil),
 	}
 	file_theatropolis_control_v1_control_proto_msgTypes[3].OneofWrappers = []any{
 		(*MasterFrame_Challenge)(nil),
@@ -2908,6 +3067,7 @@ func file_theatropolis_control_v1_control_proto_init() {
 		(*MasterFrame_ManagedUserAuthority)(nil),
 		(*MasterFrame_ManagedUserTrafficAck)(nil),
 		(*MasterFrame_ManagedUserTrafficRequest)(nil),
+		(*MasterFrame_MigrateMaster)(nil),
 	}
 	type x struct{}
 	out := protoimpl.TypeBuilder{
@@ -2915,7 +3075,7 @@ func file_theatropolis_control_v1_control_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_theatropolis_control_v1_control_proto_rawDesc), len(file_theatropolis_control_v1_control_proto_rawDesc)),
 			NumEnums:      6,
-			NumMessages:   29,
+			NumMessages:   31,
 			NumExtensions: 0,
 			NumServices:   1,
 		},
