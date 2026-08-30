@@ -101,7 +101,7 @@ var simplifiedChinese = map[string]string{
 	"username must match [a-z0-9][a-z0-9._-]{0,63}":                   "登录名只能使用小写字母、数字、点、下划线和连字符，且必须以字母或数字开头。",
 	"password must not exceed 512 bytes":                              "密码不得超过 512 字节。",
 	"password must be valid UTF-8":                                    "密码必须是有效的 UTF-8 文本。",
-	"password must contain between 15 and 128 Unicode characters":     "密码须包含 15 至 128 个字符。",
+	"password must contain between 12 and 128 Unicode characters":     "密码须包含 12 至 128 个字符。",
 	"password must not contain control characters":                    "密码不能包含控制字符。",
 	"password is too common or too closely related to the username":   "密码过于常见，或与登录名过于相似。",
 	"Create Account":              "创建账户",
@@ -769,13 +769,38 @@ func localizeMembershipPlan(locale string, view *membershipPlanView) {
 		view.QuotaLabel = "每月 " + strings.TrimSuffix(view.QuotaLabel, " / month")
 	}
 	view.QuotaLabel = localizedText(locale, view.QuotaLabel)
-	view.ResetLabel = localizedText(locale, view.ResetLabel)
-	view.ExpirationLabel = localizedText(locale, view.ExpirationLabel)
+	view.ResetLabel = localizedBillingTime(locale, view.ResetLabel)
+	view.ExpirationLabel = localizedBillingTime(locale, view.ExpirationLabel)
 	view.StatusLabel = localizedText(locale, view.StatusLabel)
+}
+
+func localizedBillingTime(locale, label string) string {
+	if normalizeLocale(locale) != localeSimplifiedChinese {
+		return label
+	}
+	const zoneSuffix = " (UTC+8)"
+	value := strings.TrimSuffix(strings.TrimPrefix(label, "Expires "), zoneSuffix)
+	for _, candidate := range []struct {
+		parseLayout   string
+		displayLayout string
+	}{
+		{parseLayout: "Jan 2, 2006 15:04", displayLayout: "2006年1月2日 15:04"},
+		{parseLayout: "Jan 2, 2006", displayLayout: "2006年1月2日"},
+	} {
+		parsed, err := time.ParseInLocation(candidate.parseLayout, value, proxynode.BillingLocation())
+		if err == nil {
+			return parsed.Format(candidate.displayLayout) + "（UTC+8）"
+		}
+	}
+	return localizedText(locale, label)
 }
 
 func localizeEndUserDetail(locale string, view *endUserDetailView) {
 	view.Login.StatusLabel = localizedText(locale, view.Login.StatusLabel)
+	view.Login.InviteExpiresAt = localizedBillingTime(locale, view.Login.InviteExpiresAt)
+	if view.Login.Invitation != nil {
+		view.Login.Invitation.ExpiresAt = localizedBillingTime(locale, view.Login.Invitation.ExpiresAt)
+	}
 	localizeMembershipPlan(locale, &view.DefaultPlan)
 	localizeDailyUsage(locale, view.DailyUsage)
 	for index := range view.AssignedAccess {

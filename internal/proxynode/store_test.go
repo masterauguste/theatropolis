@@ -1015,6 +1015,9 @@ func TestCompileMirrorsShadowsocksInboundMultiplexOntoManagedLinkOutbound(t *tes
 	if got := parentMultiplex["protocol"]; got != "smux" {
 		t.Fatalf("parent Shadowsocks multiplex protocol = %#v, want smux", got)
 	}
+	if parentMultiplex["max_connections"] != float64(4) || parentMultiplex["min_streams"] != float64(4) {
+		t.Fatalf("parent Shadowsocks multiplex pool = %#v, want max_connections=4 and min_streams=4", parentMultiplex)
+	}
 
 	var child struct {
 		Inbounds []struct {
@@ -1107,8 +1110,8 @@ func TestSharedShadowsocksListenerEnablesMuxForOnlyRequestingLinks(t *testing.T)
 				break
 			}
 		}
-		if wantMux && outboundMux["protocol"] != "smux" {
-			t.Fatalf("%s mux outbound = %#v, want smux", agentID, outboundMux)
+		if wantMux && (outboundMux["protocol"] != "smux" || outboundMux["max_connections"] != float64(4) || outboundMux["min_streams"] != float64(4)) {
+			t.Fatalf("%s mux outbound = %#v, want smux with the managed 4/4 pool", agentID, outboundMux)
 		}
 		if !wantMux && outboundMux != nil {
 			t.Fatalf("%s plain outbound unexpectedly uses mux: %#v", agentID, outboundMux)

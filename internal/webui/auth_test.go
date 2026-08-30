@@ -213,6 +213,7 @@ func TestAdminCredentialValidation(t *testing.T) {
 
 	validPasswords := [][]byte{
 		[]byte(testAdminPassword),
+		[]byte("Orbit!Cedar7"),
 		[]byte("  spaces stay exact  "),
 		[]byte("准确马电池订书钉密码短语足够长"),
 		[]byte(strings.Repeat("🔐", passwordMaxRunes-1) + "🔑"),
@@ -228,10 +229,13 @@ func TestAdminCredentialValidation(t *testing.T) {
 		append([]byte("long enough pass"), 0),
 		{0xff, 0xfe, 0xfd},
 		[]byte("passwordpassword"),
+		[]byte("password1234"),
+		[]byte("123456789012"),
 		[]byte("123456789012345"),
 		[]byte("correct horse battery staple"),
 		[]byte("correcthorsebatterystaple"),
 		[]byte("theatropolispassword"),
+		[]byte("theatropolis"),
 		[]byte(strings.Repeat(" ", passwordMinRunes)),
 		[]byte(strings.Repeat("x", passwordMinRunes)),
 	}

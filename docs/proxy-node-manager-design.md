@@ -139,7 +139,9 @@ routing identity, while the physical listener remains for other references;
 deleting the final reference removes the listener on the next deployment.
 
 For a Shadowsocks Link with multiplexing enabled, its parent outbound explicitly
-selects `smux`. The child inbound enables multiplex support if at least one Link
+selects `smux` with `max_connections: 4` and `min_streams: 4`. These managed
+defaults are rendered for every enabled Link, including Links stored before the
+policy was introduced. The child inbound enables multiplex support if at least one Link
 attached to that physical listener requests it. Links that do not request mux
 omit outbound multiplex configuration and continue to use ordinary sessions on
 the same listener. Padding and TCP Brutal remain accepted in existing stored
@@ -732,7 +734,8 @@ leave application state untouched.
   cycles.
 - A shared Shadowsocks listener enables inbound multiplex support when any
   attached Link requests it. Only those requesting Links receive `smux` on
-  their parent outbounds; other Links on the listener remain non-multiplexed.
+  their parent outbounds, using four maximum physical connections and four
+  streams before opening another; other Links on the listener remain non-multiplexed.
   Padding and TCP Brutal are intentionally absent from the current UI.
 - The relay map renders every conditional Rule as a separate branch. Selecting
   a branch edits only that Rule; adding, deleting, or reordering Rules is done

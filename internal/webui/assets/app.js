@@ -963,6 +963,11 @@ const fieldValidationMessage = (control) => {
   if (validity.rangeOverflow) {
     return chinese ? `${label}不能大于 ${control.max}。` : `${label} must be at most ${control.max}.`;
   }
+  if (validity.tooShort) {
+    return chinese
+      ? `${label}至少需要 ${control.minLength} 个字符。`
+      : `${label} must be at least ${control.minLength} characters.`;
+  }
   if (validity.tooLong) {
     return chinese ? `${label}不能超过 ${control.maxLength} 个字符。` : `${label} must be ${control.maxLength} characters or fewer.`;
   }

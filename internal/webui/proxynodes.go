@@ -1580,7 +1580,7 @@ func membershipPlanViewFor(membership proxynode.Membership) membershipPlanView {
 		view.SubscriptionValue = strconv.Itoa(membership.SubscriptionValue)
 		view.SubscriptionUnit = string(membership.SubscriptionUnit)
 		view.CanExtend = true
-		view.ExpirationLabel = "Expires " + membership.SubscriptionEndsAfter.In(proxynode.BillingLocation()).Format("Jan 2, 2006 15:04") + " (UTC+8)"
+		view.ExpirationLabel = membership.SubscriptionEndsAfter.In(proxynode.BillingLocation()).Format("Jan 2, 2006 15:04") + " (UTC+8)"
 	}
 	switch membership.DisabledReason {
 	case proxynode.MembershipQuotaReached:

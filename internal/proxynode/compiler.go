@@ -694,6 +694,12 @@ func renderOutboundMultiplex(config *MultiplexConfig) map[string]any {
 		// The protocol is selected by the dialing side. Set it explicitly so a
 		// sing-box default change cannot silently alter managed relay Links.
 		multiplex["protocol"] = "smux"
+		// Relay Links favor a small reusable connection pool: each connection
+		// carries at least four active streams before another is opened, up to
+		// four physical connections. Render these defaults for every enabled
+		// Link so topologies created before this policy receive it too.
+		multiplex["max_connections"] = 4
+		multiplex["min_streams"] = 4
 	}
 	return multiplex
 }

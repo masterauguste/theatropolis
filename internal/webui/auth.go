@@ -44,7 +44,7 @@ const (
 	passwordSaltBytes    = 16
 	passwordHashBytes    = 32
 	passwordMaxBytes     = 512
-	passwordMinRunes     = 15
+	passwordMinRunes     = 12
 	passwordMaxRunes     = 128
 	passwordDocumentType = "password"
 
@@ -1347,15 +1347,19 @@ func obviousWeakPassword(username, password string) bool {
 		return true
 	}
 	switch lowerPassword {
-	case "123456789012345",
+	case "123456789012",
+		"123456789012345",
+		"password1234",
 		"passwordpassword",
 		"password123456",
+		"qwertyuiopas",
 		"qwertyuiopasdfgh",
 		"letmeinletmein",
 		"changemechangeme",
 		"adminadminadmin",
 		"correct horse battery staple",
 		"correcthorsebatterystaple",
+		"theatropolis",
 		"theatropolistheatropolis":
 		return true
 	}

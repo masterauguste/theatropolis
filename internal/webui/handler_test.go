@@ -1477,7 +1477,11 @@ func TestAdminAndPortalShowDailyUserTraffic(t *testing.T) {
 			TLS: proxynode.TLSConfig{Mode: proxynode.TLSModeSelfSigned, ServerName: "cinema.example"},
 		},
 	})
-	if _, err := fixture.proxyNodes.AddMembership(node.ID, user.ID); err != nil {
+	if _, err := fixture.proxyNodes.AddMembershipWithPlan(node.ID, user.ID, proxynode.MembershipPlan{
+		MonthlyQuotaBytes: 10 << 30,
+		SubscriptionValue: 1,
+		SubscriptionUnit:  proxynode.SubscriptionMonths,
+	}); err != nil {
 		t.Fatal(err)
 	}
 	if err := fixture.proxyNodes.MarkTopologyApplied(fixture.proxyNodes.Snapshot().Revision, []string{"edge-online"}); err != nil {
@@ -1514,6 +1518,18 @@ func TestAdminAndPortalShowDailyUserTraffic(t *testing.T) {
 	if response.Code != http.StatusOK || !strings.Contains(response.Body.String(), "Daily Traffic") ||
 		!strings.Contains(response.Body.String(), "5.00 MiB") || !strings.Contains(response.Body.String(), "Cinema") {
 		t.Fatalf("portal daily traffic = %d %q", response.Code, response.Body.String())
+	}
+
+	request = fixture.requestWithLocale(http.MethodGet, "/portal", "", localeSimplifiedChinese)
+	request.AddCookie(NewEndUserSessionCookie(portalSession.Token, portalSession.ExpiresAt))
+	response = httptest.NewRecorder()
+	fixture.handler.ServeHTTP(response, request)
+	localizedBody := response.Body.String()
+	if response.Code != http.StatusOK ||
+		!regexp.MustCompile(`\d{4}年\d{1,2}月\d{1,2}日（UTC(?:\+|&#43;)8）`).MatchString(localizedBody) ||
+		!regexp.MustCompile(`\d{4}年\d{1,2}月\d{1,2}日 \d{2}:\d{2}（UTC(?:\+|&#43;)8）`).MatchString(localizedBody) ||
+		strings.Contains(localizedBody, "到期时间：") {
+		t.Fatalf("localized portal dates = %d %q", response.Code, localizedBody)
 	}
 }
 
@@ -4454,6 +4470,18 @@ func TestAssetsAreSelfHostedAndSecurityHeadersApplyToErrors(t *testing.T) {
 			)
 		}
 		assertSecurityHeaders(t, response.Header())
+		if path == "/assets/app.js" {
+			asset := response.Body.String()
+			for _, expected := range []string{
+				`if (validity.tooShort)`,
+				`${label}至少需要 ${control.minLength} 个字符。`,
+				`${label} must be at least ${control.minLength} characters.`,
+			} {
+				if !strings.Contains(asset, expected) {
+					t.Errorf("shared validation does not contain %q", expected)
+				}
+			}
+		}
 		if path == "/assets/dropdown.js" {
 			asset := response.Body.String()
 			for _, expected := range []string{
@@ -4642,6 +4670,14 @@ func TestEndUserInvitationClaimPortalAndLoginReset(t *testing.T) {
 	if response.Code != http.StatusOK {
 		t.Fatalf("claim form = %d %q", response.Code, response.Body.String())
 	}
+	for _, expected := range []string{
+		`id="claim-password" name="password" type="password" autocomplete="new-password" required minlength="12"`,
+		`id="claim-password-confirmation" name="password_confirmation" type="password" autocomplete="new-password" required minlength="12"`,
+	} {
+		if !strings.Contains(response.Body.String(), expected) {
+			t.Errorf("claim form does not contain %q", expected)
+		}
+	}
 	if got := response.Header().Get("Referrer-Policy"); got != "strict-origin" {
 		t.Fatalf("claim form Referrer-Policy = %q, want strict-origin", got)
 	}
@@ -4778,6 +4814,28 @@ func TestEndUserPortalLanguageSwitchReturnsToPortalRealm(t *testing.T) {
 	fixture.handler.ServeHTTP(response, request)
 	if response.Code != http.StatusSeeOther || response.Header().Get("Location") != "/portal/login" {
 		t.Fatalf("portal language redirect = %d %q", response.Code, response.Header().Get("Location"))
+	}
+}
+
+func TestSimplifiedChineseMembershipDatesUseChineseCalendarFormat(t *testing.T) {
+	t.Parallel()
+
+	resetAt := time.Date(2026, time.September, 26, 0, 0, 0, 0, proxynode.BillingLocation())
+	expiresAt := time.Date(2026, time.October, 27, 0, 0, 0, 0, proxynode.BillingLocation())
+	plan := membershipPlanView{
+		ResetLabel:      resetAt.Format("Jan 2, 2006") + " (UTC+8)",
+		ExpirationLabel: expiresAt.Format("Jan 2, 2006 15:04") + " (UTC+8)",
+	}
+	localizeMembershipPlan(localeSimplifiedChinese, &plan)
+
+	if plan.ResetLabel != "2026年9月26日（UTC+8）" {
+		t.Fatalf("localized reset date = %q", plan.ResetLabel)
+	}
+	if plan.ExpirationLabel != "2026年10月27日 00:00（UTC+8）" {
+		t.Fatalf("localized expiration date = %q", plan.ExpirationLabel)
+	}
+	if strings.Contains(plan.ExpirationLabel, "到期时间") {
+		t.Fatalf("expiration value repeats its field label: %q", plan.ExpirationLabel)
 	}
 }
 
