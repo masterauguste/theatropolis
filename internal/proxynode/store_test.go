@@ -509,6 +509,11 @@ func TestMoveHopPreservesSubtreeAndReplaceLinkDestinationDeletesIt(t *testing.T)
 	if err != nil {
 		t.Fatal(err)
 	}
+	if _, _, err := store.AddLink(node.ID, AddLinkInput{
+		ParentHopID: child.ID, ChildAgent: "edge-a", Endpoint: testTLSEndpoint(ProtocolAnyTLS, 10442),
+	}); !errors.Is(err, ErrConflict) {
+		t.Fatalf("repeated ancestor Agent AddLink error = %v, want ErrConflict", err)
+	}
 	nested, grandchild, err := store.AddLink(node.ID, AddLinkInput{
 		ParentHopID: child.ID, ChildAgent: "edge-c", Endpoint: testTLSEndpoint(ProtocolHysteria2, 9443),
 	})
@@ -534,6 +539,15 @@ func TestMoveHopPreservesSubtreeAndReplaceLinkDestinationDeletesIt(t *testing.T)
 		!slices.ContainsFunc(moved.Hops, func(hop Hop) bool { return hop.ID == grandchild.ID }) ||
 		!slices.ContainsFunc(moved.BlockBranches, func(branch BlockBranch) bool { return branch.Rule.ID == block.Rule.ID }) {
 		t.Fatalf("moving Hop changed its subtree: %#v", moved)
+	}
+	if _, err := store.ReplaceLinkDestination(
+		node.ID,
+		root.ID,
+		"edge-a",
+		testTLSEndpoint(ProtocolAnyTLS, 10443),
+		Target{Type: TargetDirect},
+	); !errors.Is(err, ErrConflict) {
+		t.Fatalf("repeated ancestor Agent replacement error = %v, want ErrConflict", err)
 	}
 
 	replacementEndpoint := Endpoint{

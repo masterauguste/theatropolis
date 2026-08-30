@@ -367,7 +367,7 @@ func localizedCount(locale string, count int, kind string) string {
 		case "proxy-access":
 			return fmt.Sprintf("已授权 %d 个代理节点", count)
 		case "reference":
-			return fmt.Sprintf("%d 个引用", count)
+			return fmt.Sprintf("%d 个配置", count)
 		default:
 			return fmt.Sprintf("共 %d 项", count)
 		}

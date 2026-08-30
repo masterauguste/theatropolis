@@ -361,6 +361,11 @@
   border-radius: var(--radius-md);
 }
 
+.proxy-map__link--with-latency {
+  min-height: 4.15rem;
+  padding-bottom: 1.35rem;
+}
+
 .proxy-map__drag-handle {
   color: var(--ink-400);
   font-size: 0.85rem;
@@ -3344,38 +3349,62 @@ dialog.fleet-settings-dialog {
 
 .proxy-listener-picker {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) minmax(14rem, 0.8fr);
-  gap: 0.75rem;
-  align-items: end;
+  grid-template-columns: minmax(0, 1fr);
+  gap: 0.55rem;
 }
 
 .proxy-listener-status {
-  min-height: 2.9rem;
-  padding: 0.7rem 0.8rem;
-  color: var(--neutral-700);
-  background: var(--neutral-100);
+  display: grid;
+  min-height: 0;
+  padding: 0.62rem 0.75rem;
+  grid-template-columns: 0.5rem minmax(0, 1fr);
+  gap: 0.6rem;
+  color: var(--ink-500);
+  background: var(--surface);
   border: 1px solid var(--ink-200);
   border-radius: var(--radius-md);
-  font-size: 0.8rem;
+  font-size: 0.78rem;
+  line-height: 1.45;
+}
+
+.proxy-listener-status::before {
+  width: 0.5rem;
+  height: 0.5rem;
+  margin-top: 0.34rem;
+  background: var(--ink-400);
+  border-radius: 999px;
+  content: "";
+}
+
+.proxy-listener-status__copy {
+  display: grid;
+  min-width: 0;
+  gap: 0.08rem;
+}
+
+.proxy-listener-status__copy strong {
+  color: var(--ink-900);
+  font-size: 0.78rem;
 }
 
 .proxy-listener-status.is-compatible {
-  color: var(--green-700);
-  background: var(--green-100);
+  background: color-mix(in srgb, var(--green-100) 58%, var(--surface));
   border-color: color-mix(in srgb, var(--green-700) 28%, transparent);
 }
+.proxy-listener-status.is-compatible::before { background: var(--green-700); }
 
 .proxy-listener-status.is-warning {
-  color: var(--amber-700);
-  background: var(--amber-100);
+  background: color-mix(in srgb, var(--amber-100) 58%, var(--surface));
   border-color: color-mix(in srgb, var(--amber-700) 28%, transparent);
 }
+.proxy-listener-status.is-warning::before { background: var(--amber-700); }
 
 .proxy-listener-status.is-conflict {
-  color: var(--red-700);
-  background: var(--red-100);
+  background: color-mix(in srgb, var(--red-100) 52%, var(--surface));
   border-color: color-mix(in srgb, var(--red-700) 28%, transparent);
 }
+.proxy-listener-status.is-conflict::before { background: var(--red-700); }
+.proxy-listener-status.is-conflict .proxy-listener-status__copy strong { color: var(--red-700); }
 
 .proxy-listener-summary {
   display: grid;

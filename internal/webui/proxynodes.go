@@ -1988,18 +1988,23 @@ func (h *Handler) attachProxyTreeControls(node proxynode.ProxyNode, tree *proxyT
 	tree.ProxyID = node.ID
 	tree.Final = targetValue(hop.Final)
 	tree.AgentOptions = h.proxyAgentOptions(hop.AgentID)
-	tree.DestinationAgentOptions = h.proxyDestinationAgentOptions(node, hop.AgentID, "")
+	tree.DestinationAgentOptions = h.proxyDestinationAgentOptions(node, hop.ID, "")
 	tree.NewRule = proxyRuleView{Match: string(proxynode.MatchProtocol)}
 	tree.NewLinkEndpoint = defaultEndpointView()
 	for index := range tree.Children {
 		link := &tree.Children[index]
-		link.DestinationAgentOptions = h.proxyDestinationAgentOptions(node, hop.AgentID, link.Child.AgentID)
+		link.DestinationAgentOptions = h.proxyDestinationAgentOptions(node, hop.ID, link.Child.AgentID)
 		h.attachProxyTreeControls(node, link.Child)
 	}
 }
 
-func (h *Handler) proxyDestinationAgentOptions(node proxynode.ProxyNode, parentAgent, selected string) []agentOptionView {
+func (h *Handler) proxyDestinationAgentOptions(node proxynode.ProxyNode, parentHopID, selected string) []agentOptionView {
 	options := h.proxyAgentOptions(selected)
+	excluded := proxynode.AncestorAgentIDs(node, parentHopID)
+	options = slices.DeleteFunc(options, func(option agentOptionView) bool {
+		_, exists := excluded[option.ID]
+		return exists
+	})
 	if h.controller == nil {
 		return options
 	}
@@ -2007,6 +2012,7 @@ func (h *Handler) proxyDestinationAgentOptions(node proxynode.ProxyNode, parentA
 	for _, hop := range node.Hops {
 		hops[hop.ID] = hop.AgentID
 	}
+	parentAgent := hops[parentHopID]
 	type pathView struct {
 		latency linkLatencyView
 		links   []string

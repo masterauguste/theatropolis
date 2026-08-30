@@ -126,6 +126,9 @@ compact sticky top bar with horizontal navigation and document scrolling.
   Routine Hop movement and destructive Link destination replacement are separate
   controls; replacement uses the standard danger dialog and states its subtree
   scope before submission.
+- Listener compatibility appears as one compact status row below the physical
+  listener selector. A state bead and short localized title carry the status;
+  conflict details name only the settings the operator must reconcile.
 - User access renders as compact Node-role chips: a colored identity mark,
   Node name, entrance context, and a text status. The searchable role picker is
   the canonical assignment surface; the color is supporting identity, not

@@ -1768,6 +1768,19 @@ func TestProxyNodePagesUseLinkOwnedRulesAndMembershipCredentials(t *testing.T) {
 	}
 	fixture.controller.linkLatencies = make(map[string]control.LinkLatencyState)
 	updatedNode, _ := fixture.proxyNodes.ProxyNode(node.ID)
+	rootOptions := fixture.handler.(*Handler).proxyDestinationAgentOptions(updatedNode, node.Entrance.HopID, "")
+	if slices.ContainsFunc(rootOptions, func(option agentOptionView) bool { return option.ID == "edge-online" }) {
+		t.Fatalf("entrance Agent remains selectable as its own child: %#v", rootOptions)
+	}
+	childOptions := fixture.handler.(*Handler).proxyDestinationAgentOptions(updatedNode, child.ID, "")
+	for _, excluded := range []string{"edge-online", "edge-exit"} {
+		if slices.ContainsFunc(childOptions, func(option agentOptionView) bool { return option.ID == excluded }) {
+			t.Fatalf("ancestor Agent %q remains selectable below child Hop: %#v", excluded, childOptions)
+		}
+	}
+	if !slices.ContainsFunc(childOptions, func(option agentOptionView) bool { return option.ID == "edge-alt" }) {
+		t.Fatalf("unrelated Agent is missing from child destination choices: %#v", childOptions)
+	}
 	for _, candidate := range updatedNode.Links {
 		fixture.controller.linkLatencies["edge-online/"+proxynode.LinkOutboundTag(candidate.ID)] = control.LinkLatencyState{
 			Responded: true, Connected: true, Duration: 42 * time.Millisecond, ObservedAt: fixture.handler.(*Handler).now(),
@@ -1805,7 +1818,7 @@ func TestProxyNodePagesUseLinkOwnedRulesAndMembershipCredentials(t *testing.T) {
 		`data-reorder-url="/proxy-nodes/` + node.ID + `/hops/` + node.Entrance.HopID + `/rules/reorder"`, "Delete branch",
 		`<option value="shadowsocks"`, `<option value="anytls"`, `<option value="hysteria2"`,
 		"example.net", "Address family", "Multiplex", "[::]:8443",
-		"TCP latency", `data-link-latency="` + link.ID + `"`, "42 ms",
+		"TCP latency", `class="proxy-map__link proxy-map__link--with-latency`, `data-link-latency="` + link.ID + `"`, "42 ms",
 		"Live TCP Probe", "Link Monitor", `data-dialog-open="proxy-link-monitor-` + link.ID + `"`, `id="proxy-link-monitor-` + link.ID + `"`,
 		`data-history-url="` + proxyLinkURL(node.ID, link.ID) + `/latency-history"`, `data-option-detail="42 ms · TCP"`,
 	} {
@@ -1855,7 +1868,7 @@ func TestProxyNodePagesUseLinkOwnedRulesAndMembershipCredentials(t *testing.T) {
 	response = httptest.NewRecorder()
 	fixture.handler.ServeHTTP(response, request)
 	chineseBody := response.Body.String()
-	for _, expected := range []string{"编辑中继", "替换目标", "替换目标会删除", "如需保留子树"} {
+	for _, expected := range []string{"编辑中继", "替换目标", "替换目标会删除", "如需保留子树", "1 个配置"} {
 		if response.Code != http.StatusOK || !strings.Contains(chineseBody, expected) {
 			t.Errorf("Chinese Link editor omitted %q: %d %q", expected, response.Code, chineseBody)
 		}
@@ -4572,6 +4585,7 @@ func TestAssetsAreSelfHostedAndSecurityHeadersApplyToErrors(t *testing.T) {
 		"/assets/app.js",
 		"/assets/config-editor.js",
 		"/assets/dropdown.js",
+		"/assets/i18n.js",
 		"/assets/subscription-rules.js",
 	} {
 		request := fixture.request(http.MethodGet, path, "")
@@ -4599,9 +4613,17 @@ func TestAssetsAreSelfHostedAndSecurityHeadersApplyToErrors(t *testing.T) {
 				`${label}至少需要 ${control.minLength} 个字符。`,
 				`${label} must be at least ${control.minLength} characters.`,
 				`const body = new URLSearchParams();`,
+				`t("Listener conflict")`,
+				`uses the same socket, but these settings differ`,
 			} {
 				if !strings.Contains(asset, expected) {
 					t.Errorf("shared validation does not contain %q", expected)
+				}
+			}
+		} else if path == "/assets/i18n.js" {
+			for _, expected := range []string{`"Listener conflict": "监听器冲突"`, `"domain or certificate identity": "域名或证书标识"`} {
+				if !strings.Contains(response.Body.String(), expected) {
+					t.Errorf("localized listener status does not contain %q", expected)
 				}
 			}
 		} else if path == "/assets/dropdown.js" {

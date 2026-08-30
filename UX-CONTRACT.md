@@ -182,7 +182,10 @@ Security and domain rules in the Go implementation remain authoritative.
   terminal, and downstream branches. Replacing a Link destination is an
   explicitly destructive dialog action: it preserves that Link's match and
   priority, deletes the old child subtree, rotates the relay credential, and
-  creates a fresh terminal Hop on the selected Agent.
+  creates a fresh terminal Hop on the selected Agent. Creating or replacing a
+  Link never offers an Agent already traversed earlier on that branch, including
+  the parent Agent; the topology store rejects the same choice from a forged
+  request.
 - User-plane changes apply immediately and never require a separate topology
   save.
 - Membership quota reset and subscription expiration displays show their exact

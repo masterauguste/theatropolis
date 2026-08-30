@@ -751,6 +751,9 @@ func (s *Store) addLink(nodeID string, input AddLinkInput, rule *Rule, fallback 
 		if !slices.ContainsFunc(node.Hops, func(hop Hop) bool { return hop.ID == input.ParentHopID }) {
 			return ErrNotFound
 		}
+		if _, repeated := AncestorAgentIDs(*node, input.ParentHopID)[input.ChildAgent]; repeated {
+			return fmt.Errorf("%w: destination Agent already appears earlier in this branch", ErrConflict)
+		}
 		link.Order = len(orderedSiblingLinkIndexes(*node, input.ParentHopID))
 		for siblingIndex := range node.Links {
 			sibling := &node.Links[siblingIndex]
@@ -846,6 +849,9 @@ func (s *Store) ReplaceLinkDestination(nodeID, linkID, agentID string, endpoint 
 		rootIndex := slices.IndexFunc(node.Links, func(link Link) bool { return link.ID == linkID })
 		if rootIndex < 0 {
 			return ErrNotFound
+		}
+		if _, repeated := AncestorAgentIDs(*node, node.Links[rootIndex].ParentHopID)[agentID]; repeated {
+			return fmt.Errorf("%w: destination Agent already appears earlier in this branch", ErrConflict)
 		}
 		removeHops := descendantHops(*node, node.Links[rootIndex].ChildHopID)
 		node.Hops = slices.DeleteFunc(node.Hops, func(hop Hop) bool { return removeHops[hop.ID] })

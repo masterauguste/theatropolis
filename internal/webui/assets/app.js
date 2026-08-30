@@ -169,10 +169,20 @@ const proxyListenerClaims = (agent, listener) => {
   return networks.map((network) => `${agent}/${network}/${listener.listen}:${listener.port}`);
 };
 
-const setProxyListenerStatus = (editor, message, kind = "") => {
+const setProxyListenerStatus = (editor, message, kind = "", title = "") => {
   const status = editor.querySelector("[data-proxy-listener-status]");
   if (!status) return;
-  status.textContent = message;
+  const copy = document.createElement("span");
+  copy.className = "proxy-listener-status__copy";
+  if (title) {
+    const heading = document.createElement("strong");
+    heading.textContent = title;
+    copy.append(heading);
+  }
+  const detail = document.createElement("span");
+  detail.textContent = message;
+  copy.append(detail);
+  status.replaceChildren(copy);
   status.className = `proxy-listener-status${kind ? ` is-${kind}` : ""}`;
 };
 
@@ -227,7 +237,10 @@ const validateProxyListener = (editor) => {
   const others = proxyListenerCatalog.filter((preset) => preset.agent === agent && preset.listenerId !== currentID);
   const compatible = others.find((preset) => proxyListenersMatch(candidate, preset));
   if (compatible) {
-    setProxyListenerStatus(editor, `Compatible with “${compatible.label}”. You can select it above to reuse its settings.`, "compatible");
+    const message = window.theatropolisLocale === "zh-CN"
+      ? `与“${compatible.label}”完全兼容，可直接在上方选择并复用。`
+      : `Fully compatible with “${compatible.label}”. Select it above to reuse the listener.`;
+    setProxyListenerStatus(editor, message, "compatible", t("Listener available"));
     return;
   }
   const conflict = others.find((preset) => proxyListenerClaims(agent, preset).some((claim) => claims.has(claim)));
@@ -235,23 +248,28 @@ const validateProxyListener = (editor) => {
     const differences = candidate.protocol === conflict.protocol ?
       proxyListenerCompatibilityFields(candidate.protocol)
         .filter((field) => !["listen", "port"].includes(field) && String(candidate[field] ?? "") !== String(conflict[field] ?? ""))
-        .map((field) => proxyListenerFieldLabels[field] || field) : ["protocol"];
-    const detail = differences.length ? ` The conflicting fields are: ${differences.join(", ")}.` : "";
-    const message = `This socket overlaps “${conflict.label}”, but its listener-wide settings differ.${detail}`;
+        .map((field) => t(proxyListenerFieldLabels[field] || field)) : [t("protocol")];
+    const fields = differences.join(window.theatropolisLocale === "zh-CN" ? "、" : ", ");
+    const message = window.theatropolisLocale === "zh-CN"
+      ? `“${conflict.label}”已使用同一监听地址与端口，但${fields}不同。请复用该监听器，或更换地址/端口。`
+      : `“${conflict.label}” uses the same socket, but these settings differ: ${fields}. Reuse that listener or choose another address or port.`;
     port.setCustomValidity(message);
-    setProxyListenerStatus(editor, `${message} Reuse that listener or choose another address or port.`, "conflict");
+    setProxyListenerStatus(editor, message, "conflict", t("Listener conflict"));
     return;
   }
   const current = proxyListenerCatalog.find((preset) => preset.listenerId === currentID && preset.agent === agent);
   if (current?.referenceCount > 1) {
-    setProxyListenerStatus(editor, `This physical listener is shared by ${current.referenceCount} logical references. Saving changes updates all of them atomically.`, "warning");
+    const message = window.theatropolisLocale === "zh-CN"
+      ? `该监听器由 ${current.referenceCount} 个配置共享；保存后会同步更新全部引用。`
+      : `This listener is shared by ${current.referenceCount} configurations. Saving updates every reference together.`;
+    setProxyListenerStatus(editor, message, "warning", t("Shared listener"));
     return;
   }
   if (current) {
-    setProxyListenerStatus(editor, t("Saving will update this physical listener atomically."), "compatible");
+    setProxyListenerStatus(editor, t("Saving will update this physical listener atomically."), "compatible", t("Listener ready"));
     return;
   }
-  setProxyListenerStatus(editor, t("This socket is available for a new physical listener."), "compatible");
+  setProxyListenerStatus(editor, t("This socket is available for a new physical listener."), "compatible", t("Listener ready"));
 };
 
 const updateProxyListenerChoices = (editor) => {

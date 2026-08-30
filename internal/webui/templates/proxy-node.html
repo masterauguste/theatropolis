@@ -12,7 +12,7 @@
 
 {{define "proxy-tree-link"}}
 <div class="proxy-map__outcome"{{if .RuleID}} draggable="true" data-proxy-rule-branch="{{.RuleID}}"{{end}}>
-  <button class="proxy-map__link{{if not .Used}} proxy-map__link--unused{{end}}{{if .Fallback}} proxy-map__link--fallback{{end}}{{if .Uncertain}} proxy-map__link--runtime{{end}}" type="button" data-proxy-inspector-open="{{if .Block}}{{.InspectorID}}{{else if .RuleID}}rule-{{.RuleID}}{{else}}link-{{.LinkID}}{{end}}" aria-label="{{.RuleLabel}}{{if .RuleValues}}: {{.RuleValues}}{{end}}{{if .Block}} · Reject{{else}} · {{.Child.AgentID}}{{end}}{{if .Uncertain}} · Runtime-dependent path{{end}}">
+  <button class="proxy-map__link{{if and (not .Block) .LinkID}} proxy-map__link--with-latency{{end}}{{if not .Used}} proxy-map__link--unused{{end}}{{if .Fallback}} proxy-map__link--fallback{{end}}{{if .Uncertain}} proxy-map__link--runtime{{end}}" type="button" data-proxy-inspector-open="{{if .Block}}{{.InspectorID}}{{else if .RuleID}}rule-{{.RuleID}}{{else}}link-{{.LinkID}}{{end}}" aria-label="{{.RuleLabel}}{{if .RuleValues}}: {{.RuleValues}}{{end}}{{if .Block}} · Reject{{else}} · {{.Child.AgentID}}{{end}}{{if .Uncertain}} · Runtime-dependent path{{end}}">
     {{if .RuleID}}<span class="proxy-map__drag-handle" aria-hidden="true" title="Drag to change priority">⋮⋮</span>{{end}}
     <span class="proxy-map__condition"><b>{{.RuleLabel}}</b>{{if .RuleValues}}<span>{{.RuleValues}}</span>{{end}}</span>
     {{if .RuleID}}<span class="proxy-map__priority" aria-hidden="true">{{.RulePosition}}</span>{{end}}
