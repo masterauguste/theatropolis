@@ -537,6 +537,12 @@
 .link-monitor__loss { fill: none; stroke-width: 2.5; vector-effect: non-scaling-stroke; }
 .link-monitor__latency { stroke: var(--accent-600); }
 .link-monitor__loss { stroke: var(--red-700); stroke-dasharray: 5 5; }
+.link-monitor__latency-point { fill: var(--surface); stroke: var(--accent-600); stroke-width: 2; vector-effect: non-scaling-stroke; }
+
+.link-monitor-modal {
+  width: min(100% - 2rem, 980px);
+  height: min(72vh, 680px);
+}
 
 .link-monitor__legend {
   position: absolute;
@@ -2095,6 +2101,13 @@ textarea[aria-invalid="true"]:focus {
   white-space: nowrap;
 }
 
+.select-box__value--rich {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.75rem;
+}
+
 .select-box__chevron,
 .route-match-chevron {
   display: inline-flex;
@@ -2275,6 +2288,44 @@ input.select-box__filter::-webkit-search-cancel-button {
   overflow-wrap: anywhere;
   white-space: normal;
 }
+
+.select-box__option-copy {
+  display: grid;
+  min-width: 0;
+  flex: 1;
+  gap: 0.12rem;
+}
+
+.select-box__option-title {
+  overflow: hidden;
+  color: inherit;
+  font-weight: 680;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.select-box__option-detail {
+  overflow: hidden;
+  color: var(--ink-500);
+  font: 650 0.72rem var(--font-mono);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.select-box__option-signal {
+  width: 0.55rem;
+  height: 0.55rem;
+  flex: 0 0 auto;
+  background: var(--ink-300);
+  border-radius: 50%;
+}
+
+.select-box__option-signal--reachable { background: var(--green-700); }
+.select-box__option-signal--reference { background: var(--amber-700); }
+.select-box__option-signal--unreachable { background: var(--red-700); }
+.select-box__option-signal--stale,
+.select-box__option-signal--pending,
+.select-box__option-signal--offline { background: var(--ink-300); }
 
 .select-box__option:hover:not(:disabled),
 .select-box__option:focus-visible {

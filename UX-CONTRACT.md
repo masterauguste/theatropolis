@@ -156,6 +156,11 @@ Security and domain rules in the Go implementation remain authoritative.
   unavailable. The UI never labels a reachable latency as good or bad by an
   arbitrary threshold. Link deletion hides its monitor but does not erase the
   shared physical-path history; retention removes it naturally after 30 days.
+  History opens from the Link or Rule inspector in its own read-only monitor
+  dialog and never appears inside relay editing. Destination selectors extend
+  the canonical authored Select with the newest already-known physical-path
+  latency; an Agent with no existing measured path is labelled Not measured.
+  The draft relay editor's immediate probe remains separate from that history.
 
 ## Dialogs and transient layers
 

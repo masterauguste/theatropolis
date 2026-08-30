@@ -1806,11 +1806,23 @@ func TestProxyNodePagesUseLinkOwnedRulesAndMembershipCredentials(t *testing.T) {
 		`<option value="shadowsocks"`, `<option value="anytls"`, `<option value="hysteria2"`,
 		"example.net", "Address family", "Multiplex", "[::]:8443",
 		"TCP latency", `data-link-latency="` + link.ID + `"`, "42 ms",
-		"Live TCP Probe", "Link Monitor", `data-history-url="` + proxyLinkURL(node.ID, link.ID) + `/latency-history"`,
+		"Live TCP Probe", "Link Monitor", `data-dialog-open="proxy-link-monitor-` + link.ID + `"`, `id="proxy-link-monitor-` + link.ID + `"`,
+		`data-history-url="` + proxyLinkURL(node.ID, link.ID) + `/latency-history"`, `data-option-detail="42 ms · TCP"`,
 	} {
 		if !strings.Contains(body, expected) {
 			t.Errorf("Proxy Node tree does not contain %q", expected)
 		}
+	}
+	editDialogStart := strings.Index(body, `id="proxy-edit-link-`+link.ID+`"`)
+	if editDialogStart < 0 {
+		t.Fatal("Proxy Node tree omitted the relay editor")
+	}
+	editDialogEnd := strings.Index(body[editDialogStart:], "</dialog>")
+	if editDialogEnd < 0 {
+		t.Fatal("Proxy Node relay editor is not a complete dialog")
+	}
+	if strings.Contains(body[editDialogStart:editDialogStart+editDialogEnd], "data-link-monitor") {
+		t.Error("Proxy Node relay editor still contains Link history")
 	}
 	for _, removed := range []string{"Every configured path reaches an exit", `class="proxy-map__health"`, "Deploy fleet", `name="scope"`, `name="scope_type"`, `name="scope_value"`, `name="auth_user"`, `proxy-map__node--direct`, "Terminal on edge-exit", `id="proxy-hop-manager"`, `data-proxy-hop-manage`, `data-proxy-hop-manager-view`, "Ordered child Links", "Mux padding", "TCP Brutal", "Private branch credential and auth_user", "Branch settings", "<dt>Isolation</dt>"} {
 		if strings.Contains(body, removed) {
@@ -4586,9 +4598,17 @@ func TestAssetsAreSelfHostedAndSecurityHeadersApplyToErrors(t *testing.T) {
 				`if (validity.tooShort)`,
 				`${label}至少需要 ${control.minLength} 个字符。`,
 				`${label} must be at least ${control.minLength} characters.`,
+				`const body = new URLSearchParams();`,
 			} {
 				if !strings.Contains(asset, expected) {
 					t.Errorf("shared validation does not contain %q", expected)
+				}
+			}
+		} else if path == "/assets/dropdown.js" {
+			asset := response.Body.String()
+			for _, expected := range []string{`option.dataset.optionDetail`, `select-box__option-detail`, `window.theatropolisSyncSelect`} {
+				if !strings.Contains(asset, expected) {
+					t.Errorf("shared dropdown does not contain %q", expected)
 				}
 			}
 		}

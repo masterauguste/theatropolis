@@ -466,6 +466,22 @@ const refreshLinkLatencies = async () => {
         if (label) label.textContent = t(sample.label || "—");
       }
     }
+    for (const option of document.querySelectorAll("option[data-option-latency-links]")) {
+      const samples = (option.dataset.optionLatencyLinks || "")
+        .split(",")
+        .map((linkID) => body?.links?.[linkID])
+        .filter(Boolean)
+        .sort((left, right) => String(right.observed_at || "").localeCompare(String(left.observed_at || "")));
+      const sample = samples[0];
+      if (!sample) continue;
+      const status = ["reachable", "reference", "unreachable", "stale", "pending"].includes(sample.status)
+        ? sample.status : "pending";
+      option.dataset.optionStatus = status;
+      option.dataset.optionDetail = status === "pending"
+        ? "Not measured"
+        : `${sample.label || "—"} · ${String(sample.probe_type || "tcp").toUpperCase()}`;
+      window.theatropolisSyncSelect?.(option.closest("select"));
+    }
   } catch (_) {
     // Monitoring is advisory; retain the last value through transient UI or
     // control-plane failures instead of replacing it with a false outage.
@@ -502,7 +518,7 @@ const runLinkProbe = async (form) => {
   linkProbeControllers.set(form, controller);
   panel.dataset.status = "loading";
   output.textContent = t("Measuring…");
-  const body = new FormData();
+  const body = new URLSearchParams();
   body.set("csrf_token", form.querySelector('[name="csrf_token"]')?.value || "");
   body.set("agent_id", agentID);
   body.set("family", family);
@@ -522,7 +538,7 @@ const runLinkProbe = async (form) => {
     if (redirectForExpiredSession(response)) return;
     if (!response.ok) {
       const message = (await response.text()).trim();
-      if (response.status === 409 && message) {
+      if ([400, 403, 409, 503].includes(response.status) && message) {
         panel.dataset.status = "error";
         output.textContent = t(message);
         return;
@@ -583,6 +599,10 @@ const renderLinkMonitorChart = (monitor, points, probeType = "TCP") => {
   const latency = points.map((point, index) => Number(point.responses) > 0
     ? `${x(index)},${height - inset - (Number(point.average_ms) / maximum) * (height - inset * 2)}` : null).filter(Boolean);
   if (latency.length > 1) svg.append(svgElement("polyline", { points: latency.join(" "), class: "link-monitor__latency" }));
+  for (const point of latency) {
+    const [cx, cy] = point.split(",");
+    svg.append(svgElement("circle", { cx, cy, r: 3.5, class: "link-monitor__latency-point" }));
+  }
   const loss = points.map((point, index) => `${x(index)},${height - inset - (Number(point.loss_percent) / 100) * (height - inset * 2)}`);
   if (loss.length > 1) svg.append(svgElement("polyline", { points: loss.join(" "), class: "link-monitor__loss" }));
   chart.append(svg);

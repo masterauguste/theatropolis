@@ -96,29 +96,30 @@ type nodeUserOptionView struct {
 }
 
 type proxyTreeHopView struct {
-	ProxyID         string
-	ID              string
-	Name            string
-	AgentID         string
-	URL             string
-	IsEntrance      bool
-	IngressProtocol string
-	IngressLabel    string
-	Routes          []proxyTreeRouteView
-	Fallback        proxyTreeRouteView
-	ShowFallback    bool
-	Children        []proxyTreeLinkView
-	BlockRules      []proxyBlockRuleView
-	Branches        []proxyTreeBranchView
-	AllRuleIDs      string
-	TerminalCount   int
-	RuntimeBranches int
-	BranchCount     int
-	Final           string
-	AgentOptions    []agentOptionView
-	NewRule         proxyRuleView
-	NewLinkEndpoint endpointView
-	CSRFToken       string
+	ProxyID                 string
+	ID                      string
+	Name                    string
+	AgentID                 string
+	URL                     string
+	IsEntrance              bool
+	IngressProtocol         string
+	IngressLabel            string
+	Routes                  []proxyTreeRouteView
+	Fallback                proxyTreeRouteView
+	ShowFallback            bool
+	Children                []proxyTreeLinkView
+	BlockRules              []proxyBlockRuleView
+	Branches                []proxyTreeBranchView
+	AllRuleIDs              string
+	TerminalCount           int
+	RuntimeBranches         int
+	BranchCount             int
+	Final                   string
+	AgentOptions            []agentOptionView
+	DestinationAgentOptions []agentOptionView
+	NewRule                 proxyRuleView
+	NewLinkEndpoint         endpointView
+	CSRFToken               string
 }
 
 type proxyTreeRouteView struct {
@@ -137,25 +138,26 @@ type proxyTreeRouteView struct {
 }
 
 type proxyTreeLinkView struct {
-	ID          string
-	ParentHopID string
-	EditURL     string
-	Protocol    string
-	ListenPort  int
-	Listener    string
-	Family      string
-	Order       int
-	Endpoint    endpointView
-	Rules       []proxyRuleView
-	NewRule     proxyRuleView
-	Used        bool
-	Fallback    bool
-	CanMoveUp   bool
-	CanMoveDown bool
-	Child       *proxyTreeHopView
-	Latency     linkLatencyView
-	HistoryURL  string
-	ProbeURL    string
+	ID                      string
+	ParentHopID             string
+	EditURL                 string
+	Protocol                string
+	ListenPort              int
+	Listener                string
+	Family                  string
+	Order                   int
+	Endpoint                endpointView
+	Rules                   []proxyRuleView
+	NewRule                 proxyRuleView
+	Used                    bool
+	Fallback                bool
+	CanMoveUp               bool
+	CanMoveDown             bool
+	Child                   *proxyTreeHopView
+	Latency                 linkLatencyView
+	HistoryURL              string
+	ProbeURL                string
+	DestinationAgentOptions []agentOptionView
 }
 
 // proxyTreeBranchView is one visible route through one logical Link. Active
@@ -267,9 +269,12 @@ type credentialURIView struct {
 }
 
 type agentOptionView struct {
-	ID       string
-	Selected bool
-	Online   bool
+	ID             string
+	Selected       bool
+	Online         bool
+	LatencyDetail  string
+	LatencyStatus  string
+	LatencyLinkIDs string
 }
 
 type endpointView struct {
@@ -1983,11 +1988,73 @@ func (h *Handler) attachProxyTreeControls(node proxynode.ProxyNode, tree *proxyT
 	tree.ProxyID = node.ID
 	tree.Final = targetValue(hop.Final)
 	tree.AgentOptions = h.proxyAgentOptions(hop.AgentID)
+	tree.DestinationAgentOptions = h.proxyDestinationAgentOptions(node, hop.AgentID, "")
 	tree.NewRule = proxyRuleView{Match: string(proxynode.MatchProtocol)}
 	tree.NewLinkEndpoint = defaultEndpointView()
-	for _, link := range tree.Children {
+	for index := range tree.Children {
+		link := &tree.Children[index]
+		link.DestinationAgentOptions = h.proxyDestinationAgentOptions(node, hop.AgentID, link.Child.AgentID)
 		h.attachProxyTreeControls(node, link.Child)
 	}
+}
+
+func (h *Handler) proxyDestinationAgentOptions(node proxynode.ProxyNode, parentAgent, selected string) []agentOptionView {
+	options := h.proxyAgentOptions(selected)
+	if h.controller == nil {
+		return options
+	}
+	hops := make(map[string]string, len(node.Hops))
+	for _, hop := range node.Hops {
+		hops[hop.ID] = hop.AgentID
+	}
+	type pathView struct {
+		latency linkLatencyView
+		links   []string
+	}
+	paths := make(map[string]pathView)
+	for _, link := range node.Links {
+		if hops[link.ParentHopID] != parentAgent {
+			continue
+		}
+		childAgent := hops[link.ChildHopID]
+		path := paths[childAgent]
+		path.links = append(path.links, link.ID)
+		candidate := h.linkLatencyView(parentAgent, link)
+		if path.latency.ObservedAt == "" || candidate.ObservedAt > path.latency.ObservedAt {
+			path.latency = candidate
+		}
+		paths[childAgent] = path
+	}
+	for index := range options {
+		path, exists := paths[options[index].ID]
+		if !exists {
+			if options[index].Online {
+				options[index].LatencyDetail = "Not measured"
+				options[index].LatencyStatus = "pending"
+			} else {
+				options[index].LatencyDetail = "Offline"
+				options[index].LatencyStatus = "offline"
+			}
+			continue
+		}
+		options[index].LatencyLinkIDs = strings.Join(path.links, ",")
+		options[index].LatencyStatus = path.latency.Status
+		if path.latency.Label == "" || path.latency.Label == "—" {
+			if options[index].Online {
+				options[index].LatencyDetail = "Not measured"
+			} else {
+				options[index].LatencyDetail = "Offline"
+				options[index].LatencyStatus = "offline"
+			}
+			continue
+		}
+		probeType := path.latency.ProbeType
+		if probeType == "" {
+			probeType = "tcp"
+		}
+		options[index].LatencyDetail = path.latency.Label + " · " + strings.ToUpper(probeType)
+	}
+	return options
 }
 
 func buildProxyTree(node proxynode.ProxyNode) (*proxyTreeHopView, int, int) {

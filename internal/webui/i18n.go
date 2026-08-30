@@ -196,7 +196,7 @@ var simplifiedChinese = map[string]string{
 	"Add your first server": "添加第一台服务器", "Address family": "地址族", "Address overrides": "地址覆盖",
 	"Affected subscriptions": "受影响的订阅", "Agent": "服务器", "Agent diagnostic": "Agent 诊断",
 	"Agent software": "Agent 程序", "Agent version": "Agent 版本", "sing-box version": "sing-box 版本", "Applying topology change…": "正在应用拓扑…",
-	"TCP latency": "TCP 延迟", "QUIC latency": "QUIC 延迟", "TCP Loss": "TCP 丢包", "QUIC Loss": "QUIC 丢包", "Live TCP Probe": "实时 TCP 检测", "Live QUIC Probe": "实时 QUIC 检测", "Probe Again": "重新检测", "Link Monitor": "链路监控", "Average": "平均延迟", "Select a destination": "请选择目标服务器", "Stale": "数据已过期",
+	"TCP latency": "TCP 延迟", "QUIC latency": "QUIC 延迟", "TCP Loss": "TCP 丢包", "QUIC Loss": "QUIC 丢包", "Live TCP Probe": "实时 TCP 检测", "Live QUIC Probe": "实时 QUIC 检测", "Probe Again": "重新检测", "Link Monitor": "链路监控", "Average": "平均延迟", "History range": "历史范围", "Link latency and loss history": "链路延迟与丢包历史", "Not measured": "尚未测量", "Select a destination": "请选择目标服务器", "Stale": "数据已过期",
 	"Assign a Node": "添加节点", "Assign role": "确认添加", "Authenticated sessions": "登录会话",
 	"Authenticated user": "认证用户", "Automatic": "自动", "Automatic IP addresses": "自动使用 IP 地址", "Awaiting installation": "等待安装",
 	"Bandwidth": "带宽", "Branch": "分支", "Calendar months": "自然月",

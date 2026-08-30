@@ -110,8 +110,11 @@ compact sticky top bar with horizontal navigation and document scrolling.
   latest millisecond value. TCP relays use a connect probe and Hysteria2 uses a
   QUIC handshake. It is not color-graded by speed because an expected
   intercontinental path can be healthy at high latency. Unreachable, stale,
-  and pending states remain textual; the Link inspector owns the current value
-  plus the 30-day latency/loss chart.
+  and pending states remain textual. The Link inspector owns the current value
+  and opens a dedicated monitor dialog for the 30-day latency/loss chart; relay
+  editing contains only transport controls and an immediate probe of the draft
+  destination. Target-server selects use the shared authored dropdown and add
+  the latest known physical-path latency without starting duplicate probes.
 - The fleet table stays scannable and shows the Agent software version only.
   The sing-box runtime version belongs to the individual Server summary and
   software controls, where it has operational context.

@@ -13,8 +13,38 @@
     return field?.querySelector(":scope > span")?.textContent.trim() || select.name || t("Option");
   };
 
-  const selectedLabel = (control) =>
-    control.select.selectedOptions[0]?.textContent || t("Select an option");
+  const selectedRecord = (control) => {
+    const option = control.select.selectedOptions[0];
+    if (!option) return { label: t("Select an option"), detail: "", status: "" };
+    return {
+      label: option.textContent,
+      detail: option.dataset.optionDetail || "",
+      status: option.dataset.optionStatus || "",
+    };
+  };
+
+  const renderOptionContent = (target, record, compact = false) => {
+    target.replaceChildren();
+    target.classList.toggle("select-box__value--rich", compact && Boolean(record.detail));
+    if (!record.detail) {
+      target.textContent = record.label;
+      return;
+    }
+    const copy = document.createElement("span");
+    copy.className = "select-box__option-copy";
+    const title = document.createElement("span");
+    title.className = "select-box__option-title";
+    title.textContent = record.label;
+    const detail = document.createElement("span");
+    detail.className = "select-box__option-detail";
+    detail.textContent = t(record.detail);
+    copy.append(title, detail);
+    const signal = document.createElement("span");
+    const allowedStatus = ["reachable", "reference", "unreachable", "stale", "pending", "offline"];
+    signal.className = `select-box__option-signal select-box__option-signal--${allowedStatus.includes(record.status) ? record.status : "pending"}`;
+    signal.setAttribute("aria-hidden", "true");
+    target.append(copy, signal);
+  };
 
   const svgPart = (name, attributes) => {
     const element = document.createElementNS("http://www.w3.org/2000/svg", name);
@@ -60,6 +90,8 @@
       value: option.value,
       label: option.textContent,
       disabled: option.disabled,
+      detail: option.dataset.optionDetail || "",
+      status: option.dataset.optionStatus || "",
     }));
   };
 
@@ -78,6 +110,7 @@
       control.filteredRecords = control.optionRecords.filter((record) =>
         !normalized ||
         record.label.toLocaleLowerCase().includes(normalized) ||
+        record.detail.toLocaleLowerCase().includes(normalized) ||
         record.value.toLocaleLowerCase().includes(normalized),
       );
     }
@@ -100,7 +133,7 @@
       button.setAttribute("aria-selected", String(record.value === control.select.value));
       button.dataset.value = record.value;
       button.disabled = record.disabled;
-      button.textContent = record.label;
+      renderOptionContent(button, record);
       fragment.append(button);
       control.optionButtons.push(button);
     }
@@ -187,7 +220,7 @@
 
   function syncControl(control, rebuild = true) {
     if (rebuild) readOptions(control);
-    control.value.textContent = selectedLabel(control);
+    renderOptionContent(control.value, selectedRecord(control), true);
     control.trigger.tabIndex = control.select.disabled ? -1 : 0;
     control.trigger.setAttribute("aria-disabled", String(control.select.disabled));
     control.wrapper.classList.toggle("is-disabled", control.select.disabled);
@@ -483,6 +516,10 @@
       if (control) syncControl(control, false);
     }
   });
+  window.theatropolisSyncSelect = (select) => {
+    const control = enhanced.get(select);
+    if (control) syncControl(control);
+  };
   window.addEventListener("resize", () => closeDropdown());
   window.addEventListener("scroll", (event) => {
     // The options list owns dropdown scrolling. Close only when another
