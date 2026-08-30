@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -376,44 +377,97 @@ func TestClearAccountingFailuresIsDurableAndRevisionNeutral(t *testing.T) {
 	}
 }
 
-func TestRemnawaveStyleTrafficResetRunsAtTenMinutesAfterMidnight(t *testing.T) {
-	store, err := Open(filepath.Join(t.TempDir(), "state.json"), testBuild())
+func TestExpirationAndTrafficResetShareOneMidnightTransition(t *testing.T) {
+	statePath := filepath.Join(t.TempDir(), "state.json")
+	store, err := Open(statePath, testBuild())
 	if err != nil {
 		t.Fatal(err)
 	}
 	now := time.Date(2028, time.February, 2, 12, 0, 0, 0, time.UTC)
 	store.now = func() time.Time { return now }
 	user, _ := store.CreateUser("alice")
+	survivorUser, _ := store.CreateUser("bob")
 	node, _ := store.CreateProxyNode(CreateProxyNodeInput{
 		Name: "cinema", RootAgent: "edge-a", Entrance: testTLSEndpoint(ProtocolAnyTLS, 443),
 	})
-	if _, err := store.AddMembershipWithPlan(node.ID, user.ID, MembershipPlan{}); err != nil {
+	membership, err := store.AddMembershipWithPlan(node.ID, user.ID, MembershipPlan{
+		MonthlyQuotaBytes: 40,
+		SubscriptionValue: 1,
+		SubscriptionUnit:  SubscriptionMonths,
+	})
+	if err != nil {
 		t.Fatal(err)
+	}
+	if got := MembershipQuotaResetAt(membership); !got.Equal(membership.SubscriptionEndsAfter) {
+		t.Fatalf("reset at %v, expiration at %v", got, membership.SubscriptionEndsAfter)
+	}
+	survivor, err := store.AddMembershipWithPlan(node.ID, survivorUser.ID, MembershipPlan{MonthlyQuotaBytes: 40})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := MembershipQuotaResetAt(survivor); !got.Equal(membership.SubscriptionEndsAfter) {
+		t.Fatalf("survivor reset at %v, transition at %v", got, membership.SubscriptionEndsAfter)
 	}
 	if err := store.MarkTopologyApplied(store.Snapshot().Revision, []string{"edge-a"}); err != nil {
 		t.Fatal(err)
 	}
 	key, _, _ := listenerKeys("edge-a", node.Entrance.Endpoint)
 	path := "/tp-in-" + shortDigest(key)
-	if _, err := store.ApplyTrafficDeltaReport("edge-a", now, []UserTraffic{{
-		InboundPath: path, Username: "cinema-alice", UplinkBytes: 50,
-	}}); err != nil {
+	if _, err := store.ApplyTrafficDeltaReport("edge-a", now, []UserTraffic{
+		{InboundPath: path, Username: "cinema-alice", UplinkBytes: 50},
+		{InboundPath: path, Username: "cinema-bob", UplinkBytes: 50},
+	}); err != nil {
 		t.Fatal(err)
 	}
-	resetDay := time.Date(2028, time.March, 3, 0, 0, 0, 0, billingLocation)
-	if changed, err := store.advanceSubscriptions(resetDay); err != nil || changed {
-		t.Fatalf("midnight subscription pass changed=%v err=%v", changed, err)
+	transitionAt := membership.SubscriptionEndsAfter
+	if changed, err := store.AdvanceBilling(transitionAt.Add(-time.Second)); err != nil || changed {
+		t.Fatalf("pre-boundary billing changed=%v err=%v", changed, err)
 	}
 	current, _ := store.ProxyNode(node.ID)
-	if current.Memberships[0].UsedBytes != 50 {
-		t.Fatal("midnight subscription pass reset traffic before 00:10")
+	if current.Memberships[0].UsedBytes != 50 || current.Memberships[0].DisabledReason != MembershipQuotaReached {
+		t.Fatalf("pre-boundary membership = %#v", current.Memberships[0])
 	}
-	if _, err := store.advanceTrafficPeriods(resetDay.Add(10 * time.Minute)); err != nil {
-		t.Fatal(err)
+	revision := store.Snapshot().UserRevision
+	changed, err := store.AdvanceBilling(transitionAt)
+	if err != nil || !changed {
+		t.Fatalf("midnight billing changed=%v err=%v", changed, err)
 	}
 	current, _ = store.ProxyNode(node.ID)
-	if current.Memberships[0].UsedBytes != 0 {
-		t.Fatal("00:10 traffic pass did not reset the rolling period")
+	if len(current.Memberships) != 1 || current.Memberships[0].ID != survivor.ID {
+		t.Fatalf("expired membership remained after boundary: %#v", current.Memberships)
+	}
+	if current.Memberships[0].UsedBytes != 0 || current.Memberships[0].DisabledReason != MembershipEnabled {
+		t.Fatalf("surviving membership did not reset atomically: %#v", current.Memberships[0])
+	}
+	if got := store.Snapshot().UserRevision; got != revision+1 {
+		t.Fatalf("atomic billing revision = %d, want %d", got, revision+1)
+	}
+	if got := accountingMembershipRowCount(t, store, membership.ID); got != 0 {
+		t.Fatalf("expired membership accounting rows = %d", got)
+	}
+	var dailyRows int
+	if err := store.accounting.db.QueryRow(
+		`SELECT COUNT(*) FROM daily_membership_usage WHERE membership_id = ?`, membership.ID,
+	).Scan(&dailyRows); err != nil || dailyRows != 0 {
+		t.Fatalf("expired membership daily rows = %d, err=%v", dailyRows, err)
+	}
+	if err := store.Close(); err != nil {
+		t.Fatal(err)
+	}
+	reopened, err := Open(statePath, testBuild())
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = reopened.Close() })
+	restartedNode, _ := reopened.ProxyNode(node.ID)
+	if len(restartedNode.Memberships) != 1 || restartedNode.Memberships[0].ID != survivor.ID {
+		t.Fatalf("expired membership returned after restart: %#v", restartedNode.Memberships)
+	}
+	if restartedNode.Memberships[0].UsedBytes != 0 || restartedNode.Memberships[0].DisabledReason != MembershipEnabled {
+		t.Fatalf("surviving membership reset was not durable: %#v", restartedNode.Memberships[0])
+	}
+	if got := accountingMembershipRowCount(t, reopened, membership.ID); got != 0 {
+		t.Fatalf("expired membership accounting returned after restart: %d", got)
 	}
 }
 
@@ -819,8 +873,8 @@ func TestCalendarMonthSubscriptionExpiresAfterInclusiveEndDate(t *testing.T) {
 		t.Fatalf("next-midnight check changed=%v err=%v", changed, err)
 	}
 	updated, _ := store.ProxyNode(node.ID)
-	if updated.Memberships[0].DisabledReason != MembershipExpired {
-		t.Fatalf("membership status = %q", updated.Memberships[0].DisabledReason)
+	if len(updated.Memberships) != 0 {
+		t.Fatalf("expired membership remained = %#v", updated.Memberships)
 	}
 }
 
@@ -871,6 +925,10 @@ func TestSubscriptionDurationUnits(t *testing.T) {
 			if changed, err := store.AdvanceBilling(test.want); err != nil || !changed {
 				t.Fatalf("subscription did not expire at deadline: changed=%v err=%v", changed, err)
 			}
+			updated, _ := store.ProxyNode(node.ID)
+			if len(updated.Memberships) != 0 {
+				t.Fatalf("expired membership remained for %s: %#v", test.name, updated.Memberships)
+			}
 		})
 	}
 }
@@ -920,6 +978,36 @@ func TestExtendSubscriptionPreservesTrafficPeriod(t *testing.T) {
 	}
 }
 
+func TestExpiredMembershipCannotBeRenewedBeforeEnforcementDeletesIt(t *testing.T) {
+	store, _ := Open(filepath.Join(t.TempDir(), "state.json"), testBuild())
+	now := time.Date(2028, time.March, 4, 9, 0, 0, 0, time.UTC)
+	store.now = func() time.Time { return now }
+	user, _ := store.CreateUser("alice")
+	node, _ := store.CreateProxyNode(CreateProxyNodeInput{
+		Name: "cinema", RootAgent: "edge-a", Entrance: testTLSEndpoint(ProtocolAnyTLS, 443),
+	})
+	membership, err := store.AddMembershipWithPlan(node.ID, user.ID, MembershipPlan{
+		SubscriptionValue: 1, SubscriptionUnit: SubscriptionMinutes,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	now = membership.SubscriptionEndsAfter
+	if err := store.ExtendMembershipSubscription(node.ID, user.ID, 1, SubscriptionHours); err != ErrNotFound {
+		t.Fatalf("extend expired membership error = %v", err)
+	}
+	if err := store.UpdateMembershipPlan(node.ID, user.ID, MembershipPlan{}); err != ErrNotFound {
+		t.Fatalf("renew expired membership error = %v", err)
+	}
+	if changed, err := store.AdvanceBilling(now); err != nil || !changed {
+		t.Fatalf("delete expired membership changed=%v err=%v", changed, err)
+	}
+	updated, _ := store.ProxyNode(node.ID)
+	if len(updated.Memberships) != 0 {
+		t.Fatalf("expired membership remained = %#v", updated.Memberships)
+	}
+}
+
 func TestProxyNodeCompensationExtendsOnlyFiniteSubscriptions(t *testing.T) {
 	store, _ := Open(filepath.Join(t.TempDir(), "state.json"), testBuild())
 	now := time.Date(2028, time.March, 4, 9, 0, 0, 0, time.UTC)
@@ -945,14 +1033,21 @@ func TestProxyNodeCompensationExtendsOnlyFiniteSubscriptions(t *testing.T) {
 	if changed, err := store.advanceSubscriptions(now); err != nil || !changed {
 		t.Fatalf("expire short subscription changed=%v err=%v", changed, err)
 	}
+	updated, _ := store.ProxyNode(node.ID)
+	if slices.ContainsFunc(updated.Memberships, func(membership Membership) bool { return membership.ID == expired.ID }) {
+		t.Fatalf("expired membership remained after subscription pass: %#v", updated.Memberships)
+	}
+	if got := accountingMembershipRowCount(t, store, expired.ID); got != 0 {
+		t.Fatalf("expired membership accounting rows = %d", got)
+	}
 
 	extended, err := store.ExtendProxyNodeSubscriptions(
-		node.ID, []string{finite.ID, expired.ID}, 1, SubscriptionHours,
+		node.ID, []string{finite.ID}, 1, SubscriptionHours,
 	)
-	if err != nil || extended != 2 {
+	if err != nil || extended != 1 {
 		t.Fatalf("ExtendProxyNodeSubscriptions() extended=%d err=%v", extended, err)
 	}
-	updated, _ := store.ProxyNode(node.ID)
+	updated, _ = store.ProxyNode(node.ID)
 	byUser := make(map[string]Membership, len(updated.Memberships))
 	for _, membership := range updated.Memberships {
 		byUser[membership.UserID] = membership
@@ -966,9 +1061,8 @@ func TestProxyNodeCompensationExtendsOnlyFiniteSubscriptions(t *testing.T) {
 	if got := byUser[unlimitedUser.ID]; !got.SubscriptionEndsAfter.IsZero() || got.Credential != unlimited.Credential {
 		t.Fatalf("unlimited membership changed = %#v", got)
 	}
-	if got := byUser[expiredUser.ID]; !got.SubscriptionEndsAfter.Equal(expired.SubscriptionEndsAfter.Add(time.Hour)) ||
-		got.DisabledReason != MembershipEnabled {
-		t.Fatalf("expired compensated membership = %#v", got)
+	if _, exists := byUser[expiredUser.ID]; exists {
+		t.Fatalf("compensation restored expired membership = %#v", byUser[expiredUser.ID])
 	}
 	for _, membership := range updated.Memberships {
 		var original Membership
@@ -979,8 +1073,6 @@ func TestProxyNodeCompensationExtendsOnlyFiniteSubscriptions(t *testing.T) {
 			original = unlimited
 		case unselectedUser.ID:
 			original = unselected
-		case expiredUser.ID:
-			original = expired
 		}
 		if !membership.QuotaPeriodStartedOn.Equal(original.QuotaPeriodStartedOn) ||
 			!membership.QuotaResetsAfter.Equal(original.QuotaResetsAfter) {

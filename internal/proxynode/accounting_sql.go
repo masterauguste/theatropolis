@@ -355,6 +355,9 @@ func (a *accountingDB) prepareMembershipReconciliation(state State) (*sql.Tx, er
 	if err := ensureAccountingMemberships(transaction, &state); err != nil {
 		return nil, err
 	}
+	if err := syncAccountingMembershipUsage(transaction, &state); err != nil {
+		return nil, err
+	}
 	if err := pruneAccountingMemberships(transaction, &state); err != nil {
 		return nil, err
 	}
@@ -363,6 +366,34 @@ func (a *accountingDB) prepareMembershipReconciliation(state State) (*sql.Tx, er
 	}
 	ok = true
 	return transaction, nil
+}
+
+// syncAccountingMembershipUsage makes a low-frequency state reconciliation a
+// complete accounting checkpoint as well as an identity reconciliation. The
+// caller holds the Store write lock, so the in-memory values cannot lag a
+// concurrent traffic report while the JSON authority is being replaced.
+func syncAccountingMembershipUsage(transaction *sql.Tx, state *State) error {
+	now := time.Now().UTC().Unix()
+	for _, node := range state.ProxyNodes {
+		for _, membership := range node.Memberships {
+			if _, err := transaction.Exec(
+				`UPDATE membership_usage SET
+					used_bytes = ?,
+					period_started_at = ?,
+					resets_after = ?,
+					updated_at = ?
+				 WHERE membership_id = ?`,
+				strconv.FormatUint(membership.UsedBytes, 10),
+				membership.QuotaPeriodStartedOn.UTC().Unix(),
+				membership.QuotaResetsAfter.UTC().Unix(),
+				now,
+				membership.ID,
+			); err != nil {
+				return fmt.Errorf("synchronize membership accounting: %w", err)
+			}
+		}
+	}
+	return nil
 }
 
 func setAccountingUserRevision(transaction *sql.Tx, revision uint64) error {

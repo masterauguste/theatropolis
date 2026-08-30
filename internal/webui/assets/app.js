@@ -2,6 +2,23 @@
 
 const t = (text) => window.theatropolisText?.(text) || text;
 
+const localDateTimeFormatter = new Intl.DateTimeFormat(
+  document.documentElement.lang || navigator.language,
+  {
+    year: "numeric",
+    month: "long",
+    day: "numeric",
+    hour: "2-digit",
+    minute: "2-digit",
+    hourCycle: "h23",
+  },
+);
+
+for (const element of document.querySelectorAll("time[data-local-datetime]")) {
+  const value = new Date(element.dateTime);
+  if (!Number.isNaN(value.getTime())) element.textContent = localDateTimeFormatter.format(value);
+}
+
 const ruleSetCatalogRequests = new Map();
 window.theatropolisRuleSetCatalog = (kind) => {
   if (kind !== "geosite" && kind !== "geoip") {

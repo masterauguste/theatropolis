@@ -26,6 +26,13 @@ var billingLocation = time.FixedZone("UTC+8", 8*60*60)
 // compensation, and other administrator-facing billing references.
 func BillingLocation() *time.Location { return billingLocation }
 
+// MembershipQuotaResetAt returns the scheduled instant when the current
+// inclusive quota period is cleared. QuotaResetsAfter stores the last valid
+// UTC+8 billing date; enforcement runs at the following midnight.
+func MembershipQuotaResetAt(membership Membership) time.Time {
+	return membership.QuotaResetsAfter.AddDate(0, 0, 1)
+}
+
 const (
 	AccountingFailureCollection  = "collection_failed"
 	AccountingFailurePersistence = "persistence_failed"
@@ -233,6 +240,9 @@ func (s *Store) UpdateMembershipPlan(nodeID, userID string, plan MembershipPlan)
 			return ErrNotFound
 		}
 		now := s.now().UTC()
+		if !membership.SubscriptionEndsAfter.IsZero() && !now.Before(membership.SubscriptionEndsAfter) {
+			return ErrNotFound
+		}
 		membership.MonthlyQuotaBytes = plan.MonthlyQuotaBytes
 		membership.SubscriptionStartedAt = time.Time{}
 		membership.SubscriptionEndsAfter = time.Time{}
@@ -248,10 +258,9 @@ func (s *Store) UpdateMembershipPlan(nodeID, userID string, plan MembershipPlan)
 	})
 }
 
-// ExtendMembershipSubscription adds time to a finite subscription without
-// changing its traffic period, reset date, or quota. Extension is strictly
-// additive to the stored deadline; it re-enables an expired grant only when the
-// resulting deadline moves into the future.
+// ExtendMembershipSubscription adds time to an existing finite subscription
+// without changing its traffic period, reset date, or quota. Expired grants are
+// removed by the billing enforcer and must be granted again.
 func (s *Store) ExtendMembershipSubscription(nodeID, userID string, value int, unit SubscriptionUnit) error {
 	if err := validateMembershipPlan(MembershipPlan{SubscriptionValue: value, SubscriptionUnit: unit}); err != nil {
 		return err
@@ -265,6 +274,9 @@ func (s *Store) ExtendMembershipSubscription(nodeID, userID string, value int, u
 			return fmt.Errorf("%w: subscription has no expiration", ErrConflict)
 		}
 		now := s.now().UTC()
+		if !now.Before(membership.SubscriptionEndsAfter) {
+			return ErrNotFound
+		}
 		membership.SubscriptionEndsAfter = extendSubscriptionDeadline(membership.SubscriptionEndsAfter, value, unit)
 		recomputeMembershipStatus(membership, now)
 		return nil
@@ -299,6 +311,9 @@ func (s *Store) ExtendProxyNodeSubscriptions(nodeID string, membershipIDs []stri
 			}
 			if membership.SubscriptionEndsAfter.IsZero() {
 				return fmt.Errorf("%w: selected Membership has no expiration", ErrConflict)
+			}
+			if !now.Before(membership.SubscriptionEndsAfter) {
+				return ErrNotFound
 			}
 			membership.SubscriptionEndsAfter = extendSubscriptionDeadline(membership.SubscriptionEndsAfter, value, unit)
 			recomputeMembershipStatus(membership, now)
@@ -496,23 +511,45 @@ func (s *Store) AdvanceBilling(now time.Time) (bool, error) {
 	return s.advanceBilling(now, true, true)
 }
 
-func (s *Store) advanceTrafficPeriods(now time.Time) (bool, error) {
-	return s.advanceBilling(now, true, false)
-}
-
 func (s *Store) advanceSubscriptions(now time.Time) (bool, error) {
 	return s.advanceBilling(now, false, true)
 }
 
 func (s *Store) advanceBilling(now time.Time, resetTraffic, expireSubscriptions bool) (bool, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
 	now = now.UTC()
 	today := billingDate(now)
-	configurationChanged := false
-	err := s.mutateBilling(func(state *State) (bool, error) {
-		for nodeIndex := range state.ProxyNodes {
-			for membershipIndex := range state.ProxyNodes[nodeIndex].Memberships {
-				membership := &state.ProxyNodes[nodeIndex].Memberships[membershipIndex]
-				for resetTraffic && today.After(membership.QuotaResetsAfter) {
+	next := cloneState(s.state)
+	identityChanged := false
+	accountingChanged := false
+	authorityChanged := false
+
+	if expireSubscriptions {
+		for nodeIndex := range next.ProxyNodes {
+			memberships := next.ProxyNodes[nodeIndex].Memberships
+			retained := memberships[:0]
+			for membershipIndex := range memberships {
+				membership := memberships[membershipIndex]
+				if !membership.SubscriptionEndsAfter.IsZero() && !now.Before(membership.SubscriptionEndsAfter) {
+					identityChanged = true
+					authorityChanged = true
+					continue
+				}
+				retained = append(retained, membership)
+			}
+			clear(memberships[len(retained):])
+			next.ProxyNodes[nodeIndex].Memberships = retained
+		}
+	}
+
+	if resetTraffic {
+		for nodeIndex := range next.ProxyNodes {
+			for membershipIndex := range next.ProxyNodes[nodeIndex].Memberships {
+				membership := &next.ProxyNodes[nodeIndex].Memberships[membershipIndex]
+				for today.After(membership.QuotaResetsAfter) {
+					accountingChanged = true
 					membership.UsedBytes = 0
 					membership.QuotaPeriodStartedOn = membership.QuotaResetsAfter.AddDate(0, 0, 1)
 					membership.QuotaResetsAfter = addCalendarMonthsAnchored(
@@ -520,19 +557,37 @@ func (s *Store) advanceBilling(now time.Time, resetTraffic, expireSubscriptions 
 					)
 					if membership.DisabledReason == MembershipQuotaReached {
 						membership.DisabledReason = MembershipEnabled
-						configurationChanged = true
+						authorityChanged = true
 					}
-				}
-				if expireSubscriptions && !membership.SubscriptionEndsAfter.IsZero() && !now.Before(membership.SubscriptionEndsAfter) &&
-					membership.DisabledReason != MembershipExpired {
-					membership.DisabledReason = MembershipExpired
-					configurationChanged = true
 				}
 			}
 		}
-		return configurationChanged, nil
-	})
-	return configurationChanged, err
+	}
+
+	if !identityChanged && !accountingChanged {
+		return false, nil
+	}
+	if authorityChanged {
+		next.UserRevision++
+	}
+	if err := validateState(next); err != nil {
+		return false, err
+	}
+	if identityChanged {
+		build := normalizeBuild(s.build, s.now())
+		if err := s.persistStateAndAccountingLocked(next, build); err != nil {
+			return false, err
+		}
+		return authorityChanged, nil
+	}
+	if s.accounting == nil {
+		return false, errors.New("accounting database is unavailable")
+	}
+	if err := s.accounting.persistChanges(s.state, next, nil); err != nil {
+		return false, err
+	}
+	s.state = next
+	return authorityChanged, nil
 }
 
 func (s *Store) mutateBilling(mutation func(*State) (bool, error)) error {

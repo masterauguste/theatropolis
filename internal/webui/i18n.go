@@ -714,13 +714,15 @@ func localizePageData(locale string, data *pageData) {
 		for index := range data.EndUserPortal.Nodes {
 			node := &data.EndUserPortal.Nodes[index]
 			plan := membershipPlanView{
-				QuotaLabel: node.QuotaLabel, ResetLabel: node.ResetLabel,
-				ExpirationLabel: node.ExpirationLabel, StatusLabel: node.StatusLabel,
+				QuotaLabel: node.QuotaLabel, ResetLabel: node.ResetLabel, ResetAt: node.ResetAt,
+				ExpirationLabel: node.ExpirationLabel, ExpirationAt: node.ExpirationAt, StatusLabel: node.StatusLabel,
 			}
 			localizeMembershipPlan(locale, &plan)
 			node.QuotaLabel = plan.QuotaLabel
 			node.ResetLabel = plan.ResetLabel
+			node.ResetAt = plan.ResetAt
 			node.ExpirationLabel = plan.ExpirationLabel
+			node.ExpirationAt = plan.ExpirationAt
 			node.StatusLabel = plan.StatusLabel
 		}
 	}
@@ -769,9 +771,29 @@ func localizeMembershipPlan(locale string, view *membershipPlanView) {
 		view.QuotaLabel = "每月 " + strings.TrimSuffix(view.QuotaLabel, " / month")
 	}
 	view.QuotaLabel = localizedText(locale, view.QuotaLabel)
-	view.ResetLabel = localizedBillingTime(locale, view.ResetLabel)
-	view.ExpirationLabel = localizedBillingTime(locale, view.ExpirationLabel)
+	view.ResetLabel = localizedMembershipTime(locale, view.ResetLabel)
+	view.ExpirationLabel = localizedMembershipTime(locale, view.ExpirationLabel)
 	view.StatusLabel = localizedText(locale, view.StatusLabel)
+}
+
+func localizedMembershipTime(locale, label string) string {
+	if normalizeLocale(locale) != localeSimplifiedChinese {
+		return label
+	}
+	value := strings.TrimPrefix(label, "Expires ")
+	for _, candidate := range []struct {
+		parseLayout   string
+		displayLayout string
+	}{
+		{parseLayout: "Jan 2, 2006 15:04", displayLayout: "2006年1月2日 15:04"},
+		{parseLayout: "Jan 2, 2006", displayLayout: "2006年1月2日"},
+	} {
+		parsed, err := time.ParseInLocation(candidate.parseLayout, value, proxynode.BillingLocation())
+		if err == nil {
+			return parsed.Format(candidate.displayLayout)
+		}
+	}
+	return localizedText(locale, label)
 }
 
 func localizedBillingTime(locale, label string) string {

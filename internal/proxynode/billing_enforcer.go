@@ -75,36 +75,19 @@ func (e *BillingEnforcer) TriggerAppliedRefresh() {
 func (e *BillingEnforcer) calendarLoop(ctx context.Context) {
 	for {
 		now := e.now()
-		changed := false
-		subscriptionChanged, err := e.store.advanceSubscriptions(now)
+		// Evaluate both transitions against one clock reading and persist them
+		// atomically. AdvanceBilling checks expiration before quota reset.
+		changed, err := e.store.AdvanceBilling(now)
 		if err != nil {
-			e.logger.Error("advance Proxy Node subscriptions", "error", err)
-		} else {
-			changed = subscriptionChanged
-		}
-		trafficResetAt := billingDate(now).Add(10 * time.Minute)
-		if !now.Before(trafficResetAt) {
-			trafficChanged, trafficErr := e.store.advanceTrafficPeriods(now)
-			if trafficErr != nil {
-				e.logger.Error("reset Proxy Node traffic periods", "error", trafficErr)
-			} else {
-				changed = changed || trafficChanged
-			}
+			e.logger.Error("advance Proxy Node billing", "error", err)
 		}
 		if changed {
 			e.TriggerDeployment()
 		}
-		next := trafficResetAt
-		if !now.Before(trafficResetAt) {
-			next = billingDate(now).AddDate(0, 0, 1)
-		}
 		// Minute/hour subscriptions need enforcement before the next daily
-		// quota-reset pass. A minute cadence bounds expiration delay without
-		// introducing one timer per Membership.
-		nextSubscriptionCheck := now.Truncate(time.Minute).Add(time.Minute)
-		if nextSubscriptionCheck.Before(next) {
-			next = nextSubscriptionCheck
-		}
+		// boundary. A minute cadence bounds scheduling delay without introducing
+		// one timer per Membership; UTC+8 midnight is included in the same pass.
+		next := now.Truncate(time.Minute).Add(time.Minute)
 		timer := time.NewTimer(max(next.Sub(now), time.Second))
 		select {
 		case <-timer.C:

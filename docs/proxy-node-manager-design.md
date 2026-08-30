@@ -232,12 +232,14 @@ fixed UTC+8 product clock. Minute/hour/day grants use exact durations. A calenda
 keeps the established natural-month behavior: a grant created on March 4 for
 one month remains active through April 4 and expires at April 5 00:00 UTC+8.
 Administrators may extend a finite deadline using any supported unit. Extension
-is strictly additive to the stored deadline, including for a disabled expired
-Membership; it re-enables that Membership only if the resulting deadline is in
-the future. Proxy Node-wide compensation takes a UTC+8 outage start and end,
-preselects finite Memberships whose current subscription interval overlaps that
-range, and presents a searchable checklist for administrator overrides before
-applying one extension to the checked Memberships. Unlimited Memberships are
+is strictly additive to the stored deadline while the Membership is active.
+At the deadline, the Membership is removed atomically, its entrance credential
+is revoked, and its accounting rows are deleted; restoring access requires a
+new grant with a new Membership identity and credential. Proxy Node-wide
+compensation takes a UTC+8 outage start and end, preselects active finite
+Memberships whose current subscription interval overlaps that range, and
+presents a searchable checklist for administrator overrides before applying one
+extension to the checked Memberships. Unlimited or already-expired grants are
 never candidates. Neither operation changes the quota period, anchor day, or
 next traffic reset.
 
@@ -326,8 +328,9 @@ This intentionally follows an at-most-once polling model: a sing-box/Agent
 crash before sampling, a response lost after counters were cleared, or a master
 persistence failure can lose that interval. The system does not claim
 audit-grade billing. Rolling quota resets clear master-owned Membership usage
-in a serialized SQL transaction at 00:10 UTC+8. Subscription deadlines are
-checked once per minute and synchronize through the independent user plane.
+in a serialized SQL transaction at UTC+8 midnight. Subscription deadlines are
+checked once per minute; reaching one atomically removes the Membership and its
+accounting rows before the independent user plane revokes the entrance credential.
 An administrator-requested traffic reset first requests and persists an
 entrance sample, then clears only the current-period total; it never moves the
 quota period or subscription deadline. During rolling upgrades, legacy cumulative Agents retain their baseline

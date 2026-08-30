@@ -47,7 +47,9 @@ type endUserPortalNodeView struct {
 	UsageLabel      string
 	QuotaLabel      string
 	ResetLabel      string
+	ResetAt         string
 	ExpirationLabel string
+	ExpirationAt    string
 	StatusLabel     string
 	StatusClass     string
 }
@@ -349,7 +351,8 @@ func (h *Handler) endUserPortal(response http.ResponseWriter, request *http.Requ
 			Name: node.Name, Initial: nodeInitial(node.Name), Tone: nodeRoleTone(node.Name),
 			Protocol: protocolLabel(activeNode.Entrance.Endpoint.Protocol), EntranceAgent: root.AgentID,
 			UsageLabel: plan.UsageLabel, QuotaLabel: plan.QuotaLabel, ResetLabel: plan.ResetLabel,
-			ExpirationLabel: plan.ExpirationLabel, StatusLabel: plan.StatusLabel, StatusClass: plan.StatusClass,
+			ResetAt: plan.ResetAt, ExpirationLabel: plan.ExpirationLabel, ExpirationAt: plan.ExpirationAt,
+			StatusLabel: plan.StatusLabel, StatusClass: plan.StatusClass,
 		})
 	}
 	sort.Slice(view.Nodes, func(i, j int) bool { return strings.ToLower(view.Nodes[i].Name) < strings.ToLower(view.Nodes[j].Name) })

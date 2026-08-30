@@ -1526,8 +1526,8 @@ func TestAdminAndPortalShowDailyUserTraffic(t *testing.T) {
 	fixture.handler.ServeHTTP(response, request)
 	localizedBody := response.Body.String()
 	if response.Code != http.StatusOK ||
-		!regexp.MustCompile(`\d{4}年\d{1,2}月\d{1,2}日（UTC(?:\+|&#43;)8）`).MatchString(localizedBody) ||
-		!regexp.MustCompile(`\d{4}年\d{1,2}月\d{1,2}日 \d{2}:\d{2}（UTC(?:\+|&#43;)8）`).MatchString(localizedBody) ||
+		!regexp.MustCompile(`<time datetime="[^"]+" data-local-datetime>\d{4}年\d{1,2}月\d{1,2}日 \d{2}:\d{2}</time>`).MatchString(localizedBody) ||
+		strings.Contains(localizedBody, "（UTC+8）") ||
 		strings.Contains(localizedBody, "到期时间：") {
 		t.Fatalf("localized portal dates = %d %q", response.Code, localizedBody)
 	}
@@ -4817,25 +4817,27 @@ func TestEndUserPortalLanguageSwitchReturnsToPortalRealm(t *testing.T) {
 	}
 }
 
-func TestSimplifiedChineseMembershipDatesUseChineseCalendarFormat(t *testing.T) {
+func TestMembershipPlanUsesExactTransitionInstantsWithoutFixedZoneLabels(t *testing.T) {
 	t.Parallel()
 
-	resetAt := time.Date(2026, time.September, 26, 0, 0, 0, 0, proxynode.BillingLocation())
+	lastQuotaDate := time.Date(2026, time.September, 26, 0, 0, 0, 0, proxynode.BillingLocation())
 	expiresAt := time.Date(2026, time.October, 27, 0, 0, 0, 0, proxynode.BillingLocation())
-	plan := membershipPlanView{
-		ResetLabel:      resetAt.Format("Jan 2, 2006") + " (UTC+8)",
-		ExpirationLabel: expiresAt.Format("Jan 2, 2006 15:04") + " (UTC+8)",
-	}
+	plan := membershipPlanViewFor(proxynode.Membership{
+		QuotaResetsAfter:      lastQuotaDate,
+		SubscriptionEndsAfter: expiresAt,
+		SubscriptionValue:     1,
+		SubscriptionUnit:      proxynode.SubscriptionMonths,
+	})
 	localizeMembershipPlan(localeSimplifiedChinese, &plan)
 
-	if plan.ResetLabel != "2026年9月26日（UTC+8）" {
+	if plan.ResetLabel != "2026年9月27日 00:00" || plan.ResetAt != "2026-09-27T00:00:00+08:00" {
 		t.Fatalf("localized reset date = %q", plan.ResetLabel)
 	}
-	if plan.ExpirationLabel != "2026年10月27日 00:00（UTC+8）" {
+	if plan.ExpirationLabel != "2026年10月27日 00:00" || plan.ExpirationAt != "2026-10-27T00:00:00+08:00" {
 		t.Fatalf("localized expiration date = %q", plan.ExpirationLabel)
 	}
-	if strings.Contains(plan.ExpirationLabel, "到期时间") {
-		t.Fatalf("expiration value repeats its field label: %q", plan.ExpirationLabel)
+	if strings.Contains(plan.ResetLabel+plan.ExpirationLabel, "UTC+8") {
+		t.Fatalf("membership transition labels expose the billing timezone: reset=%q expiration=%q", plan.ResetLabel, plan.ExpirationLabel)
 	}
 }
 

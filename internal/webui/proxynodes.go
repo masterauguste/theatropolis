@@ -70,7 +70,9 @@ type membershipPlanView struct {
 	QuotaLabel        string
 	UsageLabel        string
 	ResetLabel        string
+	ResetAt           string
 	ExpirationLabel   string
+	ExpirationAt      string
 	StatusLabel       string
 	StatusClass       string
 }
@@ -1561,10 +1563,12 @@ func (h *Handler) attachProxyNodeUsers(detail *proxyNodeDetailView, node proxyno
 }
 
 func membershipPlanViewFor(membership proxynode.Membership) membershipPlanView {
+	resetAt := proxynode.MembershipQuotaResetAt(membership)
 	view := membershipPlanView{
 		QuotaMode: "unlimited", QuotaLabel: "Unlimited", UsageLabel: formatByteCount(membership.UsedBytes),
 		ExpirationMode: "none", SubscriptionValue: "1", SubscriptionUnit: "months",
-		ResetLabel:      membership.QuotaResetsAfter.In(proxynode.BillingLocation()).Format("Jan 2, 2006") + " (UTC+8)",
+		ResetLabel:      resetAt.In(proxynode.BillingLocation()).Format("Jan 2, 2006 15:04"),
+		ResetAt:         resetAt.Format(time.RFC3339),
 		ExpirationLabel: "No expiration", StatusLabel: "Active", StatusClass: "active",
 	}
 	if membership.MonthlyQuotaBytes > 0 {
@@ -1580,7 +1584,8 @@ func membershipPlanViewFor(membership proxynode.Membership) membershipPlanView {
 		view.SubscriptionValue = strconv.Itoa(membership.SubscriptionValue)
 		view.SubscriptionUnit = string(membership.SubscriptionUnit)
 		view.CanExtend = true
-		view.ExpirationLabel = membership.SubscriptionEndsAfter.In(proxynode.BillingLocation()).Format("Jan 2, 2006 15:04") + " (UTC+8)"
+		view.ExpirationLabel = membership.SubscriptionEndsAfter.In(proxynode.BillingLocation()).Format("Jan 2, 2006 15:04")
+		view.ExpirationAt = membership.SubscriptionEndsAfter.Format(time.RFC3339)
 	}
 	switch membership.DisabledReason {
 	case proxynode.MembershipQuotaReached:

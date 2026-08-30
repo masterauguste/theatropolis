@@ -105,7 +105,7 @@ Security and domain rules in the Go implementation remain authoritative.
   shows its empty state without offering a mutation.
 - The Proxy Node Users dialog owns its searchable access roster, add-user flow,
   subscription compensation, and per-membership maintenance dialogs. A finite
-  subscription remains compensable even when other global users are unassigned.
+  active subscription remains compensable even when other global users are unassigned.
   Add user remains visible when every existing user is assigned; its dialog
   shows an empty state without offering a duplicate grant.
 - Empty states explain the next useful action. Async regions reserve their
@@ -166,6 +166,14 @@ Security and domain rules in the Go implementation remain authoritative.
   creates a fresh terminal Hop on the selected Agent.
 - User-plane changes apply immediately and never require a separate topology
   save.
+- Membership quota reset and subscription expiration displays show their exact
+  transition instants, not the preceding inclusive billing date. Billing
+  boundaries remain calculated at UTC+8 midnight. When expiration and quota
+  reset coincide, one atomic billing transition removes the expired Membership
+  before processing quota resets for surviving grants. Removal also revokes the
+  entrance credential and deletes that Membership's accounting history; access
+  can return only through a new grant. The browser renders transition instants
+  in the viewer's local timezone without a hard-coded timezone suffix.
 - Every newly created user receives a subscription bearer token. Resetting the
   subscription link atomically rotates that token and all of the user's Proxy
   Node credentials; revoking the link changes only the token. A per-Node reset

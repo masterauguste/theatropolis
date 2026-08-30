@@ -603,8 +603,9 @@ func (s *Store) ResetMembershipCredential(nodeID, userID string) error {
 }
 
 // ResetUserCredentials rotates every Membership secret owned by one End User
-// in a single user-plane mutation. Disabled and expired Memberships are also
-// rotated so restoring them later cannot revive an old credential.
+// in a single user-plane mutation. Disabled Memberships are also rotated so
+// restoring them later cannot revive an old credential. Expired Memberships
+// are removed by the billing enforcer and therefore cannot be rotated.
 func (s *Store) ResetUserCredentials(userID string) (int, error) {
 	rotated := 0
 	err := s.mutateUser(func(state *State) error {
@@ -1451,9 +1452,10 @@ func (s *Store) mutateUser(mutation func(*State) error) error {
 	return nil
 }
 
-// persistStateAndAccountingLocked commits low-frequency membership identity and
-// policy changes across the JSON authority and SQLite accounting ledger. The
-// SQLite transaction remains open while the JSON file is atomically replaced.
+// persistStateAndAccountingLocked commits low-frequency membership identity,
+// policy, and the matching accounting checkpoint across the JSON authority and
+// SQLite ledger. The SQLite transaction remains open while the JSON file is
+// atomically replaced.
 // A crash before SQLite commit rolls that transaction back; startup then
 // reconciles the old database to the already-durable JSON state. A JSON write
 // failure rolls the still-open SQL transaction back, so callers never observe
