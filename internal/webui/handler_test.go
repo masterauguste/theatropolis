@@ -4627,9 +4627,23 @@ func TestEndUserInvitationClaimPortalAndLoginReset(t *testing.T) {
 	if response.Code != http.StatusSeeOther || response.Header().Get("Location") != "/claim" {
 		t.Fatalf("claim token exchange = %d %q", response.Code, response.Header().Get("Location"))
 	}
+	if got := response.Header().Get("Referrer-Policy"); got != "no-referrer" {
+		t.Fatalf("claim token exchange Referrer-Policy = %q, want no-referrer", got)
+	}
 	claimCookie := response.Result().Cookies()[0]
 	if claimCookie.Name != EndUserClaimCookieName || !claimCookie.HttpOnly || !claimCookie.Secure {
 		t.Fatalf("claim cookie = %+v", claimCookie)
+	}
+
+	request = fixture.request(http.MethodGet, "/claim", "")
+	request.AddCookie(claimCookie)
+	response = httptest.NewRecorder()
+	fixture.handler.ServeHTTP(response, request)
+	if response.Code != http.StatusOK {
+		t.Fatalf("claim form = %d %q", response.Code, response.Body.String())
+	}
+	if got := response.Header().Get("Referrer-Policy"); got != "strict-origin" {
+		t.Fatalf("claim form Referrer-Policy = %q, want strict-origin", got)
 	}
 
 	form = url.Values{

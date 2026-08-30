@@ -180,6 +180,9 @@ func (h *Handler) endUserLogin(response http.ResponseWriter, request *http.Reque
 
 func (h *Handler) endUserClaimLink(response http.ResponseWriter, request *http.Request) {
 	h.noStore(response)
+	// The invitation bearer token exists only on this exchange URL. Prevent it
+	// from becoming a referrer, then redirect to the token-free claim form.
+	response.Header().Set("Referrer-Policy", "no-referrer")
 	if h.endUserAccess == nil {
 		http.NotFound(response, request)
 		return
@@ -428,7 +431,9 @@ func (h *Handler) endUserClaimToken(request *http.Request) (string, bool) {
 
 func (h *Handler) noStore(response http.ResponseWriter) {
 	response.Header().Set("Cache-Control", "no-store")
-	response.Header().Set("Referrer-Policy", "no-referrer")
+	// Keep the handler-wide strict-origin policy on token-free forms. Setting
+	// no-referrer here can make WebKit serialize same-origin form POSTs with an
+	// opaque Origin, which the mutation guard must reject.
 }
 
 func endUserInvitationURL(publicURL, token string) string {
