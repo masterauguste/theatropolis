@@ -302,6 +302,107 @@ func (SingBoxUpdateStatus) EnumDescriptor() ([]byte, []int) {
 	return file_theatropolis_control_v1_control_proto_rawDescGZIP(), []int{4}
 }
 
+type LinkLatencyStatus int32
+
+const (
+	LinkLatencyStatus_LINK_LATENCY_STATUS_UNSPECIFIED LinkLatencyStatus = 0
+	LinkLatencyStatus_LINK_LATENCY_STATUS_REACHABLE   LinkLatencyStatus = 1
+	LinkLatencyStatus_LINK_LATENCY_STATUS_UNREACHABLE LinkLatencyStatus = 2
+	LinkLatencyStatus_LINK_LATENCY_STATUS_REFUSED     LinkLatencyStatus = 3
+)
+
+// Enum value maps for LinkLatencyStatus.
+var (
+	LinkLatencyStatus_name = map[int32]string{
+		0: "LINK_LATENCY_STATUS_UNSPECIFIED",
+		1: "LINK_LATENCY_STATUS_REACHABLE",
+		2: "LINK_LATENCY_STATUS_UNREACHABLE",
+		3: "LINK_LATENCY_STATUS_REFUSED",
+	}
+	LinkLatencyStatus_value = map[string]int32{
+		"LINK_LATENCY_STATUS_UNSPECIFIED": 0,
+		"LINK_LATENCY_STATUS_REACHABLE":   1,
+		"LINK_LATENCY_STATUS_UNREACHABLE": 2,
+		"LINK_LATENCY_STATUS_REFUSED":     3,
+	}
+)
+
+func (x LinkLatencyStatus) Enum() *LinkLatencyStatus {
+	p := new(LinkLatencyStatus)
+	*p = x
+	return p
+}
+
+func (x LinkLatencyStatus) String() string {
+	return protoimpl.X.EnumStringOf(x.Descriptor(), protoreflect.EnumNumber(x))
+}
+
+func (LinkLatencyStatus) Descriptor() protoreflect.EnumDescriptor {
+	return file_theatropolis_control_v1_control_proto_enumTypes[5].Descriptor()
+}
+
+func (LinkLatencyStatus) Type() protoreflect.EnumType {
+	return &file_theatropolis_control_v1_control_proto_enumTypes[5]
+}
+
+func (x LinkLatencyStatus) Number() protoreflect.EnumNumber {
+	return protoreflect.EnumNumber(x)
+}
+
+// Deprecated: Use LinkLatencyStatus.Descriptor instead.
+func (LinkLatencyStatus) EnumDescriptor() ([]byte, []int) {
+	return file_theatropolis_control_v1_control_proto_rawDescGZIP(), []int{5}
+}
+
+type LinkLatencyProbeType int32
+
+const (
+	LinkLatencyProbeType_LINK_LATENCY_PROBE_TYPE_UNSPECIFIED LinkLatencyProbeType = 0
+	LinkLatencyProbeType_LINK_LATENCY_PROBE_TYPE_TCP         LinkLatencyProbeType = 1
+	LinkLatencyProbeType_LINK_LATENCY_PROBE_TYPE_QUIC        LinkLatencyProbeType = 2
+)
+
+// Enum value maps for LinkLatencyProbeType.
+var (
+	LinkLatencyProbeType_name = map[int32]string{
+		0: "LINK_LATENCY_PROBE_TYPE_UNSPECIFIED",
+		1: "LINK_LATENCY_PROBE_TYPE_TCP",
+		2: "LINK_LATENCY_PROBE_TYPE_QUIC",
+	}
+	LinkLatencyProbeType_value = map[string]int32{
+		"LINK_LATENCY_PROBE_TYPE_UNSPECIFIED": 0,
+		"LINK_LATENCY_PROBE_TYPE_TCP":         1,
+		"LINK_LATENCY_PROBE_TYPE_QUIC":        2,
+	}
+)
+
+func (x LinkLatencyProbeType) Enum() *LinkLatencyProbeType {
+	p := new(LinkLatencyProbeType)
+	*p = x
+	return p
+}
+
+func (x LinkLatencyProbeType) String() string {
+	return protoimpl.X.EnumStringOf(x.Descriptor(), protoreflect.EnumNumber(x))
+}
+
+func (LinkLatencyProbeType) Descriptor() protoreflect.EnumDescriptor {
+	return file_theatropolis_control_v1_control_proto_enumTypes[6].Descriptor()
+}
+
+func (LinkLatencyProbeType) Type() protoreflect.EnumType {
+	return &file_theatropolis_control_v1_control_proto_enumTypes[6]
+}
+
+func (x LinkLatencyProbeType) Number() protoreflect.EnumNumber {
+	return protoreflect.EnumNumber(x)
+}
+
+// Deprecated: Use LinkLatencyProbeType.Descriptor instead.
+func (LinkLatencyProbeType) EnumDescriptor() ([]byte, []int) {
+	return file_theatropolis_control_v1_control_proto_rawDescGZIP(), []int{6}
+}
+
 type ManagedUserAuthorityStatus int32
 
 const (
@@ -338,11 +439,11 @@ func (x ManagedUserAuthorityStatus) String() string {
 }
 
 func (ManagedUserAuthorityStatus) Descriptor() protoreflect.EnumDescriptor {
-	return file_theatropolis_control_v1_control_proto_enumTypes[5].Descriptor()
+	return file_theatropolis_control_v1_control_proto_enumTypes[7].Descriptor()
 }
 
 func (ManagedUserAuthorityStatus) Type() protoreflect.EnumType {
-	return &file_theatropolis_control_v1_control_proto_enumTypes[5]
+	return &file_theatropolis_control_v1_control_proto_enumTypes[7]
 }
 
 func (x ManagedUserAuthorityStatus) Number() protoreflect.EnumNumber {
@@ -351,7 +452,7 @@ func (x ManagedUserAuthorityStatus) Number() protoreflect.EnumNumber {
 
 // Deprecated: Use ManagedUserAuthorityStatus.Descriptor instead.
 func (ManagedUserAuthorityStatus) EnumDescriptor() ([]byte, []int) {
-	return file_theatropolis_control_v1_control_proto_rawDescGZIP(), []int{5}
+	return file_theatropolis_control_v1_control_proto_rawDescGZIP(), []int{7}
 }
 
 type EnrollRequest struct {
@@ -467,6 +568,8 @@ type AgentFrame struct {
 	//	*AgentFrame_ManagedUserTrafficReport
 	//	*AgentFrame_ManagedUserAuthorityReport
 	//	*AgentFrame_MasterMigrationReport
+	//	*AgentFrame_LinkLatencyReport
+	//	*AgentFrame_LinkLatencyProbeReport
 	Payload       isAgentFrame_Payload `protobuf_oneof:"payload"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
@@ -624,6 +727,24 @@ func (x *AgentFrame) GetMasterMigrationReport() *MasterMigrationReport {
 	return nil
 }
 
+func (x *AgentFrame) GetLinkLatencyReport() *LinkLatencyReport {
+	if x != nil {
+		if x, ok := x.Payload.(*AgentFrame_LinkLatencyReport); ok {
+			return x.LinkLatencyReport
+		}
+	}
+	return nil
+}
+
+func (x *AgentFrame) GetLinkLatencyProbeReport() *LinkLatencyProbeReport {
+	if x != nil {
+		if x, ok := x.Payload.(*AgentFrame_LinkLatencyProbeReport); ok {
+			return x.LinkLatencyProbeReport
+		}
+	}
+	return nil
+}
+
 type isAgentFrame_Payload interface {
 	isAgentFrame_Payload()
 }
@@ -676,6 +797,14 @@ type AgentFrame_MasterMigrationReport struct {
 	MasterMigrationReport *MasterMigrationReport `protobuf:"bytes,21,opt,name=master_migration_report,json=masterMigrationReport,proto3,oneof"`
 }
 
+type AgentFrame_LinkLatencyReport struct {
+	LinkLatencyReport *LinkLatencyReport `protobuf:"bytes,22,opt,name=link_latency_report,json=linkLatencyReport,proto3,oneof"`
+}
+
+type AgentFrame_LinkLatencyProbeReport struct {
+	LinkLatencyProbeReport *LinkLatencyProbeReport `protobuf:"bytes,23,opt,name=link_latency_probe_report,json=linkLatencyProbeReport,proto3,oneof"`
+}
+
 func (*AgentFrame_Hello) isAgentFrame_Payload() {}
 
 func (*AgentFrame_Proof) isAgentFrame_Payload() {}
@@ -700,6 +829,10 @@ func (*AgentFrame_ManagedUserAuthorityReport) isAgentFrame_Payload() {}
 
 func (*AgentFrame_MasterMigrationReport) isAgentFrame_Payload() {}
 
+func (*AgentFrame_LinkLatencyReport) isAgentFrame_Payload() {}
+
+func (*AgentFrame_LinkLatencyProbeReport) isAgentFrame_Payload() {}
+
 type MasterFrame struct {
 	state    protoimpl.MessageState `protogen:"open.v1"`
 	Sequence uint64                 `protobuf:"varint,1,opt,name=sequence,proto3" json:"sequence,omitempty"`
@@ -716,6 +849,7 @@ type MasterFrame struct {
 	//	*MasterFrame_ManagedUserTrafficAck
 	//	*MasterFrame_ManagedUserTrafficRequest
 	//	*MasterFrame_MigrateMaster
+	//	*MasterFrame_LinkLatencyProbe
 	Payload       isMasterFrame_Payload `protobuf_oneof:"payload"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
@@ -864,6 +998,15 @@ func (x *MasterFrame) GetMigrateMaster() *MigrateMasterCommand {
 	return nil
 }
 
+func (x *MasterFrame) GetLinkLatencyProbe() *LinkLatencyProbeCommand {
+	if x != nil {
+		if x, ok := x.Payload.(*MasterFrame_LinkLatencyProbe); ok {
+			return x.LinkLatencyProbe
+		}
+	}
+	return nil
+}
+
 type isMasterFrame_Payload interface {
 	isMasterFrame_Payload()
 }
@@ -912,6 +1055,10 @@ type MasterFrame_MigrateMaster struct {
 	MigrateMaster *MigrateMasterCommand `protobuf:"bytes,20,opt,name=migrate_master,json=migrateMaster,proto3,oneof"`
 }
 
+type MasterFrame_LinkLatencyProbe struct {
+	LinkLatencyProbe *LinkLatencyProbeCommand `protobuf:"bytes,21,opt,name=link_latency_probe,json=linkLatencyProbe,proto3,oneof"`
+}
+
 func (*MasterFrame_Challenge) isMasterFrame_Payload() {}
 
 func (*MasterFrame_AuthenticationResult) isMasterFrame_Payload() {}
@@ -933,6 +1080,8 @@ func (*MasterFrame_ManagedUserTrafficAck) isMasterFrame_Payload() {}
 func (*MasterFrame_ManagedUserTrafficRequest) isMasterFrame_Payload() {}
 
 func (*MasterFrame_MigrateMaster) isMasterFrame_Payload() {}
+
+func (*MasterFrame_LinkLatencyProbe) isMasterFrame_Payload() {}
 
 type MigrateMasterCommand struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
@@ -1250,6 +1399,11 @@ type AuthenticationResult struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	Authenticated bool                   `protobuf:"varint,1,opt,name=authenticated,proto3" json:"authenticated,omitempty"`
 	ErrorCode     string                 `protobuf:"bytes,2,opt,name=error_code,json=errorCode,proto3" json:"error_code,omitempty"`
+	// Capabilities explicitly enabled by this Master for the authenticated
+	// session. An Agent must not send optional autonomous reports unless the
+	// corresponding capability is echoed here, which keeps rolling upgrades
+	// compatible with older Masters.
+	Capabilities  []string `protobuf:"bytes,3,rep,name=capabilities,proto3" json:"capabilities,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -1296,6 +1450,13 @@ func (x *AuthenticationResult) GetErrorCode() string {
 		return x.ErrorCode
 	}
 	return ""
+}
+
+func (x *AuthenticationResult) GetCapabilities() []string {
+	if x != nil {
+		return x.Capabilities
+	}
+	return nil
 }
 
 type AgentHeartbeat struct {
@@ -2152,6 +2313,301 @@ func (x *AddressProbeReport) GetError() string {
 	return ""
 }
 
+// LinkLatencyReport is advisory physical-path telemetry. TCP relays use a
+// connect probe and Hysteria2 uses a QUIC handshake. It carries no destination
+// address or credential; the authenticated Agent identity and generated
+// outbound tags are enough for the Master to bind it to applied topology.
+type LinkLatencyReport struct {
+	state          protoimpl.MessageState `protogen:"open.v1"`
+	ObservedAtUnix int64                  `protobuf:"varint,1,opt,name=observed_at_unix,json=observedAtUnix,proto3" json:"observed_at_unix,omitempty"`
+	Samples        []*LinkLatencySample   `protobuf:"bytes,2,rep,name=samples,proto3" json:"samples,omitempty"`
+	unknownFields  protoimpl.UnknownFields
+	sizeCache      protoimpl.SizeCache
+}
+
+func (x *LinkLatencyReport) Reset() {
+	*x = LinkLatencyReport{}
+	mi := &file_theatropolis_control_v1_control_proto_msgTypes[22]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *LinkLatencyReport) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*LinkLatencyReport) ProtoMessage() {}
+
+func (x *LinkLatencyReport) ProtoReflect() protoreflect.Message {
+	mi := &file_theatropolis_control_v1_control_proto_msgTypes[22]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use LinkLatencyReport.ProtoReflect.Descriptor instead.
+func (*LinkLatencyReport) Descriptor() ([]byte, []int) {
+	return file_theatropolis_control_v1_control_proto_rawDescGZIP(), []int{22}
+}
+
+func (x *LinkLatencyReport) GetObservedAtUnix() int64 {
+	if x != nil {
+		return x.ObservedAtUnix
+	}
+	return 0
+}
+
+func (x *LinkLatencyReport) GetSamples() []*LinkLatencySample {
+	if x != nil {
+		return x.Samples
+	}
+	return nil
+}
+
+type LinkLatencySample struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// Retained for compatibility with the first monitor implementation.
+	OutboundTag          string            `protobuf:"bytes,1,opt,name=outbound_tag,json=outboundTag,proto3" json:"outbound_tag,omitempty"`
+	Status               LinkLatencyStatus `protobuf:"varint,2,opt,name=status,proto3,enum=theatropolis.control.v1.LinkLatencyStatus" json:"status,omitempty"`
+	DurationMilliseconds uint64            `protobuf:"varint,3,opt,name=duration_milliseconds,json=durationMilliseconds,proto3" json:"duration_milliseconds,omitempty"`
+	// Stable hash of transport plus physical destination IP. Multiple logical
+	// Links to the same path share one sample and one history series.
+	TargetId      string               `protobuf:"bytes,4,opt,name=target_id,json=targetId,proto3" json:"target_id,omitempty"`
+	OutboundTags  []string             `protobuf:"bytes,5,rep,name=outbound_tags,json=outboundTags,proto3" json:"outbound_tags,omitempty"`
+	ProbeType     LinkLatencyProbeType `protobuf:"varint,6,opt,name=probe_type,json=probeType,proto3,enum=theatropolis.control.v1.LinkLatencyProbeType" json:"probe_type,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *LinkLatencySample) Reset() {
+	*x = LinkLatencySample{}
+	mi := &file_theatropolis_control_v1_control_proto_msgTypes[23]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *LinkLatencySample) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*LinkLatencySample) ProtoMessage() {}
+
+func (x *LinkLatencySample) ProtoReflect() protoreflect.Message {
+	mi := &file_theatropolis_control_v1_control_proto_msgTypes[23]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use LinkLatencySample.ProtoReflect.Descriptor instead.
+func (*LinkLatencySample) Descriptor() ([]byte, []int) {
+	return file_theatropolis_control_v1_control_proto_rawDescGZIP(), []int{23}
+}
+
+func (x *LinkLatencySample) GetOutboundTag() string {
+	if x != nil {
+		return x.OutboundTag
+	}
+	return ""
+}
+
+func (x *LinkLatencySample) GetStatus() LinkLatencyStatus {
+	if x != nil {
+		return x.Status
+	}
+	return LinkLatencyStatus_LINK_LATENCY_STATUS_UNSPECIFIED
+}
+
+func (x *LinkLatencySample) GetDurationMilliseconds() uint64 {
+	if x != nil {
+		return x.DurationMilliseconds
+	}
+	return 0
+}
+
+func (x *LinkLatencySample) GetTargetId() string {
+	if x != nil {
+		return x.TargetId
+	}
+	return ""
+}
+
+func (x *LinkLatencySample) GetOutboundTags() []string {
+	if x != nil {
+		return x.OutboundTags
+	}
+	return nil
+}
+
+func (x *LinkLatencySample) GetProbeType() LinkLatencyProbeType {
+	if x != nil {
+		return x.ProbeType
+	}
+	return LinkLatencyProbeType_LINK_LATENCY_PROBE_TYPE_UNSPECIFIED
+}
+
+type LinkLatencyProbeCommand struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	RequestId     string                 `protobuf:"bytes,1,opt,name=request_id,json=requestId,proto3" json:"request_id,omitempty"`
+	Address       string                 `protobuf:"bytes,2,opt,name=address,proto3" json:"address,omitempty"`
+	Port          uint32                 `protobuf:"varint,3,opt,name=port,proto3" json:"port,omitempty"`
+	ProbeType     LinkLatencyProbeType   `protobuf:"varint,4,opt,name=probe_type,json=probeType,proto3,enum=theatropolis.control.v1.LinkLatencyProbeType" json:"probe_type,omitempty"`
+	ServerName    string                 `protobuf:"bytes,5,opt,name=server_name,json=serverName,proto3" json:"server_name,omitempty"`
+	ObfsType      string                 `protobuf:"bytes,6,opt,name=obfs_type,json=obfsType,proto3" json:"obfs_type,omitempty"`
+	ObfsSecret    string                 `protobuf:"bytes,7,opt,name=obfs_secret,json=obfsSecret,proto3" json:"obfs_secret,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *LinkLatencyProbeCommand) Reset() {
+	*x = LinkLatencyProbeCommand{}
+	mi := &file_theatropolis_control_v1_control_proto_msgTypes[24]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *LinkLatencyProbeCommand) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*LinkLatencyProbeCommand) ProtoMessage() {}
+
+func (x *LinkLatencyProbeCommand) ProtoReflect() protoreflect.Message {
+	mi := &file_theatropolis_control_v1_control_proto_msgTypes[24]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use LinkLatencyProbeCommand.ProtoReflect.Descriptor instead.
+func (*LinkLatencyProbeCommand) Descriptor() ([]byte, []int) {
+	return file_theatropolis_control_v1_control_proto_rawDescGZIP(), []int{24}
+}
+
+func (x *LinkLatencyProbeCommand) GetRequestId() string {
+	if x != nil {
+		return x.RequestId
+	}
+	return ""
+}
+
+func (x *LinkLatencyProbeCommand) GetAddress() string {
+	if x != nil {
+		return x.Address
+	}
+	return ""
+}
+
+func (x *LinkLatencyProbeCommand) GetPort() uint32 {
+	if x != nil {
+		return x.Port
+	}
+	return 0
+}
+
+func (x *LinkLatencyProbeCommand) GetProbeType() LinkLatencyProbeType {
+	if x != nil {
+		return x.ProbeType
+	}
+	return LinkLatencyProbeType_LINK_LATENCY_PROBE_TYPE_UNSPECIFIED
+}
+
+func (x *LinkLatencyProbeCommand) GetServerName() string {
+	if x != nil {
+		return x.ServerName
+	}
+	return ""
+}
+
+func (x *LinkLatencyProbeCommand) GetObfsType() string {
+	if x != nil {
+		return x.ObfsType
+	}
+	return ""
+}
+
+func (x *LinkLatencyProbeCommand) GetObfsSecret() string {
+	if x != nil {
+		return x.ObfsSecret
+	}
+	return ""
+}
+
+type LinkLatencyProbeReport struct {
+	state                protoimpl.MessageState `protogen:"open.v1"`
+	RequestId            string                 `protobuf:"bytes,1,opt,name=request_id,json=requestId,proto3" json:"request_id,omitempty"`
+	Status               LinkLatencyStatus      `protobuf:"varint,2,opt,name=status,proto3,enum=theatropolis.control.v1.LinkLatencyStatus" json:"status,omitempty"`
+	DurationMilliseconds uint64                 `protobuf:"varint,3,opt,name=duration_milliseconds,json=durationMilliseconds,proto3" json:"duration_milliseconds,omitempty"`
+	unknownFields        protoimpl.UnknownFields
+	sizeCache            protoimpl.SizeCache
+}
+
+func (x *LinkLatencyProbeReport) Reset() {
+	*x = LinkLatencyProbeReport{}
+	mi := &file_theatropolis_control_v1_control_proto_msgTypes[25]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *LinkLatencyProbeReport) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*LinkLatencyProbeReport) ProtoMessage() {}
+
+func (x *LinkLatencyProbeReport) ProtoReflect() protoreflect.Message {
+	mi := &file_theatropolis_control_v1_control_proto_msgTypes[25]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use LinkLatencyProbeReport.ProtoReflect.Descriptor instead.
+func (*LinkLatencyProbeReport) Descriptor() ([]byte, []int) {
+	return file_theatropolis_control_v1_control_proto_rawDescGZIP(), []int{25}
+}
+
+func (x *LinkLatencyProbeReport) GetRequestId() string {
+	if x != nil {
+		return x.RequestId
+	}
+	return ""
+}
+
+func (x *LinkLatencyProbeReport) GetStatus() LinkLatencyStatus {
+	if x != nil {
+		return x.Status
+	}
+	return LinkLatencyStatus_LINK_LATENCY_STATUS_UNSPECIFIED
+}
+
+func (x *LinkLatencyProbeReport) GetDurationMilliseconds() uint64 {
+	if x != nil {
+		return x.DurationMilliseconds
+	}
+	return 0
+}
+
 type ManagedUserTrafficReport struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
 	// Reset-delta Agents generate a fresh identifier for every destructive-read
@@ -2171,7 +2627,7 @@ type ManagedUserTrafficReport struct {
 
 func (x *ManagedUserTrafficReport) Reset() {
 	*x = ManagedUserTrafficReport{}
-	mi := &file_theatropolis_control_v1_control_proto_msgTypes[22]
+	mi := &file_theatropolis_control_v1_control_proto_msgTypes[26]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2183,7 +2639,7 @@ func (x *ManagedUserTrafficReport) String() string {
 func (*ManagedUserTrafficReport) ProtoMessage() {}
 
 func (x *ManagedUserTrafficReport) ProtoReflect() protoreflect.Message {
-	mi := &file_theatropolis_control_v1_control_proto_msgTypes[22]
+	mi := &file_theatropolis_control_v1_control_proto_msgTypes[26]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2196,7 +2652,7 @@ func (x *ManagedUserTrafficReport) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ManagedUserTrafficReport.ProtoReflect.Descriptor instead.
 func (*ManagedUserTrafficReport) Descriptor() ([]byte, []int) {
-	return file_theatropolis_control_v1_control_proto_rawDescGZIP(), []int{22}
+	return file_theatropolis_control_v1_control_proto_rawDescGZIP(), []int{26}
 }
 
 func (x *ManagedUserTrafficReport) GetEpoch() string {
@@ -2247,7 +2703,7 @@ type ManagedUserTraffic struct {
 
 func (x *ManagedUserTraffic) Reset() {
 	*x = ManagedUserTraffic{}
-	mi := &file_theatropolis_control_v1_control_proto_msgTypes[23]
+	mi := &file_theatropolis_control_v1_control_proto_msgTypes[27]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2259,7 +2715,7 @@ func (x *ManagedUserTraffic) String() string {
 func (*ManagedUserTraffic) ProtoMessage() {}
 
 func (x *ManagedUserTraffic) ProtoReflect() protoreflect.Message {
-	mi := &file_theatropolis_control_v1_control_proto_msgTypes[23]
+	mi := &file_theatropolis_control_v1_control_proto_msgTypes[27]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2272,7 +2728,7 @@ func (x *ManagedUserTraffic) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ManagedUserTraffic.ProtoReflect.Descriptor instead.
 func (*ManagedUserTraffic) Descriptor() ([]byte, []int) {
-	return file_theatropolis_control_v1_control_proto_rawDescGZIP(), []int{23}
+	return file_theatropolis_control_v1_control_proto_rawDescGZIP(), []int{27}
 }
 
 func (x *ManagedUserTraffic) GetInboundPath() string {
@@ -2315,7 +2771,7 @@ type ManagedUserTrafficAck struct {
 
 func (x *ManagedUserTrafficAck) Reset() {
 	*x = ManagedUserTrafficAck{}
-	mi := &file_theatropolis_control_v1_control_proto_msgTypes[24]
+	mi := &file_theatropolis_control_v1_control_proto_msgTypes[28]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2327,7 +2783,7 @@ func (x *ManagedUserTrafficAck) String() string {
 func (*ManagedUserTrafficAck) ProtoMessage() {}
 
 func (x *ManagedUserTrafficAck) ProtoReflect() protoreflect.Message {
-	mi := &file_theatropolis_control_v1_control_proto_msgTypes[24]
+	mi := &file_theatropolis_control_v1_control_proto_msgTypes[28]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2340,7 +2796,7 @@ func (x *ManagedUserTrafficAck) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ManagedUserTrafficAck.ProtoReflect.Descriptor instead.
 func (*ManagedUserTrafficAck) Descriptor() ([]byte, []int) {
-	return file_theatropolis_control_v1_control_proto_rawDescGZIP(), []int{24}
+	return file_theatropolis_control_v1_control_proto_rawDescGZIP(), []int{28}
 }
 
 func (x *ManagedUserTrafficAck) GetEpoch() string {
@@ -2368,7 +2824,7 @@ type ManagedUserTrafficRequest struct {
 
 func (x *ManagedUserTrafficRequest) Reset() {
 	*x = ManagedUserTrafficRequest{}
-	mi := &file_theatropolis_control_v1_control_proto_msgTypes[25]
+	mi := &file_theatropolis_control_v1_control_proto_msgTypes[29]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2380,7 +2836,7 @@ func (x *ManagedUserTrafficRequest) String() string {
 func (*ManagedUserTrafficRequest) ProtoMessage() {}
 
 func (x *ManagedUserTrafficRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_theatropolis_control_v1_control_proto_msgTypes[25]
+	mi := &file_theatropolis_control_v1_control_proto_msgTypes[29]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2393,7 +2849,7 @@ func (x *ManagedUserTrafficRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ManagedUserTrafficRequest.ProtoReflect.Descriptor instead.
 func (*ManagedUserTrafficRequest) Descriptor() ([]byte, []int) {
-	return file_theatropolis_control_v1_control_proto_rawDescGZIP(), []int{25}
+	return file_theatropolis_control_v1_control_proto_rawDescGZIP(), []int{29}
 }
 
 func (x *ManagedUserTrafficRequest) GetRequestId() string {
@@ -2417,7 +2873,7 @@ type ManagedUserAuthorityCommand struct {
 
 func (x *ManagedUserAuthorityCommand) Reset() {
 	*x = ManagedUserAuthorityCommand{}
-	mi := &file_theatropolis_control_v1_control_proto_msgTypes[26]
+	mi := &file_theatropolis_control_v1_control_proto_msgTypes[30]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2429,7 +2885,7 @@ func (x *ManagedUserAuthorityCommand) String() string {
 func (*ManagedUserAuthorityCommand) ProtoMessage() {}
 
 func (x *ManagedUserAuthorityCommand) ProtoReflect() protoreflect.Message {
-	mi := &file_theatropolis_control_v1_control_proto_msgTypes[26]
+	mi := &file_theatropolis_control_v1_control_proto_msgTypes[30]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2442,7 +2898,7 @@ func (x *ManagedUserAuthorityCommand) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ManagedUserAuthorityCommand.ProtoReflect.Descriptor instead.
 func (*ManagedUserAuthorityCommand) Descriptor() ([]byte, []int) {
-	return file_theatropolis_control_v1_control_proto_rawDescGZIP(), []int{26}
+	return file_theatropolis_control_v1_control_proto_rawDescGZIP(), []int{30}
 }
 
 func (x *ManagedUserAuthorityCommand) GetRequestId() string {
@@ -2476,7 +2932,7 @@ type ManagedUserAuthorityVariant struct {
 
 func (x *ManagedUserAuthorityVariant) Reset() {
 	*x = ManagedUserAuthorityVariant{}
-	mi := &file_theatropolis_control_v1_control_proto_msgTypes[27]
+	mi := &file_theatropolis_control_v1_control_proto_msgTypes[31]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2488,7 +2944,7 @@ func (x *ManagedUserAuthorityVariant) String() string {
 func (*ManagedUserAuthorityVariant) ProtoMessage() {}
 
 func (x *ManagedUserAuthorityVariant) ProtoReflect() protoreflect.Message {
-	mi := &file_theatropolis_control_v1_control_proto_msgTypes[27]
+	mi := &file_theatropolis_control_v1_control_proto_msgTypes[31]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2501,7 +2957,7 @@ func (x *ManagedUserAuthorityVariant) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ManagedUserAuthorityVariant.ProtoReflect.Descriptor instead.
 func (*ManagedUserAuthorityVariant) Descriptor() ([]byte, []int) {
-	return file_theatropolis_control_v1_control_proto_rawDescGZIP(), []int{27}
+	return file_theatropolis_control_v1_control_proto_rawDescGZIP(), []int{31}
 }
 
 func (x *ManagedUserAuthorityVariant) GetTopologySha256() []byte {
@@ -2528,7 +2984,7 @@ type ManagedUserAuthorityEndpoint struct {
 
 func (x *ManagedUserAuthorityEndpoint) Reset() {
 	*x = ManagedUserAuthorityEndpoint{}
-	mi := &file_theatropolis_control_v1_control_proto_msgTypes[28]
+	mi := &file_theatropolis_control_v1_control_proto_msgTypes[32]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2540,7 +2996,7 @@ func (x *ManagedUserAuthorityEndpoint) String() string {
 func (*ManagedUserAuthorityEndpoint) ProtoMessage() {}
 
 func (x *ManagedUserAuthorityEndpoint) ProtoReflect() protoreflect.Message {
-	mi := &file_theatropolis_control_v1_control_proto_msgTypes[28]
+	mi := &file_theatropolis_control_v1_control_proto_msgTypes[32]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2553,7 +3009,7 @@ func (x *ManagedUserAuthorityEndpoint) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ManagedUserAuthorityEndpoint.ProtoReflect.Descriptor instead.
 func (*ManagedUserAuthorityEndpoint) Descriptor() ([]byte, []int) {
-	return file_theatropolis_control_v1_control_proto_rawDescGZIP(), []int{28}
+	return file_theatropolis_control_v1_control_proto_rawDescGZIP(), []int{32}
 }
 
 func (x *ManagedUserAuthorityEndpoint) GetInboundPath() string {
@@ -2580,7 +3036,7 @@ type ManagedUserAuthorityUser struct {
 
 func (x *ManagedUserAuthorityUser) Reset() {
 	*x = ManagedUserAuthorityUser{}
-	mi := &file_theatropolis_control_v1_control_proto_msgTypes[29]
+	mi := &file_theatropolis_control_v1_control_proto_msgTypes[33]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2592,7 +3048,7 @@ func (x *ManagedUserAuthorityUser) String() string {
 func (*ManagedUserAuthorityUser) ProtoMessage() {}
 
 func (x *ManagedUserAuthorityUser) ProtoReflect() protoreflect.Message {
-	mi := &file_theatropolis_control_v1_control_proto_msgTypes[29]
+	mi := &file_theatropolis_control_v1_control_proto_msgTypes[33]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2605,7 +3061,7 @@ func (x *ManagedUserAuthorityUser) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ManagedUserAuthorityUser.ProtoReflect.Descriptor instead.
 func (*ManagedUserAuthorityUser) Descriptor() ([]byte, []int) {
-	return file_theatropolis_control_v1_control_proto_rawDescGZIP(), []int{29}
+	return file_theatropolis_control_v1_control_proto_rawDescGZIP(), []int{33}
 }
 
 func (x *ManagedUserAuthorityUser) GetUsername() string {
@@ -2635,7 +3091,7 @@ type ManagedUserAuthorityReport struct {
 
 func (x *ManagedUserAuthorityReport) Reset() {
 	*x = ManagedUserAuthorityReport{}
-	mi := &file_theatropolis_control_v1_control_proto_msgTypes[30]
+	mi := &file_theatropolis_control_v1_control_proto_msgTypes[34]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2647,7 +3103,7 @@ func (x *ManagedUserAuthorityReport) String() string {
 func (*ManagedUserAuthorityReport) ProtoMessage() {}
 
 func (x *ManagedUserAuthorityReport) ProtoReflect() protoreflect.Message {
-	mi := &file_theatropolis_control_v1_control_proto_msgTypes[30]
+	mi := &file_theatropolis_control_v1_control_proto_msgTypes[34]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2660,7 +3116,7 @@ func (x *ManagedUserAuthorityReport) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ManagedUserAuthorityReport.ProtoReflect.Descriptor instead.
 func (*ManagedUserAuthorityReport) Descriptor() ([]byte, []int) {
-	return file_theatropolis_control_v1_control_proto_rawDescGZIP(), []int{30}
+	return file_theatropolis_control_v1_control_proto_rawDescGZIP(), []int{34}
 }
 
 func (x *ManagedUserAuthorityReport) GetRequestId() string {
@@ -2708,7 +3164,8 @@ const file_theatropolis_control_v1_control_proto_rawDesc = "" +
 	"\n" +
 	"public_key\x18\x03 \x01(\fR\tpublicKeyJ\x04\b\x01\x10\x02R\bagent_id\"J\n" +
 	"\x0eEnrollResponse\x12(\n" +
-	"\x10enrolled_at_unix\x18\x02 \x01(\x03R\x0eenrolledAtUnixJ\x04\b\x01\x10\x02R\bagent_id\"\xb0\t\n" +
+	"\x10enrolled_at_unix\x18\x02 \x01(\x03R\x0eenrolledAtUnixJ\x04\b\x01\x10\x02R\bagent_id\"\xfc\n" +
+	"\n" +
 	"\n" +
 	"AgentFrame\x12\x1a\n" +
 	"\bsequence\x18\x01 \x01(\x04R\bsequence\x12;\n" +
@@ -2724,8 +3181,10 @@ const file_theatropolis_control_v1_control_proto_rawDesc = "" +
 	"\x14address_probe_report\x18\x12 \x01(\v2+.theatropolis.control.v1.AddressProbeReportH\x00R\x12addressProbeReport\x12r\n" +
 	"\x1bmanaged_user_traffic_report\x18\x13 \x01(\v21.theatropolis.control.v1.ManagedUserTrafficReportH\x00R\x18managedUserTrafficReport\x12x\n" +
 	"\x1dmanaged_user_authority_report\x18\x14 \x01(\v23.theatropolis.control.v1.ManagedUserAuthorityReportH\x00R\x1amanagedUserAuthorityReport\x12h\n" +
-	"\x17master_migration_report\x18\x15 \x01(\v2..theatropolis.control.v1.MasterMigrationReportH\x00R\x15masterMigrationReportB\t\n" +
-	"\apayload\"\xba\b\n" +
+	"\x17master_migration_report\x18\x15 \x01(\v2..theatropolis.control.v1.MasterMigrationReportH\x00R\x15masterMigrationReport\x12\\\n" +
+	"\x13link_latency_report\x18\x16 \x01(\v2*.theatropolis.control.v1.LinkLatencyReportH\x00R\x11linkLatencyReport\x12l\n" +
+	"\x19link_latency_probe_report\x18\x17 \x01(\v2/.theatropolis.control.v1.LinkLatencyProbeReportH\x00R\x16linkLatencyProbeReportB\t\n" +
+	"\apayload\"\x9c\t\n" +
 	"\vMasterFrame\x12\x1a\n" +
 	"\bsequence\x18\x01 \x01(\x04R\bsequence\x12G\n" +
 	"\tchallenge\x18\n" +
@@ -2739,7 +3198,8 @@ const file_theatropolis_control_v1_control_proto_rawDesc = "" +
 	"\x16managed_user_authority\x18\x11 \x01(\v24.theatropolis.control.v1.ManagedUserAuthorityCommandH\x00R\x14managedUserAuthority\x12i\n" +
 	"\x18managed_user_traffic_ack\x18\x12 \x01(\v2..theatropolis.control.v1.ManagedUserTrafficAckH\x00R\x15managedUserTrafficAck\x12u\n" +
 	"\x1cmanaged_user_traffic_request\x18\x13 \x01(\v22.theatropolis.control.v1.ManagedUserTrafficRequestH\x00R\x19managedUserTrafficRequest\x12V\n" +
-	"\x0emigrate_master\x18\x14 \x01(\v2-.theatropolis.control.v1.MigrateMasterCommandH\x00R\rmigrateMasterB\t\n" +
+	"\x0emigrate_master\x18\x14 \x01(\v2-.theatropolis.control.v1.MigrateMasterCommandH\x00R\rmigrateMaster\x12`\n" +
+	"\x12link_latency_probe\x18\x15 \x01(\v20.theatropolis.control.v1.LinkLatencyProbeCommandH\x00R\x10linkLatencyProbeB\t\n" +
 	"\apayload\"`\n" +
 	"\x14MigrateMasterCommand\x12!\n" +
 	"\fmigration_id\x18\x01 \x01(\tR\vmigrationId\x12%\n" +
@@ -2765,11 +3225,12 @@ const file_theatropolis_control_v1_control_proto_rawDesc = "" +
 	"\x0fexpires_at_unix\x18\x02 \x01(\x03R\rexpiresAtUnix\"*\n" +
 	"\n" +
 	"AgentProof\x12\x1c\n" +
-	"\tsignature\x18\x01 \x01(\fR\tsignature\"[\n" +
+	"\tsignature\x18\x01 \x01(\fR\tsignature\"\x7f\n" +
 	"\x14AuthenticationResult\x12$\n" +
 	"\rauthenticated\x18\x01 \x01(\bR\rauthenticated\x12\x1d\n" +
 	"\n" +
-	"error_code\x18\x02 \x01(\tR\terrorCode\"\xc1\x01\n" +
+	"error_code\x18\x02 \x01(\tR\terrorCode\x12\"\n" +
+	"\fcapabilities\x18\x03 \x03(\tR\fcapabilities\"\xc1\x01\n" +
 	"\x0eAgentHeartbeat\x12(\n" +
 	"\x10observed_at_unix\x18\x01 \x01(\x03R\x0eobservedAtUnix\x12,\n" +
 	"\x12active_revision_id\x18\x02 \x01(\tR\x10activeRevisionId\x12(\n" +
@@ -2853,7 +3314,35 @@ const file_theatropolis_control_v1_control_proto_rawDesc = "" +
 	"\x12AddressProbeReport\x12\x16\n" +
 	"\x06family\x18\x01 \x01(\tR\x06family\x12\x18\n" +
 	"\aaddress\x18\x02 \x01(\tR\aaddress\x12\x14\n" +
-	"\x05error\x18\x03 \x01(\tR\x05error\"\xdc\x01\n" +
+	"\x05error\x18\x03 \x01(\tR\x05error\"\x83\x01\n" +
+	"\x11LinkLatencyReport\x12(\n" +
+	"\x10observed_at_unix\x18\x01 \x01(\x03R\x0eobservedAtUnix\x12D\n" +
+	"\asamples\x18\x02 \x03(\v2*.theatropolis.control.v1.LinkLatencySampleR\asamples\"\xbf\x02\n" +
+	"\x11LinkLatencySample\x12!\n" +
+	"\foutbound_tag\x18\x01 \x01(\tR\voutboundTag\x12B\n" +
+	"\x06status\x18\x02 \x01(\x0e2*.theatropolis.control.v1.LinkLatencyStatusR\x06status\x123\n" +
+	"\x15duration_milliseconds\x18\x03 \x01(\x04R\x14durationMilliseconds\x12\x1b\n" +
+	"\ttarget_id\x18\x04 \x01(\tR\btargetId\x12#\n" +
+	"\routbound_tags\x18\x05 \x03(\tR\foutboundTags\x12L\n" +
+	"\n" +
+	"probe_type\x18\x06 \x01(\x0e2-.theatropolis.control.v1.LinkLatencyProbeTypeR\tprobeType\"\x93\x02\n" +
+	"\x17LinkLatencyProbeCommand\x12\x1d\n" +
+	"\n" +
+	"request_id\x18\x01 \x01(\tR\trequestId\x12\x18\n" +
+	"\aaddress\x18\x02 \x01(\tR\aaddress\x12\x12\n" +
+	"\x04port\x18\x03 \x01(\rR\x04port\x12L\n" +
+	"\n" +
+	"probe_type\x18\x04 \x01(\x0e2-.theatropolis.control.v1.LinkLatencyProbeTypeR\tprobeType\x12\x1f\n" +
+	"\vserver_name\x18\x05 \x01(\tR\n" +
+	"serverName\x12\x1b\n" +
+	"\tobfs_type\x18\x06 \x01(\tR\bobfsType\x12\x1f\n" +
+	"\vobfs_secret\x18\a \x01(\tR\n" +
+	"obfsSecret\"\xb0\x01\n" +
+	"\x16LinkLatencyProbeReport\x12\x1d\n" +
+	"\n" +
+	"request_id\x18\x01 \x01(\tR\trequestId\x12B\n" +
+	"\x06status\x18\x02 \x01(\x0e2*.theatropolis.control.v1.LinkLatencyStatusR\x06status\x123\n" +
+	"\x15duration_milliseconds\x18\x03 \x01(\x04R\x14durationMilliseconds\"\xdc\x01\n" +
 	"\x18ManagedUserTrafficReport\x12\x14\n" +
 	"\x05epoch\x18\x01 \x01(\tR\x05epoch\x12(\n" +
 	"\x10observed_at_unix\x18\x02 \x01(\x03R\x0eobservedAtUnix\x12A\n" +
@@ -2928,7 +3417,16 @@ const file_theatropolis_control_v1_control_proto_rawDesc = "" +
 	" SING_BOX_UPDATE_STATUS_SCHEDULED\x10\x01\x12\"\n" +
 	"\x1eSING_BOX_UPDATE_STATUS_APPLIED\x10\x02\x12!\n" +
 	"\x1dSING_BOX_UPDATE_STATUS_FAILED\x10\x03\x12#\n" +
-	"\x1fSING_BOX_UPDATE_STATUS_REJECTED\x10\x04*\xd3\x01\n" +
+	"\x1fSING_BOX_UPDATE_STATUS_REJECTED\x10\x04*\xa1\x01\n" +
+	"\x11LinkLatencyStatus\x12#\n" +
+	"\x1fLINK_LATENCY_STATUS_UNSPECIFIED\x10\x00\x12!\n" +
+	"\x1dLINK_LATENCY_STATUS_REACHABLE\x10\x01\x12#\n" +
+	"\x1fLINK_LATENCY_STATUS_UNREACHABLE\x10\x02\x12\x1f\n" +
+	"\x1bLINK_LATENCY_STATUS_REFUSED\x10\x03*\x82\x01\n" +
+	"\x14LinkLatencyProbeType\x12'\n" +
+	"#LINK_LATENCY_PROBE_TYPE_UNSPECIFIED\x10\x00\x12\x1f\n" +
+	"\x1bLINK_LATENCY_PROBE_TYPE_TCP\x10\x01\x12 \n" +
+	"\x1cLINK_LATENCY_PROBE_TYPE_QUIC\x10\x02*\xd3\x01\n" +
 	"\x1aManagedUserAuthorityStatus\x12-\n" +
 	")MANAGED_USER_AUTHORITY_STATUS_UNSPECIFIED\x10\x00\x12)\n" +
 	"%MANAGED_USER_AUTHORITY_STATUS_APPLIED\x10\x01\x12)\n" +
@@ -2950,91 +3448,105 @@ func file_theatropolis_control_v1_control_proto_rawDescGZIP() []byte {
 	return file_theatropolis_control_v1_control_proto_rawDescData
 }
 
-var file_theatropolis_control_v1_control_proto_enumTypes = make([]protoimpl.EnumInfo, 6)
-var file_theatropolis_control_v1_control_proto_msgTypes = make([]protoimpl.MessageInfo, 31)
+var file_theatropolis_control_v1_control_proto_enumTypes = make([]protoimpl.EnumInfo, 8)
+var file_theatropolis_control_v1_control_proto_msgTypes = make([]protoimpl.MessageInfo, 35)
 var file_theatropolis_control_v1_control_proto_goTypes = []any{
 	(ConfigValidationStatus)(0),          // 0: theatropolis.control.v1.ConfigValidationStatus
 	(ConfigDeploymentStatus)(0),          // 1: theatropolis.control.v1.ConfigDeploymentStatus
 	(ConfigRuntimeStatus)(0),             // 2: theatropolis.control.v1.ConfigRuntimeStatus
 	(AgentUpdateStatus)(0),               // 3: theatropolis.control.v1.AgentUpdateStatus
 	(SingBoxUpdateStatus)(0),             // 4: theatropolis.control.v1.SingBoxUpdateStatus
-	(ManagedUserAuthorityStatus)(0),      // 5: theatropolis.control.v1.ManagedUserAuthorityStatus
-	(*EnrollRequest)(nil),                // 6: theatropolis.control.v1.EnrollRequest
-	(*EnrollResponse)(nil),               // 7: theatropolis.control.v1.EnrollResponse
-	(*AgentFrame)(nil),                   // 8: theatropolis.control.v1.AgentFrame
-	(*MasterFrame)(nil),                  // 9: theatropolis.control.v1.MasterFrame
-	(*MigrateMasterCommand)(nil),         // 10: theatropolis.control.v1.MigrateMasterCommand
-	(*MasterMigrationReport)(nil),        // 11: theatropolis.control.v1.MasterMigrationReport
-	(*AgentHello)(nil),                   // 12: theatropolis.control.v1.AgentHello
-	(*AgentChallenge)(nil),               // 13: theatropolis.control.v1.AgentChallenge
-	(*AgentProof)(nil),                   // 14: theatropolis.control.v1.AgentProof
-	(*AuthenticationResult)(nil),         // 15: theatropolis.control.v1.AuthenticationResult
-	(*AgentHeartbeat)(nil),               // 16: theatropolis.control.v1.AgentHeartbeat
-	(*ValidateConfigCommand)(nil),        // 17: theatropolis.control.v1.ValidateConfigCommand
-	(*ConfigValidationReport)(nil),       // 18: theatropolis.control.v1.ConfigValidationReport
-	(*DeployConfigCommand)(nil),          // 19: theatropolis.control.v1.DeployConfigCommand
-	(*ConfigDeploymentReport)(nil),       // 20: theatropolis.control.v1.ConfigDeploymentReport
-	(*ConfigRuntimeReport)(nil),          // 21: theatropolis.control.v1.ConfigRuntimeReport
-	(*AgentUpdateCommand)(nil),           // 22: theatropolis.control.v1.AgentUpdateCommand
-	(*AgentUpdateReport)(nil),            // 23: theatropolis.control.v1.AgentUpdateReport
-	(*SingBoxUpdateCommand)(nil),         // 24: theatropolis.control.v1.SingBoxUpdateCommand
-	(*SingBoxUpdateReport)(nil),          // 25: theatropolis.control.v1.SingBoxUpdateReport
-	(*ProbeAddresses)(nil),               // 26: theatropolis.control.v1.ProbeAddresses
-	(*AddressProbeReport)(nil),           // 27: theatropolis.control.v1.AddressProbeReport
-	(*ManagedUserTrafficReport)(nil),     // 28: theatropolis.control.v1.ManagedUserTrafficReport
-	(*ManagedUserTraffic)(nil),           // 29: theatropolis.control.v1.ManagedUserTraffic
-	(*ManagedUserTrafficAck)(nil),        // 30: theatropolis.control.v1.ManagedUserTrafficAck
-	(*ManagedUserTrafficRequest)(nil),    // 31: theatropolis.control.v1.ManagedUserTrafficRequest
-	(*ManagedUserAuthorityCommand)(nil),  // 32: theatropolis.control.v1.ManagedUserAuthorityCommand
-	(*ManagedUserAuthorityVariant)(nil),  // 33: theatropolis.control.v1.ManagedUserAuthorityVariant
-	(*ManagedUserAuthorityEndpoint)(nil), // 34: theatropolis.control.v1.ManagedUserAuthorityEndpoint
-	(*ManagedUserAuthorityUser)(nil),     // 35: theatropolis.control.v1.ManagedUserAuthorityUser
-	(*ManagedUserAuthorityReport)(nil),   // 36: theatropolis.control.v1.ManagedUserAuthorityReport
+	(LinkLatencyStatus)(0),               // 5: theatropolis.control.v1.LinkLatencyStatus
+	(LinkLatencyProbeType)(0),            // 6: theatropolis.control.v1.LinkLatencyProbeType
+	(ManagedUserAuthorityStatus)(0),      // 7: theatropolis.control.v1.ManagedUserAuthorityStatus
+	(*EnrollRequest)(nil),                // 8: theatropolis.control.v1.EnrollRequest
+	(*EnrollResponse)(nil),               // 9: theatropolis.control.v1.EnrollResponse
+	(*AgentFrame)(nil),                   // 10: theatropolis.control.v1.AgentFrame
+	(*MasterFrame)(nil),                  // 11: theatropolis.control.v1.MasterFrame
+	(*MigrateMasterCommand)(nil),         // 12: theatropolis.control.v1.MigrateMasterCommand
+	(*MasterMigrationReport)(nil),        // 13: theatropolis.control.v1.MasterMigrationReport
+	(*AgentHello)(nil),                   // 14: theatropolis.control.v1.AgentHello
+	(*AgentChallenge)(nil),               // 15: theatropolis.control.v1.AgentChallenge
+	(*AgentProof)(nil),                   // 16: theatropolis.control.v1.AgentProof
+	(*AuthenticationResult)(nil),         // 17: theatropolis.control.v1.AuthenticationResult
+	(*AgentHeartbeat)(nil),               // 18: theatropolis.control.v1.AgentHeartbeat
+	(*ValidateConfigCommand)(nil),        // 19: theatropolis.control.v1.ValidateConfigCommand
+	(*ConfigValidationReport)(nil),       // 20: theatropolis.control.v1.ConfigValidationReport
+	(*DeployConfigCommand)(nil),          // 21: theatropolis.control.v1.DeployConfigCommand
+	(*ConfigDeploymentReport)(nil),       // 22: theatropolis.control.v1.ConfigDeploymentReport
+	(*ConfigRuntimeReport)(nil),          // 23: theatropolis.control.v1.ConfigRuntimeReport
+	(*AgentUpdateCommand)(nil),           // 24: theatropolis.control.v1.AgentUpdateCommand
+	(*AgentUpdateReport)(nil),            // 25: theatropolis.control.v1.AgentUpdateReport
+	(*SingBoxUpdateCommand)(nil),         // 26: theatropolis.control.v1.SingBoxUpdateCommand
+	(*SingBoxUpdateReport)(nil),          // 27: theatropolis.control.v1.SingBoxUpdateReport
+	(*ProbeAddresses)(nil),               // 28: theatropolis.control.v1.ProbeAddresses
+	(*AddressProbeReport)(nil),           // 29: theatropolis.control.v1.AddressProbeReport
+	(*LinkLatencyReport)(nil),            // 30: theatropolis.control.v1.LinkLatencyReport
+	(*LinkLatencySample)(nil),            // 31: theatropolis.control.v1.LinkLatencySample
+	(*LinkLatencyProbeCommand)(nil),      // 32: theatropolis.control.v1.LinkLatencyProbeCommand
+	(*LinkLatencyProbeReport)(nil),       // 33: theatropolis.control.v1.LinkLatencyProbeReport
+	(*ManagedUserTrafficReport)(nil),     // 34: theatropolis.control.v1.ManagedUserTrafficReport
+	(*ManagedUserTraffic)(nil),           // 35: theatropolis.control.v1.ManagedUserTraffic
+	(*ManagedUserTrafficAck)(nil),        // 36: theatropolis.control.v1.ManagedUserTrafficAck
+	(*ManagedUserTrafficRequest)(nil),    // 37: theatropolis.control.v1.ManagedUserTrafficRequest
+	(*ManagedUserAuthorityCommand)(nil),  // 38: theatropolis.control.v1.ManagedUserAuthorityCommand
+	(*ManagedUserAuthorityVariant)(nil),  // 39: theatropolis.control.v1.ManagedUserAuthorityVariant
+	(*ManagedUserAuthorityEndpoint)(nil), // 40: theatropolis.control.v1.ManagedUserAuthorityEndpoint
+	(*ManagedUserAuthorityUser)(nil),     // 41: theatropolis.control.v1.ManagedUserAuthorityUser
+	(*ManagedUserAuthorityReport)(nil),   // 42: theatropolis.control.v1.ManagedUserAuthorityReport
 }
 var file_theatropolis_control_v1_control_proto_depIdxs = []int32{
-	12, // 0: theatropolis.control.v1.AgentFrame.hello:type_name -> theatropolis.control.v1.AgentHello
-	14, // 1: theatropolis.control.v1.AgentFrame.proof:type_name -> theatropolis.control.v1.AgentProof
-	16, // 2: theatropolis.control.v1.AgentFrame.heartbeat:type_name -> theatropolis.control.v1.AgentHeartbeat
-	18, // 3: theatropolis.control.v1.AgentFrame.config_validation_report:type_name -> theatropolis.control.v1.ConfigValidationReport
-	20, // 4: theatropolis.control.v1.AgentFrame.config_deployment_report:type_name -> theatropolis.control.v1.ConfigDeploymentReport
-	21, // 5: theatropolis.control.v1.AgentFrame.config_runtime_report:type_name -> theatropolis.control.v1.ConfigRuntimeReport
-	23, // 6: theatropolis.control.v1.AgentFrame.agent_update_report:type_name -> theatropolis.control.v1.AgentUpdateReport
-	25, // 7: theatropolis.control.v1.AgentFrame.sing_box_update_report:type_name -> theatropolis.control.v1.SingBoxUpdateReport
-	27, // 8: theatropolis.control.v1.AgentFrame.address_probe_report:type_name -> theatropolis.control.v1.AddressProbeReport
-	28, // 9: theatropolis.control.v1.AgentFrame.managed_user_traffic_report:type_name -> theatropolis.control.v1.ManagedUserTrafficReport
-	36, // 10: theatropolis.control.v1.AgentFrame.managed_user_authority_report:type_name -> theatropolis.control.v1.ManagedUserAuthorityReport
-	11, // 11: theatropolis.control.v1.AgentFrame.master_migration_report:type_name -> theatropolis.control.v1.MasterMigrationReport
-	13, // 12: theatropolis.control.v1.MasterFrame.challenge:type_name -> theatropolis.control.v1.AgentChallenge
-	15, // 13: theatropolis.control.v1.MasterFrame.authentication_result:type_name -> theatropolis.control.v1.AuthenticationResult
-	17, // 14: theatropolis.control.v1.MasterFrame.validate_config:type_name -> theatropolis.control.v1.ValidateConfigCommand
-	19, // 15: theatropolis.control.v1.MasterFrame.deploy_config:type_name -> theatropolis.control.v1.DeployConfigCommand
-	22, // 16: theatropolis.control.v1.MasterFrame.update_agent:type_name -> theatropolis.control.v1.AgentUpdateCommand
-	24, // 17: theatropolis.control.v1.MasterFrame.update_sing_box:type_name -> theatropolis.control.v1.SingBoxUpdateCommand
-	26, // 18: theatropolis.control.v1.MasterFrame.probe_addresses:type_name -> theatropolis.control.v1.ProbeAddresses
-	32, // 19: theatropolis.control.v1.MasterFrame.managed_user_authority:type_name -> theatropolis.control.v1.ManagedUserAuthorityCommand
-	30, // 20: theatropolis.control.v1.MasterFrame.managed_user_traffic_ack:type_name -> theatropolis.control.v1.ManagedUserTrafficAck
-	31, // 21: theatropolis.control.v1.MasterFrame.managed_user_traffic_request:type_name -> theatropolis.control.v1.ManagedUserTrafficRequest
-	10, // 22: theatropolis.control.v1.MasterFrame.migrate_master:type_name -> theatropolis.control.v1.MigrateMasterCommand
-	0,  // 23: theatropolis.control.v1.ConfigValidationReport.status:type_name -> theatropolis.control.v1.ConfigValidationStatus
-	1,  // 24: theatropolis.control.v1.ConfigDeploymentReport.status:type_name -> theatropolis.control.v1.ConfigDeploymentStatus
-	2,  // 25: theatropolis.control.v1.ConfigRuntimeReport.status:type_name -> theatropolis.control.v1.ConfigRuntimeStatus
-	3,  // 26: theatropolis.control.v1.AgentUpdateReport.status:type_name -> theatropolis.control.v1.AgentUpdateStatus
-	4,  // 27: theatropolis.control.v1.SingBoxUpdateReport.status:type_name -> theatropolis.control.v1.SingBoxUpdateStatus
-	29, // 28: theatropolis.control.v1.ManagedUserTrafficReport.users:type_name -> theatropolis.control.v1.ManagedUserTraffic
-	29, // 29: theatropolis.control.v1.ManagedUserTrafficAck.users:type_name -> theatropolis.control.v1.ManagedUserTraffic
-	33, // 30: theatropolis.control.v1.ManagedUserAuthorityCommand.variants:type_name -> theatropolis.control.v1.ManagedUserAuthorityVariant
-	34, // 31: theatropolis.control.v1.ManagedUserAuthorityVariant.endpoints:type_name -> theatropolis.control.v1.ManagedUserAuthorityEndpoint
-	35, // 32: theatropolis.control.v1.ManagedUserAuthorityEndpoint.users:type_name -> theatropolis.control.v1.ManagedUserAuthorityUser
-	5,  // 33: theatropolis.control.v1.ManagedUserAuthorityReport.status:type_name -> theatropolis.control.v1.ManagedUserAuthorityStatus
-	6,  // 34: theatropolis.control.v1.AgentControlService.Enroll:input_type -> theatropolis.control.v1.EnrollRequest
-	8,  // 35: theatropolis.control.v1.AgentControlService.Connect:input_type -> theatropolis.control.v1.AgentFrame
-	7,  // 36: theatropolis.control.v1.AgentControlService.Enroll:output_type -> theatropolis.control.v1.EnrollResponse
-	9,  // 37: theatropolis.control.v1.AgentControlService.Connect:output_type -> theatropolis.control.v1.MasterFrame
-	36, // [36:38] is the sub-list for method output_type
-	34, // [34:36] is the sub-list for method input_type
-	34, // [34:34] is the sub-list for extension type_name
-	34, // [34:34] is the sub-list for extension extendee
-	0,  // [0:34] is the sub-list for field type_name
+	14, // 0: theatropolis.control.v1.AgentFrame.hello:type_name -> theatropolis.control.v1.AgentHello
+	16, // 1: theatropolis.control.v1.AgentFrame.proof:type_name -> theatropolis.control.v1.AgentProof
+	18, // 2: theatropolis.control.v1.AgentFrame.heartbeat:type_name -> theatropolis.control.v1.AgentHeartbeat
+	20, // 3: theatropolis.control.v1.AgentFrame.config_validation_report:type_name -> theatropolis.control.v1.ConfigValidationReport
+	22, // 4: theatropolis.control.v1.AgentFrame.config_deployment_report:type_name -> theatropolis.control.v1.ConfigDeploymentReport
+	23, // 5: theatropolis.control.v1.AgentFrame.config_runtime_report:type_name -> theatropolis.control.v1.ConfigRuntimeReport
+	25, // 6: theatropolis.control.v1.AgentFrame.agent_update_report:type_name -> theatropolis.control.v1.AgentUpdateReport
+	27, // 7: theatropolis.control.v1.AgentFrame.sing_box_update_report:type_name -> theatropolis.control.v1.SingBoxUpdateReport
+	29, // 8: theatropolis.control.v1.AgentFrame.address_probe_report:type_name -> theatropolis.control.v1.AddressProbeReport
+	34, // 9: theatropolis.control.v1.AgentFrame.managed_user_traffic_report:type_name -> theatropolis.control.v1.ManagedUserTrafficReport
+	42, // 10: theatropolis.control.v1.AgentFrame.managed_user_authority_report:type_name -> theatropolis.control.v1.ManagedUserAuthorityReport
+	13, // 11: theatropolis.control.v1.AgentFrame.master_migration_report:type_name -> theatropolis.control.v1.MasterMigrationReport
+	30, // 12: theatropolis.control.v1.AgentFrame.link_latency_report:type_name -> theatropolis.control.v1.LinkLatencyReport
+	33, // 13: theatropolis.control.v1.AgentFrame.link_latency_probe_report:type_name -> theatropolis.control.v1.LinkLatencyProbeReport
+	15, // 14: theatropolis.control.v1.MasterFrame.challenge:type_name -> theatropolis.control.v1.AgentChallenge
+	17, // 15: theatropolis.control.v1.MasterFrame.authentication_result:type_name -> theatropolis.control.v1.AuthenticationResult
+	19, // 16: theatropolis.control.v1.MasterFrame.validate_config:type_name -> theatropolis.control.v1.ValidateConfigCommand
+	21, // 17: theatropolis.control.v1.MasterFrame.deploy_config:type_name -> theatropolis.control.v1.DeployConfigCommand
+	24, // 18: theatropolis.control.v1.MasterFrame.update_agent:type_name -> theatropolis.control.v1.AgentUpdateCommand
+	26, // 19: theatropolis.control.v1.MasterFrame.update_sing_box:type_name -> theatropolis.control.v1.SingBoxUpdateCommand
+	28, // 20: theatropolis.control.v1.MasterFrame.probe_addresses:type_name -> theatropolis.control.v1.ProbeAddresses
+	38, // 21: theatropolis.control.v1.MasterFrame.managed_user_authority:type_name -> theatropolis.control.v1.ManagedUserAuthorityCommand
+	36, // 22: theatropolis.control.v1.MasterFrame.managed_user_traffic_ack:type_name -> theatropolis.control.v1.ManagedUserTrafficAck
+	37, // 23: theatropolis.control.v1.MasterFrame.managed_user_traffic_request:type_name -> theatropolis.control.v1.ManagedUserTrafficRequest
+	12, // 24: theatropolis.control.v1.MasterFrame.migrate_master:type_name -> theatropolis.control.v1.MigrateMasterCommand
+	32, // 25: theatropolis.control.v1.MasterFrame.link_latency_probe:type_name -> theatropolis.control.v1.LinkLatencyProbeCommand
+	0,  // 26: theatropolis.control.v1.ConfigValidationReport.status:type_name -> theatropolis.control.v1.ConfigValidationStatus
+	1,  // 27: theatropolis.control.v1.ConfigDeploymentReport.status:type_name -> theatropolis.control.v1.ConfigDeploymentStatus
+	2,  // 28: theatropolis.control.v1.ConfigRuntimeReport.status:type_name -> theatropolis.control.v1.ConfigRuntimeStatus
+	3,  // 29: theatropolis.control.v1.AgentUpdateReport.status:type_name -> theatropolis.control.v1.AgentUpdateStatus
+	4,  // 30: theatropolis.control.v1.SingBoxUpdateReport.status:type_name -> theatropolis.control.v1.SingBoxUpdateStatus
+	31, // 31: theatropolis.control.v1.LinkLatencyReport.samples:type_name -> theatropolis.control.v1.LinkLatencySample
+	5,  // 32: theatropolis.control.v1.LinkLatencySample.status:type_name -> theatropolis.control.v1.LinkLatencyStatus
+	6,  // 33: theatropolis.control.v1.LinkLatencySample.probe_type:type_name -> theatropolis.control.v1.LinkLatencyProbeType
+	6,  // 34: theatropolis.control.v1.LinkLatencyProbeCommand.probe_type:type_name -> theatropolis.control.v1.LinkLatencyProbeType
+	5,  // 35: theatropolis.control.v1.LinkLatencyProbeReport.status:type_name -> theatropolis.control.v1.LinkLatencyStatus
+	35, // 36: theatropolis.control.v1.ManagedUserTrafficReport.users:type_name -> theatropolis.control.v1.ManagedUserTraffic
+	35, // 37: theatropolis.control.v1.ManagedUserTrafficAck.users:type_name -> theatropolis.control.v1.ManagedUserTraffic
+	39, // 38: theatropolis.control.v1.ManagedUserAuthorityCommand.variants:type_name -> theatropolis.control.v1.ManagedUserAuthorityVariant
+	40, // 39: theatropolis.control.v1.ManagedUserAuthorityVariant.endpoints:type_name -> theatropolis.control.v1.ManagedUserAuthorityEndpoint
+	41, // 40: theatropolis.control.v1.ManagedUserAuthorityEndpoint.users:type_name -> theatropolis.control.v1.ManagedUserAuthorityUser
+	7,  // 41: theatropolis.control.v1.ManagedUserAuthorityReport.status:type_name -> theatropolis.control.v1.ManagedUserAuthorityStatus
+	8,  // 42: theatropolis.control.v1.AgentControlService.Enroll:input_type -> theatropolis.control.v1.EnrollRequest
+	10, // 43: theatropolis.control.v1.AgentControlService.Connect:input_type -> theatropolis.control.v1.AgentFrame
+	9,  // 44: theatropolis.control.v1.AgentControlService.Enroll:output_type -> theatropolis.control.v1.EnrollResponse
+	11, // 45: theatropolis.control.v1.AgentControlService.Connect:output_type -> theatropolis.control.v1.MasterFrame
+	44, // [44:46] is the sub-list for method output_type
+	42, // [42:44] is the sub-list for method input_type
+	42, // [42:42] is the sub-list for extension type_name
+	42, // [42:42] is the sub-list for extension extendee
+	0,  // [0:42] is the sub-list for field type_name
 }
 
 func init() { file_theatropolis_control_v1_control_proto_init() }
@@ -3055,6 +3567,8 @@ func file_theatropolis_control_v1_control_proto_init() {
 		(*AgentFrame_ManagedUserTrafficReport)(nil),
 		(*AgentFrame_ManagedUserAuthorityReport)(nil),
 		(*AgentFrame_MasterMigrationReport)(nil),
+		(*AgentFrame_LinkLatencyReport)(nil),
+		(*AgentFrame_LinkLatencyProbeReport)(nil),
 	}
 	file_theatropolis_control_v1_control_proto_msgTypes[3].OneofWrappers = []any{
 		(*MasterFrame_Challenge)(nil),
@@ -3068,14 +3582,15 @@ func file_theatropolis_control_v1_control_proto_init() {
 		(*MasterFrame_ManagedUserTrafficAck)(nil),
 		(*MasterFrame_ManagedUserTrafficRequest)(nil),
 		(*MasterFrame_MigrateMaster)(nil),
+		(*MasterFrame_LinkLatencyProbe)(nil),
 	}
 	type x struct{}
 	out := protoimpl.TypeBuilder{
 		File: protoimpl.DescBuilder{
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_theatropolis_control_v1_control_proto_rawDesc), len(file_theatropolis_control_v1_control_proto_rawDesc)),
-			NumEnums:      6,
-			NumMessages:   31,
+			NumEnums:      8,
+			NumMessages:   35,
 			NumExtensions: 0,
 			NumServices:   1,
 		},

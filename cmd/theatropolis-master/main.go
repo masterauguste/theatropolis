@@ -247,6 +247,16 @@ func serve(arguments []string) error {
 		return changed, err
 	})
 	server.SetManagedUserTrafficFailureHandler(proxyNodes.RecordAccountingFailure)
+	server.SetLinkLatencyHandler(func(agentID string, observedAt time.Time, samples []control.LinkLatencyObservation) error {
+		observations := make([]proxynode.LinkLatencyObservation, 0, len(samples))
+		for _, sample := range samples {
+			observations = append(observations, proxynode.LinkLatencyObservation{
+				TargetID: sample.TargetID, Responded: sample.Responded,
+				Connected: sample.Connected, Duration: sample.Duration,
+			})
+		}
+		return proxyNodes.RecordLinkLatencySnapshot(agentID, observedAt, observations)
+	})
 	accessPath, err := resolveWebAccessPath(*stateDirectory, *webAuthFile)
 	if err != nil {
 		return fmt.Errorf("prepare unified web identity path: %w", err)

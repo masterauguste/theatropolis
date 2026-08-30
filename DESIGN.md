@@ -106,6 +106,15 @@ compact sticky top bar with horizontal navigation and document scrolling.
   focus ring; focus indication belongs to its actionable controls.
 - The relay map uses the same cool surface system; connectors remain visible
   and rule cards carry the signal color without overpowering Hop nodes.
+- Relay Link cards carry one quiet path signal: a small state bead and the
+  latest millisecond value. TCP relays use a connect probe and Hysteria2 uses a
+  QUIC handshake. It is not color-graded by speed because an expected
+  intercontinental path can be healthy at high latency. Unreachable, stale,
+  and pending states remain textual; the Link inspector owns the current value
+  plus the 30-day latency/loss chart.
+- The fleet table stays scannable and shows the Agent software version only.
+  The sing-box runtime version belongs to the individual Server summary and
+  software controls, where it has operational context.
 - A Proxy Node detail header keeps identity on the left and Users/Delete on the
   right; the name's compact pencil is the only rename affordance. Entrance
   listener/protocol editing belongs to a dedicated wide dialog opened directly
@@ -146,10 +155,12 @@ compact sticky top bar with horizontal navigation and document scrolling.
 
 ## Motion and accessibility
 
-The Settings migration helper uses one wide, three-stage dialog. Export,
-restore, and online-server cutover are visually separated cards; restore and
-cutover use danger intent and typed confirmation, while archive creation uses
-the neutral secondary action.
+Master migration is a compact supporting action in the Settings page header,
+not a page section. Its chooser separates the two machine roles into distinct
+dialogs: the source dialog owns archive export and the later online-server
+cutover, while the destination dialog owns archive restore only. Restore and
+cutover use danger intent and typed confirmation; archive creation uses the
+neutral secondary action.
 
 Motion is limited to 120–160ms color, border, and small position transitions.
 No ambient animation is used. Reduced-motion preference collapses transitions

@@ -43,6 +43,8 @@ message AgentFrame {
     ManagedUserTrafficReport managed_user_traffic_report = 19;
     ManagedUserAuthorityReport managed_user_authority_report = 20;
     MasterMigrationReport master_migration_report = 21;
+    LinkLatencyReport link_latency_report = 22;
+    LinkLatencyProbeReport link_latency_probe_report = 23;
   }
 }
 
@@ -61,6 +63,7 @@ message MasterFrame {
     ManagedUserTrafficAck managed_user_traffic_ack = 18;
     ManagedUserTrafficRequest managed_user_traffic_request = 19;
     MigrateMasterCommand migrate_master = 20;
+    LinkLatencyProbeCommand link_latency_probe = 21;
   }
 }
 
@@ -104,6 +107,11 @@ message AgentProof {
 message AuthenticationResult {
   bool authenticated = 1;
   string error_code = 2;
+  // Capabilities explicitly enabled by this Master for the authenticated
+  // session. An Agent must not send optional autonomous reports unless the
+  // corresponding capability is echoed here, which keeps rolling upgrades
+  // compatible with older Masters.
+  repeated string capabilities = 3;
 }
 
 message AgentHeartbeat {
@@ -240,6 +248,56 @@ message AddressProbeReport {
   string address = 2;
   // Failure reason; empty on success.
   string error = 3;
+}
+
+enum LinkLatencyStatus {
+  LINK_LATENCY_STATUS_UNSPECIFIED = 0;
+  LINK_LATENCY_STATUS_REACHABLE = 1;
+  LINK_LATENCY_STATUS_UNREACHABLE = 2;
+  LINK_LATENCY_STATUS_REFUSED = 3;
+}
+
+enum LinkLatencyProbeType {
+  LINK_LATENCY_PROBE_TYPE_UNSPECIFIED = 0;
+  LINK_LATENCY_PROBE_TYPE_TCP = 1;
+  LINK_LATENCY_PROBE_TYPE_QUIC = 2;
+}
+
+// LinkLatencyReport is advisory physical-path telemetry. TCP relays use a
+// connect probe and Hysteria2 uses a QUIC handshake. It carries no destination
+// address or credential; the authenticated Agent identity and generated
+// outbound tags are enough for the Master to bind it to applied topology.
+message LinkLatencyReport {
+  int64 observed_at_unix = 1;
+  repeated LinkLatencySample samples = 2;
+}
+
+message LinkLatencySample {
+  // Retained for compatibility with the first monitor implementation.
+  string outbound_tag = 1;
+  LinkLatencyStatus status = 2;
+  uint64 duration_milliseconds = 3;
+  // Stable hash of transport plus physical destination IP. Multiple logical
+  // Links to the same path share one sample and one history series.
+  string target_id = 4;
+  repeated string outbound_tags = 5;
+  LinkLatencyProbeType probe_type = 6;
+}
+
+message LinkLatencyProbeCommand {
+  string request_id = 1;
+  string address = 2;
+  uint32 port = 3;
+  LinkLatencyProbeType probe_type = 4;
+  string server_name = 5;
+  string obfs_type = 6;
+  string obfs_secret = 7;
+}
+
+message LinkLatencyProbeReport {
+  string request_id = 1;
+  LinkLatencyStatus status = 2;
+  uint64 duration_milliseconds = 3;
 }
 
 message ManagedUserTrafficReport {

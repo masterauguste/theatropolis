@@ -101,6 +101,26 @@ type testAgentController struct {
 	migrationAddress    string
 	migrationQueued     int
 	migrationSkipped    int
+	linkLatencies       map[string]control.LinkLatencyState
+	linkProbeResult     control.LinkLatencyState
+	linkProbeErr        error
+	linkProbeAgent      string
+	linkProbeAddress    string
+	linkProbePort       uint16
+	linkProbeType       string
+}
+
+func (c *testAgentController) LinkLatency(agentID, outboundTag string) (control.LinkLatencyState, bool) {
+	value, exists := c.linkLatencies[agentID+"/"+outboundTag]
+	return value, exists
+}
+
+func (c *testAgentController) RequestLinkLatencyProbe(_ context.Context, agentID string, target control.LinkLatencyProbeTarget) (control.LinkLatencyState, error) {
+	c.linkProbeAgent = agentID
+	c.linkProbeAddress = target.Address
+	c.linkProbePort = target.Port
+	c.linkProbeType = target.ProbeType
+	return c.linkProbeResult, c.linkProbeErr
 }
 
 func (c *testAgentController) QueueOnlineMasterMigration(_ context.Context, _ string, address string) (int, int, error) {
@@ -1132,8 +1152,6 @@ func TestServersPageUsesRealEnrollmentAndConnectionState(t *testing.T) {
 		"Not established",
 		"Agent version",
 		"v0.0.9",
-		"sing-box version",
-		"v1.14.0-beta.2",
 		"4 total",
 	} {
 		if !strings.Contains(body, expected) {
@@ -1159,19 +1177,19 @@ func TestServersPageUsesRealEnrollmentAndConnectionState(t *testing.T) {
 	}
 }
 
-func TestServersPageHidesManagedSingBoxPatchSuffix(t *testing.T) {
+func TestServerDetailHidesManagedSingBoxPatchSuffix(t *testing.T) {
 	t.Parallel()
 
 	fixture := newWebFixture(t)
 	enrollAgent(t, fixture.registry, "edge-managed-version")
 	fixture.controller.sessions["edge-managed-version"] = true
 
-	request := fixture.authenticatedRequest(http.MethodGet, "/servers/content", "")
+	request := fixture.authenticatedRequest(http.MethodGet, "/servers/edge-managed-version/manage", "")
 	response := httptest.NewRecorder()
 	fixture.handler.ServeHTTP(response, request)
 	body := response.Body.String()
 	if response.Code != http.StatusOK || !strings.Contains(body, "v1.14.0-rc.2") {
-		t.Fatalf("servers content omitted simplified sing-box version: %d %q", response.Code, body)
+		t.Fatalf("server detail omitted simplified sing-box version: %d %q", response.Code, body)
 	}
 	if strings.Contains(body, "v1.14.0-rc.2.theatropolis.2") {
 		t.Fatal("servers content exposed the managed sing-box patch suffix")
@@ -1179,7 +1197,7 @@ func TestServersPageHidesManagedSingBoxPatchSuffix(t *testing.T) {
 
 	request = fixture.authenticatedRequestWithLocale(
 		http.MethodGet,
-		"/servers/content",
+		"/servers/edge-managed-version/manage",
 		"",
 		localeSimplifiedChinese,
 	)
@@ -1268,7 +1286,11 @@ func TestSettingsPageOwnsMasterSoftwareManagement(t *testing.T) {
 		`data-master-version-refresh`,
 		`data-version-catalog-url="/settings/versions"`,
 		`href="/settings" class="is-active"`,
-		"Master Migration",
+		`data-dialog-open="master-migration-menu"`,
+		`id="master-migration-source"`,
+		`id="master-migration-destination"`,
+		"Move From This Master",
+		"Receive Migration",
 		`action="/settings/migration/export"`,
 		`action="/settings/migration/restore"`,
 		`action="/settings/migration/cutover"`,
@@ -1276,6 +1298,25 @@ func TestSettingsPageOwnsMasterSoftwareManagement(t *testing.T) {
 		if !strings.Contains(body, expected) {
 			t.Errorf("settings page does not contain %q", expected)
 		}
+	}
+	for _, removed := range []string{`aria-labelledby="migration-heading"`, `id="master-migration-dialog"`, "1. Export", "2. Restore", "3. Switch Online Servers"} {
+		if strings.Contains(body, removed) {
+			t.Errorf("settings page still contains obsolete migration UI %q", removed)
+		}
+	}
+	sourceStart := strings.Index(body, `id="master-migration-source"`)
+	destinationStart := strings.Index(body, `id="master-migration-destination"`)
+	accountingStart := strings.Index(body, `aria-labelledby="accounting-errors-heading"`)
+	if sourceStart < 0 || destinationStart <= sourceStart || accountingStart <= destinationStart {
+		t.Fatalf("migration dialogs are not rendered as separate ordered surfaces")
+	}
+	sourceDialog := body[sourceStart:destinationStart]
+	destinationDialog := body[destinationStart:accountingStart]
+	if !strings.Contains(sourceDialog, `action="/settings/migration/export"`) || !strings.Contains(sourceDialog, `action="/settings/migration/cutover"`) || strings.Contains(sourceDialog, `action="/settings/migration/restore"`) {
+		t.Errorf("source migration dialog does not exclusively own export and cutover")
+	}
+	if !strings.Contains(destinationDialog, `action="/settings/migration/restore"`) || strings.Contains(destinationDialog, `action="/settings/migration/export"`) || strings.Contains(destinationDialog, `action="/settings/migration/cutover"`) {
+		t.Errorf("destination migration dialog does not exclusively own restore")
 	}
 }
 
@@ -1725,6 +1766,13 @@ func TestProxyNodePagesUseLinkOwnedRulesAndMembershipCredentials(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	fixture.controller.linkLatencies = make(map[string]control.LinkLatencyState)
+	updatedNode, _ := fixture.proxyNodes.ProxyNode(node.ID)
+	for _, candidate := range updatedNode.Links {
+		fixture.controller.linkLatencies["edge-online/"+proxynode.LinkOutboundTag(candidate.ID)] = control.LinkLatencyState{
+			Responded: true, Connected: true, Duration: 42 * time.Millisecond, ObservedAt: fixture.handler.(*Handler).now(),
+		}
+	}
 
 	request := fixture.authenticatedRequest(http.MethodGet, proxyHopURL(node.ID, node.Entrance.HopID), "")
 	response := httptest.NewRecorder()
@@ -1757,6 +1805,8 @@ func TestProxyNodePagesUseLinkOwnedRulesAndMembershipCredentials(t *testing.T) {
 		`data-reorder-url="/proxy-nodes/` + node.ID + `/hops/` + node.Entrance.HopID + `/rules/reorder"`, "Delete branch",
 		`<option value="shadowsocks"`, `<option value="anytls"`, `<option value="hysteria2"`,
 		"example.net", "Address family", "Multiplex", "[::]:8443",
+		"TCP latency", `data-link-latency="` + link.ID + `"`, "42 ms",
+		"Live TCP Probe", "Link Monitor", `data-history-url="` + proxyLinkURL(node.ID, link.ID) + `/latency-history"`,
 	} {
 		if !strings.Contains(body, expected) {
 			t.Errorf("Proxy Node tree does not contain %q", expected)
@@ -1812,6 +1862,12 @@ func TestProxyNodePagesUseLinkOwnedRulesAndMembershipCredentials(t *testing.T) {
 	}
 	if strings.Contains(body, `/deploy"`) || !strings.Contains(body, `data-topology-workflow`) {
 		t.Error("Proxy Node tree still exposes a manual topology Save workflow")
+	}
+	request = fixture.authenticatedRequest(http.MethodGet, "/proxy-nodes/"+url.PathEscape(node.ID)+"/latencies", "")
+	response = httptest.NewRecorder()
+	fixture.handler.ServeHTTP(response, request)
+	if response.Code != http.StatusOK || response.Header().Get("Cache-Control") != "no-store" || !strings.Contains(response.Body.String(), `"label":"42 ms"`) {
+		t.Fatalf("Link latency endpoint = %d %q", response.Code, response.Body.String())
 	}
 	childAgentAction := `action="/proxy-nodes/` + node.ID + `/hops/` + child.ID + `" method="post"`
 	if !strings.Contains(body, childAgentAction) {
@@ -2007,6 +2063,59 @@ func TestProxyNodePagesUseLinkOwnedRulesAndMembershipCredentials(t *testing.T) {
 	afterDuplicate, _ := fixture.proxyNodes.ProxyNode(node.ID)
 	if len(afterDuplicate.Hops) <= len(beforeDuplicate.Hops) {
 		t.Fatalf("duplicated branch did not create a child subtree: before=%d after=%d", len(beforeDuplicate.Hops), len(afterDuplicate.Hops))
+	}
+}
+
+func TestProxyLinkLatencyProbeAndHistory(t *testing.T) {
+	fixture := newWebFixture(t)
+	enrollAgent(t, fixture.registry, "edge-online")
+	enrollAgent(t, fixture.registry, "edge-exit")
+	registry, err := pool.Open(filepath.Join(t.TempDir(), "pool.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	fixture.controller.poolRegistry = registry
+	if _, err := registry.SetReported("edge-exit", []string{"203.0.113.50"}, nil); err != nil {
+		t.Fatal(err)
+	}
+	node, err := fixture.proxyNodes.CreateProxyNode(proxynode.CreateProxyNodeInput{
+		Name: "Cinema", RootAgent: "edge-online", Entrance: proxynode.Endpoint{Protocol: proxynode.ProtocolAnyTLS, Listen: "::", ListenPort: 443, Family: "auto", TLS: proxynode.TLSConfig{Mode: proxynode.TLSModeSelfSigned, ServerName: "cinema.example"}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	link, _, err := fixture.proxyNodes.AddLink(node.ID, proxynode.AddLinkInput{
+		ParentHopID: node.Entrance.HopID, ChildAgent: "edge-exit",
+		Endpoint: proxynode.Endpoint{Protocol: proxynode.ProtocolHysteria2, Listen: "::", ListenPort: 8443, Family: "ipv4", TLS: proxynode.TLSConfig{Mode: proxynode.TLSModeSelfSigned, ServerName: "exit.example"}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	fixture.controller.linkProbeResult = control.LinkLatencyState{ProbeType: "quic", Responded: true, Duration: 8 * time.Millisecond, ObservedAt: fixture.handler.(*Handler).now()}
+	request := fixture.authenticatedMutationRequest(http.MethodPost, proxyLinkURL(node.ID, link.ID)+"/latency-probe", url.Values{
+		"csrf_token": {fixture.session.CSRFToken}, "agent_id": {"edge-exit"}, "family": {"ipv4"},
+		"protocol": {"hysteria2"}, "listen": {"::"}, "listen_port": {"8443"}, "server_name": {"exit.example"}, "obfs_type": {""},
+	}.Encode())
+	response := httptest.NewRecorder()
+	fixture.handler.ServeHTTP(response, request)
+	if response.Code != http.StatusOK || fixture.controller.linkProbeAgent != "edge-online" ||
+		fixture.controller.linkProbeAddress != "203.0.113.50" || fixture.controller.linkProbePort != 8443 || fixture.controller.linkProbeType != "quic" ||
+		!strings.Contains(response.Body.String(), `"status":"reference"`) {
+		t.Fatalf("probe = %d %q, parent=%q address=%q port=%d", response.Code, response.Body.String(), fixture.controller.linkProbeAgent, fixture.controller.linkProbeAddress, fixture.controller.linkProbePort)
+	}
+	targetID := "0123456789abcdef0123456789abcdef"
+	now := fixture.handler.(*Handler).now()
+	fixture.controller.linkLatencies = map[string]control.LinkLatencyState{
+		"edge-online/" + proxynode.LinkOutboundTag(link.ID): {TargetID: targetID, ProbeType: "quic", Responded: true, Connected: true, Duration: 12 * time.Millisecond, ObservedAt: now},
+	}
+	if err := fixture.proxyNodes.RecordLinkLatencySnapshot("edge-online", now, []proxynode.LinkLatencyObservation{{TargetID: targetID, Responded: true, Connected: true, Duration: 12 * time.Millisecond}}); err != nil {
+		t.Fatal(err)
+	}
+	request = fixture.authenticatedRequest(http.MethodGet, proxyLinkURL(node.ID, link.ID)+"/latency-history?range=24h", "")
+	response = httptest.NewRecorder()
+	fixture.handler.ServeHTTP(response, request)
+	if response.Code != http.StatusOK || !strings.Contains(response.Body.String(), `"average_ms":12`) || !strings.Contains(response.Body.String(), `"loss_percent":0`) {
+		t.Fatalf("history = %d %q", response.Code, response.Body.String())
 	}
 }
 
@@ -4329,6 +4438,7 @@ func TestPublicURLValidation(t *testing.T) {
 		"https://master.example.com:8443": "master.example.com:8443",
 		"https://master.example.com:443":  "master.example.com:443",
 		"https://[2001:db8::1]:8443":      "[2001:db8::1]:8443",
+		"http://localhost:19444":          "localhost:19444",
 	}
 	for raw, expectedAddress := range valid {
 		parsed, err := parsePublicURL(raw)

@@ -15,11 +15,12 @@ import (
 	_ "modernc.org/sqlite"
 )
 
-const accountingSchemaVersion = 3
+const accountingSchemaVersion = 4
 
 type accountingDB struct {
-	db   *sql.DB
-	path string
+	db               *sql.DB
+	path             string
+	lastLatencyPrune time.Time
 }
 
 func accountingPath(statePath string) string {
@@ -127,6 +128,20 @@ func (a *accountingDB) initialize(state *State) error {
 			reason TEXT NOT NULL,
 			occurred_at INTEGER NOT NULL
 		) STRICT`,
+		`CREATE TABLE IF NOT EXISTS link_latency_buckets (
+			parent_agent TEXT NOT NULL,
+			target_id TEXT NOT NULL,
+			bucket_started_at INTEGER NOT NULL,
+			sample_count INTEGER NOT NULL,
+			response_count INTEGER NOT NULL,
+			connected_count INTEGER NOT NULL,
+			duration_sum_ms INTEGER NOT NULL,
+			duration_min_ms INTEGER NOT NULL,
+			duration_max_ms INTEGER NOT NULL,
+			PRIMARY KEY (parent_agent, target_id, bucket_started_at)
+		) STRICT`,
+		`CREATE INDEX IF NOT EXISTS link_latency_buckets_by_time
+			ON link_latency_buckets(bucket_started_at)`,
 	} {
 		if _, err := transaction.Exec(statement); err != nil {
 			return fmt.Errorf("create accounting schema: %w", err)
@@ -151,6 +166,14 @@ func (a *accountingDB) initialize(state *State) error {
 		version = 2
 		fallthrough
 	case version == 2:
+		if _, err := transaction.Exec(
+			`UPDATE accounting_meta SET value = ? WHERE key = 'schema_version'`,
+			strconv.Itoa(accountingSchemaVersion),
+		); err != nil {
+			return fmt.Errorf("record accounting schema migration: %w", err)
+		}
+		version = accountingSchemaVersion
+	case version == 3:
 		if _, err := transaction.Exec(
 			`UPDATE accounting_meta SET value = ? WHERE key = 'schema_version'`,
 			strconv.Itoa(accountingSchemaVersion),

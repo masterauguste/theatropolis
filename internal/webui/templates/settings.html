@@ -11,6 +11,9 @@
         <p class="eyebrow">Global settings</p>
         <h1>Master</h1>
       </div>
+      <div class="page-header__actions">
+        <button class="button button--secondary button--small" type="button" data-dialog-open="master-migration-menu" aria-haspopup="dialog">Migration</button>
+      </div>
     </header>
     {{if .Error}}<div class="notice notice--error" role="alert">{{.Error}}</div>{{end}}
     {{if .Notice}}<div class="notice notice--success" role="status">{{.Notice}}</div>{{end}}
@@ -41,18 +44,21 @@
       </form>
       <div class="notice" data-master-update-progress hidden aria-live="polite"></div>
     </section>
-    <section class="panel settings-panel" aria-labelledby="migration-heading">
-      <div class="panel__header">
-        <h2 id="migration-heading">Master Migration</h2>
-        <button class="button button--secondary button--small" type="button" data-dialog-open="master-migration-dialog" aria-haspopup="dialog">Open Migration Helper</button>
-      </div>
-    </section>
-    <dialog class="modal resource-modal" id="master-migration-dialog" aria-labelledby="master-migration-title">
+    <dialog class="modal migration-menu-dialog" id="master-migration-menu" aria-labelledby="master-migration-menu-title">
       <div class="modal__surface">
-        <header class="modal__header"><div><p class="eyebrow">Master Migration</p><h2 id="master-migration-title">Migration Helper</h2></div><button class="button button--secondary button--icon-only" type="button" data-dialog-close aria-label="Close Master migration">×</button></header>
-        <div class="modal__body migration-actions">
-          <section class="migration-action">
-            <h3>1. Export</h3>
+        <header class="modal__header"><div><p class="eyebrow">Master</p><h2 id="master-migration-menu-title">Migration</h2></div><button class="button button--secondary button--icon-only" type="button" data-dialog-close aria-label="Close Migration">×</button></header>
+        <div class="modal__body migration-choices">
+          <button class="migration-choice" type="button" data-dialog-open="master-migration-source" aria-haspopup="dialog"><span class="migration-choice__direction" aria-hidden="true">&#8599;</span><span>Move From This Master</span><span class="migration-choice__arrow" aria-hidden="true">&#8594;</span></button>
+          <button class="migration-choice" type="button" data-dialog-open="master-migration-destination" aria-haspopup="dialog"><span class="migration-choice__direction" aria-hidden="true">&#8601;</span><span>Receive On This Master</span><span class="migration-choice__arrow" aria-hidden="true">&#8594;</span></button>
+        </div>
+      </div>
+    </dialog>
+    <dialog class="modal migration-source-dialog" id="master-migration-source" aria-labelledby="master-migration-source-title">
+      <div class="modal__surface">
+        <header class="modal__header"><div><p class="eyebrow">Source Master</p><h2 id="master-migration-source-title">Move From This Master</h2></div><button class="button button--secondary button--icon-only" type="button" data-dialog-close aria-label="Close Source Migration">×</button></header>
+        <div class="modal__body migration-source-actions">
+          <section class="migration-step">
+            <div class="migration-step__heading"><span>1</span><h3>Download Archive</h3></div>
             <form class="stack" action="/settings/migration/export" method="post" novalidate>
               <input type="hidden" name="csrf_token" value="{{.CSRFToken}}">
               <label class="field"><span>Passphrase</span><span class="secret-input"><input id="migration-export-passphrase" type="password" name="passphrase" minlength="15" maxlength="512" autocomplete="new-password" required><button type="button" data-reveal-secret data-secret-label="passphrase" aria-label="Show passphrase" aria-controls="migration-export-passphrase" aria-pressed="false">Show</button></span></label>
@@ -60,18 +66,8 @@
               <button class="button button--secondary" type="submit" data-submit-button data-submit-label="Exporting…">Download Archive</button>
             </form>
           </section>
-          <section class="migration-action">
-            <h3>2. Restore</h3>
-            <form class="stack" action="/settings/migration/restore" method="post" enctype="multipart/form-data" novalidate>
-              <input type="hidden" name="csrf_token" value="{{.CSRFToken}}">
-              <label class="field"><span>Archive</span><input type="file" name="archive" accept=".zip,application/zip" required></label>
-              <label class="field"><span>Passphrase</span><span class="secret-input"><input id="migration-restore-passphrase" type="password" name="passphrase" minlength="15" maxlength="512" autocomplete="current-password" required><button type="button" data-reveal-secret data-secret-label="passphrase" aria-label="Show passphrase" aria-controls="migration-restore-passphrase" aria-pressed="false">Show</button></span></label>
-              <label class="field"><span>Confirmation</span><input type="text" name="confirmation" autocomplete="off" placeholder="RESTORE" required></label>
-              <button class="button button--danger" type="submit" data-submit-button data-submit-label="Restoring…">Restore And Restart</button>
-            </form>
-          </section>
-          <section class="migration-action">
-            <h3>3. Switch Online Servers</h3>
+          <section class="migration-step migration-step--danger">
+            <div class="migration-step__heading"><span>2</span><h3>Switch Online Servers</h3></div>
             <form class="stack" action="/settings/migration/cutover" method="post" novalidate>
               <input type="hidden" name="csrf_token" value="{{.CSRFToken}}">
               <label class="field"><span>New Master</span><input type="text" name="master_address" placeholder="master.example.com:443" autocomplete="off" required></label>
@@ -81,6 +77,20 @@
           </section>
         </div>
         <footer class="modal__footer"><button class="button button--secondary" type="button" data-dialog-close>Close</button></footer>
+      </div>
+    </dialog>
+    <dialog class="modal migration-destination-dialog" id="master-migration-destination" aria-labelledby="master-migration-destination-title">
+      <div class="modal__surface">
+        <header class="modal__header"><div><p class="eyebrow">Destination Master</p><h2 id="master-migration-destination-title">Receive Migration</h2></div><button class="button button--secondary button--icon-only" type="button" data-dialog-close aria-label="Close Destination Migration">×</button></header>
+        <form action="/settings/migration/restore" method="post" enctype="multipart/form-data" novalidate>
+          <div class="modal__body stack">
+            <input type="hidden" name="csrf_token" value="{{.CSRFToken}}">
+            <label class="field"><span>Archive</span><input type="file" name="archive" accept=".zip,application/zip" required></label>
+            <label class="field"><span>Passphrase</span><span class="secret-input"><input id="migration-restore-passphrase" type="password" name="passphrase" minlength="15" maxlength="512" autocomplete="current-password" required><button type="button" data-reveal-secret data-secret-label="passphrase" aria-label="Show passphrase" aria-controls="migration-restore-passphrase" aria-pressed="false">Show</button></span></label>
+            <label class="field"><span>Confirmation</span><input type="text" name="confirmation" autocomplete="off" placeholder="RESTORE" required></label>
+          </div>
+          <footer class="modal__footer"><button class="button button--secondary" type="button" data-dialog-close>Cancel</button><button class="button button--danger" type="submit" data-submit-button data-submit-label="Restoring…">Restore And Restart</button></footer>
+        </form>
       </div>
     </dialog>
     <section class="panel settings-panel" aria-labelledby="accounting-errors-heading">

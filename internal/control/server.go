@@ -35,6 +35,8 @@ const (
 	HeartbeatCapability                 = "heartbeat-v1"
 	CapabilityAddressReport             = "address-report-v1"
 	CapabilityAddressProbe              = "address-probe-v1"
+	LinkLatencyCapability               = "link-latency-v1"
+	LinkLatencyProbeCapability          = "link-latency-probe-v1"
 	ManagedUserTrafficCapability        = "managed-user-traffic-v1"
 	ManagedUserTrafficDeltaCapability   = "managed-user-traffic-delta-v1"
 	ManagedUserTrafficRequestCapability = "managed-user-traffic-request-v1"
@@ -94,6 +96,11 @@ type Server struct {
 	authoritativeProfileProvider     func(context.Context, string) ([]byte, bool, error)
 	managedUserAuthorityMu           sync.Mutex
 	managedUserAuthorityWaiters      map[string]chan *controlv1.ManagedUserAuthorityReport
+	linkLatencyHandler               func(string, time.Time, []LinkLatencyObservation) error
+	linkLatencyMu                    sync.RWMutex
+	linkLatency                      map[string]map[string]LinkLatencyState
+	linkLatencyProbeMu               sync.Mutex
+	linkLatencyProbeWaiters          map[string]chan LinkLatencyState
 	closeOnce                        sync.Once
 }
 
@@ -102,6 +109,33 @@ type ManagedUserTraffic struct {
 	Username      string
 	UplinkBytes   uint64
 	DownlinkBytes uint64
+}
+
+type LinkLatencyState struct {
+	TargetID   string
+	ProbeType  string
+	Responded  bool
+	Connected  bool
+	Duration   time.Duration
+	ObservedAt time.Time
+}
+
+type LinkLatencyObservation struct {
+	TargetID     string
+	ProbeType    string
+	OutboundTags []string
+	Responded    bool
+	Connected    bool
+	Duration     time.Duration
+}
+
+type LinkLatencyProbeTarget struct {
+	Address    string
+	Port       uint16
+	ProbeType  string
+	ServerName string
+	ObfsType   string
+	ObfsSecret string
 }
 
 func NewServer(
@@ -132,6 +166,8 @@ func NewServer(
 		singBoxUpdates:              make(map[string]SingBoxUpdateState),
 		managedUserAuthorityWaiters: make(map[string]chan *controlv1.ManagedUserAuthorityReport),
 		managedUserTrafficWaiters:   make(map[string]chan error),
+		linkLatency:                 make(map[string]map[string]LinkLatencyState),
+		linkLatencyProbeWaiters:     make(map[string]chan LinkLatencyState),
 	}
 	return server
 }
@@ -154,6 +190,13 @@ func (s *Server) SetManagedUserTrafficHandler(
 // history store itself is unavailable.
 func (s *Server) SetManagedUserTrafficFailureHandler(handler func(string, string, time.Time) error) {
 	s.managedUserTrafficFailureHandler = handler
+}
+
+// SetLinkLatencyHandler connects periodic physical-path observations to the
+// master's durable history store. Latest values remain available even when
+// history persistence is temporarily unavailable.
+func (s *Server) SetLinkLatencyHandler(handler func(string, time.Time, []LinkLatencyObservation) error) {
+	s.linkLatencyHandler = handler
 }
 
 // SetProxyNodeAddressHandler connects every persisted pool/address mutation to
@@ -355,6 +398,18 @@ func (s *Server) Connect(stream controlv1.AgentControlService_ConnectServer) err
 	session := newSessionFromHello(agentID, hello)
 	for _, capability := range hello.GetCapabilities() {
 		session.capabilities[capability] = struct{}{}
+	}
+	if _, supported := session.capabilities[LinkLatencyCapability]; supported {
+		authResult.GetAuthenticationResult().Capabilities = append(
+			authResult.GetAuthenticationResult().Capabilities,
+			LinkLatencyCapability,
+		)
+	}
+	if _, supported := session.capabilities[LinkLatencyProbeCapability]; supported {
+		authResult.GetAuthenticationResult().Capabilities = append(
+			authResult.GetAuthenticationResult().Capabilities,
+			LinkLatencyProbeCapability,
+		)
 	}
 	s.authorizationMu.Lock()
 	currentAgentID, currentKeyErr := s.Identities.AgentIDForPublicKey(ctx, publicKey)
@@ -831,6 +886,10 @@ func (s *Server) handleAgentFrame(
 		)
 	case *controlv1.AgentFrame_AddressProbeReport:
 		return s.handleAddressProbeReport(ctx, agentID, payload.AddressProbeReport)
+	case *controlv1.AgentFrame_LinkLatencyReport:
+		return s.handleLinkLatencyReport(agentID, payload.LinkLatencyReport)
+	case *controlv1.AgentFrame_LinkLatencyProbeReport:
+		return s.handleLinkLatencyProbeReport(agentID, payload.LinkLatencyProbeReport)
 	case *controlv1.AgentFrame_ManagedUserTrafficReport:
 		return s.handleManagedUserTrafficReport(ctx, agentID, payload.ManagedUserTrafficReport)
 	case *controlv1.AgentFrame_ManagedUserAuthorityReport:

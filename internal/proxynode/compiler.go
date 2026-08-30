@@ -748,8 +748,11 @@ func linkUserLabel(proxyName, linkID string) string {
 }
 
 func linkOutboundTag(linkID string) string {
-	return "tp-out-" + shortID(linkID)
+	return LinkOutboundTag(linkID)
 }
+
+// LinkOutboundTag is stable across compiler, telemetry, and UI processes.
+func LinkOutboundTag(linkID string) string { return "tp-out-" + shortID(linkID) }
 
 func shortID(id string) string {
 	if separator := strings.IndexByte(id, '_'); separator >= 0 {

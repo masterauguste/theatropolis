@@ -14,6 +14,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/masterauguste/theatropolis/internal/control"
 	"github.com/masterauguste/theatropolis/internal/identity"
 	"github.com/masterauguste/theatropolis/internal/pool"
 	"github.com/masterauguste/theatropolis/internal/proxynode"
@@ -152,6 +153,9 @@ type proxyTreeLinkView struct {
 	CanMoveUp   bool
 	CanMoveDown bool
 	Child       *proxyTreeHopView
+	Latency     linkLatencyView
+	HistoryURL  string
+	ProbeURL    string
 }
 
 // proxyTreeBranchView is one visible route through one logical Link. Active
@@ -171,6 +175,15 @@ type proxyTreeBranchView struct {
 	AgentID      string
 	Uncertain    bool
 	Child        *proxyTreeHopView
+	Latency      linkLatencyView
+}
+
+type linkLatencyView struct {
+	Status     string `json:"status"`
+	Label      string `json:"label"`
+	Detail     string `json:"detail,omitempty"`
+	ProbeType  string `json:"probe_type,omitempty"`
+	ObservedAt string `json:"observed_at,omitempty"`
 }
 
 type proxyBlockRuleView struct {
@@ -1498,7 +1511,307 @@ func (h *Handler) proxyNodeDetail(node proxynode.ProxyNode) *proxyNodeDetailView
 	}
 	detail.Tree, detail.TerminalCount, detail.UnusedLinkCount = buildProxyTree(node)
 	h.attachProxyTreeControls(node, detail.Tree)
+	h.attachProxyTreeLatencies(node, detail.Tree)
 	return detail
+}
+
+func (h *Handler) attachProxyTreeLatencies(node proxynode.ProxyNode, tree *proxyTreeHopView) {
+	if tree == nil {
+		return
+	}
+	hops := make(map[string]proxynode.Hop, len(node.Hops))
+	for _, hop := range node.Hops {
+		hops[hop.ID] = hop
+	}
+	views := make(map[string]linkLatencyView, len(node.Links))
+	for _, link := range node.Links {
+		views[link.ID] = h.linkLatencyView(hops[link.ParentHopID].AgentID, link)
+	}
+	var visit func(*proxyTreeHopView)
+	visit = func(hop *proxyTreeHopView) {
+		if hop == nil {
+			return
+		}
+		for index := range hop.Children {
+			hop.Children[index].Latency = views[hop.Children[index].ID]
+			visit(hop.Children[index].Child)
+		}
+		for index := range hop.Branches {
+			if hop.Branches[index].LinkID != "" {
+				hop.Branches[index].Latency = views[hop.Branches[index].LinkID]
+			}
+			visit(hop.Branches[index].Child)
+		}
+	}
+	visit(tree)
+}
+
+func (h *Handler) linkLatencyView(parentAgent string, link proxynode.Link) linkLatencyView {
+	if h.controller == nil {
+		return linkLatencyView{Status: "pending", Label: "—"}
+	}
+	sample, exists := h.controller.LinkLatency(parentAgent, proxynode.LinkOutboundTag(link.ID))
+	if !exists {
+		return linkLatencyView{Status: "pending", Label: "—"}
+	}
+	observed := sample.ObservedAt.Format(time.RFC3339)
+	if h.now().Sub(sample.ObservedAt) > 90*time.Second {
+		probeType := sample.ProbeType
+		if probeType == "" {
+			probeType = "tcp"
+		}
+		return linkLatencyView{Status: "stale", Label: "Stale", ProbeType: probeType, ObservedAt: observed}
+	}
+	return linkLatencyViewFromSample(sample, h.now())
+}
+
+func (h *Handler) proxyNodeLatencies(response http.ResponseWriter, request *http.Request) {
+	if _, ok := h.requireAuthentication(response, request); !ok {
+		return
+	}
+	node, ok := h.loadProxyNode(response, request)
+	if !ok {
+		return
+	}
+	hops := make(map[string]proxynode.Hop, len(node.Hops))
+	for _, hop := range node.Hops {
+		hops[hop.ID] = hop
+	}
+	result := make(map[string]linkLatencyView, len(node.Links))
+	for _, link := range node.Links {
+		result[link.ID] = h.linkLatencyView(hops[link.ParentHopID].AgentID, link)
+	}
+	response.Header().Set("Content-Type", "application/json")
+	response.Header().Set("Cache-Control", "no-store")
+	_ = json.NewEncoder(response).Encode(map[string]any{"links": result})
+}
+
+type linkLatencyPointView struct {
+	At          string  `json:"at"`
+	Samples     uint64  `json:"samples"`
+	Responses   uint64  `json:"responses"`
+	AverageMS   float64 `json:"average_ms"`
+	MinimumMS   int64   `json:"minimum_ms"`
+	MaximumMS   int64   `json:"maximum_ms"`
+	LossPercent float64 `json:"loss_percent"`
+}
+
+func (h *Handler) proxyLinkLatencyHistory(response http.ResponseWriter, request *http.Request) {
+	if _, ok := h.requireAuthentication(response, request); !ok {
+		return
+	}
+	node, ok := h.loadProxyNode(response, request)
+	if !ok {
+		return
+	}
+	link, exists := proxyLink(node, request.PathValue("link_id"))
+	if !exists {
+		http.NotFound(response, request)
+		return
+	}
+	parent, exists := proxyHop(node, link.ParentHopID)
+	if !exists || h.controller == nil {
+		http.Error(response, "Link monitor is unavailable", http.StatusServiceUnavailable)
+		return
+	}
+	rangeName, duration, interval := linkLatencyRange(request.URL.Query().Get("range"))
+	if duration == 0 {
+		http.Error(response, "invalid Link monitor range", http.StatusBadRequest)
+		return
+	}
+	sample, sampled := h.controller.LinkLatency(parent.AgentID, proxynode.LinkOutboundTag(link.ID))
+	points := make([]linkLatencyPointView, 0)
+	if sampled && sample.TargetID != "" {
+		buckets, err := h.proxyNodes.LinkLatencyHistory(parent.AgentID, sample.TargetID, h.now().Add(-duration), interval)
+		if err != nil {
+			h.logger.Error("load Link latency history", "proxy_id", node.ID, "link_id", link.ID, "error", err)
+			http.Error(response, "Link monitor history is unavailable", http.StatusInternalServerError)
+			return
+		}
+		points = make([]linkLatencyPointView, 0, len(buckets))
+		for _, bucket := range buckets {
+			point := linkLatencyPointView{
+				At: bucket.StartedAt.Format(time.RFC3339), Samples: bucket.Samples,
+				Responses: bucket.Responses,
+			}
+			if bucket.Responses > 0 {
+				point.AverageMS = float64(bucket.DurationSum.Milliseconds()) / float64(bucket.Responses)
+				point.MinimumMS = bucket.DurationMin.Milliseconds()
+				point.MaximumMS = bucket.DurationMax.Milliseconds()
+			}
+			if bucket.Samples > 0 {
+				point.LossPercent = float64(bucket.Samples-bucket.Responses) * 100 / float64(bucket.Samples)
+			}
+			points = append(points, point)
+		}
+	}
+	response.Header().Set("Content-Type", "application/json")
+	response.Header().Set("Cache-Control", "no-store")
+	_ = json.NewEncoder(response).Encode(map[string]any{
+		"range": rangeName, "current": h.linkLatencyView(parent.AgentID, link), "points": points,
+	})
+}
+
+func linkLatencyRange(value string) (string, time.Duration, time.Duration) {
+	switch strings.TrimSpace(value) {
+	case "", "24h":
+		return "24h", 24 * time.Hour, 15 * time.Minute
+	case "1h":
+		return "1h", time.Hour, 5 * time.Minute
+	case "7d":
+		return "7d", 7 * 24 * time.Hour, time.Hour
+	case "30d":
+		return "30d", 30 * 24 * time.Hour, 3 * time.Hour
+	default:
+		return "", 0, 0
+	}
+}
+
+func (h *Handler) proxyHopLatencyProbe(response http.ResponseWriter, request *http.Request) {
+	_, form, ok := h.authorizeProxyMutation(response, request, "agent_id", "family", "protocol", "listen", "listen_port", "server_name", "obfs_type")
+	if !ok {
+		return
+	}
+	node, ok := h.loadProxyNode(response, request)
+	if !ok {
+		return
+	}
+	parent, exists := proxyHop(node, request.PathValue("hop_id"))
+	if !exists {
+		http.NotFound(response, request)
+		return
+	}
+	h.proxyLatencyProbe(response, request, parent.AgentID, form)
+}
+
+func (h *Handler) proxyLinkLatencyProbe(response http.ResponseWriter, request *http.Request) {
+	_, form, ok := h.authorizeProxyMutation(response, request, "agent_id", "family", "protocol", "listen", "listen_port", "server_name", "obfs_type")
+	if !ok {
+		return
+	}
+	node, ok := h.loadProxyNode(response, request)
+	if !ok {
+		return
+	}
+	link, exists := proxyLink(node, request.PathValue("link_id"))
+	if !exists {
+		http.NotFound(response, request)
+		return
+	}
+	parent, exists := proxyHop(node, link.ParentHopID)
+	if !exists {
+		http.NotFound(response, request)
+		return
+	}
+	h.proxyLatencyProbe(response, request, parent.AgentID, form)
+}
+
+func (h *Handler) proxyLatencyProbe(response http.ResponseWriter, request *http.Request, parentAgent string, form url.Values) {
+	if h.controller == nil || h.controller.PoolRegistry() == nil || !h.enrolledAgent(form.Get("agent_id")) {
+		http.Error(response, "target Agent is unavailable", http.StatusBadRequest)
+		return
+	}
+	family, err := pool.ParseFamily(form.Get("family"))
+	if err != nil {
+		http.Error(response, "address family is invalid", http.StatusBadRequest)
+		return
+	}
+	port, err := strconv.ParseUint(form.Get("listen_port"), 10, 16)
+	if err != nil || port == 0 {
+		http.Error(response, "listen port is invalid", http.StatusBadRequest)
+		return
+	}
+	address, exists := h.controller.PoolRegistry().AgentAddressForFamily(form.Get("agent_id"), family)
+	if !exists {
+		http.Error(response, "target Agent has no routable address", http.StatusConflict)
+		return
+	}
+	ctx, cancel := context.WithTimeout(request.Context(), 5*time.Second)
+	defer cancel()
+	probeType := "tcp"
+	if form.Get("protocol") == string(proxynode.ProtocolHysteria2) {
+		probeType = "quic"
+	}
+	material := h.proxyProbeEndpointMaterial(form.Get("agent_id"), form.Get("protocol"), form.Get("listen"), int(port))
+	target := control.LinkLatencyProbeTarget{
+		Address: address, Port: uint16(port), ProbeType: probeType,
+		ServerName: form.Get("server_name"), ObfsType: form.Get("obfs_type"),
+	}
+	if probeType == "quic" && material != nil && material.ObfsType == target.ObfsType {
+		target.ObfsSecret = material.ObfsSecret
+		if target.ServerName == "" {
+			target.ServerName = material.TLS.ServerName
+		}
+	}
+	if probeType == "quic" && target.ObfsType != "" && target.ObfsSecret == "" {
+		http.Error(response, "Hysteria2 listener is not active yet", http.StatusConflict)
+		return
+	}
+	sample, err := h.controller.RequestLinkLatencyProbe(ctx, parentAgent, target)
+	if err != nil {
+		statusCode := http.StatusServiceUnavailable
+		if errors.Is(err, control.ErrLinkLatencyProbeUnsupported) {
+			statusCode = http.StatusConflict
+		}
+		http.Error(response, "path probe is unavailable", statusCode)
+		return
+	}
+	view := linkLatencyViewFromSample(sample, h.now())
+	response.Header().Set("Content-Type", "application/json")
+	response.Header().Set("Cache-Control", "no-store")
+	_ = json.NewEncoder(response).Encode(view)
+}
+
+func (h *Handler) proxyProbeEndpointMaterial(agentID, protocol, listen string, port int) *proxynode.Endpoint {
+	state := h.proxyNodes.Snapshot()
+	for _, node := range state.ProxyNodes {
+		hops := make(map[string]string, len(node.Hops))
+		for _, hop := range node.Hops {
+			hops[hop.ID] = hop.AgentID
+		}
+		if hops[node.Entrance.HopID] == agentID && string(node.Entrance.Endpoint.Protocol) == protocol &&
+			node.Entrance.Endpoint.Listen == listen && node.Entrance.Endpoint.ListenPort == port {
+			endpoint := node.Entrance.Endpoint
+			return &endpoint
+		}
+		for _, link := range node.Links {
+			if hops[link.ChildHopID] == agentID && string(link.Endpoint.Protocol) == protocol &&
+				link.Endpoint.Listen == listen && link.Endpoint.ListenPort == port {
+				endpoint := link.Endpoint
+				return &endpoint
+			}
+		}
+	}
+	return nil
+}
+
+func (h *Handler) enrolledAgent(agentID string) bool {
+	for _, agent := range h.registry.Snapshot(h.currentTime()) {
+		if agent.ID == agentID {
+			return agent.State == identity.AgentStateEnrolled
+		}
+	}
+	return false
+}
+
+func linkLatencyViewFromSample(sample control.LinkLatencyState, _ time.Time) linkLatencyView {
+	observed := sample.ObservedAt.Format(time.RFC3339)
+	probeType := sample.ProbeType
+	if probeType == "" {
+		probeType = "tcp"
+	}
+	if !sample.Responded {
+		return linkLatencyView{Status: "unreachable", Label: "No response", Detail: strings.ToUpper(probeType) + " loss", ProbeType: probeType, ObservedAt: observed}
+	}
+	milliseconds := sample.Duration.Milliseconds()
+	label := "<1 ms"
+	if milliseconds > 0 {
+		label = strconv.FormatInt(milliseconds, 10) + " ms"
+	}
+	if !sample.Connected {
+		return linkLatencyView{Status: "reference", Label: label, Detail: "Connection refused", ProbeType: probeType, ObservedAt: observed}
+	}
+	return linkLatencyView{Status: "reachable", Label: label, Detail: "Connected", ProbeType: probeType, ObservedAt: observed}
 }
 
 func defaultMembershipPlanView() membershipPlanView {
@@ -1749,6 +2062,8 @@ func buildProxyTree(node proxynode.ProxyNode) (*proxyTreeHopView, int, int) {
 				ruleViews := proxyRuleViews(link.Rules, totalRules)
 				view.Children = append(view.Children, proxyTreeLinkView{
 					ID: link.ID, ParentHopID: link.ParentHopID, EditURL: proxyLinkURL(node.ID, link.ID), Protocol: protocolLabel(link.Endpoint.Protocol),
+					HistoryURL: proxyLinkURL(node.ID, link.ID) + "/latency-history",
+					ProbeURL:   proxyLinkURL(node.ID, link.ID) + "/latency-probe",
 					ListenPort: link.Endpoint.ListenPort, Listener: listenEndpointLabel(link.Endpoint.Listen, link.Endpoint.ListenPort),
 					Family: relayFamilyLabel(link.Endpoint.Family), Order: index + 1, Endpoint: endpointViewForAgent(link.Endpoint, childAgent),
 					Rules: ruleViews, NewRule: proxyRuleView{Match: string(proxynode.MatchProtocol)}, Used: used,

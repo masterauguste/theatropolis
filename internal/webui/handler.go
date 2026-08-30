@@ -106,6 +106,8 @@ type AgentController interface {
 	// RequestManagedUserTraffic persists and clears the entrance Agent's
 	// current accounting interval before an administrator resets usage.
 	RequestManagedUserTraffic(context.Context, string) error
+	LinkLatency(agentID, outboundTag string) (control.LinkLatencyState, bool)
+	RequestLinkLatencyProbe(context.Context, string, control.LinkLatencyProbeTarget) (control.LinkLatencyState, error)
 	QueueOnlineMasterMigration(context.Context, string, string) (int, int, error)
 }
 
@@ -481,6 +483,10 @@ func (h *Handler) routes() {
 	h.mux.HandleFunc("POST /proxy-nodes/deploy", h.deployProxyNodes)
 	h.mux.HandleFunc("GET /proxy-nodes/deployment-status", h.proxyDeploymentStatus)
 	h.mux.HandleFunc("GET /proxy-nodes/{proxy_id}/manage", h.proxyNodePage)
+	h.mux.HandleFunc("GET /proxy-nodes/{proxy_id}/latencies", h.proxyNodeLatencies)
+	h.mux.HandleFunc("GET /proxy-nodes/{proxy_id}/links/{link_id}/latency-history", h.proxyLinkLatencyHistory)
+	h.mux.HandleFunc("POST /proxy-nodes/{proxy_id}/hops/{hop_id}/latency-probe", h.proxyHopLatencyProbe)
+	h.mux.HandleFunc("POST /proxy-nodes/{proxy_id}/links/{link_id}/latency-probe", h.proxyLinkLatencyProbe)
 	h.mux.HandleFunc("GET /proxy-nodes/{proxy_id}/users", h.proxyNodeUsersPage)
 	h.mux.HandleFunc("POST /proxy-nodes/{proxy_id}/rename", h.renameProxyNode)
 	h.mux.HandleFunc("POST /proxy-nodes/{proxy_id}/subscription-addresses", h.updateProxyNodeSubscriptionAddresses)
@@ -2254,7 +2260,7 @@ func (h *Handler) serverPageData(
 	}
 	if info, exists := h.sessions.AgentInfo(snapshot.ID); exists {
 		detail.AgentVersion = info.Version
-		detail.SingBoxVersion = info.SingBoxVersion
+		detail.SingBoxVersion = displaySingBoxVersion(info.SingBoxVersion)
 		detail.OperatingSystem = info.OperatingSystem
 		detail.Architecture = info.Architecture
 	}
@@ -3373,8 +3379,9 @@ func parsePublicURL(raw string) (parsedPublicURL, error) {
 		return parsedPublicURL{}, fmt.Errorf("parse public web URL: %w", err)
 	}
 	scheme := strings.ToLower(parsed.Scheme)
-	if scheme != "https" {
-		return parsedPublicURL{}, errors.New("public web URL must use HTTPS")
+	hostname := strings.TrimSuffix(strings.ToLower(parsed.Hostname()), ".")
+	if scheme != "https" && !(scheme == "http" && hostname == "localhost") {
+		return parsedPublicURL{}, errors.New("public web URL must use HTTPS except on localhost")
 	}
 	if parsed.Opaque != "" ||
 		parsed.User != nil ||
@@ -3385,7 +3392,6 @@ func parsePublicURL(raw string) (parsedPublicURL, error) {
 		parsed.Fragment != "" {
 		return parsedPublicURL{}, errors.New("public web URL must contain only a scheme and host")
 	}
-	hostname := strings.TrimSuffix(strings.ToLower(parsed.Hostname()), ".")
 	if !validHostname(hostname) {
 		return parsedPublicURL{}, errors.New("public web URL contains an invalid host")
 	}

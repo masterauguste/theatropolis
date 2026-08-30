@@ -61,6 +61,10 @@ Security and domain rules in the Go implementation remain authoritative.
 
 - Primary buttons commit or create the page's main object. Secondary buttons
   save optional settings, cancel, close, refresh, or open supporting controls.
+- Settings exposes Master migration as one compact header action. A role chooser
+  opens separate source and destination dialogs: the source owns export and
+  online-server cutover, while the destination owns restore. The two sides are
+  never combined into one form or workflow surface.
 - Add Server collects only identity and enrollment lifetime. Optional IPv4 and
   IPv6 configuration-subscription domains belong to the enrolled Server's
   settings dialog and save atomically. Invalid values reopen that dialog with
@@ -142,6 +146,16 @@ Security and domain rules in the Go implementation remain authoritative.
 - Proxy Node topology Rules use the same searchable catalog selector for
   single-value Geosite and GeoIP matches; all other match types keep their
   established value editor.
+- Link latency is advisory physical-path telemetry measured by the parent Agent
+  every 30 seconds. AnyTLS and Shadowsocks 2022 use a TCP connect; Hysteria2
+  uses an actual QUIC handshake, including the listener's configured
+  obfuscation. Logical Links sharing the same parent, child address, and
+  transport reuse one probe and one 30-day history. The relay map updates
+  without navigation and preserves the last value during a transient UI fetch
+  failure. A sample older than 90 seconds is stale and a failed handshake is
+  unavailable. The UI never labels a reachable latency as good or bad by an
+  arbitrary threshold. Link deletion hides its monitor but does not erase the
+  shared physical-path history; retention removes it naturally after 30 days.
 
 ## Dialogs and transient layers
 

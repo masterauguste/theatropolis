@@ -443,6 +443,209 @@ const topologyWorkflow = document.querySelector("[data-topology-workflow]");
 const proxyDeployment = document.querySelector("[data-proxy-deployment][data-status-url]");
 let topologyPolling = false;
 
+const linkLatencyURL = topologyWorkflow?.dataset.linkLatencyUrl;
+let linkLatencyLoading = false;
+const refreshLinkLatencies = async () => {
+  if (!linkLatencyURL || linkLatencyLoading || document.hidden) return;
+  linkLatencyLoading = true;
+  try {
+    const response = await fetch(linkLatencyURL, {
+      headers: { Accept: "application/json" },
+      credentials: "same-origin",
+      cache: "no-store",
+    });
+    if (await redirectIfSessionExpired(response)) return;
+    if (!response.ok) return;
+    const body = await response.json();
+    for (const [linkID, sample] of Object.entries(body?.links || {})) {
+      for (const element of document.querySelectorAll(`[data-link-latency="${CSS.escape(linkID)}"]`)) {
+        const status = ["reachable", "reference", "unreachable", "stale", "unsupported", "pending"].includes(sample.status)
+          ? sample.status : "pending";
+        element.className = `link-latency link-latency--${status}`;
+        const label = element.querySelector("[data-link-latency-label]");
+        if (label) label.textContent = t(sample.label || "—");
+      }
+    }
+  } catch (_) {
+    // Monitoring is advisory; retain the last value through transient UI or
+    // control-plane failures instead of replacing it with a false outage.
+  } finally {
+    linkLatencyLoading = false;
+  }
+};
+if (linkLatencyURL) {
+  window.setInterval(refreshLinkLatencies, 20_000);
+  document.addEventListener("visibilitychange", () => { if (!document.hidden) refreshLinkLatencies(); });
+}
+
+const linkProbeControllers = new WeakMap();
+const linkProbeTimers = new WeakMap();
+
+const runLinkProbe = async (form) => {
+  const panel = form.querySelector("[data-link-probe]");
+  const output = panel?.querySelector("[data-link-probe-result]");
+  const editor = form.querySelector("[data-proxy-listener-editor]");
+  if (!panel || !output || !editor || !form.dataset.linkProbeUrl) return;
+  const agentID = proxyListenerAgent(editor);
+  const family = form.querySelector('[name="family"]')?.value || "auto";
+  const probeType = form.querySelector('[name="protocol"]')?.value === "hysteria2" ? "QUIC" : "TCP";
+  const port = form.querySelector('[name="listen_port"]')?.value || "";
+  const probeLabel = panel.querySelector(":scope > div > span");
+  if (probeLabel) probeLabel.textContent = t(`Live ${probeType} Probe`);
+  if (!agentID || !port) {
+    output.textContent = t("Select a destination");
+    panel.dataset.status = "idle";
+    return;
+  }
+  linkProbeControllers.get(form)?.abort();
+  const controller = new AbortController();
+  linkProbeControllers.set(form, controller);
+  panel.dataset.status = "loading";
+  output.textContent = t("Measuring…");
+  const body = new FormData();
+  body.set("csrf_token", form.querySelector('[name="csrf_token"]')?.value || "");
+  body.set("agent_id", agentID);
+  body.set("family", family);
+  body.set("protocol", form.querySelector('[name="protocol"]')?.value || "");
+  body.set("listen", form.querySelector('[name="listen"]')?.value || "");
+  body.set("listen_port", port);
+  body.set("server_name", form.querySelector('[name="server_name"]')?.value || "");
+  body.set("obfs_type", form.querySelector('[name="obfs_type"]')?.value || "");
+  try {
+    const response = await fetch(form.dataset.linkProbeUrl, {
+      method: "POST",
+      body,
+      credentials: "same-origin",
+      headers: { Accept: "application/json" },
+      signal: controller.signal,
+    });
+    if (redirectForExpiredSession(response)) return;
+    if (!response.ok) {
+      const message = (await response.text()).trim();
+      if (response.status === 409 && message) {
+        panel.dataset.status = "error";
+        output.textContent = t(message);
+        return;
+      }
+      throw new Error(message);
+    }
+    const result = await response.json();
+    panel.dataset.status = result.status || "idle";
+    output.textContent = `${t(result.label || "—")} · ${t(result.detail || "")}`;
+  } catch (error) {
+    if (error?.name === "AbortError") return;
+    panel.dataset.status = "error";
+    output.textContent = t("Path probe unavailable");
+  }
+};
+
+const scheduleLinkProbe = (form, immediate = false) => {
+  const previous = linkProbeTimers.get(form);
+  if (previous) window.clearTimeout(previous);
+  linkProbeTimers.set(form, window.setTimeout(() => runLinkProbe(form), immediate ? 0 : 400));
+};
+
+for (const form of document.querySelectorAll("[data-link-probe-form]")) {
+  for (const input of form.querySelectorAll('[name="child_agent"], [name="agent_id"], [name="family"], [name="protocol"], [name="listen"], [name="listen_port"], [name="server_name"], [name="obfs_type"], [data-proxy-listener-select]')) {
+    input.addEventListener("change", () => scheduleLinkProbe(form));
+    if (input.matches("input")) input.addEventListener("input", () => scheduleLinkProbe(form));
+  }
+  form.querySelector("[data-link-probe-refresh]")?.addEventListener("click", () => scheduleLinkProbe(form, true));
+}
+
+const svgElement = (name, attributes = {}) => {
+  const element = document.createElementNS("http://www.w3.org/2000/svg", name);
+  for (const [key, value] of Object.entries(attributes)) element.setAttribute(key, String(value));
+  return element;
+};
+
+const renderLinkMonitorChart = (monitor, points, probeType = "TCP") => {
+  const chart = monitor.querySelector("[data-link-monitor-chart]");
+  if (!chart) return;
+  chart.replaceChildren();
+  if (!points.length) {
+    const empty = document.createElement("span");
+    empty.textContent = t("No history yet");
+    chart.append(empty);
+    return;
+  }
+  const width = 720;
+  const height = 210;
+  const inset = 18;
+  const svg = svgElement("svg", { viewBox: `0 0 ${width} ${height}`, preserveAspectRatio: "none", "aria-hidden": "true" });
+  for (let index = 0; index < 4; index += 1) {
+    const y = inset + ((height - inset * 2) * index / 3);
+    svg.append(svgElement("line", { x1: inset, y1: y, x2: width - inset, y2: y, class: "link-monitor__grid" }));
+  }
+  const samples = points.filter((point) => Number(point.responses) > 0);
+  const maximum = Math.max(1, ...samples.map((point) => Number(point.maximum_ms) || Number(point.average_ms) || 0));
+  const x = (index) => inset + ((width - inset * 2) * index / Math.max(1, points.length - 1));
+  const latency = points.map((point, index) => Number(point.responses) > 0
+    ? `${x(index)},${height - inset - (Number(point.average_ms) / maximum) * (height - inset * 2)}` : null).filter(Boolean);
+  if (latency.length > 1) svg.append(svgElement("polyline", { points: latency.join(" "), class: "link-monitor__latency" }));
+  const loss = points.map((point, index) => `${x(index)},${height - inset - (Number(point.loss_percent) / 100) * (height - inset * 2)}`);
+  if (loss.length > 1) svg.append(svgElement("polyline", { points: loss.join(" "), class: "link-monitor__loss" }));
+  chart.append(svg);
+  const legend = document.createElement("div");
+  legend.className = "link-monitor__legend";
+  for (const [className, label] of [["latency", `${probeType} Latency`], ["loss", `${probeType} Loss`]]) {
+    const item = document.createElement("span");
+    item.className = `link-monitor__legend-${className}`;
+    item.textContent = t(label);
+    legend.append(item);
+  }
+  chart.append(legend);
+};
+
+const loadLinkMonitor = async (monitor, range = "24h") => {
+  if (!monitor.dataset.historyUrl || monitor.dataset.loading === "true") return;
+  monitor.dataset.loading = "true";
+  try {
+    const url = new URL(monitor.dataset.historyUrl, window.location.href);
+    url.searchParams.set("range", range);
+    const response = await fetch(url, { credentials: "same-origin", cache: "no-store", headers: { Accept: "application/json" } });
+    if (redirectForExpiredSession(response)) return;
+    if (!response.ok) throw new Error("history unavailable");
+    const body = await response.json();
+    const points = Array.isArray(body.points) ? body.points : [];
+    const samples = points.reduce((total, point) => total + Number(point.samples || 0), 0);
+    const responses = points.reduce((total, point) => total + Number(point.responses || 0), 0);
+    const weightedLatency = points.reduce((total, point) => total + Number(point.average_ms || 0) * Number(point.responses || 0), 0);
+    const average = monitor.querySelector("[data-link-monitor-average]");
+    const loss = monitor.querySelector("[data-link-monitor-loss]");
+    const current = monitor.querySelector("[data-link-monitor-current]");
+    const probeType = String(body.current?.probe_type || monitor.dataset.probeType || "tcp").toUpperCase();
+    const lossLabel = monitor.querySelector(".link-monitor__summary > div:nth-child(2) > span");
+    if (average) average.textContent = responses ? `${Math.round(weightedLatency / responses)} ms` : "—";
+    if (loss) loss.textContent = samples ? `${(((samples - responses) * 100) / samples).toFixed(1)}%` : "—";
+    if (current) current.textContent = t(body.current?.label || "—");
+    if (lossLabel) lossLabel.textContent = t(`${probeType} Loss`);
+    renderLinkMonitorChart(monitor, points, probeType);
+  } catch {
+    const chart = monitor.querySelector("[data-link-monitor-chart]");
+    if (chart) chart.textContent = t("History unavailable");
+  } finally {
+    delete monitor.dataset.loading;
+  }
+};
+
+for (const monitor of document.querySelectorAll("[data-link-monitor]")) {
+  for (const button of monitor.querySelectorAll("[data-link-monitor-range]")) {
+    button.addEventListener("click", () => {
+      for (const candidate of monitor.querySelectorAll("[data-link-monitor-range]")) candidate.setAttribute("aria-pressed", String(candidate === button));
+      loadLinkMonitor(monitor, button.dataset.linkMonitorRange);
+    });
+  }
+}
+
+const refreshDialogLinkData = (dialog) => {
+  for (const form of dialog.querySelectorAll("[data-link-probe-form]")) scheduleLinkProbe(form, true);
+  for (const monitor of dialog.querySelectorAll("[data-link-monitor]")) {
+    const active = monitor.querySelector('[data-link-monitor-range][aria-pressed="true"]');
+    loadLinkMonitor(monitor, active?.dataset.linkMonitorRange || "24h");
+  }
+};
+
 const topologyMutationForms = () => [...(topologyWorkflow?.querySelectorAll("form") || [])]
   .filter((form) => {
     let path = "";
@@ -770,6 +973,7 @@ document.addEventListener("click", (event) => {
     dialogTriggers.set(dialog, button);
     if (!dialog.open) dialog.showModal();
     refreshProxyRuleSets(dialog);
+    refreshDialogLinkData(dialog);
     return;
   }
 
@@ -831,6 +1035,7 @@ document.addEventListener("close", (event) => {
       dialogReturns.delete(event.target);
       returnDialog.showModal();
       refreshProxyRuleSets(returnDialog);
+      refreshDialogLinkData(returnDialog);
       dialogTriggers.get(event.target)?.focus();
       return;
     }

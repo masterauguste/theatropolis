@@ -218,6 +218,11 @@ func (r *Runner) runControlSession(
 			control.ManagedUserTrafficRequestCapability,
 		)
 	}
+	latencyProvider, reportsLinkLatency := r.Manager.(linkLatencyTargetProvider)
+	if reportsLinkLatency {
+		hello.Capabilities = append(hello.Capabilities, control.LinkLatencyCapability)
+		hello.Capabilities = append(hello.Capabilities, control.LinkLatencyProbeCapability)
+	}
 	_, managesUserAuthority := r.Manager.(managedUserAuthorityManager)
 	if managesUserAuthority {
 		hello.Capabilities = append(hello.Capabilities, control.ManagedUserAuthorityCapability)
@@ -290,6 +295,7 @@ func (r *Runner) runControlSession(
 		return errors.New("master rejected the agent identity")
 	}
 	lastMasterSequence := authFrame.GetSequence()
+	monitorLinkLatency := reportsLinkLatency && slices.Contains(authResult.GetCapabilities(), control.LinkLatencyCapability)
 	if err := r.sendPendingUpdateResult(stream, &agentSequence); err != nil {
 		return err
 	}
@@ -317,6 +323,7 @@ func (r *Runner) runControlSession(
 	// select loop below remains the only sender and the only writer of
 	// agentSequence — the same pattern updateTicks uses for update results.
 	probeReports := make(chan *controlv1.AddressProbeReport, 4)
+	linkLatencyProbeReports := make(chan linkLatencyProbeResult, control.DefaultCommandQueue)
 	// The periodic prober is per-session: a reconnect re-arms its state, so
 	// the first probe of a fresh session re-reports the public address and
 	// the master re-learns it even though reports are change-only within a
@@ -332,6 +339,17 @@ func (r *Runner) runControlSession(
 	trafficRequestIDs := make([]string, 0, 1)
 	var migrationExit <-chan time.Time
 	migrationStaged := false
+	var latencyTicker *time.Ticker
+	var latencyTicks <-chan time.Time
+	latencyReports := make(chan linkLatencyCollectionResult, 1)
+	latencyCollecting := false
+	if monitorLinkLatency {
+		latencyTicker = time.NewTicker(defaultLinkLatencyPeriod)
+		defer latencyTicker.Stop()
+		latencyTicks = latencyTicker.C
+		latencyCollecting = true
+		go func() { latencyReports <- collectLinkLatency(sessionContext, latencyProvider, r.now()) }()
+	}
 	if reportsTraffic {
 		trafficTicker = time.NewTicker(defaultTrafficPeriod)
 		defer trafficTicker.Stop()
@@ -411,6 +429,11 @@ func (r *Runner) runControlSession(
 						},
 					}
 				}
+			case *controlv1.MasterFrame_LinkLatencyProbe:
+				if !reportsLinkLatency {
+					return errors.New("master requested Link latency from an incompatible agent")
+				}
+				go runLinkLatencyProbe(sessionContext, command.LinkLatencyProbe, linkLatencyProbeReports)
 			case *controlv1.MasterFrame_ManagedUserAuthority:
 				manager, ok := r.Manager.(managedUserAuthorityManager)
 				if !ok {
@@ -491,6 +514,34 @@ func (r *Runner) runControlSession(
 				},
 			}); err != nil {
 				return fmt.Errorf("send address probe report: %w", err)
+			}
+		case result := <-linkLatencyProbeReports:
+			agentSequence++
+			if err := stream.Send(&controlv1.AgentFrame{
+				Sequence: agentSequence,
+				Payload: &controlv1.AgentFrame_LinkLatencyProbeReport{
+					LinkLatencyProbeReport: result.report,
+				},
+			}); err != nil {
+				return fmt.Errorf("send on-demand Link latency report: %w", err)
+			}
+		case <-latencyTicks:
+			if !latencyCollecting {
+				latencyCollecting = true
+				go func() { latencyReports <- collectLinkLatency(sessionContext, latencyProvider, r.now()) }()
+			}
+		case result := <-latencyReports:
+			latencyCollecting = false
+			if result.err != nil {
+				slog.Warn("collect Link path latency", "error", result.err)
+				continue
+			}
+			agentSequence++
+			if err := stream.Send(&controlv1.AgentFrame{
+				Sequence: agentSequence,
+				Payload:  &controlv1.AgentFrame_LinkLatencyReport{LinkLatencyReport: result.report},
+			}); err != nil {
+				return fmt.Errorf("send Link latency report: %w", err)
 			}
 		case <-trafficTicks:
 			if !trafficCollecting {

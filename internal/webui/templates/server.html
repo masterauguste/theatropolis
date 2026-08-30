@@ -64,6 +64,10 @@
           <strong class="summary-card__value">Unknown</strong>
           {{end}}
         </article>
+        <article class="summary-card">
+          <span class="summary-card__label">sing-box version</span>
+          {{if .Agent.SingBoxVersion}}<strong class="summary-card__value">{{.Agent.SingBoxVersion}}</strong>{{else}}<strong class="summary-card__value">Unknown</strong>{{end}}
+        </article>
       </section>
 
       <div>
