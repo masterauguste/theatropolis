@@ -891,7 +891,7 @@ LEGACY_AUTH_FILE="$TEST_ROOT/etc/theatropolis/web-auth.json"
 mv "$AUTH_FILE" "$LEGACY_AUTH_FILE"
 LEGACY_AUTH_HASH="$(sha256sum "$LEGACY_AUTH_FILE" | awk '{ print $1 }')"
 set +e
-MIGRATION_FAILURE_OUTPUT="$(run_installer yes 2>&1)"
+run_installer yes >/dev/null 2>&1
 MIGRATION_FAILURE_STATUS="$?"
 set -e
 [ "$MIGRATION_FAILURE_STATUS" -ne 0 ] ||
