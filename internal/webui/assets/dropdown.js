@@ -7,6 +7,7 @@
   const optionBatchSize = 80;
   let openControl = null;
   let menuSequence = 0;
+  let positionFrame = 0;
 
   const fieldLabel = (select) => {
     const field = select.closest(".field");
@@ -60,29 +61,54 @@
     const gap = Number.parseFloat(
       getComputedStyle(document.documentElement).getPropertyValue("--select-menu-gap"),
     ) || 6;
-    const viewportWidth = document.documentElement.clientWidth;
+    const viewport = window.visualViewport;
+    const viewportLeft = viewport?.offsetLeft || 0;
+    const viewportTop = viewport?.offsetTop || 0;
+    const viewportWidth = viewport?.width || document.documentElement.clientWidth;
+    const viewportHeight = viewport?.height || window.innerHeight;
+    const viewportRight = viewportLeft + viewportWidth;
+    const viewportBottom = viewportTop + viewportHeight;
     const viewportMargin = 8;
+    const triggerInViewport =
+      bounds.bottom > viewportTop + viewportMargin &&
+      bounds.top < viewportBottom - viewportMargin;
     const menuWidth = Math.max(
       0,
       Math.min(bounds.width, viewportWidth - viewportMargin * 2),
     );
-    const availableBelow = window.innerHeight - bounds.bottom - gap - 12;
-    const availableAbove = bounds.top - gap - 12;
-    const maxHeight = Math.max(0, Math.min(360, Math.max(availableBelow, availableAbove)));
+    const availableBelow = viewportBottom - bounds.bottom - gap - 12;
+    const availableAbove = bounds.top - viewportTop - gap - 12;
+    const maxHeight = Math.max(
+      0,
+      Math.min(
+        360,
+        triggerInViewport
+          ? Math.max(availableBelow, availableAbove)
+          : viewportHeight - viewportMargin * 2,
+      ),
+    );
     control.menu.style.width = `${menuWidth}px`;
     control.menu.style.maxHeight = `${maxHeight}px`;
     control.menu.style.left =
       `${Math.max(
-        viewportMargin,
-        Math.min(bounds.left, viewportWidth - menuWidth - viewportMargin),
+        viewportLeft + viewportMargin,
+        Math.min(bounds.left, viewportRight - menuWidth - viewportMargin),
       )}px`;
-    if (availableBelow >= 180 || availableBelow >= availableAbove) {
-      control.menu.style.top = `${bounds.bottom + gap}px`;
-      control.menu.style.bottom = "auto";
-    } else {
-      control.menu.style.top = "auto";
-      control.menu.style.bottom = `${window.innerHeight - bounds.top + gap}px`;
-    }
+    const menuHeight = control.menu.getBoundingClientRect().height;
+    const placeBelow = availableBelow >= 180 || availableBelow >= availableAbove;
+    const desiredTop = placeBelow ? bounds.bottom + gap : bounds.top - gap - menuHeight;
+    const minimumTop = viewportTop + viewportMargin;
+    const maximumTop = Math.max(minimumTop, viewportBottom - menuHeight - viewportMargin);
+    control.menu.style.top = `${Math.max(minimumTop, Math.min(desiredTop, maximumTop))}px`;
+    control.menu.style.bottom = "auto";
+  };
+
+  const schedulePosition = () => {
+    if (!openControl || positionFrame) return;
+    positionFrame = window.requestAnimationFrame(() => {
+      positionFrame = 0;
+      if (openControl?.open) positionMenu(openControl);
+    });
   };
 
   const readOptions = (control) => {
@@ -489,7 +515,7 @@
     characterData: true,
   });
 
-  document.addEventListener("pointerdown", (event) => {
+  document.addEventListener("click", (event) => {
     if (
       openControl &&
       !openControl.wrapper.contains(event.target) &&
@@ -520,16 +546,8 @@
     const control = enhanced.get(select);
     if (control) syncControl(control);
   };
-  window.addEventListener("resize", () => closeDropdown());
-  window.addEventListener("scroll", (event) => {
-    // The options list owns dropdown scrolling. Close only when another
-    // surface scrolls and moves the trigger.
-    if (
-      openControl &&
-      (event.target === openControl.options || openControl.options.contains(event.target))
-    ) {
-      return;
-    }
-    closeDropdown();
-  }, true);
+  window.addEventListener("resize", schedulePosition);
+  window.addEventListener("scroll", schedulePosition, true);
+  window.visualViewport?.addEventListener("resize", schedulePosition);
+  window.visualViewport?.addEventListener("scroll", schedulePosition);
 })();

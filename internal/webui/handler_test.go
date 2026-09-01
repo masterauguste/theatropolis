@@ -4823,6 +4823,9 @@ func TestAssetsAreSelfHostedAndSecurityHeadersApplyToErrors(t *testing.T) {
 				`const renderNextBatch =`,
 				`options.addEventListener("scroll"`,
 				`clearRenderedOptions(control);`,
+				`document.addEventListener("click"`,
+				`window.addEventListener("scroll", schedulePosition, true);`,
+				`window.visualViewport?.addEventListener("resize", schedulePosition);`,
 			} {
 				if !strings.Contains(asset, expected) {
 					t.Errorf("shared dropdown does not contain %q", expected)
@@ -4833,6 +4836,12 @@ func TestAssetsAreSelfHostedAndSecurityHeadersApplyToErrors(t *testing.T) {
 			}
 			if strings.Contains(asset, `button.addEventListener("click"`) {
 				t.Fatal("shared dropdown still installs one click listener per rendered option")
+			}
+			if strings.Contains(asset, `document.addEventListener("pointerdown"`) {
+				t.Fatal("shared dropdown still dismisses on the start of a touch scroll")
+			}
+			if strings.Contains(asset, `window.addEventListener("resize", () => closeDropdown())`) {
+				t.Fatal("shared dropdown still closes when the mobile keyboard resizes the viewport")
 			}
 		}
 		if path == "/assets/config-editor.js" &&

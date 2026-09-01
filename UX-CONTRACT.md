@@ -186,6 +186,9 @@ Security and domain rules in the Go implementation remain authoritative.
   in regular forms, listener editors, and routing editors. The closed trigger
   only displays the committed selection and owns exactly its visible hit area;
   opening the popover focuses a dedicated filter field above the option list.
+  Page scrolling and mobile-keyboard viewport changes reposition an open
+  popover instead of dismissing it. A pointer dismisses it only after a
+  completed tap or click outside; touch-scroll gestures do not dismiss it.
 
 ## Mutation outcomes
 
