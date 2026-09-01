@@ -29,6 +29,7 @@ import (
 	"github.com/masterauguste/theatropolis/internal/mastermigration"
 	"github.com/masterauguste/theatropolis/internal/pool"
 	"github.com/masterauguste/theatropolis/internal/proxynode"
+	"github.com/masterauguste/theatropolis/internal/singboxupdate"
 	"github.com/masterauguste/theatropolis/internal/webui"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/health"
@@ -77,7 +78,7 @@ func main() {
 
 func run(arguments []string) error {
 	if len(arguments) == 0 {
-		return errors.New("expected serve, apply-update, create-enrollment, set-web-admin, or version")
+		return errors.New("expected serve, apply-update, create-enrollment, set-web-admin, latest-sing-box-version, validate-sing-box-build-manifest, or version")
 	}
 	switch arguments[0] {
 	case "serve":
@@ -90,12 +91,75 @@ func run(arguments []string) error {
 		return createEnrollment(arguments[1:])
 	case "set-web-admin":
 		return setWebAdmin(arguments[1:])
+	case "latest-sing-box-version":
+		return latestSingBoxVersion(arguments[1:])
+	case "validate-sing-box-build-manifest":
+		return validateSingBoxBuildManifest(arguments[1:])
 	case "version":
 		fmt.Printf("%s (commit %s, built %s)\n", version, commit, buildDate)
 		return nil
 	default:
 		return fmt.Errorf("unknown command %q", arguments[0])
 	}
+}
+
+func latestSingBoxVersion(arguments []string) error {
+	if len(arguments) != 0 {
+		return errors.New("latest-sing-box-version does not accept arguments")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+	defer cancel()
+	return writeLatestSingBoxVersion(
+		ctx,
+		webui.NewSingBoxReleaseCatalog(nil),
+		os.Stdout,
+	)
+}
+
+func writeLatestSingBoxVersion(
+	ctx context.Context,
+	catalog webui.ReleaseCatalog,
+	output io.Writer,
+) error {
+	releases, err := catalog.Versions(ctx)
+	if err != nil {
+		return fmt.Errorf("resolve latest supported sing-box release: %w", err)
+	}
+	if len(releases) == 0 {
+		return errors.New("no supported sing-box release is available")
+	}
+	_, err = fmt.Fprintln(output, releases[0].Tag)
+	return err
+}
+
+func validateSingBoxBuildManifest(arguments []string) error {
+	flags := flag.NewFlagSet("validate-sing-box-build-manifest", flag.ContinueOnError)
+	flags.SetOutput(io.Discard)
+	targetVersion := flags.String("version", "", "exact sing-box release tag")
+	manifestPath := flags.String("file", "", "downloaded build manifest")
+	if err := flags.Parse(arguments); err != nil {
+		return err
+	}
+	if flags.NArg() != 0 || !singboxupdate.ValidVersion(*targetVersion) ||
+		strings.TrimSpace(*manifestPath) == "" {
+		return errors.New("a valid --version and --file are required")
+	}
+	info, err := os.Lstat(*manifestPath)
+	if err != nil {
+		return fmt.Errorf("inspect sing-box build manifest: %w", err)
+	}
+	const maximumManifestSize = 128 << 10
+	if !info.Mode().IsRegular() || info.Size() <= 0 || info.Size() > maximumManifestSize {
+		return errors.New("sing-box build manifest is not a bounded regular file")
+	}
+	encoded, err := os.ReadFile(*manifestPath)
+	if err != nil {
+		return fmt.Errorf("read sing-box build manifest: %w", err)
+	}
+	if err := singboxupdate.ValidateBuildManifest(encoded, *targetVersion); err != nil {
+		return err
+	}
+	return nil
 }
 
 func serve(arguments []string) error {

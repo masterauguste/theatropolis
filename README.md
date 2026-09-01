@@ -91,6 +91,10 @@ sudo sh -s -- agent \
 Use `host:port` for `--master`, without `https://`. Reinstalling an Agent with a
 token from another Master transfers control to that Master and clears the old
 Master's active profile before the new authoritative profile is applied.
+On a fresh Agent, the installer selects the newest compatible signed stable or
+release-candidate sing-box build from the dedicated Theatropolis patched-build
+repository. Reinstalling an Agent keeps its existing sing-box version when that
+binary and its required managed-user build tags are healthy.
 
 To replace existing hardware without losing the server record or retained
 profile, open that server's settings and generate a replacement command. The
@@ -288,6 +292,10 @@ sudo sh -s -- agent \
 `--master` 只填写 `主机名:端口`，不要添加 `https://`。如果使用另一个主控
 端签发的令牌重新安装代理端，控制权会转移到新主控端；旧主控端留下的活动
 配置会先被清除，再应用新主控端保存的权威配置。
+
+首次安装代理端时，Installer 会从 Theatropolis 专用 patched-build 仓库选择
+最新且兼容的已签名 sing-box 正式版或候选版。重新安装代理端时，如果现有
+sing-box 及其托管用户 build tags 均正常，则保留现有版本，不会自动替换。
 
 如果只是更换服务器硬件，可以打开该服务器的设置并生成替换命令。旧代理端
 会保持授权，直到新服务器兑换替换令牌；服务器记录和主控端保存的配置不会

@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"io"
 	"os"
 	"path/filepath"
@@ -10,6 +11,64 @@ import (
 
 	"github.com/masterauguste/theatropolis/internal/webui"
 )
+
+type staticReleaseCatalog struct {
+	releases []webui.AgentRelease
+	err      error
+}
+
+func (c staticReleaseCatalog) Versions(context.Context) ([]webui.AgentRelease, error) {
+	return c.releases, c.err
+}
+
+func TestWriteLatestSingBoxVersionUsesFirstSupportedRelease(t *testing.T) {
+	t.Parallel()
+	var output bytes.Buffer
+	err := writeLatestSingBoxVersion(
+		context.Background(),
+		staticReleaseCatalog{releases: []webui.AgentRelease{
+			{Tag: "v1.15.0-rc.1.theatropolis.2"},
+			{Tag: "v1.14.0-theatropolis.4"},
+		}},
+		&output,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, want := output.String(), "v1.15.0-rc.1.theatropolis.2\n"; got != want {
+		t.Fatalf("latest version output = %q, want %q", got, want)
+	}
+}
+
+func TestValidateSingBoxBuildManifestCommand(t *testing.T) {
+	t.Parallel()
+	const target = "v1.14.0-rc.2.theatropolis.2"
+	path := filepath.Join(t.TempDir(), "build-manifest.json")
+	encoded := []byte(`{"schema_version":2,"release":{"tag":"` + target + `","version":"1.14.0-rc.2.theatropolis.2"},"patchset":{"capabilities":["managed-users-v1","anytls-live-users","hysteria2-live-users","session-revocation-v1","traffic-reset-v1"]},"build":{"tags":["with_v2ray_api","with_theatropolis_managed_users"]}}`)
+	if err := os.WriteFile(path, encoded, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := validateSingBoxBuildManifest([]string{
+		"--version", target,
+		"--file", path,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, bytes.Replace(
+		encoded,
+		[]byte("traffic-reset-v1"),
+		[]byte("missing-capability"),
+		1,
+	), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := validateSingBoxBuildManifest([]string{
+		"--version", target,
+		"--file", path,
+	}); err == nil {
+		t.Fatal("manifest without traffic reset was accepted")
+	}
+}
 
 func TestReadAdminPasswordBoundsAndTerminators(t *testing.T) {
 	maximum := strings.Repeat("x", maxAdminPasswordBytes)

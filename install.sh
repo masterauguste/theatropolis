@@ -8,7 +8,8 @@ REPOSITORY="masterauguste/theatropolis"
 INSTALL_DIRECTORY="/usr/local/bin"
 UPDATE_HELPER_DIRECTORY="/usr/local/libexec/theatropolis"
 UPDATE_HELPER_PATH="${UPDATE_HELPER_DIRECTORY}/theatropolis-update-helper"
-SING_BOX_VERSION="1.14.0-rc.1.theatropolis.2"
+SING_BOX_VERSION=""
+SING_BOX_TAG=""
 SING_BOX_REPOSITORY="masterauguste/sing-box-v2ray-api-builds"
 SING_BOX_LIBRARY_DIRECTORY="/usr/local/lib/theatropolis/sing-box"
 MASTER_USER="theatropolis-master"
@@ -231,6 +232,51 @@ prompt_for_enrollment_token() {
 	validate_enrollment_token
 }
 
+sing_box_output_has_tag() {
+	printf '%s\n' "$1" |
+		awk -v expected="$2" '
+			/^Tags:[[:space:]]*/ {
+				line = $0
+				sub(/^Tags:[[:space:]]*/, "", line)
+				count = split(line, tags, ",")
+				for (position = 1; position <= count; position++) {
+					sub(/^[[:space:]]*/, "", tags[position])
+					sub(/[[:space:]\r]*$/, "", tags[position])
+					if (tags[position] == expected) found = 1
+				}
+			}
+			END { exit found ? 0 : 1 }
+		'
+}
+
+installed_sing_box_usable() {
+	SING_BOX_INSTALLED_BINARY="$INSTALL_DIRECTORY/sing-box"
+	SING_BOX_INSTALLED_LIBRARY="$SING_BOX_LIBRARY_DIRECTORY/libcronet.so"
+	for SING_BOX_INSTALLED_COMPONENT in \
+		"$SING_BOX_INSTALLED_BINARY" \
+		"$SING_BOX_INSTALLED_LIBRARY"; do
+		if [ ! -f "$SING_BOX_INSTALLED_COMPONENT" ] ||
+			[ -L "$SING_BOX_INSTALLED_COMPONENT" ]; then
+			return 1
+		fi
+	done
+	[ -x "$SING_BOX_INSTALLED_BINARY" ] || return 1
+	SING_BOX_INSTALLED_VERSION_OUTPUT="$(
+		LD_LIBRARY_PATH="$SING_BOX_LIBRARY_DIRECTORY" \
+			"$SING_BOX_INSTALLED_BINARY" version 2>/dev/null
+	)" || return 1
+	printf '%s\n' "$SING_BOX_INSTALLED_VERSION_OUTPUT" |
+		grep -Eq '^sing-box version (1\.(1[4-9]|[2-9][0-9])|([2-9]|[1-9][0-9]+)\.[0-9]+)\.[0-9]+([-+][0-9A-Za-z.-]+)?$' ||
+		return 1
+	sing_box_output_has_tag \
+		"$SING_BOX_INSTALLED_VERSION_OUTPUT" \
+		with_v2ray_api || return 1
+	sing_box_output_has_tag \
+		"$SING_BOX_INSTALLED_VERSION_OUTPUT" \
+		with_theatropolis_managed_users || return 1
+	return 0
+}
+
 validate_master_endpoint() {
 	printf '%s' "$DOMAIN" |
 		grep -Eq '^([A-Za-z0-9]([A-Za-z0-9-]{0,61}[A-Za-z0-9])?\.)+[A-Za-z]{2,63}$' ||
@@ -449,11 +495,9 @@ flock -n 9 ||
 case "$(uname -m)" in
 x86_64 | amd64)
 	ARCHITECTURE="amd64"
-	SING_BOX_SHA256="5d1ebf727af665dd433f7661583b6087eee9b162b5be1df0795a3ab0686f2122"
 	;;
 aarch64 | arm64)
 	ARCHITECTURE="arm64"
-	SING_BOX_SHA256="849adddda2f0d64439ce99447d89051e30c79df94febc639c0924ae31fff03d4"
 	;;
 *) fail "only amd64 and arm64 are supported" ;;
 esac
@@ -510,10 +554,9 @@ agent | all)
 		[ ! -f "$IDENTITY_FILE" ]; then
 		prompt_for_enrollment_token
 	fi
-	if [ -f "$IDENTITY_FILE" ]; then
-		# Reinstallation updates Theatropolis binaries and systemd units only.
-		# sing-box has its own signed update plane and an old bootstrap release
-		# must never block an Agent repair or upgrade.
+	if [ -f "$IDENTITY_FILE" ] && installed_sing_box_usable; then
+		# A working managed-user sing-box has its own independent signed update
+		# plane. Reinstalling the Agent must not silently replace it.
 		SING_BOX_BOOTSTRAP_REQUIRED="no"
 	fi
 	if [ -n "$CA_FILE" ]; then
@@ -603,6 +646,7 @@ prepare_sing_box() {
 	SING_BOX_ARCHIVE_PATH="$TEMP_DIRECTORY/$SING_BOX_ARCHIVE"
 	SING_BOX_MANIFEST_PATH="$TEMP_DIRECTORY/sing-box-checksums.txt"
 	SING_BOX_SIGNATURE_PATH="$TEMP_DIRECTORY/sing-box-checksums.txt.sig"
+	SING_BOX_BUILD_MANIFEST_PATH="$TEMP_DIRECTORY/sing-box-build-manifest.json"
 	SING_BOX_PUBLIC_KEY_PATH="$TEMP_DIRECTORY/sing-box-release-signing-public.pem"
 	# Word splitting is intentional for the constant curl option list.
 	# shellcheck disable=SC2086
@@ -613,6 +657,10 @@ prepare_sing_box() {
 	curl $CURL_OPTIONS \
 		-o "$SING_BOX_SIGNATURE_PATH" \
 		"$SING_BOX_RELEASE_BASE/checksums.txt.sig"
+	# shellcheck disable=SC2086
+	curl $CURL_OPTIONS \
+		-o "$SING_BOX_BUILD_MANIFEST_PATH" \
+		"$SING_BOX_RELEASE_BASE/build-manifest.json"
 
 	cat >"$SING_BOX_PUBLIC_KEY_PATH" <<'EOF'
 -----BEGIN PUBLIC KEY-----
@@ -645,8 +693,27 @@ EOF
 	printf '%s' "$SING_BOX_SIGNED_SHA256" |
 		grep -Eq '^[a-f0-9]{64}$' ||
 		fail "sing-box release checksum is missing or invalid"
-	[ "$SING_BOX_SIGNED_SHA256" = "$SING_BOX_SHA256" ] ||
-		fail "sing-box signed checksum does not match the installer pin"
+	SING_BOX_SIGNED_BUILD_MANIFEST_SHA256="$(
+		awk '
+			$2 == "build-manifest.json" { matches++; checksum = $1 }
+			END { if (matches == 1) print checksum }
+		' "$SING_BOX_MANIFEST_PATH"
+	)"
+	printf '%s' "$SING_BOX_SIGNED_BUILD_MANIFEST_SHA256" |
+		grep -Eq '^[a-f0-9]{64}$' ||
+		fail "sing-box build manifest checksum is missing or invalid"
+	SING_BOX_ACTUAL_BUILD_MANIFEST_SHA256="$(
+		sha256sum "$SING_BOX_BUILD_MANIFEST_PATH" |
+			awk '{ print $1 }'
+	)"
+	[ "$SING_BOX_ACTUAL_BUILD_MANIFEST_SHA256" = "$SING_BOX_SIGNED_BUILD_MANIFEST_SHA256" ] ||
+		fail "sing-box build manifest checksum verification failed"
+	if ! "$TEMP_DIRECTORY/extracted/theatropolis-master" \
+		validate-sing-box-build-manifest \
+		--version "$SING_BOX_TAG" \
+		--file "$SING_BOX_BUILD_MANIFEST_PATH"; then
+		fail "sing-box build manifest lacks required managed-user capabilities"
+	fi
 	# shellcheck disable=SC2086
 	curl $CURL_OPTIONS \
 		-o "$SING_BOX_ARCHIVE_PATH" \
@@ -656,7 +723,7 @@ EOF
 		sha256sum "$SING_BOX_ARCHIVE_PATH" |
 			awk '{ print $1 }'
 	)"
-	[ "$SING_BOX_ACTUAL_SHA256" = "$SING_BOX_SHA256" ] ||
+	[ "$SING_BOX_ACTUAL_SHA256" = "$SING_BOX_SIGNED_SHA256" ] ||
 		fail "sing-box archive checksum verification failed"
 
 	SING_BOX_ENTRY_COUNT=0
@@ -715,17 +782,28 @@ EOF
 	printf '%s\n' "$SING_BOX_VERSION_OUTPUT" |
 		grep -Fqx "sing-box version $SING_BOX_VERSION" ||
 		fail "sing-box candidate reported an unexpected version"
-	printf '%s\n' "$SING_BOX_VERSION_OUTPUT" |
-		grep -Eq '^Tags: (.*, )?with_v2ray_api(, .*)?$' ||
+	sing_box_output_has_tag "$SING_BOX_VERSION_OUTPUT" with_v2ray_api ||
 		fail "sing-box candidate lacks V2Ray API support"
-	printf '%s\n' "$SING_BOX_VERSION_OUTPUT" |
-		grep -Eq '^Tags: (.*, )?with_theatropolis_managed_users(, .*)?$' ||
+	sing_box_output_has_tag \
+		"$SING_BOX_VERSION_OUTPUT" \
+		with_theatropolis_managed_users ||
 		fail "sing-box candidate lacks Theatropolis managed-user support"
+}
+
+resolve_sing_box_version() {
+	SING_BOX_TAG="$(
+		"$TEMP_DIRECTORY/extracted/theatropolis-master" latest-sing-box-version
+	)" || fail "could not resolve the latest supported sing-box release"
+	printf '%s' "$SING_BOX_TAG" |
+		grep -Eq '^v(1\.(1[4-9]|[2-9][0-9])|([2-9]|[1-9][0-9]+)\.[0-9]+)\.[0-9]+(-rc\.[0-9]+\.theatropolis\.[1-9][0-9]*|-theatropolis\.[1-9][0-9]*)$' ||
+		fail "the latest sing-box release has an invalid version"
+	SING_BOX_VERSION="${SING_BOX_TAG#v}"
 }
 
 case "$ROLE" in
 agent | all)
 	if [ "$SING_BOX_BOOTSTRAP_REQUIRED" = "yes" ]; then
+		resolve_sing_box_version
 		prepare_sing_box
 	fi
 	;;

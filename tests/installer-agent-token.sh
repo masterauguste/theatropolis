@@ -64,7 +64,13 @@ chmod +x "$TEST_DIRECTORY/install.sh"
 
 cat >"$RELEASE_STAGE/theatropolis-master" <<'EOF'
 #!/bin/sh
-exit 0
+case "${1:-}" in
+latest-sing-box-version)
+	printf '%s\n' 'v1.14.0-rc.1.theatropolis.2'
+	;;
+validate-sing-box-build-manifest) ;;
+*) exit 64 ;;
+esac
 EOF
 
 cat >"$RELEASE_STAGE/theatropolis-agent" <<'EOF'
@@ -84,7 +90,7 @@ chmod +x \
 
 cat >"$SING_BOX_STAGE/$SING_BOX_PACKAGE/sing-box" <<'EOF'
 #!/bin/sh
-printf '%s\n' 'sing-box version 1.14.0-rc.1.theatropolis.2' 'Tags: with_v2ray_api, with_theatropolis_managed_users'
+printf '%s\n' 'sing-box version 1.14.0-rc.1.theatropolis.2' 'Tags: with_v2ray_api,with_theatropolis_managed_users'
 EOF
 printf '%s\n' 'mock cronet library' \
 	>"$SING_BOX_STAGE/$SING_BOX_PACKAGE/libcronet.so"
@@ -100,10 +106,19 @@ tar -czf "$RELEASE_DIRECTORY/theatropolis_linux_amd64.tar.gz" \
 tar -czf "$RELEASE_DIRECTORY/$SING_BOX_ARCHIVE" \
 	-C "$SING_BOX_STAGE" \
 	"$SING_BOX_PACKAGE"
-printf '%s  %s\n' \
-	'5d1ebf727af665dd433f7661583b6087eee9b162b5be1df0795a3ab0686f2122' \
-	"$SING_BOX_ARCHIVE" \
-	>"$RELEASE_DIRECTORY/sing-box-checksums.txt"
+cat >"$RELEASE_DIRECTORY/build-manifest.json" <<EOF
+{"schema_version":2,"release":{"tag":"v$SING_BOX_VERSION","version":"$SING_BOX_VERSION"},"patchset":{"capabilities":["managed-users-v1","anytls-live-users","hysteria2-live-users","session-revocation-v1","traffic-reset-v1"]},"build":{"tags":["with_v2ray_api","with_theatropolis_managed_users"]}}
+EOF
+(
+	cd "$RELEASE_DIRECTORY"
+	BUILD_MANIFEST_CHECKSUM="$(sha256sum build-manifest.json | awk '{ print $1 }')"
+	printf '%s  %s\n%s  %s\n' \
+		'5d1ebf727af665dd433f7661583b6087eee9b162b5be1df0795a3ab0686f2122' \
+		"$SING_BOX_ARCHIVE" \
+		"$BUILD_MANIFEST_CHECKSUM" \
+		build-manifest.json \
+		>sing-box-checksums.txt
+)
 : >"$RELEASE_DIRECTORY/sing-box-checksums.txt.sig"
 (
 	cd "$RELEASE_DIRECTORY"
@@ -173,6 +188,9 @@ case "$SOURCE" in
 	;;
 */sing-box-v2ray-api-builds/releases/download/v1.14.0-rc.1.theatropolis.2/checksums.txt.sig)
 	cp "$TEST_RELEASE_DIRECTORY/sing-box-checksums.txt.sig" "$OUTPUT"
+	;;
+*/sing-box-v2ray-api-builds/releases/download/v1.14.0-rc.1.theatropolis.2/build-manifest.json)
+	cp "$TEST_RELEASE_DIRECTORY/build-manifest.json" "$OUTPUT"
 	;;
 */checksums.txt)
 	cp "$TEST_RELEASE_DIRECTORY/checksums.txt" "$OUTPUT"
@@ -390,9 +408,9 @@ AGENT_ENV="$TEST_ROOT/etc/theatropolis/agent.env"
 grep -Fqx 'THEATROPOLIS_MASTER_DIAL=' "$AGENT_ENV" ||
 	fail "ordinary remote Agent unexpectedly received a local Master dial override"
 [ -x "$TEST_ROOT/usr/local/bin/sing-box" ] ||
-	fail "pinned sing-box binary was not installed"
+	fail "resolved sing-box binary was not installed"
 [ -f "$TEST_ROOT/usr/local/lib/theatropolis/sing-box/libcronet.so" ] ||
-	fail "pinned sing-box libcronet library was not installed"
+	fail "resolved sing-box libcronet library was not installed"
 [ "$(stat -c '%a' "$TEST_ROOT/usr/local/bin/sing-box")" = "755" ] ||
 	fail "installed sing-box binary does not have mode 0755"
 [ "$(stat -c '%a' "$TEST_ROOT/usr/local/lib/theatropolis/sing-box/libcronet.so")" = "644" ] ||
@@ -504,7 +522,7 @@ case "$TEST_PLATFORM" in
 MINGW* | MSYS*) exit 0 ;;
 esac
 
-# The pinned V2Ray-API archive is rejected before extraction if any expected
+# The resolved V2Ray-API archive is rejected before extraction if any expected
 # member is a symbolic link, even when its path and checksum otherwise pass.
 rm -f -- "$SING_BOX_STAGE/$SING_BOX_PACKAGE/libcronet.so"
 ln -s /etc/shadow "$SING_BOX_STAGE/$SING_BOX_PACKAGE/libcronet.so"
