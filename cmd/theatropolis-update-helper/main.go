@@ -5,6 +5,7 @@ package main
 
 import (
 	"context"
+	"debug/buildinfo"
 	"errors"
 	"flag"
 	"fmt"
@@ -20,6 +21,8 @@ import (
 )
 
 const defaultHelperInstallPath = "/usr/local/libexec/theatropolis/theatropolis-update-helper"
+
+const theatropolisModulePath = "github.com/masterauguste/theatropolis"
 
 var (
 	version   = "development"
@@ -71,6 +74,10 @@ func applyTheatropolis(arguments []string) error {
 	if flags.NArg() != 0 || (*component != "agent" && *component != "master") {
 		return errors.New("component must be agent or master and positional arguments are not accepted")
 	}
+	runningVersion, err := installedComponentVersion(*installPath, *component)
+	if err != nil {
+		return fmt.Errorf("inspect installed %s version: %w", *component, err)
+	}
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
 	defer cancel()
 	return agentupdate.Apply(ctx, agentupdate.ApplyOptions{
@@ -79,8 +86,37 @@ func applyTheatropolis(arguments []string) error {
 		HelperInstallPath: *helperInstallPath,
 		Component:         *component,
 		Architecture:      runtime.GOARCH,
-		RunningVersion:    version,
+		RunningVersion:    runningVersion,
 	})
+}
+
+func installedComponentVersion(path, component string) (string, error) {
+	if component != "agent" && component != "master" {
+		return "", errors.New("component is invalid")
+	}
+	info, err := os.Lstat(path)
+	if err != nil {
+		return "", err
+	}
+	const maximumComponentSize = 128 << 20
+	if !info.Mode().IsRegular() || info.Size() <= 0 || info.Size() > maximumComponentSize {
+		return "", errors.New("installed component is not a bounded regular file")
+	}
+	metadata, err := buildinfo.ReadFile(path)
+	if err != nil {
+		return "", errors.New("installed component has no readable Go build information")
+	}
+	return componentVersionFromBuildInfo(metadata, component)
+}
+
+func componentVersionFromBuildInfo(metadata *buildinfo.BuildInfo, component string) (string, error) {
+	if metadata == nil ||
+		metadata.Path != theatropolisModulePath+"/cmd/theatropolis-"+component ||
+		metadata.Main.Path != theatropolisModulePath ||
+		!agentupdate.ValidVersion(metadata.Main.Version) {
+		return "", errors.New("installed component build identity is invalid")
+	}
+	return metadata.Main.Version, nil
 }
 
 func applySingBox(arguments []string) error {
