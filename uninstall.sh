@@ -226,8 +226,9 @@ remove_master_caddy_entry() {
 		fail "the Theatropolis Caddy entry is not a regular file or symbolic link"
 	fi
 	CADDY_BACKUP="${CADDY_SNIPPET}.uninstall.$$"
-	[ ! -e "$CADDY_BACKUP" ] && [ ! -L "$CADDY_BACKUP" ] ||
+	if [ -e "$CADDY_BACKUP" ] || [ -L "$CADDY_BACKUP" ]; then
 		fail "temporary Caddy backup path already exists: $CADDY_BACKUP"
+	fi
 	mv -- "$CADDY_SNIPPET" "$CADDY_BACKUP"
 
 	if [ -f "$CADDYFILE" ] && command -v caddy >/dev/null 2>&1; then
