@@ -23,8 +23,8 @@
 <!doctype html><html lang="{{.Locale}}">{{template "document-head" .}}<body>
 <a class="skip-link" href="#main">Skip to content</a>{{template "global-header" .}}
 <main class="main" id="main">
-  <nav class="breadcrumbs" aria-label="Breadcrumb"><a href="/users">Users</a><span aria-hidden="true">/</span><a href="/users/{{.UserSubscription.UserID}}">{{.UserSubscription.UserName}}</a><span aria-hidden="true">/</span><span>Subscription</span></nav>
-  <header class="page-header"><div><p class="eyebrow">User subscription</p><h1>{{.UserSubscription.UserName}}</h1></div></header>
+  {{if .UserSubscription.System}}<nav class="breadcrumbs" aria-label="Breadcrumb"><a href="/subscriptions">Subscriptions</a><span aria-hidden="true">/</span><span>My Subscription</span></nav>{{else}}<nav class="breadcrumbs" aria-label="Breadcrumb"><a href="/users">Users</a><span aria-hidden="true">/</span><a href="/users/{{.UserSubscription.UserID}}">{{.UserSubscription.UserName}}</a><span aria-hidden="true">/</span><span>Subscription</span></nav>{{end}}
+  <header class="page-header"><div><p class="eyebrow">{{if .UserSubscription.System}}Administrator Subscription{{else}}User Subscription{{end}}</p><h1>{{if .UserSubscription.System}}My Subscription{{else}}{{.UserSubscription.UserName}}{{end}}</h1></div></header>
 
   <section class="panel subscription-links-panel">
     <div class="panel__header"><h2>Subscription links</h2>{{if .UserSubscription.Enabled}}<span class="membership-status membership-status--active">Active</span>{{else}}<span class="membership-status membership-status--disabled">Inactive</span>{{end}}</div>
@@ -34,18 +34,18 @@
       <article><span class="protocol-badge">Surge</span><code>{{.UserSubscription.SurgeURL}}</code><button class="button button--secondary button--small" type="button" data-copy-value="{{.UserSubscription.SurgeURL}}">Copy</button></article>
       <article><span class="protocol-badge">sing-box</span><code>{{.UserSubscription.SingBoxURL}}</code><button class="button button--secondary button--small" type="button" data-copy-value="{{.UserSubscription.SingBoxURL}}">Copy</button></article>
     </div>
-    <div class="panel__actions"><button class="button button--danger" type="button" data-dialog-open="reset-user-subscription">Reset subscription link</button><button class="button button--danger" type="button" data-dialog-open="revoke-user-subscription">Revoke link</button></div>
+    {{if not .UserSubscription.System}}<div class="panel__actions"><button class="button button--danger" type="button" data-dialog-open="reset-user-subscription">Reset subscription link</button><button class="button button--danger" type="button" data-dialog-open="revoke-user-subscription">Revoke link</button></div>{{end}}
     {{else}}
     <div class="panel__empty panel__empty--action"><strong>No subscription link</strong><form action="/users/{{.UserSubscription.UserID}}/subscription/token" method="post" novalidate><input type="hidden" name="csrf_token" value="{{.CSRFToken}}"><button class="button button--primary" type="submit">Create subscription</button></form></div>
     {{end}}
   </section>
 
   <section class="panel">
-    <div class="panel__header"><h2>Nodes</h2><span class="panel__count">{{len .UserSubscription.Nodes}} assigned</span></div>
-    {{if .UserSubscription.Nodes}}<div class="subscription-node-list">{{range .UserSubscription.Nodes}}<article class="subscription-node"><span class="node-role-chip__mark" aria-hidden="true">{{slice .Name 0 1}}</span><div><strong>{{.Name}}</strong><small>{{.Protocol}}{{if .AgentID}} · {{.AgentID}}{{end}}</small></div><div class="subscription-node__families">{{range .Addresses}}<span>{{.}}</span>{{end}}</div><span class="membership-status membership-status--{{.StatusCSS}}">{{.Status}}</span></article>{{end}}</div>{{else}}<div class="panel__empty"><strong>No node access</strong><a class="button-link" href="/users/{{.UserSubscription.UserID}}">Assign a Node</a></div>{{end}}
+    <div class="panel__header"><h2>Nodes</h2><span class="panel__count">{{count (len .UserSubscription.Nodes) "node"}}</span></div>
+    {{if .UserSubscription.Nodes}}<div class="subscription-node-list">{{range .UserSubscription.Nodes}}<article class="subscription-node"><span class="node-role-chip__mark" aria-hidden="true">{{slice .Name 0 1}}</span><div><strong>{{.Name}}</strong><small>{{.Protocol}}{{if .AgentID}} · {{.AgentID}}{{end}}</small></div><div class="subscription-node__families">{{range .Addresses}}<span>{{.}}</span>{{end}}</div><span class="membership-status membership-status--{{.StatusCSS}}">{{.Status}}</span></article>{{end}}</div>{{else}}<div class="panel__empty"><strong>No Node Access</strong>{{if not .UserSubscription.System}}<a class="button-link" href="/users/{{.UserSubscription.UserID}}">Assign a Node</a>{{end}}</div>{{end}}
   </section>
 
-  {{if .UserSubscription.Enabled}}<dialog class="modal" id="reset-user-subscription"><div class="modal__surface modal__surface--compact"><header class="modal__header"><div><p class="eyebrow">Subscription link</p><h2>Reset subscription link?</h2></div><button class="button button--secondary button--icon-only" type="button" data-dialog-close aria-label="Close">×</button></header><div class="modal__body"><p>The current subscription URLs and every Proxy Node credential for this user will stop working immediately.</p></div><footer class="modal__footer"><button class="button button--secondary" type="button" data-dialog-close autofocus>Cancel</button><form action="/users/{{.UserSubscription.UserID}}/subscription/reset" method="post" novalidate><input type="hidden" name="csrf_token" value="{{.CSRFToken}}"><input type="hidden" name="confirm_reset" value="yes"><button class="button button--danger" type="submit">Reset link and credentials</button></form></footer></div></dialog>
+  {{if and .UserSubscription.Enabled (not .UserSubscription.System)}}<dialog class="modal" id="reset-user-subscription"><div class="modal__surface modal__surface--compact"><header class="modal__header"><div><p class="eyebrow">Subscription link</p><h2>Reset subscription link?</h2></div><button class="button button--secondary button--icon-only" type="button" data-dialog-close aria-label="Close">×</button></header><div class="modal__body"><p>The current subscription URLs and every Proxy Node credential for this user will stop working immediately.</p></div><footer class="modal__footer"><button class="button button--secondary" type="button" data-dialog-close autofocus>Cancel</button><form action="/users/{{.UserSubscription.UserID}}/subscription/reset" method="post" novalidate><input type="hidden" name="csrf_token" value="{{.CSRFToken}}"><input type="hidden" name="confirm_reset" value="yes"><button class="button button--danger" type="submit">Reset link and credentials</button></form></footer></div></dialog>
   <dialog class="modal" id="revoke-user-subscription"><div class="modal__surface modal__surface--compact"><header class="modal__header"><div><p class="eyebrow">Subscription link</p><h2>Revoke link</h2></div><button class="button button--secondary button--icon-only" type="button" data-dialog-close aria-label="Close">×</button></header><div class="modal__body"><p>All three format links will stop working immediately.</p></div><footer class="modal__footer"><button class="button button--secondary" type="button" data-dialog-close>Cancel</button><form action="/users/{{.UserSubscription.UserID}}/subscription/revoke" method="post" novalidate><input type="hidden" name="csrf_token" value="{{.CSRFToken}}"><button class="button button--danger" type="submit">Revoke link</button></form></footer></div></dialog>{{end}}
 </main><script src="/assets/app.js?v={{.AssetVersion}}" defer></script></body></html>
 {{end}}
@@ -54,7 +54,7 @@
 <!doctype html><html lang="{{.Locale}}">{{template "document-head" .}}<body>
 <a class="skip-link" href="#main">Skip to content</a>{{template "global-header" .}}
 <main class="main" id="main">
-  <header class="page-header"><div><p class="eyebrow">Universal export policy</p><h1>Subscriptions</h1></div></header>
+  <header class="page-header"><div><p class="eyebrow">Universal Export Policy</p><h1>Subscriptions</h1></div>{{if .AdministratorProxyAccessEnabled}}<div class="page-header__actions"><a class="button button--secondary" href="/subscriptions/admin">My Subscription</a></div>{{end}}</header>
 
   <section class="panel subscription-default">
     <div class="panel__header"><h2>FINAL (Unmatched Rules)</h2></div>

@@ -110,6 +110,19 @@ Security and domain rules in the Go implementation remain authoritative.
 - The Proxy Node Users dialog owns its searchable access roster, add-user flow,
   subscription compensation, and per-membership maintenance dialogs. A finite
   active subscription remains compensable even when other global users are unassigned.
+- Administrator Proxy Access is a global Settings toggle and defaults to off.
+  Enabling it creates one protected Administrator Membership on every current
+  Proxy Node and on Nodes created later; disabling it removes those Memberships,
+  their live entrance credentials, and the administrator configuration
+  subscription. The transition is one durable user-plane change and never waits
+  for topology deployment. While enabled, each Administrator Membership is
+  unlimited, never expires, remains visible in the roster, and cannot be
+  renamed, edited, reset, compensated, revoked, or deleted. The administrator's
+  configuration subscription follows the universal export policy.
+- Each Server detail page summarizes entrance allocation from current Proxy
+  Nodes assigned to that Agent. Finite Membership quotas and usage are summed
+  per Membership; unlimited Membership traffic is excluded, while unlimited
+  users are counted once per Agent even when they have several Nodes there.
   Add user remains visible when every existing user is assigned; its dialog
   shows an empty state without offering a duplicate grant.
 - Empty states explain the next useful action. Async regions reserve their

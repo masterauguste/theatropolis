@@ -651,9 +651,12 @@ func (r testResolver) AgentAddressForFamily(agentID string, _ pool.Family) (stri
 	return value, ok
 }
 
-func TestCompileKeepsEmptyEntranceReadyForLiveUserManagement(t *testing.T) {
+func TestCompileKeepsAdministratorEntranceReadyForLiveUserManagement(t *testing.T) {
 	store, err := Open(filepath.Join(t.TempDir(), "state.json"), testBuild())
 	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.SetAdministratorProxyAccess(true); err != nil {
 		t.Fatal(err)
 	}
 	node, err := store.CreateProxyNode(CreateProxyNodeInput{
@@ -686,8 +689,8 @@ func TestCompileKeepsEmptyEntranceReadyForLiveUserManagement(t *testing.T) {
 	if err := json.Unmarshal(compiled.Configs["edge-a"], &config); err != nil {
 		t.Fatal(err)
 	}
-	if len(config.Inbounds) != 1 || len(config.Inbounds[0].Users) != 0 {
-		t.Fatalf("empty entrance inbounds = %#v", config.Inbounds)
+	if len(config.Inbounds) != 1 || len(config.Inbounds[0].Users) != 1 {
+		t.Fatalf("administrator entrance inbounds = %#v", config.Inbounds)
 	}
 	if len(config.Services) != 1 || config.Services[0].Type != "ssm-api" ||
 		config.Services[0].Tag != singbox.ManagedUserAPIServiceTag ||
@@ -735,9 +738,12 @@ func TestCompileKeepsEmptyEntranceReadyForLiveUserManagement(t *testing.T) {
 	}
 }
 
-func TestCompileUsesManagedModeForEmptyShadowsocksListener(t *testing.T) {
+func TestCompileUsesMultiUserModeForAdministratorShadowsocksListener(t *testing.T) {
 	store, err := Open(filepath.Join(t.TempDir(), "state.json"), testBuild())
 	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.SetAdministratorProxyAccess(true); err != nil {
 		t.Fatal(err)
 	}
 	endpoint := Endpoint{
@@ -762,8 +768,8 @@ func TestCompileUsesManagedModeForEmptyShadowsocksListener(t *testing.T) {
 	if err := json.Unmarshal(compiled.Configs["edge-a"], &config); err != nil {
 		t.Fatal(err)
 	}
-	if len(config.Inbounds) != 1 || !config.Inbounds[0].Managed || len(config.Inbounds[0].Users) != 0 {
-		t.Fatalf("empty Shadowsocks inbound = %#v", config.Inbounds)
+	if len(config.Inbounds) != 1 || config.Inbounds[0].Managed || len(config.Inbounds[0].Users) != 1 {
+		t.Fatalf("administrator Shadowsocks inbound = %#v", config.Inbounds)
 	}
 }
 
@@ -809,8 +815,12 @@ func TestCompileCombinesCompatibleEntrancesAndRoutesByMembership(t *testing.T) {
 	if len(config.Inbounds) != 1 || len(config.Inbounds[0].Users) != 2 {
 		t.Fatalf("combined inbounds = %#v", config.Inbounds)
 	}
-	if config.Inbounds[0].Users[0].Name != AuthenticatedUserLabel("archive", "bob", secondMembership.ID) ||
-		config.Inbounds[0].Users[1].Name != AuthenticatedUserLabel("cinema", "alice", firstMembership.ID) {
+	compiledNames := make([]string, 0, len(config.Inbounds[0].Users))
+	for _, compiledUser := range config.Inbounds[0].Users {
+		compiledNames = append(compiledNames, compiledUser.Name)
+	}
+	if !slices.Contains(compiledNames, AuthenticatedUserLabel("archive", "bob", secondMembership.ID)) ||
+		!slices.Contains(compiledNames, AuthenticatedUserLabel("cinema", "alice", firstMembership.ID)) {
 		t.Fatalf("compiled users = %#v", config.Inbounds[0].Users)
 	}
 	if len(config.Route.Rules) != 2 {

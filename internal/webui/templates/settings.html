@@ -44,6 +44,25 @@
       </form>
       <div class="notice" data-master-update-progress hidden aria-live="polite"></div>
     </section>
+    <section class="panel settings-panel settings-toggle-panel" aria-labelledby="administrator-proxy-access-heading">
+      <div class="settings-toggle-row">
+        <div>
+          <h2 id="administrator-proxy-access-heading">Administrator Proxy Access</h2>
+          <p>All Proxy Nodes · Unlimited</p>
+        </div>
+        <button class="settings-toggle" type="button" role="switch" aria-checked="{{if .AdministratorProxyAccessEnabled}}true{{else}}false{{end}}" aria-label="Administrator Proxy Access" data-dialog-open="administrator-proxy-access-confirm">
+          <span class="settings-toggle__track" aria-hidden="true"><span></span></span>
+          <span class="settings-toggle__state">{{if .AdministratorProxyAccessEnabled}}Enabled{{else}}Off{{end}}</span>
+        </button>
+      </div>
+    </section>
+    <dialog class="modal" id="administrator-proxy-access-confirm" aria-labelledby="administrator-proxy-access-confirm-title">
+      <div class="modal__surface modal__surface--compact">
+        <header class="modal__header"><div><p class="eyebrow">Administrator Access</p><h2 id="administrator-proxy-access-confirm-title">{{if .AdministratorProxyAccessEnabled}}Disable Proxy Access?{{else}}Enable Proxy Access?{{end}}</h2></div><button class="button button--secondary button--icon-only" type="button" data-dialog-close aria-label="Close">×</button></header>
+        <div class="modal__body"><p>{{if .AdministratorProxyAccessEnabled}}This revokes the administrator credential and configuration subscription on every Proxy Node.{{else}}This grants the administrator unlimited, non-expiring access to every Proxy Node.{{end}}</p></div>
+        <footer class="modal__footer"><button class="button button--secondary" type="button" data-dialog-close autofocus>Cancel</button><form action="/settings/administrator-proxy-access" method="post" novalidate><input type="hidden" name="csrf_token" value="{{.CSRFToken}}"><input type="hidden" name="enabled" value="{{if .AdministratorProxyAccessEnabled}}false{{else}}true{{end}}"><button class="button {{if .AdministratorProxyAccessEnabled}}button--danger{{else}}button--primary{{end}}" type="submit" data-submit-button data-submit-label="Updating…">{{if .AdministratorProxyAccessEnabled}}Disable Access{{else}}Enable Access{{end}}</button></form></footer>
+      </div>
+    </dialog>
     <dialog class="modal migration-menu-dialog" id="master-migration-menu" aria-labelledby="master-migration-menu-title">
       <div class="modal__surface">
         <header class="modal__header"><div><p class="eyebrow">Master</p><h2 id="master-migration-menu-title">Migration</h2></div><button class="button button--secondary button--icon-only" type="button" data-dialog-close aria-label="Close Migration">×</button></header>

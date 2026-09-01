@@ -118,6 +118,10 @@ compact sticky top bar with horizontal navigation and document scrolling.
 - The fleet table stays scannable and shows the Agent software version only.
   The sing-box runtime version belongs to the individual Server summary and
   software controls, where it has operational context.
+- The individual Server page owns one compact Entrance Traffic panel. It shows
+  finite monthly quota allocated and consumed across Proxy Nodes entering on
+  that Agent, plus a de-duplicated count of unlimited users. Unlimited-user
+  traffic never contributes to the finite consumption figure.
 - A Proxy Node detail header keeps identity on the left and Users/Delete on the
   right; the name's compact pencil is the only rename affordance. Entrance
   listener/protocol editing belongs to a dedicated wide dialog opened directly
@@ -146,6 +150,11 @@ compact sticky top bar with horizontal navigation and document scrolling.
 - Proxy Node membership management uses the relay map's wide Users dialog. Its
   searchable roster opens focused access, grant, and compensation dialogs
   without turning the map canvas into a user-management dashboard.
+- Settings owns one compact Administrator Proxy Access switch. It is off by
+  default. When enabled, every Proxy Node roster includes one visually quiet,
+  protected Administrator membership. It is always unlimited and non-expiring,
+  exposes no edit, credential-reset, compensation, or revoke controls, and
+  links only to the administrator's own configuration subscription.
 - User subscription pages contain only a stable bearer-link surface and the
   read-only projection of that user's active Node roles. The global
   Subscriptions destination owns one compact ordered Rule ledger rendered as
@@ -153,6 +162,12 @@ compact sticky top bar with horizontal navigation and document scrolling.
   sibling-card motion rather than insertion lines; the drag handle retains
   keyboard reordering. The page also owns the FINAL Proxy/Direct/Reject outcome
   for every exported user profile.
+- While Administrator Proxy Access is enabled, the global Subscriptions page
+  exposes My Subscription as a secondary header action. This administrator
+  subscription uses the same universal export policy and Clash, Surge, and
+  sing-box formats as end-user subscriptions; its token and per-Node
+  credentials are system-managed and cannot be rotated or revoked through
+  ordinary user controls.
 - Search uses one canonical control: magnifier leading icon, white bordered
   surface, cobalt focus halo, and a trailing clear action that appears only
   when a query exists.

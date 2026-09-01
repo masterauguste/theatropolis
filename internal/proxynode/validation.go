@@ -62,9 +62,56 @@ func validateState(state State) error {
 	return nil
 }
 
+// validateStoredState adds invariants that belong to the persisted product
+// model but are intentionally absent from user-agnostic topology projections.
+func validateStoredState(state State) error {
+	if err := validateState(state); err != nil {
+		return err
+	}
+	administrators := 0
+	for _, user := range state.Users {
+		if IsSystemAdministrator(user) && user.Name == SystemAdministratorUserName && user.Subscription.Token != "" {
+			administrators++
+		}
+	}
+	if !state.AdministratorProxyAccessEnabled {
+		if administrators != 0 || slices.ContainsFunc(state.Users, func(user User) bool {
+			return user.ID == SystemAdministratorUserID || user.Role == UserRoleAdministrator
+		}) {
+			return fmt.Errorf("%w: disabled administrator access retains a system administrator", ErrInvalidState)
+		}
+		for _, node := range state.ProxyNodes {
+			if slices.ContainsFunc(node.Memberships, func(membership Membership) bool {
+				return membership.UserID == SystemAdministratorUserID
+			}) {
+				return fmt.Errorf("%w: disabled administrator access retains a Membership", ErrInvalidState)
+			}
+		}
+		return nil
+	}
+	if administrators != 1 {
+		return fmt.Errorf("%w: enabled administrator access must contain exactly one system administrator", ErrInvalidState)
+	}
+	for _, node := range state.ProxyNodes {
+		membership := slices.IndexFunc(node.Memberships, func(membership Membership) bool {
+			return membership.UserID == SystemAdministratorUserID
+		})
+		if membership < 0 {
+			return fmt.Errorf("%w: Proxy Node %q has no administrator Membership", ErrInvalidState, node.Name)
+		}
+		administrator := node.Memberships[membership]
+		if administrator.MonthlyQuotaBytes != 0 || !administrator.SubscriptionEndsAfter.IsZero() ||
+			administrator.SubscriptionValue != 0 || administrator.SubscriptionUnit != "" ||
+			administrator.DisabledReason != MembershipEnabled {
+			return fmt.Errorf("%w: Proxy Node %q has an invalid administrator Membership", ErrInvalidState, node.Name)
+		}
+	}
+	return nil
+}
+
 func validateStateCore(state State) error {
 	userIDs := make(map[string]User, len(state.Users))
-	userNames := make(map[string]struct{}, len(state.Users))
+	userNames := make(map[string]UserRole, len(state.Users))
 	subscriptionTokens := make(map[string]struct{}, len(state.Users))
 	for _, user := range state.Users {
 		if !validID(user.ID, "usr_") || !validName(user.Name) || user.CreatedAt.IsZero() || user.UpdatedAt.IsZero() {
@@ -72,6 +119,18 @@ func validateStateCore(state State) error {
 		}
 		if err := validateUserSubscription(user.Subscription); err != nil {
 			return fmt.Errorf("%w: invalid subscription for end user %q: %v", ErrInvalidState, user.Name, err)
+		}
+		switch user.Role {
+		case UserRoleEndUser:
+		case UserRoleAdministrator:
+			if !IsSystemAdministrator(user) || user.Name != SystemAdministratorUserName {
+				return fmt.Errorf("%w: invalid system administrator", ErrInvalidState)
+			}
+			if user.Subscription.Token == "" {
+				return fmt.Errorf("%w: system administrator has no configuration subscription", ErrInvalidState)
+			}
+		default:
+			return fmt.Errorf("%w: invalid end user role", ErrInvalidState)
 		}
 		if user.Subscription.Token != "" {
 			if _, exists := subscriptionTokens[user.Subscription.Token]; exists {
@@ -83,13 +142,12 @@ func validateStateCore(state State) error {
 		if _, exists := userIDs[user.ID]; exists {
 			return fmt.Errorf("%w: duplicate end user ID", ErrInvalidState)
 		}
-		if _, exists := userNames[key]; exists {
+		if existingRole, exists := userNames[key]; exists && existingRole != UserRoleAdministrator && user.Role != UserRoleAdministrator {
 			return fmt.Errorf("%w: duplicate end user name", ErrInvalidState)
 		}
 		userIDs[user.ID] = user
-		userNames[key] = struct{}{}
+		userNames[key] = user.Role
 	}
-
 	proxyIDs := make(map[string]struct{}, len(state.ProxyNodes))
 	proxyNames := make(map[string]struct{}, len(state.ProxyNodes))
 	globalIDs := make(map[string]struct{}, len(state.Users)+len(state.ProxyNodes))

@@ -88,6 +88,7 @@ type nodeUserAccessView struct {
 	SubscriptionStartedAt string
 	SubscriptionEndsAfter string
 	CompensationSelected  bool
+	System                bool
 }
 
 type nodeUserOptionView struct {
@@ -1067,6 +1068,9 @@ func (h *Handler) endUsersPage(response http.ResponseWriter, request *http.Reque
 	}
 	views := make([]endUserListView, 0, len(state.Users))
 	for _, user := range state.Users {
+		if proxynode.IsSystemAdministrator(user) {
+			continue
+		}
 		view := endUserListView{ID: user.ID, Name: user.Name, URL: "/users/" + url.PathEscape(user.ID), Memberships: counts[user.ID], LoginStatus: "Not registered", LoginClass: "disabled"}
 		if h.endUserAccess != nil {
 			status := h.endUserAccess.Status(user.ID)
@@ -1104,7 +1108,7 @@ func (h *Handler) endUserPage(response http.ResponseWriter, request *http.Reques
 		return
 	}
 	user, exists := h.proxyNodes.User(request.PathValue("user_id"))
-	if !exists {
+	if !exists || proxynode.IsSystemAdministrator(user) {
 		http.NotFound(response, request)
 		return
 	}
@@ -1840,7 +1844,12 @@ func nodeInitial(name string) string {
 }
 
 func (h *Handler) attachProxyNodeUsers(detail *proxyNodeDetailView, node proxynode.ProxyNode, users []proxynode.User) {
-	detail.EndUserCount = len(users)
+	detail.EndUserCount = 0
+	for _, user := range users {
+		if !proxynode.IsSystemAdministrator(user) {
+			detail.EndUserCount++
+		}
+	}
 	compensationStart, _ := parseBillingDateTimeLocal(detail.CompensationStart)
 	compensationEnd, _ := parseBillingDateTimeLocal(detail.CompensationEnd)
 	assigned := make(map[string]proxynode.Membership, len(node.Memberships))
@@ -1853,12 +1862,18 @@ func (h *Handler) attachProxyNodeUsers(detail *proxyNodeDetailView, node proxyno
 	for _, user := range users {
 		membership, exists := assigned[user.ID]
 		if !exists {
-			detail.AvailableUsers = append(detail.AvailableUsers, nodeUserOptionView{UserID: user.ID, Label: user.Name})
+			if !proxynode.IsSystemAdministrator(user) {
+				detail.AvailableUsers = append(detail.AvailableUsers, nodeUserOptionView{UserID: user.ID, Label: user.Name})
+			}
 			continue
 		}
+		system := proxynode.IsSystemAdministrator(user)
 		access := nodeUserAccessView{
 			UserID: user.ID, Name: user.Name, Initial: nodeInitial(user.Name), URL: "/users/" + url.PathEscape(user.ID),
-			Plan: membershipPlanViewFor(membership),
+			Plan: membershipPlanViewFor(membership), System: system,
+		}
+		if system {
+			access.URL = "/subscriptions/admin"
 		}
 		if !membership.SubscriptionEndsAfter.IsZero() {
 			access.MembershipID = membership.ID

@@ -55,6 +55,8 @@ const (
 	defaultSessionPersistInterval = time.Minute
 	DefaultLoginFailureLimit      = 10
 	DefaultLoginFailureWindow     = time.Minute
+	defaultPasswordKDFQueueSize   = 8
+	defaultPasswordKDFWait        = 3 * time.Second
 	defaultMaxSessions            = 64
 	defaultMaxLoginClients        = 1024
 
@@ -66,11 +68,16 @@ var (
 	ErrAuthenticationFailed = errors.New("authentication failed")
 	ErrLoginRateLimited     = errors.New("too many login attempts")
 
-	// The production process loads one AccessManager, but this package-wide
-	// gate also protects against accidentally loading more than one. Argon2id
-	// verification never queues: a concurrent attempt is rejected instead of
-	// retaining an unbounded request body and goroutine.
-	globalPasswordKDFGate = make(chan struct{}, 1)
+	// The production process loads one unified identity manager, but this
+	// package-wide limiter also protects against accidentally loading more than
+	// one. Argon2id stays single-concurrency while a small bounded queue absorbs
+	// ordinary simultaneous logins. Excess or stalled requests fail closed
+	// instead of retaining an unbounded number of bodies and goroutines.
+	globalPasswordKDFLimiter = newPasswordKDFLimiter(
+		1,
+		defaultPasswordKDFQueueSize,
+		defaultPasswordKDFWait,
+	)
 )
 
 // CredentialMode identifies the one credential format accepted by an
@@ -139,19 +146,72 @@ type loginFailureLimiter struct {
 
 type passwordDeriver func(password, salt []byte) [passwordHashBytes]byte
 
+type passwordKDFLimiter struct {
+	gate    chan struct{}
+	wait    chan struct{}
+	timeout time.Duration
+}
+
+func newPasswordKDFLimiter(concurrency, waiting int, timeout time.Duration) *passwordKDFLimiter {
+	if concurrency < 1 {
+		concurrency = 1
+	}
+	if waiting < 0 {
+		waiting = 0
+	}
+	if timeout <= 0 {
+		timeout = defaultPasswordKDFWait
+	}
+	return &passwordKDFLimiter{
+		gate:    make(chan struct{}, concurrency),
+		wait:    make(chan struct{}, waiting),
+		timeout: timeout,
+	}
+}
+
+func (l *passwordKDFLimiter) acquire() bool {
+	if l == nil || l.gate == nil || l.wait == nil {
+		return false
+	}
+	select {
+	case l.gate <- struct{}{}:
+		return true
+	default:
+	}
+	select {
+	case l.wait <- struct{}{}:
+	default:
+		return false
+	}
+	defer func() { <-l.wait }()
+
+	timer := time.NewTimer(l.timeout)
+	defer timer.Stop()
+	select {
+	case l.gate <- struct{}{}:
+		return true
+	case <-timer.C:
+		return false
+	}
+}
+
+func (l *passwordKDFLimiter) release() {
+	<-l.gate
+}
+
 // AccessManager authenticates the persisted operator credential and owns
 // ephemeral browser sessions. It never retains plaintext passwords, access
 // keys, or session tokens.
 type AccessManager struct {
 	mode CredentialMode
 
-	accessKeyDigest [sha256.Size]byte
-	username        string
-	usernameDigest  [sha256.Size]byte
-	passwordSalt    [passwordSaltBytes]byte
-	passwordHash    [passwordHashBytes]byte
-	derivePassword  passwordDeriver
-	passwordKDFGate chan struct{}
+	accessKeyDigest    [sha256.Size]byte
+	username           string
+	usernameDigest     [sha256.Size]byte
+	passwordSalt       [passwordSaltBytes]byte
+	passwordHash       [passwordHashBytes]byte
+	derivePassword     passwordDeriver
+	passwordKDFLimiter *passwordKDFLimiter
 
 	mu          sync.Mutex
 	lifecycleMu sync.Mutex
@@ -660,7 +720,7 @@ func loadUnifiedAdministratorCredential(
 	manager.passwordSalt = admin.PasswordSalt
 	manager.passwordHash = admin.PasswordHash
 	manager.derivePassword = derive
-	manager.passwordKDFGate = globalPasswordKDFGate
+	manager.passwordKDFLimiter = globalPasswordKDFLimiter
 	binding := struct {
 		ID              string       `json:"id"`
 		Role            identityRole `json:"role"`
@@ -881,7 +941,7 @@ func loadPasswordCredential(
 	copy(manager.passwordSalt[:], salt)
 	copy(manager.passwordHash[:], hash)
 	manager.derivePassword = derive
-	manager.passwordKDFGate = globalPasswordKDFGate
+	manager.passwordKDFLimiter = globalPasswordKDFLimiter
 	return nil
 }
 
@@ -1231,19 +1291,11 @@ func (m *AccessManager) evictOldestLoginClientLocked() {
 }
 
 func (m *AccessManager) acquirePasswordKDF() bool {
-	if m.passwordKDFGate == nil {
-		return false
-	}
-	select {
-	case m.passwordKDFGate <- struct{}{}:
-		return true
-	default:
-		return false
-	}
+	return m.passwordKDFLimiter.acquire()
 }
 
 func (m *AccessManager) releasePasswordKDF() {
-	<-m.passwordKDFGate
+	m.passwordKDFLimiter.release()
 }
 
 func (m *AccessManager) matchesUsernamePassword(username, password string) bool {

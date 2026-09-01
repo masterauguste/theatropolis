@@ -1294,6 +1294,9 @@ func TestSettingsPageOwnsMasterSoftwareManagement(t *testing.T) {
 		`action="/settings/migration/export"`,
 		`action="/settings/migration/restore"`,
 		`action="/settings/migration/cutover"`,
+		`data-dialog-open="administrator-proxy-access-confirm"`,
+		`role="switch" aria-checked="false"`,
+		`action="/settings/administrator-proxy-access"`,
 	} {
 		if !strings.Contains(body, expected) {
 			t.Errorf("settings page does not contain %q", expected)
@@ -1317,6 +1320,63 @@ func TestSettingsPageOwnsMasterSoftwareManagement(t *testing.T) {
 	}
 	if !strings.Contains(destinationDialog, `action="/settings/migration/restore"`) || strings.Contains(destinationDialog, `action="/settings/migration/export"`) || strings.Contains(destinationDialog, `action="/settings/migration/cutover"`) {
 		t.Errorf("destination migration dialog does not exclusively own restore")
+	}
+}
+
+func TestSettingsToggleControlsAdministratorProxyAccess(t *testing.T) {
+	fixture := newWebFixture(t)
+	node, err := fixture.proxyNodes.CreateProxyNode(proxynode.CreateProxyNodeInput{
+		Name: "Cinema", RootAgent: "edge-online",
+		Entrance: proxynode.Endpoint{
+			Protocol: proxynode.ProtocolAnyTLS, Listen: "::", ListenPort: 443,
+			TLS: proxynode.TLSConfig{Mode: proxynode.TLSModeSelfSigned, ServerName: "cinema.example"},
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	request := fixture.authenticatedRequest(http.MethodGet, "/subscriptions", "")
+	response := httptest.NewRecorder()
+	fixture.handler.ServeHTTP(response, request)
+	if response.Code != http.StatusOK || strings.Contains(response.Body.String(), `href="/subscriptions/admin"`) {
+		t.Fatalf("disabled administrator subscription link = %d %q", response.Code, response.Body.String())
+	}
+	request = fixture.authenticatedRequest(http.MethodGet, "/subscriptions/admin", "")
+	response = httptest.NewRecorder()
+	fixture.handler.ServeHTTP(response, request)
+	if response.Code != http.StatusNotFound {
+		t.Fatalf("disabled administrator subscription status = %d", response.Code)
+	}
+
+	request = fixture.authenticatedMutationRequest(http.MethodPost, "/settings/administrator-proxy-access", url.Values{
+		"csrf_token": {fixture.session.CSRFToken}, "enabled": {"true"},
+	}.Encode())
+	response = httptest.NewRecorder()
+	fixture.handler.ServeHTTP(response, request)
+	if response.Code != http.StatusOK || !strings.Contains(response.Body.String(), "Administrator proxy access enabled.") ||
+		!strings.Contains(response.Body.String(), `role="switch" aria-checked="true"`) {
+		t.Fatalf("enable administrator access = %d %q", response.Code, response.Body.String())
+	}
+	state := fixture.proxyNodes.Snapshot()
+	current, _ := fixture.proxyNodes.ProxyNode(node.ID)
+	if !state.AdministratorProxyAccessEnabled || len(state.Users) != 1 ||
+		current.Memberships[0].UserID != proxynode.SystemAdministratorUserID {
+		t.Fatalf("enabled administrator state = %#v node=%#v", state, current)
+	}
+
+	request = fixture.authenticatedMutationRequest(http.MethodPost, "/settings/administrator-proxy-access", url.Values{
+		"csrf_token": {fixture.session.CSRFToken}, "enabled": {"false"},
+	}.Encode())
+	response = httptest.NewRecorder()
+	fixture.handler.ServeHTTP(response, request)
+	if response.Code != http.StatusOK || !strings.Contains(response.Body.String(), "Administrator proxy access disabled.") ||
+		!strings.Contains(response.Body.String(), `role="switch" aria-checked="false"`) {
+		t.Fatalf("disable administrator access = %d %q", response.Code, response.Body.String())
+	}
+	state = fixture.proxyNodes.Snapshot()
+	current, _ = fixture.proxyNodes.ProxyNode(node.ID)
+	if state.AdministratorProxyAccessEnabled || len(state.Users) != 0 || len(current.Memberships) != 0 {
+		t.Fatalf("disabled administrator state = %#v node=%#v", state, current)
 	}
 }
 
@@ -2377,6 +2437,9 @@ func TestUserSettingsOwnProxyNodeAccessAssignments(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	if _, err := fixture.proxyNodes.SetAdministratorProxyAccess(true); err != nil {
+		t.Fatal(err)
+	}
 	deployer, err := proxynode.NewDeployer(fixture.proxyNodes, fixedProxyResolver{}, fixture.controller)
 	if err != nil {
 		t.Fatal(err)
@@ -2417,7 +2480,8 @@ func TestUserSettingsOwnProxyNodeAccessAssignments(t *testing.T) {
 		t.Fatalf("grant user access = %d %q", response.Code, response.Body.String())
 	}
 	updated, _ := fixture.proxyNodes.ProxyNode(node.ID)
-	if len(updated.Memberships) != 1 || updated.Memberships[0].UserID != user.ID || updated.Memberships[0].Credential.Secret == "" {
+	grantedIndex := slices.IndexFunc(updated.Memberships, func(membership proxynode.Membership) bool { return membership.UserID == user.ID })
+	if len(updated.Memberships) != 2 || grantedIndex < 0 || updated.Memberships[grantedIndex].Credential.Secret == "" {
 		t.Fatalf("granted membership = %#v", updated.Memberships)
 	}
 
@@ -2457,7 +2521,9 @@ func TestUserSettingsOwnProxyNodeAccessAssignments(t *testing.T) {
 		!strings.Contains(response.Body.String(), `data-dialog-open="grant-proxy-node-user"`) ||
 		!strings.Contains(response.Body.String(), `id="grant-proxy-node-user"`) ||
 		!strings.Contains(response.Body.String(), "No users available.") ||
-		!strings.Contains(response.Body.String(), `data-proxy-user-search-count>1 user</span>`) ||
+		!strings.Contains(response.Body.String(), `data-proxy-user-search-count>2 users</span>`) ||
+		!strings.Contains(response.Body.String(), "Administrator") ||
+		!strings.Contains(response.Body.String(), "Protected") ||
 		!strings.Contains(response.Body.String(), "100.00 GiB / month") {
 		t.Fatalf("Proxy Node map omitted the user dialog: %d %q", response.Code, response.Body.String())
 	}
@@ -2465,7 +2531,7 @@ func TestUserSettingsOwnProxyNodeAccessAssignments(t *testing.T) {
 	response = httptest.NewRecorder()
 	fixture.handler.ServeHTTP(response, request)
 	chineseBody := response.Body.String()
-	for _, expected := range []string{"Cinema · 用户权限", "已授权用户", "搜索用户", "清除用户搜索", `data-proxy-user-search-count>1 位用户</span>`, "正常", "已用 0 B", "每月 100.00 GiB"} {
+	for _, expected := range []string{"Cinema · 用户权限", "已授权用户", "搜索用户", "清除用户搜索", `data-proxy-user-search-count>2 位用户</span>`, "管理员", "受保护", "正常", "已用 0 B", "每月 100.00 GiB"} {
 		if response.Code != http.StatusOK || !strings.Contains(chineseBody, expected) {
 			t.Errorf("Chinese Proxy Node user roster omitted %q: %d %q", expected, response.Code, chineseBody)
 		}
@@ -2491,7 +2557,7 @@ func TestUserSettingsOwnProxyNodeAccessAssignments(t *testing.T) {
 		t.Fatalf("revoke user access = %d %q", response.Code, response.Body.String())
 	}
 	updated, _ = fixture.proxyNodes.ProxyNode(node.ID)
-	if len(updated.Memberships) != 0 {
+	if len(updated.Memberships) != 1 || updated.Memberships[0].UserID != proxynode.SystemAdministratorUserID {
 		t.Fatalf("revoked membership remains: %#v", updated.Memberships)
 	}
 
@@ -2506,8 +2572,9 @@ func TestUserSettingsOwnProxyNodeAccessAssignments(t *testing.T) {
 		t.Fatalf("Proxy Node grant user access = %d %q", response.Code, response.Body.String())
 	}
 	updated, _ = fixture.proxyNodes.ProxyNode(node.ID)
-	if len(updated.Memberships) != 1 || updated.Memberships[0].MonthlyQuotaBytes != 0 ||
-		!updated.Memberships[0].SubscriptionEndsAfter.IsZero() {
+	regrantedIndex := slices.IndexFunc(updated.Memberships, func(membership proxynode.Membership) bool { return membership.UserID == user.ID })
+	if len(updated.Memberships) != 2 || regrantedIndex < 0 || updated.Memberships[regrantedIndex].MonthlyQuotaBytes != 0 ||
+		!updated.Memberships[regrantedIndex].SubscriptionEndsAfter.IsZero() {
 		t.Fatalf("Proxy Node grant membership = %#v", updated.Memberships)
 	}
 
@@ -2693,6 +2760,116 @@ func TestUserSubscriptionLinksExportActiveNodesAndOrderedRules(t *testing.T) {
 	fixture.handler.ServeHTTP(response, request)
 	if response.Code != http.StatusNotFound {
 		t.Fatalf("revoked subscription status = %d", response.Code)
+	}
+}
+
+func TestAdministratorSubscriptionIsAutomaticAndProtected(t *testing.T) {
+	fixture := newWebFixture(t)
+	enrollAgent(t, fixture.registry, "edge-online")
+	registry, err := pool.Open(filepath.Join(t.TempDir(), "outbound-pool.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := fixture.proxyNodes.SetAdministratorProxyAccess(true); err != nil {
+		t.Fatal(err)
+	}
+	if err := registry.SetOverrides("edge-online", "203.0.113.42", ""); err != nil {
+		t.Fatal(err)
+	}
+	fixture.controller.poolRegistry = registry
+	node, err := fixture.proxyNodes.CreateProxyNode(proxynode.CreateProxyNodeInput{
+		Name: "Cinema", RootAgent: "edge-online",
+		Entrance: proxynode.Endpoint{
+			Protocol: proxynode.ProtocolAnyTLS, Listen: "::", ListenPort: 443,
+			TLS: proxynode.TLSConfig{Mode: proxynode.TLSModeSelfSigned, ServerName: "cinema.example"},
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := fixture.proxyNodes.MarkTopologyApplied(fixture.proxyNodes.Snapshot().Revision, []string{"edge-online"}); err != nil {
+		t.Fatal(err)
+	}
+
+	request := fixture.authenticatedRequest(http.MethodGet, "/subscriptions/admin", "")
+	response := httptest.NewRecorder()
+	fixture.handler.ServeHTTP(response, request)
+	body := response.Body.String()
+	if response.Code != http.StatusOK || !strings.Contains(body, "My Subscription") ||
+		!strings.Contains(body, "Cinema") || !strings.Contains(body, "/subscriptions/") ||
+		strings.Contains(body, `data-dialog-open="reset-user-subscription"`) ||
+		strings.Contains(body, `data-dialog-open="revoke-user-subscription"`) {
+		t.Fatalf("administrator subscription page = %d %q", response.Code, body)
+	}
+
+	administrator, exists := fixture.proxyNodes.User(proxynode.SystemAdministratorUserID)
+	if !exists || administrator.Subscription.Token == "" {
+		t.Fatalf("administrator = %#v, exists=%v", administrator, exists)
+	}
+	request = fixture.request(http.MethodGet, "/subscriptions/"+administrator.Subscription.Token+"/clash", "")
+	response = httptest.NewRecorder()
+	fixture.handler.ServeHTTP(response, request)
+	if response.Code != http.StatusOK || !strings.Contains(response.Body.String(), `name: "Cinema"`) {
+		t.Fatalf("administrator Clash subscription = %d %q", response.Code, response.Body.String())
+	}
+
+	request = fixture.authenticatedRequest(http.MethodGet, proxyNodeURL(node.ID), "")
+	response = httptest.NewRecorder()
+	fixture.handler.ServeHTTP(response, request)
+	body = response.Body.String()
+	if response.Code != http.StatusOK || !strings.Contains(body, "Administrator") ||
+		!strings.Contains(body, "Protected") ||
+		!strings.Contains(body, `href="/subscriptions/admin"`) ||
+		!strings.Contains(body, `href="/users">Add user</a>`) ||
+		strings.Contains(body, "/users/"+proxynode.SystemAdministratorUserID+"/plan") ||
+		strings.Contains(body, "/users/"+proxynode.SystemAdministratorUserID+"/remove") {
+		t.Fatalf("protected administrator roster = %d %q", response.Code, body)
+	}
+
+	request = fixture.authenticatedRequest(http.MethodGet, "/users", "")
+	response = httptest.NewRecorder()
+	fixture.handler.ServeHTTP(response, request)
+	if response.Code != http.StatusOK || strings.Contains(response.Body.String(), proxynode.SystemAdministratorUserID) ||
+		strings.Contains(response.Body.String(), ">Administrator<") {
+		t.Fatalf("global users exposed system administrator = %d %q", response.Code, response.Body.String())
+	}
+	request = fixture.authenticatedRequest(http.MethodGet, "/users/"+proxynode.SystemAdministratorUserID, "")
+	response = httptest.NewRecorder()
+	fixture.handler.ServeHTTP(response, request)
+	if response.Code != http.StatusNotFound {
+		t.Fatalf("system administrator user page status = %d", response.Code)
+	}
+}
+
+func TestServerPageShowsFiniteEntranceUsageAndUnlimitedUserCount(t *testing.T) {
+	fixture := newWebFixture(t)
+	enrollAgent(t, fixture.registry, "edge-online")
+	finite, _ := fixture.proxyNodes.CreateUser("finite")
+	unlimited, _ := fixture.proxyNodes.CreateUser("unlimited")
+	node, err := fixture.proxyNodes.CreateProxyNode(proxynode.CreateProxyNodeInput{
+		Name: "Cinema", RootAgent: "edge-online",
+		Entrance: proxynode.Endpoint{
+			Protocol: proxynode.ProtocolAnyTLS, Listen: "::", ListenPort: 443,
+			TLS: proxynode.TLSConfig{Mode: proxynode.TLSModeSelfSigned, ServerName: "cinema.example"},
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := fixture.proxyNodes.AddMembershipWithPlan(node.ID, finite.ID, proxynode.MembershipPlan{MonthlyQuotaBytes: 100}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := fixture.proxyNodes.AddMembership(node.ID, unlimited.ID); err != nil {
+		t.Fatal(err)
+	}
+	request := fixture.authenticatedRequest(http.MethodGet, "/servers/edge-online/manage", "")
+	response := httptest.NewRecorder()
+	fixture.handler.ServeHTTP(response, request)
+	body := response.Body.String()
+	for _, expected := range []string{"Entrance Traffic", "Finite Quota Allocated", "100 B", "Finite Quota Used", "0 B", "Unlimited Users", ">1</dd>"} {
+		if response.Code != http.StatusOK || !strings.Contains(body, expected) {
+			t.Errorf("server entrance usage omitted %q: %d %q", expected, response.Code, body)
+		}
 	}
 }
 
@@ -5070,7 +5247,7 @@ func newWebFixtureWithAccess(
 		}
 	})
 	endUsers.now = func() time.Time { return now }
-	endUsers.passwordKDFGate = make(chan struct{}, 1)
+	endUsers.passwordKDFLimiter = newPasswordKDFLimiter(1, 8, time.Second)
 	migration := &testMasterMigrationService{}
 	restarts := make(chan struct{}, 1)
 	handler, err := New(Options{

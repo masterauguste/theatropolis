@@ -98,8 +98,18 @@ func (s *Service) StageRestore(_ context.Context, archive []byte, passphrase str
 	keep = true
 	return RestoreSummary{
 		MigrationID: inner.MigrationID,
-		Agents:      len(registry.Snapshot(s.now())), Users: len(state.Users), ProxyNodes: len(state.ProxyNodes),
+		Agents:      len(registry.Snapshot(s.now())), Users: migrationEndUserCount(state.Users), ProxyNodes: len(state.ProxyNodes),
 	}, nil
+}
+
+func migrationEndUserCount(users []proxynode.User) int {
+	count := 0
+	for _, user := range users {
+		if !proxynode.IsSystemAdministrator(user) {
+			count++
+		}
+	}
+	return count
 }
 
 func (s *Service) requireEmptyTarget() error {
@@ -107,7 +117,7 @@ func (s *Service) requireEmptyTarget() error {
 		return errors.New("Master migration storage is unavailable")
 	}
 	state := s.ProxyNodes.Snapshot()
-	if len(state.Users) != 0 || len(state.ProxyNodes) != 0 || len(state.AppliedProxyNodes) != 0 {
+	if migrationEndUserCount(state.Users) != 0 || len(state.ProxyNodes) != 0 || len(state.AppliedProxyNodes) != 0 {
 		return ErrTargetNotEmpty
 	}
 	if len(s.Identities.Snapshot(s.now())) != 0 {

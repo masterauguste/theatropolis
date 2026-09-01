@@ -181,7 +181,7 @@ type EndUserAccessManager struct {
 	now                func() time.Time
 	random             io.Reader
 	derivePassword     passwordDeriver
-	passwordKDFGate    chan struct{}
+	passwordKDFLimiter *passwordKDFLimiter
 	sessionIdleTimeout time.Duration
 	loginFailureLimit  int
 	loginFailureWindow time.Duration
@@ -345,7 +345,7 @@ func newEndUserAccessManager(
 		now:                time.Now,
 		random:             random,
 		derivePassword:     derivePassword,
-		passwordKDFGate:    globalPasswordKDFGate,
+		passwordKDFLimiter: globalPasswordKDFLimiter,
 		sessionIdleTimeout: DefaultSessionIdleTimeout,
 		loginFailureLimit:  DefaultLoginFailureLimit,
 		loginFailureWindow: DefaultLoginFailureWindow,
@@ -879,15 +879,10 @@ func (m *EndUserAccessManager) reserveLoginAttempt(client [sha256.Size]byte, now
 }
 
 func (m *EndUserAccessManager) acquirePasswordKDF() bool {
-	select {
-	case m.passwordKDFGate <- struct{}{}:
-		return true
-	default:
-		return false
-	}
+	return m.passwordKDFLimiter.acquire()
 }
 
-func (m *EndUserAccessManager) releasePasswordKDF() { <-m.passwordKDFGate }
+func (m *EndUserAccessManager) releasePasswordKDF() { m.passwordKDFLimiter.release() }
 
 func (m *EndUserAccessManager) purgeExpiredSessionsLocked(now time.Time) {
 	for digest, session := range m.sessions {

@@ -46,7 +46,7 @@ func TestUnifiedIdentityMigrationAndSingleRoleLookup(t *testing.T) {
 		t.Fatal(err)
 	}
 	identities.derivePassword = fastTestPasswordDeriver
-	identities.passwordKDFGate = make(chan struct{}, 1)
+	identities.passwordKDFLimiter = newPasswordKDFLimiter(1, 8, time.Second)
 	if !identities.Unified() || access.Mode() != UsernamePassword {
 		t.Fatalf("unified managers were not configured")
 	}
@@ -384,7 +384,7 @@ func newTestEndUserAccessManager(t *testing.T) (*EndUserAccessManager, string, s
 	fixed := time.Date(2026, time.August, 30, 10, 0, 0, 0, time.UTC)
 	now := func() time.Time { return fixed }
 	manager.now = now
-	manager.passwordKDFGate = make(chan struct{}, 1)
+	manager.passwordKDFLimiter = newPasswordKDFLimiter(1, 8, time.Second)
 	return manager, accessPath, sessionPath, now
 }
 

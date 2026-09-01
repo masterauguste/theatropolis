@@ -143,7 +143,7 @@ func validateTopologyTransaction(transaction topologyTransaction) error {
 	}
 	seen := make(map[string]struct{}, len(transaction.Agents))
 	if transaction.RollbackState != nil {
-		if err := validateState(*transaction.RollbackState); err != nil {
+		if err := validateStoredState(*transaction.RollbackState); err != nil {
 			return errors.New("invalid topology transaction rollback state")
 		}
 	}

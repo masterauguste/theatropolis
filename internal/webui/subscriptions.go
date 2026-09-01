@@ -29,6 +29,7 @@ type userSubscriptionView struct {
 	SurgeURL   string
 	SingBoxURL string
 	Nodes      []subscriptionNodeView
+	System     bool
 }
 
 type subscriptionPolicyView struct {
@@ -86,13 +87,38 @@ func (h *Handler) userSubscriptionPage(response http.ResponseWriter, request *ht
 	if !ok {
 		return
 	}
-	view, _, exists := h.subscriptionViewAndProfile(request.PathValue("user_id"))
+	userID := request.PathValue("user_id")
+	if userID == proxynode.SystemAdministratorUserID {
+		http.NotFound(response, request)
+		return
+	}
+	view, _, exists := h.subscriptionViewAndProfile(userID)
 	if !exists {
 		http.NotFound(response, request)
 		return
 	}
 	h.render(response, http.StatusOK, "user-subscription-nodes.html", pageData{
 		Title: view.UserName + " subscription", ActiveNav: "users", CSRFToken: session.CSRFToken,
+		UserSubscription: view,
+	})
+}
+
+func (h *Handler) administratorSubscriptionPage(response http.ResponseWriter, request *http.Request) {
+	session, ok := h.requireAuthentication(response, request)
+	if !ok {
+		return
+	}
+	if !h.proxyNodes.Snapshot().AdministratorProxyAccessEnabled {
+		http.NotFound(response, request)
+		return
+	}
+	view, _, exists := h.subscriptionViewAndProfile(proxynode.SystemAdministratorUserID)
+	if !exists {
+		http.Error(response, "administrator subscription is unavailable", http.StatusServiceUnavailable)
+		return
+	}
+	h.render(response, http.StatusOK, "user-subscription-nodes.html", pageData{
+		Title: "My Subscription", ActiveNav: "subscriptions", CSRFToken: session.CSRFToken,
 		UserSubscription: view,
 	})
 }
@@ -104,7 +130,8 @@ func (h *Handler) subscriptionPolicyPage(response http.ResponseWriter, request *
 	}
 	h.render(response, http.StatusOK, "subscription-policy.html", pageData{
 		Title: "Subscriptions", ActiveNav: "subscriptions", CSRFToken: session.CSRFToken,
-		SubscriptionPolicy: subscriptionPolicyViewFor(h.proxyNodes.SubscriptionPolicy()),
+		SubscriptionPolicy:              subscriptionPolicyViewFor(h.proxyNodes.SubscriptionPolicy()),
+		AdministratorProxyAccessEnabled: h.proxyNodes.Snapshot().AdministratorProxyAccessEnabled,
 	})
 }
 
@@ -456,6 +483,7 @@ func (h *Handler) subscriptionViewAndProfile(userID string) (*userSubscriptionVi
 	user := projection.User
 	view := &userSubscriptionView{
 		UserID: user.ID, UserName: user.Name, Enabled: user.Subscription.Token != "",
+		System: proxynode.IsSystemAdministrator(user),
 	}
 	if view.Enabled {
 		base := h.publicURL + "/subscriptions/" + url.PathEscape(user.Subscription.Token) + "/"

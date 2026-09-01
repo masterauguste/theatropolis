@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"slices"
 	"testing"
 	"time"
 )
@@ -306,7 +307,9 @@ func TestStatePersistenceFailureRollsBackPreparedAccountingMutation(t *testing.T
 	}
 
 	next := store.Snapshot()
-	next.ProxyNodes[0].Memberships = nil
+	next.ProxyNodes[0].Memberships = slices.DeleteFunc(next.ProxyNodes[0].Memberships, func(candidate Membership) bool {
+		return candidate.ID == membership.ID
+	})
 	next.UserRevision++
 	if err := validateState(next); err != nil {
 		t.Fatal(err)

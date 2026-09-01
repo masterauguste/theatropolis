@@ -433,11 +433,12 @@ func TestExpirationAndTrafficResetShareOneMidnightTransition(t *testing.T) {
 		t.Fatalf("midnight billing changed=%v err=%v", changed, err)
 	}
 	current, _ = store.ProxyNode(node.ID)
-	if len(current.Memberships) != 1 || current.Memberships[0].ID != survivor.ID {
+	if len(current.Memberships) != 1 || membershipForUser(&current, survivorUser.ID) == nil {
 		t.Fatalf("expired membership remained after boundary: %#v", current.Memberships)
 	}
-	if current.Memberships[0].UsedBytes != 0 || current.Memberships[0].DisabledReason != MembershipEnabled {
-		t.Fatalf("surviving membership did not reset atomically: %#v", current.Memberships[0])
+	remaining := membershipForUser(&current, survivorUser.ID)
+	if remaining.UsedBytes != 0 || remaining.DisabledReason != MembershipEnabled {
+		t.Fatalf("surviving membership did not reset atomically: %#v", remaining)
 	}
 	if got := store.Snapshot().UserRevision; got != revision+1 {
 		t.Fatalf("atomic billing revision = %d, want %d", got, revision+1)
@@ -460,11 +461,12 @@ func TestExpirationAndTrafficResetShareOneMidnightTransition(t *testing.T) {
 	}
 	t.Cleanup(func() { _ = reopened.Close() })
 	restartedNode, _ := reopened.ProxyNode(node.ID)
-	if len(restartedNode.Memberships) != 1 || restartedNode.Memberships[0].ID != survivor.ID {
+	if len(restartedNode.Memberships) != 1 || membershipForUser(&restartedNode, survivorUser.ID) == nil {
 		t.Fatalf("expired membership returned after restart: %#v", restartedNode.Memberships)
 	}
-	if restartedNode.Memberships[0].UsedBytes != 0 || restartedNode.Memberships[0].DisabledReason != MembershipEnabled {
-		t.Fatalf("surviving membership reset was not durable: %#v", restartedNode.Memberships[0])
+	restartedSurvivor := membershipForUser(&restartedNode, survivorUser.ID)
+	if restartedSurvivor.UsedBytes != 0 || restartedSurvivor.DisabledReason != MembershipEnabled {
+		t.Fatalf("surviving membership reset was not durable: %#v", restartedSurvivor)
 	}
 	if got := accountingMembershipRowCount(t, reopened, membership.ID); got != 0 {
 		t.Fatalf("expired membership accounting returned after restart: %d", got)
@@ -640,7 +642,7 @@ func TestAccountingFailureHistoryIsNonSensitiveAndRevisionNeutral(t *testing.T) 
 	}
 }
 
-func TestAccountingFailureIgnoresEmptyEntrancesAndChildOnlyAgents(t *testing.T) {
+func TestAccountingFailureTracksAdministratorEntranceAndIgnoresChildOnlyAgents(t *testing.T) {
 	store, err := Open(filepath.Join(t.TempDir(), "state.json"), testBuild())
 	if err != nil {
 		t.Fatal(err)
@@ -648,6 +650,9 @@ func TestAccountingFailureIgnoresEmptyEntrancesAndChildOnlyAgents(t *testing.T) 
 	node, _ := store.CreateProxyNode(CreateProxyNodeInput{
 		Name: "cinema", RootAgent: "edge-a", Entrance: testTLSEndpoint(ProtocolAnyTLS, 443),
 	})
+	if _, err := store.SetAdministratorProxyAccess(true); err != nil {
+		t.Fatal(err)
+	}
 	if _, _, err := store.AddLink(node.ID, AddLinkInput{
 		ParentHopID: node.Entrance.HopID,
 		ChildName:   "relay",
@@ -666,8 +671,8 @@ func TestAccountingFailureIgnoresEmptyEntrancesAndChildOnlyAgents(t *testing.T) 
 	if err := store.RecordAccountingFailure("edge-b", AccountingFailureCollection, now); err != nil {
 		t.Fatal(err)
 	}
-	if failures := store.Snapshot().AccountingFailures; len(failures) != 0 {
-		t.Fatalf("empty topology accounting failures = %#v", failures)
+	if failures := store.Snapshot().AccountingFailures; len(failures) != 1 || failures[0].AgentID != "edge-a" {
+		t.Fatalf("administrator entrance accounting failures = %#v", failures)
 	}
 
 	user, _ := store.CreateUser("alice")
@@ -681,7 +686,7 @@ func TestAccountingFailureIgnoresEmptyEntrancesAndChildOnlyAgents(t *testing.T) 
 		t.Fatal(err)
 	}
 	failures := store.Snapshot().AccountingFailures
-	if len(failures) != 1 || failures[0].AgentID != "edge-a" {
+	if len(failures) != 2 || failures[1].AgentID != "edge-a" {
 		t.Fatalf("membership topology accounting failures = %#v", failures)
 	}
 }
@@ -1050,6 +1055,9 @@ func TestProxyNodeCompensationExtendsOnlyFiniteSubscriptions(t *testing.T) {
 	updated, _ = store.ProxyNode(node.ID)
 	byUser := make(map[string]Membership, len(updated.Memberships))
 	for _, membership := range updated.Memberships {
+		if membership.UserID == SystemAdministratorUserID {
+			continue
+		}
 		byUser[membership.UserID] = membership
 	}
 	if got := byUser[finiteUser.ID]; !got.SubscriptionEndsAfter.Equal(finite.SubscriptionEndsAfter.Add(time.Hour)) {
@@ -1065,6 +1073,9 @@ func TestProxyNodeCompensationExtendsOnlyFiniteSubscriptions(t *testing.T) {
 		t.Fatalf("compensation restored expired membership = %#v", byUser[expiredUser.ID])
 	}
 	for _, membership := range updated.Memberships {
+		if membership.UserID == SystemAdministratorUserID {
+			continue
+		}
 		var original Membership
 		switch membership.UserID {
 		case finiteUser.ID:

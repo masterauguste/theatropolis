@@ -90,6 +90,9 @@ func (s *Store) UserBySubscriptionToken(token string) (User, bool) {
 }
 
 func (s *Store) RotateUserSubscription(userID string) (UserSubscription, error) {
+	if userID == SystemAdministratorUserID {
+		return UserSubscription{}, fmt.Errorf("%w: administrator subscription is immutable", ErrConflict)
+	}
 	var updated UserSubscription
 	err := s.mutateUser(func(state *State) error {
 		var err error
@@ -103,6 +106,9 @@ func (s *Store) RotateUserSubscription(userID string) (UserSubscription, error) 
 // and every Proxy Node Membership credential atomically. The new token is
 // never persisted unless every credential can also be generated and stored.
 func (s *Store) ResetUserSubscriptionAndCredentials(userID string) (UserSubscription, int, error) {
+	if userID == SystemAdministratorUserID {
+		return UserSubscription{}, 0, fmt.Errorf("%w: administrator subscription is immutable", ErrConflict)
+	}
 	var updated UserSubscription
 	rotated := 0
 	err := s.mutateUser(func(state *State) error {
@@ -151,6 +157,9 @@ func (s *Store) rotateUserSubscriptionToken(state *State, userID string) (UserSu
 }
 
 func (s *Store) RevokeUserSubscription(userID string) error {
+	if userID == SystemAdministratorUserID {
+		return fmt.Errorf("%w: administrator subscription is immutable", ErrConflict)
+	}
 	return s.mutateUser(func(state *State) error {
 		for index := range state.Users {
 			if state.Users[index].ID != userID {

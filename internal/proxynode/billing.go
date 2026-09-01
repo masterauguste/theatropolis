@@ -231,6 +231,9 @@ func validAccountingFailureReason(reason string) bool {
 // subscription term. A finite term starts on the current UTC+8 date. Existing
 // period usage is retained, so reducing a quota can disable access immediately.
 func (s *Store) UpdateMembershipPlan(nodeID, userID string, plan MembershipPlan) error {
+	if userID == SystemAdministratorUserID {
+		return fmt.Errorf("%w: administrator Membership is immutable", ErrConflict)
+	}
 	if err := validateMembershipPlan(plan); err != nil {
 		return err
 	}
@@ -262,6 +265,9 @@ func (s *Store) UpdateMembershipPlan(nodeID, userID string, plan MembershipPlan)
 // without changing its traffic period, reset date, or quota. Expired grants are
 // removed by the billing enforcer and must be granted again.
 func (s *Store) ExtendMembershipSubscription(nodeID, userID string, value int, unit SubscriptionUnit) error {
+	if userID == SystemAdministratorUserID {
+		return fmt.Errorf("%w: administrator Membership is immutable", ErrConflict)
+	}
 	if err := validateMembershipPlan(MembershipPlan{SubscriptionValue: value, SubscriptionUnit: unit}); err != nil {
 		return err
 	}
@@ -330,6 +336,9 @@ func (s *Store) ExtendProxyNodeSubscriptions(nodeID string, membershipIDs []stri
 // ResetMembershipTraffic clears only the current-period usage. Billing anchor,
 // period boundaries, quota, and subscription deadline are preserved.
 func (s *Store) ResetMembershipTraffic(nodeID, userID string) (bool, error) {
+	if userID == SystemAdministratorUserID {
+		return false, fmt.Errorf("%w: administrator Membership is immutable", ErrConflict)
+	}
 	configurationChanged := false
 	err := s.mutateBilling(func(state *State) (bool, error) {
 		nodeIndex := slices.IndexFunc(state.ProxyNodes, func(node ProxyNode) bool { return node.ID == nodeID })
@@ -570,7 +579,7 @@ func (s *Store) advanceBilling(now time.Time, resetTraffic, expireSubscriptions 
 	if authorityChanged {
 		next.UserRevision++
 	}
-	if err := validateState(next); err != nil {
+	if err := validateStoredState(next); err != nil {
 		return false, err
 	}
 	if identityChanged {
@@ -605,7 +614,7 @@ func (s *Store) mutateBillingWithDaily(daily *dailyUsageDelta, mutation func(*St
 	if configurationChanged {
 		next.UserRevision++
 	}
-	if err := validateState(next); err != nil {
+	if err := validateStoredState(next); err != nil {
 		return err
 	}
 	if s.accounting == nil {

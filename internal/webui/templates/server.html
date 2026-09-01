@@ -70,6 +70,15 @@
         </article>
       </section>
 
+      <section class="panel entrance-usage" aria-labelledby="entrance-usage-heading">
+        <div class="panel__header"><h2 id="entrance-usage-heading">Entrance Traffic</h2></div>
+        <dl class="server-usage-grid">
+          <div><dt>Finite Quota Allocated</dt><dd>{{.Agent.EntranceAllocated}}</dd></div>
+          <div><dt>Finite Quota Used</dt><dd>{{.Agent.EntranceUsed}}</dd></div>
+          <div><dt>Unlimited Users</dt><dd>{{.Agent.EntranceUnlimited}}</dd></div>
+        </dl>
+      </section>
+
       <div>
 
         <section class="panel" aria-labelledby="proxy-role-heading">

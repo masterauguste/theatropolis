@@ -277,6 +277,9 @@ func serve(arguments []string) error {
 	}()
 	validEndUsers := make(map[string]struct{})
 	for _, user := range proxyNodes.Snapshot().Users {
+		if proxynode.IsSystemAdministrator(user) {
+			continue
+		}
 		validEndUsers[user.ID] = struct{}{}
 	}
 	if err := endUserAccess.ReconcileUsers(validEndUsers); err != nil {

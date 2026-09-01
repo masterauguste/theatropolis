@@ -150,13 +150,32 @@ func Open(path string, build BuildInfo) (*Store, error) {
 	if stored.SchemaVersion == 13 {
 		stored.SchemaVersion = 14
 	}
+	if stored.SchemaVersion == 14 {
+		stored.SchemaVersion = 15
+	}
+	if stored.SchemaVersion == 15 {
+		// Schema v15 was an unreleased preview in which administrator access was
+		// always enabled. Preserve that preview state, while released v14 data
+		// reaches this migration with no reserved administrator and therefore
+		// keeps the new default-off behavior.
+		if slices.ContainsFunc(stored.Data.Users, IsSystemAdministrator) {
+			stored.Data.AdministratorProxyAccessEnabled = true
+			if err := ensureSystemAdministrator(&stored.Data, store.now().UTC()); err != nil {
+				return nil, fmt.Errorf("%w: migrate schema version 15: %v", ErrInvalidState, err)
+			}
+		} else {
+			stored.Data.AdministratorProxyAccessEnabled = false
+			removeSystemAdministrator(&stored.Data)
+		}
+		stored.SchemaVersion = 16
+	}
 	if stored.SchemaVersion != SchemaVersion {
 		return nil, fmt.Errorf("%w: unsupported schema version %d", ErrInvalidState, stored.SchemaVersion)
 	}
 	if err := validateBuildInfo(stored.LastUsedBy); err != nil {
 		return nil, fmt.Errorf("%w: %v", ErrInvalidState, err)
 	}
-	if err := validateState(stored.Data); err != nil {
+	if err := validateStoredState(stored.Data); err != nil {
 		return nil, err
 	}
 	if changed, err := reconcileSharedListenerSecrets(&stored.Data, nil); err != nil {
@@ -164,7 +183,7 @@ func Open(path string, build BuildInfo) (*Store, error) {
 	} else if changed {
 		stored.Data.Revision++
 	}
-	if err := validateState(stored.Data); err != nil {
+	if err := validateStoredState(stored.Data); err != nil {
 		return nil, err
 	}
 	store.state = stored.Data
@@ -175,7 +194,7 @@ func Open(path string, build BuildInfo) (*Store, error) {
 	}
 	store.accounting = accounting
 	store.rebuildIndexesLocked()
-	if err := validateState(store.state); err != nil {
+	if err := validateStoredState(store.state); err != nil {
 		_ = accounting.db.Close()
 		return nil, err
 	}
@@ -194,6 +213,106 @@ func migrateSchemaV12(state *State) {
 	}
 	reorderSubscriptionRules(state.SubscriptionPolicy.Rules)
 	state.SubscriptionPolicy.Providers = nil
+}
+
+func ensureSystemAdministrator(state *State, now time.Time) error {
+	if state == nil {
+		return errors.New("state is required")
+	}
+	found := false
+	for _, user := range state.Users {
+		if user.ID == SystemAdministratorUserID {
+			if !IsSystemAdministrator(user) {
+				return errors.New("reserved administrator user ID is already in use")
+			}
+			found = true
+			break
+		}
+	}
+	if !found {
+		token, err := uniqueSubscriptionToken(state.Users)
+		if err != nil {
+			return err
+		}
+		now = now.UTC().Truncate(time.Second)
+		state.Users = append(state.Users, User{
+			ID: SystemAdministratorUserID, Name: SystemAdministratorUserName, Role: UserRoleAdministrator,
+			Subscription: UserSubscription{Token: token, UpdatedAt: now}, CreatedAt: now, UpdatedAt: now,
+		})
+	}
+	for nodeIndex := range state.ProxyNodes {
+		node := &state.ProxyNodes[nodeIndex]
+		if membershipForUser(node, SystemAdministratorUserID) != nil {
+			continue
+		}
+		membership, err := newMembership(state, node, SystemAdministratorUserID, MembershipPlan{}, now)
+		if err != nil {
+			return fmt.Errorf("create administrator Membership for Proxy Node %q: %w", node.Name, err)
+		}
+		node.Memberships = append(node.Memberships, membership)
+	}
+	return nil
+}
+
+func removeSystemAdministrator(state *State) {
+	if state == nil {
+		return
+	}
+	state.Users = slices.DeleteFunc(state.Users, func(user User) bool {
+		return user.ID == SystemAdministratorUserID || user.Role == UserRoleAdministrator
+	})
+	for nodeIndex := range state.ProxyNodes {
+		state.ProxyNodes[nodeIndex].Memberships = slices.DeleteFunc(state.ProxyNodes[nodeIndex].Memberships, func(membership Membership) bool {
+			return membership.UserID == SystemAdministratorUserID
+		})
+	}
+}
+
+// SetAdministratorProxyAccess atomically changes the optional system
+// administrator's user-plane authority. Enabling creates a protected,
+// unlimited Membership on every current Proxy Node; disabling removes those
+// credentials and the administrator configuration-subscription token.
+func (s *Store) SetAdministratorProxyAccess(enabled bool) (bool, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.state.AdministratorProxyAccessEnabled == enabled {
+		return false, nil
+	}
+	next := cloneState(s.state)
+	now := s.now().UTC()
+	if enabled {
+		if err := ensureSystemAdministrator(&next, now); err != nil {
+			return false, err
+		}
+	} else {
+		removeSystemAdministrator(&next)
+	}
+	for index := range next.ProxyNodes {
+		next.ProxyNodes[index].UpdatedAt = now
+	}
+	next.AdministratorProxyAccessEnabled = enabled
+	next.UserRevision++
+	if err := validateStoredState(next); err != nil {
+		return false, err
+	}
+	build := normalizeBuild(s.build, s.now())
+	if err := s.persistStateAndAccountingLocked(next, build); err != nil {
+		return false, err
+	}
+	return true, nil
+}
+
+func uniqueSubscriptionToken(users []User) (string, error) {
+	for attempts := 0; attempts < 3; attempts++ {
+		token, err := randomID("sub")
+		if err != nil {
+			return "", err
+		}
+		if !slices.ContainsFunc(users, func(user User) bool { return user.Subscription.Token == token }) {
+			return token, nil
+		}
+	}
+	return "", errors.New("could not allocate a unique subscription token")
 }
 
 // migrateSchemaV11 promotes the most recently edited legacy per-user policy
@@ -353,6 +472,9 @@ func (s *Store) CreateUser(name string) (User, error) {
 }
 
 func (s *Store) RenameUser(id, name string) error {
+	if id == SystemAdministratorUserID {
+		return fmt.Errorf("%w: administrator user is immutable", ErrConflict)
+	}
 	name = strings.TrimSpace(name)
 	if !validName(name) {
 		return fmt.Errorf("%w: invalid end user name", ErrInvalidState)
@@ -375,6 +497,9 @@ func (s *Store) RenameUser(id, name string) error {
 }
 
 func (s *Store) DeleteUser(id string) error {
+	if id == SystemAdministratorUserID {
+		return fmt.Errorf("%w: administrator user is immutable", ErrConflict)
+	}
 	return s.mutateUser(func(state *State) error {
 		index := slices.IndexFunc(state.Users, func(user User) bool { return user.ID == id })
 		if index < 0 {
@@ -435,6 +560,14 @@ func (s *Store) CreateProxyNode(input CreateProxyNodeInput) (ProxyNode, error) {
 				return ErrConflict
 			}
 		}
+		if state.AdministratorProxyAccessEnabled {
+			membership, membershipErr := newMembership(state, &created, SystemAdministratorUserID, MembershipPlan{}, now)
+			if membershipErr != nil {
+				return membershipErr
+			}
+			created.Memberships = append(created.Memberships, membership)
+			state.UserRevision++
+		}
 		state.ProxyNodes = append(state.ProxyNodes, created)
 		return validateListenerLayout(state)
 	})
@@ -481,56 +614,74 @@ func (s *Store) AddMembership(nodeID, userID string) (Membership, error) {
 }
 
 func (s *Store) AddMembershipWithPlan(nodeID, userID string, plan MembershipPlan) (Membership, error) {
+	if userID == SystemAdministratorUserID {
+		return Membership{}, fmt.Errorf("%w: administrator Membership already exists", ErrConflict)
+	}
 	if err := validateMembershipPlan(plan); err != nil {
 		return Membership{}, err
 	}
-	membershipID, err := randomID("mem")
-	if err != nil {
-		return Membership{}, err
-	}
 	var created Membership
-	err = s.mutateUserProxyNode(nodeID, func(state *State, node *ProxyNode) error {
+	err := s.mutateUserProxyNode(nodeID, func(state *State, node *ProxyNode) error {
 		if !slices.ContainsFunc(state.Users, func(user User) bool { return user.ID == userID }) {
 			return ErrNotFound
 		}
 		if slices.ContainsFunc(node.Memberships, func(membership Membership) bool { return membership.UserID == userID }) {
 			return ErrConflict
 		}
-		activeEndpoint := node.Entrance.Endpoint
-		if appliedEndpoint, exists := appliedEntranceEndpoint(*state, node.ID); exists {
-			activeEndpoint = appliedEndpoint
-		}
-		credential, err := generateCredential(activeEndpoint)
+		now := s.now().UTC()
+		var err error
+		created, err = newMembership(state, node, userID, plan, now)
 		if err != nil {
 			return err
 		}
-		now := s.now().UTC()
-		today := billingDate(now)
-		created = Membership{
-			ID: membershipID, UserID: userID, Credential: credential,
-			MonthlyQuotaBytes:    plan.MonthlyQuotaBytes,
-			QuotaAnchorDay:       today.Day(),
-			QuotaPeriodStartedOn: today,
-			QuotaResetsAfter:     addCalendarMonths(today, 1),
-			CreatedAt:            now,
+		administratorIndex := slices.IndexFunc(node.Memberships, func(membership Membership) bool {
+			return membership.UserID == SystemAdministratorUserID
+		})
+		if administratorIndex < 0 {
+			node.Memberships = append(node.Memberships, created)
+		} else {
+			node.Memberships = slices.Insert(node.Memberships, administratorIndex, created)
 		}
-		if credentialShapeChanged(activeEndpoint, node.Entrance.Endpoint) {
-			pending, pendingErr := generateCredential(node.Entrance.Endpoint)
-			if pendingErr != nil {
-				return pendingErr
-			}
-			created.PendingCredential = &pending
-		}
-		if plan.SubscriptionValue > 0 {
-			created.SubscriptionStartedAt = now.Truncate(time.Second)
-			created.SubscriptionEndsAfter = subscriptionDeadline(now, plan.SubscriptionValue, plan.SubscriptionUnit)
-			created.SubscriptionValue = plan.SubscriptionValue
-			created.SubscriptionUnit = plan.SubscriptionUnit
-		}
-		node.Memberships = append(node.Memberships, created)
 		return nil
 	})
 	return created, err
+}
+
+func newMembership(state *State, node *ProxyNode, userID string, plan MembershipPlan, now time.Time) (Membership, error) {
+	membershipID, err := randomID("mem")
+	if err != nil {
+		return Membership{}, err
+	}
+	activeEndpoint := node.Entrance.Endpoint
+	if state != nil {
+		if appliedEndpoint, exists := appliedEntranceEndpoint(*state, node.ID); exists {
+			activeEndpoint = appliedEndpoint
+		}
+	}
+	credential, err := generateCredential(activeEndpoint)
+	if err != nil {
+		return Membership{}, err
+	}
+	today := billingDate(now)
+	created := Membership{
+		ID: membershipID, UserID: userID, Credential: credential,
+		MonthlyQuotaBytes: plan.MonthlyQuotaBytes, QuotaAnchorDay: today.Day(),
+		QuotaPeriodStartedOn: today, QuotaResetsAfter: addCalendarMonths(today, 1), CreatedAt: now.UTC(),
+	}
+	if credentialShapeChanged(activeEndpoint, node.Entrance.Endpoint) {
+		pending, pendingErr := generateCredential(node.Entrance.Endpoint)
+		if pendingErr != nil {
+			return Membership{}, pendingErr
+		}
+		created.PendingCredential = &pending
+	}
+	if plan.SubscriptionValue > 0 {
+		created.SubscriptionStartedAt = now.UTC().Truncate(time.Second)
+		created.SubscriptionEndsAfter = subscriptionDeadline(now, plan.SubscriptionValue, plan.SubscriptionUnit)
+		created.SubscriptionValue = plan.SubscriptionValue
+		created.SubscriptionUnit = plan.SubscriptionUnit
+	}
+	return created, nil
 }
 
 func migrateSchemaV4(state *State) {
@@ -581,6 +732,9 @@ func legacyUTCDateToBillingDate(value time.Time) time.Time {
 }
 
 func (s *Store) RemoveMembership(nodeID, userID string) error {
+	if userID == SystemAdministratorUserID {
+		return fmt.Errorf("%w: administrator Membership is immutable", ErrConflict)
+	}
 	return s.mutateUserProxyNode(nodeID, func(_ *State, node *ProxyNode) error {
 		before := len(node.Memberships)
 		node.Memberships = slices.DeleteFunc(node.Memberships, func(membership Membership) bool {
@@ -597,6 +751,9 @@ func (s *Store) RemoveMembership(nodeID, userID string) error {
 // If a topology draft changes the entrance credential shape, a distinct
 // candidate secret is staged for activation with that topology.
 func (s *Store) ResetMembershipCredential(nodeID, userID string) error {
+	if userID == SystemAdministratorUserID {
+		return fmt.Errorf("%w: administrator Membership is immutable", ErrConflict)
+	}
 	return s.mutateUserProxyNode(nodeID, func(state *State, node *ProxyNode) error {
 		return resetMembershipCredential(state, node, userID)
 	})
@@ -607,6 +764,9 @@ func (s *Store) ResetMembershipCredential(nodeID, userID string) error {
 // restoring them later cannot revive an old credential. Expired Memberships
 // are removed by the billing enforcer and therefore cannot be rotated.
 func (s *Store) ResetUserCredentials(userID string) (int, error) {
+	if userID == SystemAdministratorUserID {
+		return 0, fmt.Errorf("%w: administrator user is immutable", ErrConflict)
+	}
 	rotated := 0
 	err := s.mutateUser(func(state *State) error {
 		if !slices.ContainsFunc(state.Users, func(user User) bool { return user.ID == userID }) {
@@ -1299,7 +1459,7 @@ func (s *Store) MarkTopologyApplied(expectedRevision uint64, agentIDs []string) 
 	if credentialsChanged {
 		next.UserRevision++
 	}
-	if err := validateState(next); err != nil {
+	if err := validateStoredState(next); err != nil {
 		return err
 	}
 	build := normalizeBuild(s.build, s.now())
@@ -1346,7 +1506,7 @@ func (s *Store) RestoreTopology(expectedRevision uint64, previous State) error {
 	// A failed create/delete or credential-shape edit can change the user
 	// authority projection. Force a fresh reconciliation of the restored view.
 	next.UserRevision++
-	if err := validateState(next); err != nil {
+	if err := validateStoredState(next); err != nil {
 		return err
 	}
 	build := normalizeBuild(s.build, s.now())
@@ -1430,7 +1590,7 @@ func (s *Store) mutate(mutation func(*State) error) error {
 		return fmt.Errorf("reconcile shared listeners: %w", err)
 	}
 	next.Revision++
-	if err := validateState(next); err != nil {
+	if err := validateStoredState(next); err != nil {
 		return err
 	}
 	build := normalizeBuild(s.build, s.now())
@@ -1448,7 +1608,7 @@ func (s *Store) mutateUser(mutation func(*State) error) error {
 		return err
 	}
 	next.UserRevision++
-	if err := validateState(next); err != nil {
+	if err := validateStoredState(next); err != nil {
 		return err
 	}
 	build := normalizeBuild(s.build, s.now())

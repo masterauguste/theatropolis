@@ -215,54 +215,55 @@ func (h *Handler) ensurePublicCaches() {
 }
 
 type pageData struct {
-	Locale                 string
-	Title                  string
-	ActiveNav              string
-	AssetVersion           string
-	PublicURL              string
-	MasterAddress          string
-	CSRFToken              string
-	Error                  string
-	ErrorField             string
-	Notice                 string
-	Username               string
-	LegacyLogin            bool
-	UnifiedLogin           bool
-	AgentID                string
-	TTLSeconds             int64
-	Stats                  fleetStats
-	Agents                 []agentView
-	Agent                  *agentDetailView
-	Created                *createdServerView
-	AgentVersions          []agentVersionView
-	ReleaseCatalogWarning  string
-	LatestVersion          string
-	SingBoxVersions        []agentVersionView
-	SingBoxCatalogWarning  string
-	LatestSingBoxVersion   string
-	MasterVersion          string
-	MasterUpdateEnabled    bool
-	MasterUpdate           *agentUpdateView
-	MasterUpdateRequestID  string
-	Pool                   *poolView
-	PoolFormName           string
-	PoolFormRemark         string
-	PoolFormJSON           string
-	ProxyNodes             []proxyNodeListView
-	ProxyNode              *proxyNodeDetailView
-	EndUsers               []endUserListView
-	EndUser                *endUserDetailView
-	UserSubscription       *userSubscriptionView
-	SubscriptionPolicy     *subscriptionPolicyView
-	EndUserLogin           *endUserLoginView
-	EndUserPortal          *endUserPortalView
-	AgentOptions           []agentOptionView
-	Endpoint               endpointView
-	ListenerOptions        []listenerOptionView
-	ProxyDeployment        *proxyDeploymentView
-	AccountingFailures     []accountingFailureView
-	AccountingFailureTotal int
-	MigrationNotice        string
+	Locale                          string
+	Title                           string
+	ActiveNav                       string
+	AssetVersion                    string
+	PublicURL                       string
+	MasterAddress                   string
+	CSRFToken                       string
+	Error                           string
+	ErrorField                      string
+	Notice                          string
+	Username                        string
+	LegacyLogin                     bool
+	UnifiedLogin                    bool
+	AgentID                         string
+	TTLSeconds                      int64
+	Stats                           fleetStats
+	Agents                          []agentView
+	Agent                           *agentDetailView
+	Created                         *createdServerView
+	AgentVersions                   []agentVersionView
+	ReleaseCatalogWarning           string
+	LatestVersion                   string
+	SingBoxVersions                 []agentVersionView
+	SingBoxCatalogWarning           string
+	LatestSingBoxVersion            string
+	MasterVersion                   string
+	MasterUpdateEnabled             bool
+	MasterUpdate                    *agentUpdateView
+	MasterUpdateRequestID           string
+	Pool                            *poolView
+	PoolFormName                    string
+	PoolFormRemark                  string
+	PoolFormJSON                    string
+	ProxyNodes                      []proxyNodeListView
+	ProxyNode                       *proxyNodeDetailView
+	EndUsers                        []endUserListView
+	EndUser                         *endUserDetailView
+	UserSubscription                *userSubscriptionView
+	SubscriptionPolicy              *subscriptionPolicyView
+	EndUserLogin                    *endUserLoginView
+	EndUserPortal                   *endUserPortalView
+	AgentOptions                    []agentOptionView
+	Endpoint                        endpointView
+	ListenerOptions                 []listenerOptionView
+	ProxyDeployment                 *proxyDeploymentView
+	AccountingFailures              []accountingFailureView
+	AccountingFailureTotal          int
+	AdministratorProxyAccessEnabled bool
+	MigrationNotice                 string
 }
 
 type accountingFailureView struct {
@@ -325,6 +326,9 @@ type agentDetailView struct {
 	SubscriptionDomainV6  string
 	IPv4                  string
 	IPv6                  string
+	EntranceAllocated     string
+	EntranceUsed          string
+	EntranceUnlimited     int
 }
 
 type agentUpdateView struct {
@@ -537,6 +541,7 @@ func (h *Handler) routes() {
 	h.mux.HandleFunc("POST /users/{user_id}/subscription/reset", h.resetUserSubscription)
 	h.mux.HandleFunc("POST /users/{user_id}/subscription/revoke", h.revokeUserSubscriptionToken)
 	h.mux.HandleFunc("GET /subscriptions", h.subscriptionPolicyPage)
+	h.mux.HandleFunc("GET /subscriptions/admin", h.administratorSubscriptionPage)
 	h.mux.HandleFunc("GET /subscriptions/rule-set-options", h.subscriptionRuleSetOptions)
 	h.mux.HandleFunc("POST /subscriptions/default", h.updateSubscriptionDefault)
 	h.mux.HandleFunc("POST /subscriptions/rules", h.addSubscriptionRule)
@@ -565,6 +570,7 @@ func (h *Handler) routes() {
 	h.mux.HandleFunc("POST /settings/migration/restore", h.restoreMasterMigration)
 	h.mux.HandleFunc("POST /settings/migration/cutover", h.cutoverMasterMigration)
 	h.mux.HandleFunc("POST /settings/accounting-errors/clear", h.clearAccountingErrors)
+	h.mux.HandleFunc("POST /settings/administrator-proxy-access", h.updateAdministratorProxyAccess)
 	h.mux.HandleFunc("GET /servers/new", h.newServerPage)
 	h.mux.HandleFunc("GET /servers/enrollment-result", h.enrollmentResultPage)
 	h.mux.HandleFunc(
@@ -985,14 +991,47 @@ func (h *Handler) settingsPageData(session Session) pageData {
 		}
 	}
 	return pageData{
-		Title:                  "Settings",
-		ActiveNav:              "settings",
-		CSRFToken:              session.CSRFToken,
-		MasterVersion:          h.version,
-		MasterUpdate:           masterUpdate,
-		AccountingFailures:     failures,
-		AccountingFailureTotal: failureTotal,
+		Title:                           "Settings",
+		ActiveNav:                       "settings",
+		CSRFToken:                       session.CSRFToken,
+		MasterVersion:                   h.version,
+		MasterUpdate:                    masterUpdate,
+		AccountingFailures:              failures,
+		AccountingFailureTotal:          failureTotal,
+		AdministratorProxyAccessEnabled: h.proxyNodes != nil && h.proxyNodes.Snapshot().AdministratorProxyAccessEnabled,
 	}
+}
+
+func (h *Handler) updateAdministratorProxyAccess(response http.ResponseWriter, request *http.Request) {
+	session, form, ok := h.authorizeProxyMutation(response, request, "enabled")
+	if !ok {
+		return
+	}
+	enabled := false
+	switch form.Get("enabled") {
+	case "true":
+		enabled = true
+	case "false":
+	default:
+		h.renderSettingsError(response, http.StatusBadRequest, session, "Choose whether administrator proxy access is enabled.")
+		return
+	}
+	changed, err := h.proxyNodes.SetAdministratorProxyAccess(enabled)
+	if err != nil {
+		h.logger.Error("update administrator proxy access", "enabled", enabled, "error", err)
+		h.renderSettingsError(response, http.StatusInternalServerError, session, "Administrator proxy access could not be updated.")
+		return
+	}
+	if changed {
+		h.triggerProxyUserSync()
+	}
+	data := h.settingsPageData(session)
+	if enabled {
+		data.Notice = "Administrator proxy access enabled."
+	} else {
+		data.Notice = "Administrator proxy access disabled."
+	}
+	h.render(response, http.StatusOK, "settings.html", data)
 }
 
 func (h *Handler) renderSettingsError(response http.ResponseWriter, status int, session Session, message string) {
@@ -2257,6 +2296,15 @@ func (h *Handler) serverPageData(
 	if registry := h.controller.PoolRegistry(); registry != nil {
 		detail.SubscriptionDomainV4, detail.SubscriptionDomainV6 = registry.SubscriptionDomains(snapshot.ID)
 		detail.IPv4, detail.IPv6 = h.poolAddresses(snapshot.ID)
+	}
+	if h.proxyNodes != nil {
+		usage, err := h.proxyNodes.EntranceUsageForAgent(snapshot.ID)
+		if err != nil {
+			return pageData{}, err
+		}
+		detail.EntranceAllocated = formatByteCount(usage.AllocatedBytes)
+		detail.EntranceUsed = formatByteCount(usage.UsedBytes)
+		detail.EntranceUnlimited = usage.UnlimitedUsers
 	}
 	if info, exists := h.sessions.AgentInfo(snapshot.ID); exists {
 		detail.AgentVersion = info.Version

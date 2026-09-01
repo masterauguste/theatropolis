@@ -6,7 +6,10 @@ import "time"
 
 const (
 	SchemaID      = "theatropolis/proxy-node-state"
-	SchemaVersion = 14
+	SchemaVersion = 16
+
+	SystemAdministratorUserID   = "usr_theatropolis_admin00"
+	SystemAdministratorUserName = "Administrator"
 )
 
 type Protocol string
@@ -57,24 +60,37 @@ type BuildInfo struct {
 }
 
 type State struct {
-	Revision            uint64               `json:"revision"`
-	UserRevision        uint64               `json:"user_revision"`
-	AppliedRevision     uint64               `json:"applied_revision"`
-	Users               []User               `json:"users"`
-	SubscriptionPolicy  SubscriptionPolicy   `json:"subscription_policy,omitempty"`
-	ProxyNodes          []ProxyNode          `json:"proxy_nodes"`
-	AppliedProxyNodes   []ProxyNode          `json:"applied_proxy_nodes,omitempty"`
-	ManagedAgents       []string             `json:"managed_agents,omitempty"`
-	TrafficObservations []TrafficObservation `json:"traffic_observations,omitempty"`
-	AccountingFailures  []AccountingFailure  `json:"accounting_failures,omitempty"`
+	Revision                        uint64               `json:"revision"`
+	UserRevision                    uint64               `json:"user_revision"`
+	AppliedRevision                 uint64               `json:"applied_revision"`
+	AdministratorProxyAccessEnabled bool                 `json:"administrator_proxy_access_enabled,omitempty"`
+	Users                           []User               `json:"users"`
+	SubscriptionPolicy              SubscriptionPolicy   `json:"subscription_policy,omitempty"`
+	ProxyNodes                      []ProxyNode          `json:"proxy_nodes"`
+	AppliedProxyNodes               []ProxyNode          `json:"applied_proxy_nodes,omitempty"`
+	ManagedAgents                   []string             `json:"managed_agents,omitempty"`
+	TrafficObservations             []TrafficObservation `json:"traffic_observations,omitempty"`
+	AccountingFailures              []AccountingFailure  `json:"accounting_failures,omitempty"`
 }
 
 type User struct {
 	ID           string           `json:"id"`
 	Name         string           `json:"name"`
+	Role         UserRole         `json:"role,omitempty"`
 	Subscription UserSubscription `json:"subscription,omitempty"`
 	CreatedAt    time.Time        `json:"created_at"`
 	UpdatedAt    time.Time        `json:"updated_at"`
+}
+
+type UserRole string
+
+const (
+	UserRoleEndUser       UserRole = ""
+	UserRoleAdministrator UserRole = "administrator"
+)
+
+func IsSystemAdministrator(user User) bool {
+	return user.ID == SystemAdministratorUserID && user.Role == UserRoleAdministrator
 }
 
 type SubscriptionAction string

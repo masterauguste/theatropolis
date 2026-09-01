@@ -150,7 +150,7 @@ func TestInitializeAdminAccessCreatesExclusiveV2HashOnlyFile(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	manager.passwordKDFGate = make(chan struct{}, 1)
+	manager.passwordKDFLimiter = newPasswordKDFLimiter(1, 8, time.Second)
 	if manager.Mode() != UsernamePassword {
 		t.Fatalf("Mode() = %v, want UsernamePassword", manager.Mode())
 	}
@@ -550,7 +550,7 @@ func TestReplaceAdminAccessIsAtomicAndPreservesMetadata(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	manager.passwordKDFGate = make(chan struct{}, 1)
+	manager.passwordKDFLimiter = newPasswordKDFLimiter(1, 8, time.Second)
 	if manager.Mode() != UsernamePassword {
 		t.Fatalf("Mode() = %v, want UsernamePassword", manager.Mode())
 	}
@@ -612,7 +612,7 @@ func TestWrongUsernameAndPasswordUseOneKDFAndGenericFailure(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	manager.passwordKDFGate = make(chan struct{}, 1)
+	manager.passwordKDFLimiter = newPasswordKDFLimiter(1, 8, time.Second)
 
 	if _, err := manager.Login("unknown", testAdminPassword); !errors.Is(err, ErrAuthenticationFailed) {
 		t.Fatalf("wrong username error = %v, want generic authentication failure", err)
@@ -628,7 +628,7 @@ func TestWrongUsernameAndPasswordUseOneKDFAndGenericFailure(t *testing.T) {
 	}
 }
 
-func TestPasswordKDFGateIsNonblockingAndBounded(t *testing.T) {
+func TestPasswordKDFLimiterWaitIsBounded(t *testing.T) {
 	t.Parallel()
 
 	path := createTestAdminAccessFile(t, testAdminPassword)
@@ -643,7 +643,7 @@ func TestPasswordKDFGateIsNonblockingAndBounded(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	manager.passwordKDFGate = make(chan struct{}, 1)
+	manager.passwordKDFLimiter = newPasswordKDFLimiter(1, 1, 20*time.Millisecond)
 
 	firstResult := make(chan error, 1)
 	go func() {
@@ -667,6 +667,43 @@ func TestPasswordKDFGateIsNonblockingAndBounded(t *testing.T) {
 		}
 	case <-time.After(5 * time.Second):
 		t.Fatal("first login did not finish after KDF release")
+	}
+}
+
+func TestPasswordKDFLimiterQueuesOneWaiterAndRejectsOverflow(t *testing.T) {
+	t.Parallel()
+
+	limiter := newPasswordKDFLimiter(1, 1, time.Second)
+	if !limiter.acquire() {
+		t.Fatal("first acquire was unexpectedly rejected")
+	}
+	waiter := make(chan bool, 1)
+	go func() {
+		acquired := limiter.acquire()
+		waiter <- acquired
+		if acquired {
+			limiter.release()
+		}
+	}()
+	deadline := time.Now().Add(time.Second)
+	for len(limiter.wait) != 1 && time.Now().Before(deadline) {
+		runtime.Gosched()
+	}
+	if len(limiter.wait) != 1 {
+		t.Fatal("second acquire did not enter the bounded wait queue")
+	}
+	if limiter.acquire() {
+		limiter.release()
+		t.Fatal("overflow acquire unexpectedly entered the full wait queue")
+	}
+	limiter.release()
+	select {
+	case acquired := <-waiter:
+		if !acquired {
+			t.Fatal("queued acquire was rejected after the active KDF completed")
+		}
+	case <-time.After(time.Second):
+		t.Fatal("queued acquire did not resume")
 	}
 }
 
@@ -899,7 +936,7 @@ func TestPersistentSessionSurvivesManagerRestartAndLogout(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		manager.passwordKDFGate = make(chan struct{}, 1)
+		manager.passwordKDFLimiter = newPasswordKDFLimiter(1, 8, time.Second)
 		manager.now = func() time.Time { return now }
 		return manager
 	}
@@ -1085,7 +1122,7 @@ func newTestAdminAccessManagerWithPassword(
 	if err != nil {
 		t.Fatal(err)
 	}
-	manager.passwordKDFGate = make(chan struct{}, 1)
+	manager.passwordKDFLimiter = newPasswordKDFLimiter(1, 8, time.Second)
 	return manager, testAdminUsername
 }
 
