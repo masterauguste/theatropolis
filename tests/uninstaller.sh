@@ -2,7 +2,7 @@
 
 set -eu
 
-PROJECT_ROOT="$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)"
+PROJECT_ROOT="$(CDPATH='' cd -- "$(dirname -- "$0")/.." && pwd)"
 TEST_DIRECTORY="$(mktemp -d)"
 trap 'rm -rf -- "$TEST_DIRECTORY"' EXIT HUP INT TERM
 MOCK_BIN="$TEST_DIRECTORY/bin"

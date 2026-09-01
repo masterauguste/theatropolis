@@ -384,7 +384,7 @@ grep -Fqx "Environment=HOME=$AGENT_STATE_DIRECTORY" "$AGENT_UNIT" ||
 	fail "agent unit does not give ACME a writable home"
 grep -Fqx "Environment=XDG_DATA_HOME=$AGENT_STATE_DIRECTORY/data" "$AGENT_UNIT" ||
 	fail "agent unit does not give ACME a writable data directory"
-grep -Fq -- '--master-dial-address=${THEATROPOLIS_MASTER_DIAL}' "$AGENT_UNIT" ||
+grep -Fq -- "--master-dial-address=\${THEATROPOLIS_MASTER_DIAL}" "$AGENT_UNIT" ||
 	fail "agent unit does not pass the installer-managed local dial address"
 AGENT_ENV="$TEST_ROOT/etc/theatropolis/agent.env"
 grep -Fqx 'THEATROPOLIS_MASTER_DIAL=' "$AGENT_ENV" ||
