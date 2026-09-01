@@ -65,6 +65,11 @@ curl --proto '=https' --tlsv1.2 -fsSL \
 sudo sh -s -- all --server edge-1
 ```
 
+In all-in-one mode, the Agent automatically dials the local Caddy listener over
+loopback while retaining the public domain for TLS verification. The same
+detection applies when an Agent is installed separately beside a matching local
+Master. No NAT hairpin support or additional installer argument is required.
+
 ### 2. Add an Agent server
 
 1. Open **Servers** and select **Add Server**.
@@ -177,6 +182,34 @@ sudo /usr/local/bin/theatropolis-agent version
 sudo /usr/local/bin/sing-box version
 ```
 
+### Uninstall
+
+Download the uninstaller and select the installed role:
+
+```sh
+# Master (also removes only Theatropolis' Caddy entry)
+curl --proto '=https' --tlsv1.2 -fsSL \
+  https://raw.githubusercontent.com/masterauguste/theatropolis/main/uninstall.sh |
+sudo sh -s -- master
+
+# Agent (child server)
+curl --proto '=https' --tlsv1.2 -fsSL \
+  https://raw.githubusercontent.com/masterauguste/theatropolis/main/uninstall.sh |
+sudo sh -s -- agent
+
+# All-in-one installation
+curl --proto '=https' --tlsv1.2 -fsSL \
+  https://raw.githubusercontent.com/masterauguste/theatropolis/main/uninstall.sh |
+sudo sh -s -- all
+```
+
+The script asks for an explicit terminal confirmation. By default it removes
+the selected role's state and credentials permanently. Add `--keep-data` to
+retain `/var/lib/theatropolis/master` or `/var/lib/theatropolis/agent` for
+recovery together with its state-owning service account. Add `--yes` only for
+secured automation. Removing the Master does not uninstall Caddy or modify
+other Caddy sites.
+
 ## 简体中文
 
 ### Theatropolis 管理什么
@@ -229,6 +262,10 @@ curl --proto '=https' --tlsv1.2 -fsSL \
   https://raw.githubusercontent.com/masterauguste/theatropolis/main/install.sh |
 sudo sh -s -- all --server edge-1
 ```
+
+一体化安装时，代理端会自动通过 loopback 连接本机 Caddy，同时继续使用公网域
+名完成 TLS 验证。之后在同机单独安装代理端时，只要指定的主控地址与本机主控
+完全一致，也会自动启用该路径；无需 NAT 回环支持或额外安装参数。
 
 ### 2. 添加代理端服务器
 
@@ -335,6 +372,32 @@ sudo /usr/local/bin/theatropolis-master version
 sudo /usr/local/bin/theatropolis-agent version
 sudo /usr/local/bin/sing-box version
 ```
+
+### 卸载
+
+下载卸载脚本并指定已安装的角色：
+
+```sh
+# 主控端（同时仅移除 Theatropolis 的 Caddy 配置）
+curl --proto '=https' --tlsv1.2 -fsSL \
+  https://raw.githubusercontent.com/masterauguste/theatropolis/main/uninstall.sh |
+sudo sh -s -- master
+
+# 代理端（子服务器）
+curl --proto '=https' --tlsv1.2 -fsSL \
+  https://raw.githubusercontent.com/masterauguste/theatropolis/main/uninstall.sh |
+sudo sh -s -- agent
+
+# 一体化安装
+curl --proto '=https' --tlsv1.2 -fsSL \
+  https://raw.githubusercontent.com/masterauguste/theatropolis/main/uninstall.sh |
+sudo sh -s -- all
+```
+
+脚本会要求在终端中明确确认。默认会永久删除对应角色的状态和凭据；如需保留
+`/var/lib/theatropolis/master` 或 `/var/lib/theatropolis/agent` 以便恢复，
+请添加 `--keep-data`；对应的状态目录服务账号也会一并保留。`--yes` 仅用于安
+全的自动化环境。卸载主控端不会卸载 Caddy，也不会修改其他 Caddy 站点。
 
 ## Security and further documentation / 安全与更多文档
 

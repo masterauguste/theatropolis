@@ -384,6 +384,11 @@ grep -Fqx "Environment=HOME=$AGENT_STATE_DIRECTORY" "$AGENT_UNIT" ||
 	fail "agent unit does not give ACME a writable home"
 grep -Fqx "Environment=XDG_DATA_HOME=$AGENT_STATE_DIRECTORY/data" "$AGENT_UNIT" ||
 	fail "agent unit does not give ACME a writable data directory"
+grep -Fq -- '--master-dial-address=${THEATROPOLIS_MASTER_DIAL}' "$AGENT_UNIT" ||
+	fail "agent unit does not pass the installer-managed local dial address"
+AGENT_ENV="$TEST_ROOT/etc/theatropolis/agent.env"
+grep -Fqx 'THEATROPOLIS_MASTER_DIAL=' "$AGENT_ENV" ||
+	fail "ordinary remote Agent unexpectedly received a local Master dial override"
 [ -x "$TEST_ROOT/usr/local/bin/sing-box" ] ||
 	fail "pinned sing-box binary was not installed"
 [ -f "$TEST_ROOT/usr/local/lib/theatropolis/sing-box/libcronet.so" ] ||
@@ -437,6 +442,10 @@ fi
 # validate, or replace sing-box. Its independently managed release channel may
 # be temporarily unavailable or intentionally newer than the bootstrap pin.
 printf '%s\n' 'existing agent identity' >"$AGENT_STATE_DIRECTORY/identity.pem"
+cat >"$TEST_ROOT/etc/systemd/system/theatropolis-master.service" <<EOF
+[Service]
+Environment=THEATROPOLIS_PUBLIC_ADDRESS=master.example.com:8443
+EOF
 SING_BOX_BEFORE_REINSTALL="$TEST_DIRECTORY/sing-box-before-reinstall"
 cp "$TEST_ROOT/usr/local/bin/sing-box" "$SING_BOX_BEFORE_REINSTALL"
 set +e
@@ -447,6 +456,36 @@ set -e
 	fail "existing Agent reinstall was blocked by sing-box (status $REINSTALL_STATUS): $REINSTALL_OUTPUT"
 cmp -s "$SING_BOX_BEFORE_REINSTALL" "$TEST_ROOT/usr/local/bin/sing-box" ||
 	fail "existing Agent reinstall replaced independently managed sing-box"
+grep -Fqx 'THEATROPOLIS_MASTER_DIAL=127.0.0.1:8443' "$AGENT_ENV" ||
+	fail "Agent did not detect its matching co-located Master"
+
+# Existing Master units from before the explicit address metadata also carry
+# the canonical address in the installer's fixed ExecStart line.
+cat >"$TEST_ROOT/etc/systemd/system/theatropolis-master.service" <<EOF
+[Service]
+ExecStart=$TEST_ROOT/usr/local/bin/theatropolis-master serve --public-url https://master.example.com:8443 --web-auth-file $TEST_ROOT/var/lib/theatropolis/master/web-auth.json
+EOF
+set +e
+LEGACY_LOCAL_OUTPUT="$(run_installer yes 2>&1)"
+LEGACY_LOCAL_STATUS="$?"
+set -e
+[ "$LEGACY_LOCAL_STATUS" -eq 0 ] ||
+	fail "legacy local Master detection failed (status $LEGACY_LOCAL_STATUS): $LEGACY_LOCAL_OUTPUT"
+grep -Fqx 'THEATROPOLIS_MASTER_DIAL=127.0.0.1:8443' "$AGENT_ENV" ||
+	fail "Agent did not detect an existing pre-metadata local Master unit"
+
+cat >"$TEST_ROOT/etc/systemd/system/theatropolis-master.service" <<EOF
+[Service]
+Environment=THEATROPOLIS_PUBLIC_ADDRESS=other.example.com:8443
+EOF
+set +e
+REMOTE_WITH_LOCAL_OUTPUT="$(run_installer yes 2>&1)"
+REMOTE_WITH_LOCAL_STATUS="$?"
+set -e
+[ "$REMOTE_WITH_LOCAL_STATUS" -eq 0 ] ||
+	fail "different local Master reinstall failed (status $REMOTE_WITH_LOCAL_STATUS): $REMOTE_WITH_LOCAL_OUTPUT"
+grep -Fqx 'THEATROPOLIS_MASTER_DIAL=' "$AGENT_ENV" ||
+	fail "Agent incorrectly redirected a different Master address to loopback"
 rm -f -- "$AGENT_STATE_DIRECTORY/identity.pem"
 
 set +e

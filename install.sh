@@ -35,6 +35,7 @@ RELEASE_TAG="latest"
 DOMAIN=""
 HTTPS_PORT="$DEFAULT_HTTPS_PORT"
 MASTER_ADDRESS=""
+MASTER_DIAL_ADDRESS=""
 SERVER_NAME=""
 ENROLLMENT_TOKEN=""
 CA_FILE=""
@@ -1075,6 +1076,7 @@ Type=simple
 User=${MASTER_USER}
 Group=${MASTER_USER}
 UMask=0077
+Environment=THEATROPOLIS_PUBLIC_ADDRESS=${DOMAIN}:${HTTPS_PORT}
 RuntimeDirectory=theatropolis
 RuntimeDirectoryMode=0700
 ExecStart=${INSTALL_DIRECTORY}/theatropolis-master serve --public-url https://${DOMAIN}:${HTTPS_PORT} --web-auth-file ${WEB_AUTH_FILE}
@@ -1182,6 +1184,7 @@ write_agent_configuration() {
 	fi
 	cat >"$CONFIG_DIRECTORY/agent.env" <<EOF
 THEATROPOLIS_MASTER=${MASTER_ADDRESS}
+THEATROPOLIS_MASTER_DIAL=${MASTER_DIAL_ADDRESS}
 THEATROPOLIS_CA_FILE=${CONFIGURED_CA_FILE}
 EOF
 	chmod 0600 "$CONFIG_DIRECTORY/agent.env"
@@ -1190,6 +1193,35 @@ EOF
 	else
 		rm -f -- "$CONFIG_DIRECTORY/agent-ca.pem"
 	fi
+}
+
+detect_local_master_dial_address() {
+	MASTER_DIAL_ADDRESS=""
+	if [ ! -f "$MASTER_UNIT_FILE" ] || [ -L "$MASTER_UNIT_FILE" ]; then
+		return
+	fi
+	LOCAL_MASTER_METADATA_COUNT="$(
+		grep -Ec '^Environment=THEATROPOLIS_PUBLIC_ADDRESS=[A-Za-z0-9.-]+:[0-9]{1,5}$' \
+			"$MASTER_UNIT_FILE" || true
+	)"
+	if [ "$LOCAL_MASTER_METADATA_COUNT" -eq 1 ]; then
+		LOCAL_MASTER_ADDRESS="$(
+			sed -n 's/^Environment=THEATROPOLIS_PUBLIC_ADDRESS=//p' \
+				"$MASTER_UNIT_FILE"
+		)"
+	else
+		# Units written before the explicit metadata line can still be
+		# recognized from the installer's fixed ExecStart shape. Do not
+		# evaluate or source the unit: extract only a strict DNS host:port.
+		LOCAL_MASTER_ADDRESS="$(
+			sed -n \
+				's#^ExecStart=[^ ]* serve --public-url https://\([A-Za-z0-9.-][A-Za-z0-9.-]*:[0-9][0-9]*\) .*$#\1#p' \
+				"$MASTER_UNIT_FILE"
+		)"
+	fi
+	[ "$LOCAL_MASTER_ADDRESS" = "$MASTER_ADDRESS" ] || return
+	LOCAL_MASTER_PORT="${MASTER_ADDRESS##*:}"
+	MASTER_DIAL_ADDRESS="127.0.0.1:${LOCAL_MASTER_PORT}"
 }
 
 wait_for_master_socket() {
@@ -1227,6 +1259,7 @@ install_agent() {
 	elif [ ! -f "$AGENT_STATE_DIRECTORY/identity.pem" ]; then
 		fail "--token is required for a new agent installation"
 	fi
+	detect_local_master_dial_address
 	write_agent_configuration
 	cat >/etc/systemd/system/theatropolis-agent.service <<EOF
 [Unit]
@@ -1244,7 +1277,7 @@ Environment=LD_LIBRARY_PATH=${SING_BOX_LIBRARY_DIRECTORY}
 Environment=HOME=${AGENT_STATE_DIRECTORY}
 Environment=XDG_DATA_HOME=${AGENT_STATE_DIRECTORY}/data
 WorkingDirectory=${AGENT_STATE_DIRECTORY}
-ExecStart=${INSTALL_DIRECTORY}/theatropolis-agent --master=\${THEATROPOLIS_MASTER} --state-dir=${AGENT_STATE_DIRECTORY} --enrollment-token-file=${AGENT_STATE_DIRECTORY}/enrollment.token --ca-file=\${THEATROPOLIS_CA_FILE}
+ExecStart=${INSTALL_DIRECTORY}/theatropolis-agent --master=\${THEATROPOLIS_MASTER} --master-dial-address=\${THEATROPOLIS_MASTER_DIAL} --state-dir=${AGENT_STATE_DIRECTORY} --enrollment-token-file=${AGENT_STATE_DIRECTORY}/enrollment.token --ca-file=\${THEATROPOLIS_CA_FILE}
 Restart=on-failure
 RestartSec=5s
 NoNewPrivileges=true

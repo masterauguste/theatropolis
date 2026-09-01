@@ -15,6 +15,7 @@ import (
 	"os/signal"
 	"path/filepath"
 	"runtime"
+	"strconv"
 	"strings"
 	"syscall"
 	"time"
@@ -67,6 +68,11 @@ func run(arguments []string) error {
 	flags := flag.NewFlagSet("theatropolis-agent", flag.ContinueOnError)
 	flags.SetOutput(io.Discard)
 	masterAddress := flags.String("master", "", "master host and port")
+	masterDialAddress := flags.String(
+		"master-dial-address",
+		"",
+		"optional loopback dial address for a co-located master",
+	)
 	stateDirectory := flags.String(
 		"state-dir",
 		"/var/lib/theatropolis/agent",
@@ -102,16 +108,19 @@ func run(arguments []string) error {
 	if err != nil {
 		return err
 	}
-	host, _, err := net.SplitHostPort(resolvedMaster)
-	if err != nil || strings.TrimSpace(host) == "" {
-		return errors.New("--master must be a host:port pair")
-	}
-	tlsConfig, err := secureTLSConfig(host, *caFile)
+	connectionTarget, err := resolveMasterConnectionTarget(
+		*masterAddress,
+		resolvedMaster,
+		*masterDialAddress,
+	)
 	if err != nil {
 		return err
 	}
-	connection, err := grpc.NewClient(
-		"dns:///"+resolvedMaster,
+	tlsConfig, err := secureTLSConfig(connectionTarget.serverName, *caFile)
+	if err != nil {
+		return err
+	}
+	dialOptions := []grpc.DialOption{
 		grpc.WithTransportCredentials(credentials.NewTLS(tlsConfig)),
 		grpc.WithConnectParams(grpc.ConnectParams{
 			Backoff: backoff.Config{
@@ -131,6 +140,18 @@ func run(arguments []string) error {
 			grpc.MaxCallRecvMsgSize(maxWireMessageBytes),
 			grpc.MaxCallSendMsgSize(maxWireMessageBytes),
 		),
+	}
+	if connectionTarget.dialAddress != "" {
+		localDialer := &net.Dialer{}
+		dialOptions = append(dialOptions, grpc.WithContextDialer(
+			func(ctx context.Context, _ string) (net.Conn, error) {
+				return localDialer.DialContext(ctx, "tcp", connectionTarget.dialAddress)
+			},
+		))
+	}
+	connection, err := grpc.NewClient(
+		connectionTarget.grpcTarget,
+		dialOptions...,
 	)
 	if err != nil {
 		return fmt.Errorf("configure master connection: %w", err)
@@ -220,6 +241,72 @@ func run(arguments []string) error {
 		"master", resolvedMaster,
 	)
 	return runner.Run(ctx, client)
+}
+
+type masterConnectionTarget struct {
+	grpcTarget  string
+	serverName  string
+	dialAddress string
+}
+
+func resolveMasterConnectionTarget(
+	configuredMaster,
+	resolvedMaster,
+	configuredDialAddress string,
+) (masterConnectionTarget, error) {
+	configuredMaster, err := normalizeMasterAddress(configuredMaster)
+	if err != nil {
+		return masterConnectionTarget{}, errors.New("--master must be a host:port pair")
+	}
+	resolvedMaster, err = normalizeMasterAddress(resolvedMaster)
+	if err != nil {
+		return masterConnectionTarget{}, errors.New("--master must be a host:port pair")
+	}
+	serverName, _, _ := net.SplitHostPort(resolvedMaster)
+	target := masterConnectionTarget{
+		grpcTarget: "dns:///" + resolvedMaster,
+		serverName: serverName,
+	}
+	configuredDialAddress = strings.TrimSpace(configuredDialAddress)
+	if configuredDialAddress == "" {
+		return target, nil
+	}
+	loopbackDialAddress, err := validateLoopbackDialAddress(configuredDialAddress)
+	if err != nil {
+		return masterConnectionTarget{}, err
+	}
+	if resolvedMaster != configuredMaster {
+		// A persisted Master migration always wins over an installer-provided
+		// shortcut for the original co-located Master.
+		return target, nil
+	}
+	target.grpcTarget = "passthrough:///" + resolvedMaster
+	target.dialAddress = loopbackDialAddress
+	return target, nil
+}
+
+func normalizeMasterAddress(value string) (string, error) {
+	host, port, err := net.SplitHostPort(strings.TrimSpace(value))
+	if err != nil || strings.TrimSpace(host) == "" || strings.TrimSpace(port) == "" {
+		return "", errors.New("Master address must be a host:port pair")
+	}
+	return net.JoinHostPort(host, port), nil
+}
+
+func validateLoopbackDialAddress(value string) (string, error) {
+	host, port, err := net.SplitHostPort(strings.TrimSpace(value))
+	if err != nil || strings.TrimSpace(host) == "" || strings.TrimSpace(port) == "" {
+		return "", errors.New("--master-dial-address must be a loopback IP and port")
+	}
+	address := net.ParseIP(host)
+	if address == nil || !address.IsLoopback() {
+		return "", errors.New("--master-dial-address must use a loopback IP")
+	}
+	portNumber, err := strconv.Atoi(port)
+	if err != nil || portNumber < 1 || portNumber > 65535 {
+		return "", errors.New("--master-dial-address must use a numeric port between 1 and 65535")
+	}
+	return net.JoinHostPort(host, strconv.Itoa(portNumber)), nil
 }
 
 func singBoxUpdateHelperAvailable() bool {

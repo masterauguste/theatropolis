@@ -760,6 +760,8 @@ AUTH_HASH_RESET="$(sha256sum "$AUTH_FILE" | awk '{ print $1 }')"
 
 UNIT="$TEST_ROOT/etc/systemd/system/theatropolis-master.service"
 UNIT_HASH_RESET="$(sha256sum "$UNIT" | awk '{ print $1 }')"
+grep -Fqx "Environment=THEATROPOLIS_PUBLIC_ADDRESS=$DOMAIN:$HTTPS_PORT" "$UNIT" ||
+	fail "master unit does not publish its canonical address for co-located Agent detection"
 
 set +e
 STOP_FAILURE_OUTPUT="$(
