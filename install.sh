@@ -1219,7 +1219,9 @@ detect_local_master_dial_address() {
 				"$MASTER_UNIT_FILE"
 		)"
 	fi
-	[ "$LOCAL_MASTER_ADDRESS" = "$MASTER_ADDRESS" ] || return
+	if [ "$LOCAL_MASTER_ADDRESS" != "$MASTER_ADDRESS" ]; then
+		return 0
+	fi
 	LOCAL_MASTER_PORT="${MASTER_ADDRESS##*:}"
 	MASTER_DIAL_ADDRESS="127.0.0.1:${LOCAL_MASTER_PORT}"
 }
