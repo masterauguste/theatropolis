@@ -19,15 +19,16 @@ import (
 )
 
 type applyingController struct {
-	mu          sync.Mutex
-	store       deployment.Store
-	order       []string
-	configs     [][]byte
-	deployable  map[string]bool
-	failNext    map[string]bool
-	authorities map[string][]singbox.ManagedUserAuthorityVariant
-	samples     []string
-	sampleErr   map[string]error
+	mu                sync.Mutex
+	store             deployment.Store
+	order             []string
+	configs           [][]byte
+	deployable        map[string]bool
+	failNext          map[string]bool
+	authorities       map[string][]singbox.ManagedUserAuthorityVariant
+	samples           []string
+	sampleErr         map[string]error
+	missingIdentities map[string]bool
 }
 
 // reconnectRaceController simulates an Agent reconnect after it reports the
@@ -105,6 +106,12 @@ func (c *applyingController) CanDeployProxyNodeConfiguration(agentID string) boo
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	return c.deployable[agentID]
+}
+
+func (c *applyingController) HasAgentIdentity(agentID string) bool {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return !c.missingIdentities[agentID]
 }
 
 func (c *applyingController) CanSyncManagedUserAuthority(agentID string) bool {
@@ -542,6 +549,210 @@ func TestDeployerAppliesReceiversBeforeSendersAndRecordsManagedAgents(t *testing
 	controller.mu.Unlock()
 	if deployed != 0 {
 		t.Fatalf("no-op deployment restarted %d Agents", deployed)
+	}
+}
+
+func TestDeletedAgentReferenceCanBeRedirectedAndPrunedLocally(t *testing.T) {
+	store, err := Open(filepath.Join(t.TempDir(), "state.json"), testBuild())
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+	node, err := store.CreateProxyNode(CreateProxyNodeInput{
+		Name: "Cinema", RootAgent: "edge-deleted",
+		Entrance: testTLSEndpoint(ProtocolAnyTLS, 443),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.MarkTopologyApplied(store.Snapshot().Revision, []string{"edge-deleted"}); err != nil {
+		t.Fatal(err)
+	}
+	controller := &applyingController{
+		store:             deployment.NewMemoryStore(),
+		deployable:        map[string]bool{"edge-new": true},
+		missingIdentities: map[string]bool{"edge-deleted": true},
+	}
+	deployer, err := NewDeployer(store, testResolver{"edge-new": "192.0.2.20"}, controller)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := deployer.MutateAndStart(func() error {
+		return store.MoveHop(node.ID, node.Entrance.HopID, "edge-new")
+	}); err != nil {
+		t.Fatal(err)
+	}
+	waitForFleetDeployment(t, deployer)
+
+	state := store.Snapshot()
+	if len(state.ProxyNodes) != 1 || len(state.AppliedProxyNodes) != 1 ||
+		state.ProxyNodes[0].Hops[0].AgentID != "edge-new" ||
+		state.AppliedProxyNodes[0].Hops[0].AgentID != "edge-new" {
+		t.Fatalf("redirected topology was not committed: desired=%#v applied=%#v", state.ProxyNodes, state.AppliedProxyNodes)
+	}
+	if !slices.Equal(state.ManagedAgents, []string{"edge-new"}) {
+		t.Fatalf("managed Agents = %v, want only edge-new", state.ManagedAgents)
+	}
+	if err := store.RequireAgentUnreferenced("edge-deleted"); err != nil {
+		t.Fatalf("deleted Agent reference remains after redirect: %v", err)
+	}
+	controller.mu.Lock()
+	order := append([]string(nil), controller.order...)
+	controller.mu.Unlock()
+	if !slices.Equal(order, []string{"edge-new"}) {
+		t.Fatalf("deployment order = %v, deleted Agent must not receive cleanup", order)
+	}
+}
+
+func TestExistingDeletedAgentReferenceRemainsEditableUntilRedirected(t *testing.T) {
+	store, err := Open(filepath.Join(t.TempDir(), "state.json"), testBuild())
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+	node, err := store.CreateProxyNode(CreateProxyNodeInput{
+		Name: "Cinema", RootAgent: "edge-deleted",
+		Entrance: testTLSEndpoint(ProtocolAnyTLS, 443),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.MarkTopologyApplied(store.Snapshot().Revision, []string{"edge-deleted"}); err != nil {
+		t.Fatal(err)
+	}
+	controller := &applyingController{
+		store:             deployment.NewMemoryStore(),
+		deployable:        map[string]bool{},
+		missingIdentities: map[string]bool{"edge-deleted": true},
+	}
+	deployer, err := NewDeployer(store, testResolver{}, controller)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	job, err := deployer.MutateAndStart(func() error {
+		return store.SetFinal(node.ID, node.Entrance.HopID, Target{Type: TargetReject})
+	})
+	if err != nil {
+		t.Fatalf("edit through an existing deleted Agent reference: %v", err)
+	}
+	if job.Status != FleetDeploymentPending {
+		t.Fatalf("orphan edit status = %q, want pending until redirected or removed", job.Status)
+	}
+	state := store.Snapshot()
+	if state.ProxyNodes[0].Hops[0].Final.Type != TargetReject {
+		t.Fatalf("desired edit was not retained: %#v", state.ProxyNodes[0].Hops[0].Final)
+	}
+	if state.AppliedProxyNodes[0].Hops[0].Final.Type != TargetDirect {
+		t.Fatalf("unreachable applied configuration was falsely changed: %#v", state.AppliedProxyNodes[0].Hops[0].Final)
+	}
+}
+
+func TestDeletingProxyNodePrunesAlreadyDeletedAgentReference(t *testing.T) {
+	store, err := Open(filepath.Join(t.TempDir(), "state.json"), testBuild())
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+	node, err := store.CreateProxyNode(CreateProxyNodeInput{
+		Name: "Cinema", RootAgent: "edge-deleted",
+		Entrance: testTLSEndpoint(ProtocolAnyTLS, 443),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.MarkTopologyApplied(store.Snapshot().Revision, []string{"edge-deleted"}); err != nil {
+		t.Fatal(err)
+	}
+	controller := &applyingController{
+		store:             deployment.NewMemoryStore(),
+		deployable:        map[string]bool{},
+		missingIdentities: map[string]bool{"edge-deleted": true},
+	}
+	deployer, err := NewDeployer(store, testResolver{}, controller)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := deployer.MutateAndStart(func() error { return store.DeleteProxyNode(node.ID) }); err != nil {
+		t.Fatal(err)
+	}
+	waitForFleetDeployment(t, deployer)
+	state := store.Snapshot()
+	if len(state.ProxyNodes) != 0 || len(state.AppliedProxyNodes) != 0 || len(state.ManagedAgents) != 0 {
+		t.Fatalf("deleted Agent references remain: desired=%d applied=%d managed=%v", len(state.ProxyNodes), len(state.AppliedProxyNodes), state.ManagedAgents)
+	}
+}
+
+func TestOfflineEnrolledAgentStillRequiresConfirmedRetirement(t *testing.T) {
+	store, err := Open(filepath.Join(t.TempDir(), "state.json"), testBuild())
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+	node, err := store.CreateProxyNode(CreateProxyNodeInput{
+		Name: "Cinema", RootAgent: "edge-offline",
+		Entrance: testTLSEndpoint(ProtocolAnyTLS, 443),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.MarkTopologyApplied(store.Snapshot().Revision, []string{"edge-offline"}); err != nil {
+		t.Fatal(err)
+	}
+	controller := &applyingController{
+		store:      deployment.NewMemoryStore(),
+		deployable: map[string]bool{"edge-new": true},
+	}
+	deployer, err := NewDeployer(store, testResolver{"edge-new": "192.0.2.20"}, controller)
+	if err != nil {
+		t.Fatal(err)
+	}
+	job, err := deployer.MutateAndStart(func() error {
+		return store.MoveHop(node.ID, node.Entrance.HopID, "edge-new")
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if job.Status != FleetDeploymentPending {
+		t.Fatalf("offline retirement status = %q, want pending", job.Status)
+	}
+	state := store.Snapshot()
+	if state.ProxyNodes[0].Hops[0].AgentID != "edge-new" || state.AppliedProxyNodes[0].Hops[0].AgentID != "edge-offline" ||
+		!slices.Equal(state.ManagedAgents, []string{"edge-offline"}) {
+		t.Fatalf("offline Agent was pruned without confirmation: desired=%#v applied=%#v managed=%v", state.ProxyNodes, state.AppliedProxyNodes, state.ManagedAgents)
+	}
+}
+
+func TestTopologyMutationRejectsNewDeletedAgentReference(t *testing.T) {
+	store, err := Open(filepath.Join(t.TempDir(), "state.json"), testBuild())
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+	node, err := store.CreateProxyNode(CreateProxyNodeInput{
+		Name: "Cinema", RootAgent: "edge-current",
+		Entrance: testTLSEndpoint(ProtocolAnyTLS, 443),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	controller := &applyingController{
+		store:             deployment.NewMemoryStore(),
+		deployable:        map[string]bool{"edge-current": true},
+		missingIdentities: map[string]bool{"edge-deleted": true},
+	}
+	deployer, err := NewDeployer(store, testResolver{"edge-current": "192.0.2.10"}, controller)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := deployer.MutateAndStart(func() error {
+		return store.MoveHop(node.ID, node.Entrance.HopID, "edge-deleted")
+	}); !errors.Is(err, ErrAgentIdentityMissing) {
+		t.Fatalf("new deleted reference error = %v, want ErrAgentIdentityMissing", err)
+	}
+	restored, _ := store.ProxyNode(node.ID)
+	if restored.Hops[0].AgentID != "edge-current" {
+		t.Fatalf("invalid desired reference was not restored: %#v", restored.Hops)
 	}
 }
 

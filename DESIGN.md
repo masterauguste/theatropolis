@@ -130,6 +130,9 @@ compact sticky top bar with horizontal navigation and document scrolling.
   Routine Hop movement and destructive Link destination replacement are separate
   controls; replacement uses the standard danger dialog and states its subtree
   scope before submission.
+- Hop health distinguishes a registered but offline Server from a deleted
+  Server identity. Deleted references use the danger state and keep their
+  unavailable current selection visible beside the ordinary replacement choices.
 - Listener compatibility appears as one compact status row below the physical
   listener selector. A state bead and short localized title carry the status;
   conflict details name only the settings the operator must reconcile.

@@ -269,6 +269,7 @@
 
 .proxy-map__node-status--entrance { color: var(--red-700); background: var(--red-100); }
 .proxy-map__node-status--relay { color: var(--amber-700); background: var(--amber-100); }
+.proxy-map__node-status--deleted { color: var(--red-700); background: var(--red-100); }
 
 .proxy-map__node-mark {
   display: grid;

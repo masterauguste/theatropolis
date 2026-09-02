@@ -38,6 +38,8 @@ type proxyNodeListView struct {
 	UpdatedAt       string
 	PendingApply    bool
 	PendingRemoval  bool
+	EntranceDeleted bool
+	RelayDeleted    bool
 	EntranceOffline bool
 	RelayOffline    bool
 }
@@ -69,6 +71,8 @@ type proxyNodeDetailView struct {
 
 type proxyNodeOperationalStatusView struct {
 	TopologyPending bool
+	EntranceDeleted []proxyNodeOfflineAgentView
+	RelayDeleted    []proxyNodeOfflineAgentView
 	EntranceOffline []proxyNodeOfflineAgentView
 	RelayOffline    []proxyNodeOfflineAgentView
 }
@@ -120,6 +124,7 @@ type proxyTreeHopView struct {
 	AgentID                 string
 	URL                     string
 	IsEntrance              bool
+	Deleted                 bool
 	Offline                 bool
 	IngressProtocol         string
 	IngressLabel            string
@@ -294,6 +299,7 @@ type agentOptionView struct {
 	Name           string
 	Selected       bool
 	Online         bool
+	Deleted        bool
 	LatencyDetail  string
 	LatencyStatus  string
 	LatencyLinkIDs string
@@ -397,6 +403,8 @@ func (h *Handler) proxyNodesPage(response http.ResponseWriter, request *http.Req
 			HopCount: len(node.Hops), MemberCount: len(node.Memberships),
 			UpdatedAt:       node.UpdatedAt.In(proxynode.BillingLocation()).Format("2006-01-02 15:04 UTC+8"),
 			PendingApply:    proxyNodeTopologyPending(node, state.AppliedProxyNodes),
+			EntranceDeleted: len(status.OperationalStatus.EntranceDeleted) > 0,
+			RelayDeleted:    len(status.OperationalStatus.RelayDeleted) > 0,
 			EntranceOffline: len(status.OperationalStatus.EntranceOffline) > 0,
 			RelayOffline:    len(status.OperationalStatus.RelayOffline) > 0,
 		})
@@ -1591,16 +1599,30 @@ func (h *Handler) proxyNodeDetail(node proxynode.ProxyNode, state proxynode.Stat
 }
 
 func (h *Handler) attachProxyTreeAvailability(tree *proxyTreeHopView) {
+	h.attachProxyTreeAvailabilityWithRecords(tree, h.proxyAgentRecordIDs())
+}
+
+func (h *Handler) attachProxyTreeAvailabilityWithRecords(tree *proxyTreeHopView, records map[string]struct{}) {
 	if tree == nil {
 		return
 	}
-	tree.Offline = !h.sessions.IsOnline(tree.AgentID)
+	_, exists := records[tree.AgentID]
+	tree.Deleted = !exists
+	tree.Offline = !tree.Deleted && !h.sessions.IsOnline(tree.AgentID)
 	for index := range tree.Children {
-		h.attachProxyTreeAvailability(tree.Children[index].Child)
+		h.attachProxyTreeAvailabilityWithRecords(tree.Children[index].Child, records)
 	}
 	for index := range tree.Branches {
-		h.attachProxyTreeAvailability(tree.Branches[index].Child)
+		h.attachProxyTreeAvailabilityWithRecords(tree.Branches[index].Child, records)
 	}
+}
+
+func (h *Handler) proxyAgentRecordIDs() map[string]struct{} {
+	records := make(map[string]struct{})
+	for _, snapshot := range h.registry.Snapshot(h.currentTime()) {
+		records[snapshot.ID] = struct{}{}
+	}
+	return records
 }
 
 func (h *Handler) attachProxyNodeOperationalStatus(detail *proxyNodeDetailView, desired proxynode.ProxyNode, state proxynode.State) {
@@ -1638,13 +1660,28 @@ func (h *Handler) attachProxyNodeOperationalStatus(detail *proxyNodeDetailView, 
 		}
 	}
 
+	records := h.proxyAgentRecordIDs()
+	entranceDeleted := make([]proxyNodeOfflineAgentView, 0)
+	relayDeleted := make([]proxyNodeOfflineAgentView, 0)
 	entrances := make([]proxyNodeOfflineAgentView, 0)
 	relays := make([]proxyNodeOfflineAgentView, 0)
 	for agentID, current := range roles {
+		name := h.agentDisplayName(agentID)
+		_, exists := records[agentID]
+		if !exists {
+			if current.entranceDesired || current.entranceApplied {
+				entranceDeleted = append(entranceDeleted, proxyNodeOfflineAgentView{Name: name, Applied: current.entranceApplied})
+			}
+			relayDesired := current.relayDesired && !current.entranceDesired
+			relayApplied := current.relayApplied && !current.entranceApplied
+			if relayDesired || relayApplied {
+				relayDeleted = append(relayDeleted, proxyNodeOfflineAgentView{Name: name, Applied: relayApplied})
+			}
+			continue
+		}
 		if h.sessions.IsOnline(agentID) {
 			continue
 		}
-		name := h.agentDisplayName(agentID)
 		if current.entranceDesired || current.entranceApplied {
 			entrances = append(entrances, proxyNodeOfflineAgentView{Name: name, Applied: current.entranceApplied})
 		}
@@ -1660,6 +1697,10 @@ func (h *Handler) attachProxyNodeOperationalStatus(detail *proxyNodeDetailView, 
 	}
 	sort.Slice(entrances, func(left, right int) bool { return entrances[left].Name < entrances[right].Name })
 	sort.Slice(relays, func(left, right int) bool { return relays[left].Name < relays[right].Name })
+	sort.Slice(entranceDeleted, func(left, right int) bool { return entranceDeleted[left].Name < entranceDeleted[right].Name })
+	sort.Slice(relayDeleted, func(left, right int) bool { return relayDeleted[left].Name < relayDeleted[right].Name })
+	detail.OperationalStatus.EntranceDeleted = entranceDeleted
+	detail.OperationalStatus.RelayDeleted = relayDeleted
 	detail.OperationalStatus.EntranceOffline = entrances
 	detail.OperationalStatus.RelayOffline = relays
 }
@@ -2631,12 +2672,22 @@ func (h *Handler) loadProxyNode(response http.ResponseWriter, request *http.Requ
 
 func (h *Handler) proxyAgentOptions(selected string) []agentOptionView {
 	snapshots := h.registry.Snapshot(h.currentTime())
-	options := make([]agentOptionView, 0, len(snapshots))
+	options := make([]agentOptionView, 0, len(snapshots)+1)
+	selectedFound := false
 	for _, snapshot := range snapshots {
+		if snapshot.ID == selected {
+			selectedFound = true
+		}
 		if snapshot.State != identity.AgentStateEnrolled {
+			if snapshot.ID == selected {
+				options = append(options, agentOptionView{ID: snapshot.ID, Name: snapshot.DisplayName, Selected: true})
+			}
 			continue
 		}
 		options = append(options, agentOptionView{ID: snapshot.ID, Name: snapshot.DisplayName, Selected: snapshot.ID == selected, Online: h.sessions.IsOnline(snapshot.ID)})
+	}
+	if selected != "" && !selectedFound {
+		options = append(options, agentOptionView{ID: selected, Name: selected, Selected: true, Deleted: true})
 	}
 	sort.Slice(options, func(left, right int) bool {
 		if options[left].Name != options[right].Name {

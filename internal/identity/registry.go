@@ -441,6 +441,20 @@ func (r *Registry) DisplayName(agentID string) string {
 	return r.displayNameLocked(agentID)
 }
 
+// HasRecord reports whether the private server identity still exists in any
+// registry state. Pending and expired enrollment records deliberately count as
+// existing: only an explicit revocation removes the record and makes legacy
+// Proxy Node references eligible for local orphan cleanup.
+func (r *Registry) HasRecord(agentID string) bool {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	if _, exists := r.enrolled[agentID]; exists {
+		return true
+	}
+	_, exists := r.pending[agentID]
+	return exists
+}
+
 func (r *Registry) displayNameLocked(agentID string) string {
 	if displayName := r.displayNames[agentID]; displayName != "" {
 		return displayName

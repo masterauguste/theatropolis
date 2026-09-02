@@ -83,6 +83,13 @@ Security and domain rules in the Go implementation remain authoritative.
   topology transaction is active. The administrator must first move or remove
   those Hops and let the old Agent receive its empty retirement configuration;
   revocation never silently deletes Proxy Node branches.
+- Legacy topology references whose Server identity was already deleted are
+  shown as deleted rather than offline. Their current selector value remains
+  visible but cannot be reselected. Redirecting that Hop to an enrolled Server,
+  deleting its branch, or deleting its Proxy Node removes the stale desired,
+  applied, and managed references without waiting for an impossible remote
+  cleanup acknowledgement. Enrolled but offline Servers retain the ordinary
+  confirmed-cleanup requirement.
 - Existing server-side validation is authoritative. Invalid submissions retain
   field values, expose an inline error summary, and identify invalid fields.
 - Every product form disables browser-owned validation bubbles. The shared

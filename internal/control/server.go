@@ -2004,6 +2004,10 @@ func (s *Server) CanDeployConfiguration(agentID string) bool {
 	return s.Sessions.SupportsReady(agentID, ConfigDeployCapability)
 }
 
+func (s *Server) HasAgentIdentity(agentID string) bool {
+	return s.Identities != nil && s.Identities.HasRecord(agentID)
+}
+
 func (s *Server) CanDeployProxyNodeConfiguration(agentID string) bool {
 	return s.Sessions.SupportsReady(agentID, ProxyNodeDeployCapability)
 }

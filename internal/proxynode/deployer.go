@@ -27,6 +27,7 @@ const (
 var ErrDeploymentActive = errors.New("Proxy Node fleet deployment is already active")
 
 type DeploymentController interface {
+	HasAgentIdentity(agentID string) bool
 	CanDeployProxyNodeConfiguration(agentID string) bool
 	CanSyncManagedUserAuthority(agentID string) bool
 	RequestManagedUserTraffic(context.Context, string) error
@@ -34,6 +35,8 @@ type DeploymentController interface {
 	QueueManagedUserAuthority(context.Context, string, uint64, []singbox.ManagedUserAuthorityVariant) error
 	LatestDeployment(context.Context, string) (deployment.Record, error)
 }
+
+var ErrAgentIdentityMissing = errors.New("Proxy Node references a deleted Agent identity")
 
 type FleetDeploymentStatus string
 
@@ -375,6 +378,15 @@ func (d *Deployer) MutateAndStart(mutation func() error) (FleetDeployment, error
 		return FleetDeployment{}, err
 	}
 	mutated := d.store.Snapshot()
+	if missing := newlyMissingDesiredAgents(previous, mutated, d.controller); len(missing) > 0 {
+		currentRevision := mutated.Revision
+		if restoreErr := d.store.RestoreTopology(currentRevision, previous); restoreErr != nil {
+			d.releaseMutationReservation()
+			return FleetDeployment{}, fmt.Errorf("%w; restore rejected topology: %v", ErrAgentIdentityMissing, restoreErr)
+		}
+		d.releaseMutationReservation()
+		return FleetDeployment{}, fmt.Errorf("%w: %s", ErrAgentIdentityMissing, strings.Join(missing, ", "))
+	}
 	job, err := d.start(deploymentTopology, nil, true)
 	if err == nil {
 		d.mu.RLock()
@@ -953,6 +965,7 @@ func (d *Deployer) compileAppliedFleet() (CompileResult, error) {
 
 func (d *Deployer) changedTopologyAgents(candidate CompileResult) ([]string, error) {
 	state := d.store.Snapshot()
+	desiredAgents := topologyAgentIDs(state.ProxyNodes)
 	seen := make(map[string]struct{}, len(candidate.Configs)+len(state.ManagedAgents))
 	for agentID := range candidate.Configs {
 		seen[agentID] = struct{}{}
@@ -967,6 +980,17 @@ func (d *Deployer) changedTopologyAgents(candidate CompileResult) ([]string, err
 			candidateConfig = emptyManagedConfig()
 			candidate.Configs[agentID] = candidateConfig
 			candidate.AgentDepth[agentID] = -1
+		}
+		// A server identity revoked by an older Master can remain in the
+		// applied/managed snapshots even after the administrator redirects or
+		// removes its final desired Hop. There is no authenticated Agent left to
+		// acknowledge an empty profile, so waiting can never make progress. Once
+		// the desired topology no longer references that exact identity, omit it
+		// from the physical transaction; MarkTopologyApplied then atomically drops
+		// its applied and managed references. An enrolled-but-offline Agent is not
+		// eligible and continues to require confirmed remote cleanup.
+		if _, desired := desiredAgents[agentID]; !desired && !d.controller.HasAgentIdentity(agentID) {
+			continue
 		}
 		record, err := d.controller.LatestDeployment(context.Background(), agentID)
 		if errors.Is(err, deployment.ErrNotFound) {
@@ -1000,6 +1024,51 @@ func (d *Deployer) changedTopologyAgents(candidate CompileResult) ([]string, err
 		return agents[left] < agents[right]
 	})
 	return agents, nil
+}
+
+func topologyAgentIDs(nodes []ProxyNode) map[string]struct{} {
+	agents := make(map[string]struct{})
+	for _, node := range nodes {
+		for _, hop := range node.Hops {
+			agents[hop.AgentID] = struct{}{}
+		}
+	}
+	return agents
+}
+
+func newlyMissingDesiredAgents(before, after State, controller DeploymentController) []string {
+	previous := topologyAgentReferences(before.ProxyNodes)
+	missing := make([]string, 0)
+	for agentID, references := range topologyAgentReferences(after.ProxyNodes) {
+		if controller.HasAgentIdentity(agentID) {
+			continue
+		}
+		newReference := false
+		for reference := range references {
+			if _, legacyOrphan := previous[agentID][reference]; !legacyOrphan {
+				newReference = true
+				break
+			}
+		}
+		if newReference {
+			missing = append(missing, agentID)
+		}
+	}
+	sort.Strings(missing)
+	return missing
+}
+
+func topologyAgentReferences(nodes []ProxyNode) map[string]map[string]struct{} {
+	references := make(map[string]map[string]struct{})
+	for _, node := range nodes {
+		for _, hop := range node.Hops {
+			if references[hop.AgentID] == nil {
+				references[hop.AgentID] = make(map[string]struct{})
+			}
+			references[hop.AgentID][node.ID+"\x00"+hop.ID] = struct{}{}
+		}
+	}
+	return references
 }
 
 func managedTopologyConfigsEqual(left, right []byte) (bool, error) {

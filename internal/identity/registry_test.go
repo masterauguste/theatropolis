@@ -65,6 +65,38 @@ func TestEnrollmentIsSingleUseAndProofRequiresPrivateKey(t *testing.T) {
 	}
 }
 
+func TestHasRecordDistinguishesRevokedIdentityFromEnrollmentState(t *testing.T) {
+	ctx := context.Background()
+	registry := NewRegistry()
+	const agentID = "edge-record-lifecycle"
+	if registry.HasRecord(agentID) {
+		t.Fatal("unknown Agent unexpectedly has a registry record")
+	}
+	token, err := registry.CreateEnrollment(ctx, agentID, time.Now().Add(time.Minute))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !registry.HasRecord(agentID) {
+		t.Fatal("pending enrollment is not recognized as an existing record")
+	}
+	publicKey, _, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := registry.EnrollByToken(ctx, token, publicKey, time.Now()); err != nil {
+		t.Fatal(err)
+	}
+	if !registry.HasRecord(agentID) {
+		t.Fatal("enrolled Agent is not recognized as an existing record")
+	}
+	if err := registry.Revoke(ctx, agentID); err != nil {
+		t.Fatal(err)
+	}
+	if registry.HasRecord(agentID) {
+		t.Fatal("revoked Agent still has a registry record")
+	}
+}
+
 func TestEnrollmentTokenResolvesAgentIdentity(t *testing.T) {
 	t.Parallel()
 

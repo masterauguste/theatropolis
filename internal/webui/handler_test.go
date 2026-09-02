@@ -293,6 +293,13 @@ func (c *testAgentController) CanDeployConfiguration(agentID string) bool {
 	return c.sessions[agentID]
 }
 
+func (c *testAgentController) HasAgentIdentity(agentID string) bool {
+	if c.registry == nil {
+		return false
+	}
+	return c.registry.HasRecord(agentID)
+}
+
 func (c *testAgentController) CanDeployProxyNodeConfiguration(agentID string) bool {
 	return c.CanDeployConfiguration(agentID)
 }
@@ -2706,6 +2713,74 @@ func TestProxyNodeListShowsHighestSeverityOutageBadge(t *testing.T) {
 	fixture.handler.ServeHTTP(response, request)
 	if response.Code != http.StatusOK || !strings.Contains(response.Body.String(), "入口失联") || !strings.Contains(response.Body.String(), "中继失联") {
 		t.Fatalf("localized Proxy Node overview outage badges = %d %q", response.Code, response.Body.String())
+	}
+}
+
+func TestProxyNodeDistinguishesDeletedAgentReferencesFromOfflineServers(t *testing.T) {
+	fixture := newWebFixture(t)
+	enrollAgent(t, fixture.registry, "edge-online")
+	fixture.controller.sessions["edge-online"] = true
+	node, err := fixture.proxyNodes.CreateProxyNode(proxynode.CreateProxyNodeInput{
+		Name: "Legacy Orphan", RootAgent: "edge-deleted-entrance",
+		Entrance: proxynode.Endpoint{
+			Protocol: proxynode.ProtocolAnyTLS, Listen: "::", ListenPort: 443,
+			TLS: proxynode.TLSConfig{Mode: proxynode.TLSModeSelfSigned, ServerName: "legacy.example"},
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, _, _, err := fixture.proxyNodes.AddBranch(node.ID, proxynode.AddBranchInput{
+		AddLinkInput: proxynode.AddLinkInput{
+			ParentHopID: node.Entrance.HopID, ChildAgent: "edge-deleted-relay",
+			Endpoint: proxynode.Endpoint{
+				Protocol: proxynode.ProtocolShadowsocks, Listen: "::", ListenPort: 20048,
+				Method: "2022-blake3-aes-128-gcm",
+			},
+		},
+		Match: proxynode.MatchDomainSuffix, Values: []string{"example.com"},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := fixture.proxyNodes.MarkTopologyApplied(
+		fixture.proxyNodes.Snapshot().Revision,
+		[]string{"edge-deleted-entrance", "edge-deleted-relay"},
+	); err != nil {
+		t.Fatal(err)
+	}
+
+	request := fixture.authenticatedRequest(http.MethodGet, proxyNodeURL(node.ID), "")
+	response := httptest.NewRecorder()
+	fixture.handler.ServeHTTP(response, request)
+	body := response.Body.String()
+	for _, expected := range []string{
+		"Entrance Server Deleted", "Relay Server Deleted", "data-proxy-hop-deleted",
+		`<option value="" selected disabled>edge-deleted-entrance — deleted</option>`,
+		"Choose another server to remove this stale reference.",
+	} {
+		if response.Code != http.StatusOK || !strings.Contains(body, expected) {
+			t.Errorf("deleted Agent detail status=%d does not contain %q", response.Code, expected)
+		}
+	}
+	if strings.Contains(body, "edge-deleted-entrance — offline") || strings.Contains(body, "edge-deleted-relay — offline") {
+		t.Fatal("deleted Agent reference was mislabeled as offline")
+	}
+
+	request = fixture.authenticatedRequestWithLocale(http.MethodGet, proxyNodeURL(node.ID), "", localeSimplifiedChinese)
+	response = httptest.NewRecorder()
+	fixture.handler.ServeHTTP(response, request)
+	for _, expected := range []string{"入口服务器已删除", "中继服务器已删除", "主控端无法再远程清理原服务器"} {
+		if response.Code != http.StatusOK || !strings.Contains(response.Body.String(), expected) {
+			t.Errorf("localized deleted Agent detail status=%d does not contain %q", response.Code, expected)
+		}
+	}
+
+	request = fixture.authenticatedRequest(http.MethodGet, "/proxy-nodes", "")
+	response = httptest.NewRecorder()
+	fixture.handler.ServeHTTP(response, request)
+	if response.Code != http.StatusOK || !strings.Contains(response.Body.String(), "Entrance Server Deleted") ||
+		strings.Contains(response.Body.String(), ">Entrance Offline</span>") {
+		t.Fatalf("Proxy Node overview did not prioritize deleted entrance: %d %q", response.Code, response.Body.String())
 	}
 }
 
