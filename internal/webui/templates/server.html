@@ -2,20 +2,20 @@
 <!doctype html>
 <html lang="{{.Locale}}">
 {{template "document-head" .}}
-<body data-version-catalog-url="/servers/{{.Agent.ID}}/versions"{{if or (eq .ErrorField "subscription_domain_ipv4") (eq .ErrorField "subscription_domain_ipv6")}} data-initial-dialog="server-actions-dialog"{{end}}{{if and .Agent.Deployment .Agent.Deployment.Pending}} data-deployment-refresh-url="{{.Agent.URL}}" data-deployment-status-url="{{.Agent.DeploymentStatusURL}}"{{end}}>
+<body data-version-catalog-url="/servers/{{.Agent.ID}}/versions"{{if or (eq .ErrorField "subscription_domain_ipv4") (eq .ErrorField "subscription_domain_ipv6")}} data-initial-dialog="server-actions-dialog"{{else if eq .ErrorField "display_name"}} data-initial-dialog="server-rename-dialog"{{end}}{{if and .Agent.Deployment .Agent.Deployment.Pending}} data-deployment-refresh-url="{{.Agent.URL}}" data-deployment-status-url="{{.Agent.DeploymentStatusURL}}"{{end}}>
   <a class="skip-link" href="#main">Skip to content</a>
   {{template "global-header" .}}
   <main class="main main--wide" id="main">
       <nav class="breadcrumbs" aria-label="Breadcrumb">
         <a href="/servers">Servers</a>
         <span aria-hidden="true">/</span>
-        <span aria-current="page">{{.Agent.ID}}</span>
+        <span aria-current="page">{{.Agent.Name}}</span>
       </nav>
 
       <header class="page-header">
         <div>
           <p class="eyebrow">Server management</p>
-          <h1>{{.Agent.ID}}</h1>
+          <div class="proxy-node-page-header__title"><h1>{{.Agent.Name}}</h1><button class="button button--secondary button--icon-only" type="button" data-dialog-open="server-rename-dialog" aria-label="Rename Server"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 20h4l11-11a2.8 2.8 0 0 0-4-4L4 16v4Z"/><path d="m13.5 6.5 4 4"/></svg></button></div>
         </div>
         <div class="page-header__actions">
           <a class="button button--secondary button--icon" href="{{.Agent.URL}}" aria-label="Refresh server status">
@@ -31,6 +31,16 @@
       {{if .Error}}
       <div class="notice notice--error" id="server-page-error" role="alert">{{.Error}}</div>
       {{end}}
+
+      <dialog class="modal resource-modal" id="server-rename-dialog" aria-labelledby="server-rename-title">
+        <div class="modal__surface">
+          <header class="modal__header"><div><p class="eyebrow">Server</p><h2 id="server-rename-title">Rename Server</h2></div><button class="button button--secondary button--icon-only" type="button" data-dialog-close aria-label="Close">×</button></header>
+          <form novalidate action="/servers/{{.Agent.ID}}/rename" method="post">
+            <div class="modal__body stack"><input type="hidden" name="csrf_token" value="{{.CSRFToken}}"><label class="field"><span>Server Name</span><input name="display_name" value="{{.AgentName}}" required data-display-name data-validate-live {{if eq .ErrorField "display_name"}}autofocus aria-invalid="true" aria-describedby="server-page-error"{{else}}aria-invalid="false"{{end}}></label><dl class="detail-list detail-list--compact"><div><dt>Server Record ID</dt><dd><code>{{.Agent.ID}}</code></dd></div></dl></div>
+            <footer class="modal__footer"><button class="button button--secondary" type="button" data-dialog-close>Cancel</button><button class="button button--primary" type="submit">Save Name</button></footer>
+          </form>
+        </div>
+      </dialog>
 
       <section class="server-summary" aria-label="Server status">
         <article class="summary-card">
@@ -81,11 +91,32 @@
 
       <div>
 
-        <section class="panel" aria-labelledby="proxy-role-heading">
+        <section class="panel" aria-labelledby="proxy-role-heading" data-agent-proxy-references>
           <div class="panel__header">
-            <h2 id="proxy-role-heading">Proxy Node roles</h2>
+            <h2 id="proxy-role-heading">Proxy Node Assignments</h2>
             <a class="button button--primary" href="/proxy-nodes">Open Proxy Nodes</a>
           </div>
+          {{if .Agent.ProxyNodeReferences}}
+          <div class="membership-list">
+            {{range .Agent.ProxyNodeReferences}}
+            <a href="{{.URL}}" data-agent-proxy-reference>
+              <span>
+                <strong>{{.Name}}</strong>
+                <small>
+                  {{if .Desired}}Configured: {{if .DesiredEntrance}}Entrance{{end}}{{if and .DesiredEntrance .DesiredRelayHops}} · {{end}}{{if .DesiredRelayHops}}{{.DesiredRelayHopLabel}}{{end}}{{end}}
+                  {{if and .Desired .Applied}} · {{end}}
+                  {{if .Applied}}Applied: {{if .AppliedEntrance}}Entrance{{end}}{{if and .AppliedEntrance .AppliedRelayHops}} · {{end}}{{if .AppliedRelayHops}}{{.AppliedRelayHopLabel}}{{end}}{{end}}
+                </small>
+              </span>
+              {{if and .Applied (not .Desired)}}<span class="membership-status membership-status--pending">Pending Retirement</span>{{else if and .Desired (not .Applied)}}<span class="membership-status membership-status--pending">Pending Apply</span>{{else}}<span aria-hidden="true">→</span>{{end}}
+            </a>
+            {{end}}
+          </div>
+          {{else if .Agent.RetirementPending}}
+          <div class="panel__empty"><strong>Topology Retirement Pending</strong><p>This Server still owns an applied managed configuration. Finish or retry the Proxy Node change before removing it.</p></div>
+          {{else}}
+          <div class="panel__empty"><p>This Server is not used by any Proxy Node.</p></div>
+          {{end}}
         </section>
 
         <dialog class="modal actions-modal" id="server-actions-dialog" aria-labelledby="server-actions-title">
@@ -278,8 +309,19 @@
               {{end}}
 
               <details class="action-section action-section--danger">
-                <summary><span><strong>Revoke access</strong><small>Disconnect and invalidate this identity</small></span></summary>
+                <summary><span><strong>Revoke access</strong><small>{{if .Agent.RemovalBlocked}}Move Proxy Node Hops First{{else}}Disconnect and invalidate this identity{{end}}</small></span></summary>
                 <div class="action-section__body">
+              {{if .Agent.RemovalBlocked}}
+              {{if .Agent.ProxyNodeReferences}}
+              <p>This Server cannot be removed while Proxy Nodes use it. Move the affected Hops to another Server, or delete the branches or Proxy Nodes that use them first.</p>
+              <div class="membership-list">
+                {{range .Agent.ProxyNodeReferences}}<a href="{{.URL}}"><span><strong>{{.Name}}</strong><small>{{if .Desired}}Configured{{end}}{{if and .Desired .Applied}} · {{end}}{{if .Applied}}Applied{{end}}</small></span><span aria-hidden="true">→</span></a>{{end}}
+              </div>
+              {{else}}
+              <p>This Server still owns an applied managed configuration. Finish or retry the Proxy Node change before removing it.</p>
+              {{end}}
+              <a class="button button--secondary button--full" href="/proxy-nodes">Review Proxy Nodes</a>
+              {{else}}
               <p>This immediately closes an active control session and invalidates enrollment credentials. It does not uninstall the remote agent or stop its current sing-box process.</p>
               <form novalidate
                 action="/servers/{{.Agent.ID}}/revoke"
@@ -293,6 +335,7 @@
                 </label>
                 <button class="button button--danger button--full" type="submit">{{.Agent.RevokeLabel}}</button>
               </form>
+              {{end}}
                 </div>
               </details>
             </div>

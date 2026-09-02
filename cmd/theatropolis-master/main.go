@@ -278,12 +278,24 @@ func serve(arguments []string) error {
 	if err != nil {
 		return fmt.Errorf("configure Proxy Node deployer: %w", err)
 	}
+	server.SetAgentRevocationGuard(proxyDeployer.GuardAgentRemoval)
 	billingEnforcer := proxynode.NewBillingEnforcer(proxyNodes, proxyDeployer, logger)
 	billingEnforcer.Start(ctx)
+	topologyReconciler := proxynode.NewTopologyReconciler(proxyDeployer, logger)
+	proxyDeployer.SetTopologyDesiredHook(topologyReconciler.Trigger)
+	topologyReconciler.Start(ctx)
 	proxyDeployer.SetTopologyAppliedHook(billingEnforcer.TriggerDeployment)
+	proxyDeployer.SetUserPlaneChangedHook(billingEnforcer.TriggerDeployment)
 	server.SetAuthoritativeProfileProvider(proxyDeployer.AuthoritativeAppliedProfile)
 	server.SetProxyNodeUserHandler(billingEnforcer.TriggerDeployment)
-	server.SetProxyNodeAddressHandler(billingEnforcer.TriggerAppliedRefresh)
+	server.SetProxyNodeTopologyHandler(topologyReconciler.Trigger)
+	server.SetProxyNodeAddressHandler(func() {
+		billingEnforcer.TriggerAppliedRefresh()
+		// Initial connection address callbacks cannot race this retry ahead of
+		// profile replay: the control session is not marked deployment-ready
+		// until that authoritative replay has already occupied its slot.
+		topologyReconciler.Trigger()
+	})
 	billingEnforcer.TriggerDeployment()
 	server.SetManagedUserTrafficHandler(func(
 		agentID, epoch string,
@@ -663,7 +675,7 @@ func createEnrollment(arguments []string) error {
 		"/run/theatropolis/master-admin.sock",
 		"local administrative Unix socket",
 	)
-	serverName := flags.String("server", "", "master-side server name")
+	serverName := flags.String("server", "", "new server display name, or immutable record ID with --replace-agent")
 	expiresIn := flags.Duration("expires-in", 15*time.Minute, "token lifetime")
 	replaceAgent := flags.Bool("replace-agent", false, "replace an enrolled Agent while retaining its profile")
 	if err := flags.Parse(arguments); err != nil {
@@ -676,11 +688,16 @@ func createEnrollment(arguments []string) error {
 		return errors.New("--expires-in must be between 1ns and 24h")
 	}
 
-	payload, err := json.Marshal(enrollmentRequest{
-		AgentID:    *serverName,
+	enrollment := enrollmentRequest{
 		TTLSeconds: int64(expiresIn.Seconds()),
 		Replace:    *replaceAgent,
-	})
+	}
+	if *replaceAgent {
+		enrollment.AgentID = strings.TrimSpace(*serverName)
+	} else {
+		enrollment.DisplayName = strings.TrimSpace(*serverName)
+	}
+	payload, err := json.Marshal(enrollment)
 	if err != nil {
 		return err
 	}
@@ -765,12 +782,14 @@ func listenUnixSocket(path string) (net.Listener, error) {
 }
 
 type enrollmentRequest struct {
-	AgentID    string `json:"agent_id"`
-	TTLSeconds int64  `json:"ttl_seconds"`
-	Replace    bool   `json:"replace,omitempty"`
+	AgentID     string `json:"agent_id,omitempty"`
+	DisplayName string `json:"display_name,omitempty"`
+	TTLSeconds  int64  `json:"ttl_seconds"`
+	Replace     bool   `json:"replace,omitempty"`
 }
 
 type enrollmentResponse struct {
+	AgentID   string    `json:"agent_id,omitempty"`
 	Token     string    `json:"token"`
 	ExpiresAt time.Time `json:"expires_at"`
 }
@@ -803,15 +822,26 @@ func adminHandler(registry *identity.Registry) http.Handler {
 		}
 		ttl := time.Duration(enrollment.TTLSeconds) * time.Second
 		expiresAt := time.Now().UTC().Add(ttl)
+		var agentID string
 		var token []byte
 		var err error
 		if enrollment.Replace {
+			agentID = enrollment.AgentID
 			token, err = registry.CreateReplacementEnrollment(
 				request.Context(),
 				enrollment.AgentID,
 				expiresAt,
 			)
+		} else if strings.TrimSpace(enrollment.DisplayName) != "" {
+			agentID, token, err = registry.CreateEnrollmentForDisplayName(
+				request.Context(),
+				enrollment.DisplayName,
+				expiresAt,
+			)
 		} else {
+			// Compatibility for existing local administrative clients. New
+			// callers send display_name and receive an opaque record ID.
+			agentID = enrollment.AgentID
 			token, err = registry.CreateEnrollment(
 				request.Context(),
 				enrollment.AgentID,
@@ -821,12 +851,14 @@ func adminHandler(registry *identity.Registry) http.Handler {
 		if err != nil {
 			status := http.StatusInternalServerError
 			switch {
-			case errors.Is(err, identity.ErrInvalidAgentID):
+			case errors.Is(err, identity.ErrInvalidAgentID),
+				errors.Is(err, identity.ErrInvalidDisplayName):
 				status = http.StatusBadRequest
 			case errors.Is(err, identity.ErrAgentNotFound):
 				status = http.StatusNotFound
 			case errors.Is(err, identity.ErrAgentAlreadyEnrolled),
-				errors.Is(err, identity.ErrEnrollmentPending):
+				errors.Is(err, identity.ErrEnrollmentPending),
+				errors.Is(err, identity.ErrDisplayNameExists):
 				status = http.StatusConflict
 			default:
 				slog.Error(
@@ -843,6 +875,7 @@ func adminHandler(registry *identity.Registry) http.Handler {
 		response.Header().Set("Content-Type", "application/json")
 		response.WriteHeader(http.StatusCreated)
 		_ = json.NewEncoder(response).Encode(enrollmentResponse{
+			AgentID:   agentID,
 			Token:     base64.RawURLEncoding.EncodeToString(token),
 			ExpiresAt: expiresAt,
 		})

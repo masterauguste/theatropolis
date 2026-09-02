@@ -685,7 +685,7 @@ func TestServerPageRoutesThroughProxyNodeManager(t *testing.T) {
 	}
 	body := response.Body.String()
 	for _, expected := range []string{
-		"Proxy Node roles",
+		"Proxy Node Assignments",
 		`href="/proxy-nodes"`,
 	} {
 		if !strings.Contains(body, expected) {
@@ -802,11 +802,19 @@ func TestPoolPageCollapsesUsersButRoutingOptionsRetainThem(t *testing.T) {
 		"shared-in",
 		"alice",
 		"bob",
-		"agent/edge-source/shared-in/alice",
-		"agent/edge-source/shared-in/bob",
+		`data-pool-ref="agent/edge-source/shared-in/alice"`,
+		`data-pool-ref="agent/edge-source/shared-in/bob"`,
 	} {
 		if !strings.Contains(body, expected) {
 			t.Errorf("pool page does not contain %q", expected)
+		}
+	}
+	for _, visibleRef := range []string{
+		`<code>agent/edge-source/shared-in/alice</code>`,
+		`<code>agent/edge-source/shared-in/bob</code>`,
+	} {
+		if strings.Contains(body, visibleRef) {
+			t.Errorf("pool page visibly exposes internal routing ref %q", visibleRef)
 		}
 	}
 
@@ -829,6 +837,31 @@ func TestPoolPageCollapsesUsersButRoutingOptionsRetainThem(t *testing.T) {
 	}
 	if result.Options[0].User != "alice" || result.Options[1].User != "bob" {
 		t.Fatalf("routing users = %q/%q, want alice/bob", result.Options[0].User, result.Options[1].User)
+	}
+}
+
+func TestPoolDiagnosticsUseServerDisplayName(t *testing.T) {
+	t.Parallel()
+
+	fixture := newPoolFixture(t)
+	enrollAgent(t, fixture.registry, "edge-internal-record")
+	if err := fixture.registry.RenameDisplayName("edge-internal-record", "东京 边缘"); err != nil {
+		t.Fatal(err)
+	}
+	seedPoolDeployment(t, fixture, "edge-internal-record", `{"inbounds":[1],"outbounds":[]}`)
+
+	request := fixture.authenticatedRequest(http.MethodGet, "/pool/content", "")
+	response := httptest.NewRecorder()
+	fixture.handler.ServeHTTP(response, request)
+	if response.Code != http.StatusOK {
+		t.Fatalf("GET /pool/content status = %d, body = %s", response.Code, response.Body.String())
+	}
+	body := response.Body.String()
+	if !strings.Contains(body, "东京 边缘") {
+		t.Fatalf("pool diagnostic does not contain the server display name: %s", body)
+	}
+	if strings.Contains(body, "edge-internal-record") {
+		t.Fatalf("pool diagnostic exposes the immutable Agent ID: %s", body)
 	}
 }
 

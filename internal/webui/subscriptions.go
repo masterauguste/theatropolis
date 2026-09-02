@@ -39,8 +39,10 @@ type subscriptionPolicyView struct {
 
 type subscriptionNodeView struct {
 	Name      string
+	Initial   string
 	Protocol  string
 	AgentID   string
+	AgentName string
 	Status    string
 	StatusCSS string
 	Addresses []string
@@ -499,9 +501,10 @@ func (h *Handler) subscriptionViewAndProfile(userID string) (*userSubscriptionVi
 		}
 		activeNode, applied := projection.AppliedProxyNodes[node.ID]
 		root, hasRoot := proxyHop(activeNode, activeNode.Entrance.HopID)
-		nodeView := subscriptionNodeView{Name: node.Name, Status: "Unavailable", StatusCSS: "disabled"}
+		nodeView := subscriptionNodeView{Name: node.Name, Initial: nodeInitial(node.Name), Status: "Unavailable", StatusCSS: "disabled"}
 		if hasRoot {
 			nodeView.AgentID = root.AgentID
+			nodeView.AgentName = h.agentDisplayName(root.AgentID)
 			nodeView.Protocol = protocolLabel(activeNode.Entrance.Endpoint.Protocol)
 		}
 		switch membership.DisabledReason {

@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/url"
+	"reflect"
 	"slices"
 	"sort"
 	"strconv"
@@ -27,14 +28,18 @@ var membershipPlanFormFields = []string{
 }
 
 type proxyNodeListView struct {
-	ID            string
-	Name          string
-	URL           string
-	Entrance      string
-	EntranceAgent string
-	HopCount      int
-	MemberCount   int
-	UpdatedAt     string
+	ID              string
+	Name            string
+	URL             string
+	Entrance        string
+	EntranceAgent   string
+	HopCount        int
+	MemberCount     int
+	UpdatedAt       string
+	PendingApply    bool
+	PendingRemoval  bool
+	EntranceOffline bool
+	RelayOffline    bool
 }
 
 type proxyNodeDetailView struct {
@@ -59,6 +64,18 @@ type proxyNodeDetailView struct {
 	AvailableUsers          []nodeUserOptionView
 	DefaultPlan             membershipPlanView
 	SubscriptionAddressMode string
+	OperationalStatus       proxyNodeOperationalStatusView
+}
+
+type proxyNodeOperationalStatusView struct {
+	TopologyPending bool
+	EntranceOffline []proxyNodeOfflineAgentView
+	RelayOffline    []proxyNodeOfflineAgentView
+}
+
+type proxyNodeOfflineAgentView struct {
+	Name    string
+	Applied bool
 }
 
 type membershipPlanView struct {
@@ -103,6 +120,7 @@ type proxyTreeHopView struct {
 	AgentID                 string
 	URL                     string
 	IsEntrance              bool
+	Offline                 bool
 	IngressProtocol         string
 	IngressLabel            string
 	Routes                  []proxyTreeRouteView
@@ -176,6 +194,7 @@ type proxyTreeBranchView struct {
 	Block        bool
 	InspectorID  string
 	AgentID      string
+	Name         string
 	Uncertain    bool
 	Child        *proxyTreeHopView
 	Latency      linkLatencyView
@@ -192,6 +211,7 @@ type linkLatencyView struct {
 type proxyBlockRuleView struct {
 	Rule     proxyRuleView
 	AgentID  string
+	Name     string
 	ParentID string
 }
 
@@ -271,6 +291,7 @@ type credentialURIView struct {
 
 type agentOptionView struct {
 	ID             string
+	Name           string
 	Selected       bool
 	Online         bool
 	LatencyDetail  string
@@ -338,13 +359,19 @@ type proxyRuleView struct {
 }
 
 type proxyDeploymentView struct {
-	ID     string                              `json:"id"`
-	Status string                              `json:"status"`
-	Label  string                              `json:"label"`
-	Class  string                              `json:"class"`
-	Error  string                              `json:"error,omitempty"`
-	Active bool                                `json:"active"`
-	Agents []proxynode.AgentDeploymentProgress `json:"agents,omitempty"`
+	ID     string                     `json:"id"`
+	Status string                     `json:"status"`
+	Label  string                     `json:"label"`
+	Class  string                     `json:"class"`
+	Error  string                     `json:"error,omitempty"`
+	Active bool                       `json:"active"`
+	Agents []proxyDeploymentAgentView `json:"agents,omitempty"`
+}
+
+type proxyDeploymentAgentView struct {
+	AgentID   string `json:"agent_id"`
+	AgentName string `json:"agent_name"`
+	Status    string `json:"status"`
 }
 
 func (h *Handler) proxyNodesPage(response http.ResponseWriter, request *http.Request) {
@@ -357,14 +384,37 @@ func (h *Handler) proxyNodesPage(response http.ResponseWriter, request *http.Req
 		return
 	}
 	state := h.proxyNodes.Snapshot()
-	views := make([]proxyNodeListView, 0, len(state.ProxyNodes))
+	views := make([]proxyNodeListView, 0, len(state.ProxyNodes)+len(state.AppliedProxyNodes))
+	desiredIDs := make(map[string]struct{}, len(state.ProxyNodes))
 	for _, node := range state.ProxyNodes {
+		desiredIDs[node.ID] = struct{}{}
 		root, _ := proxyHop(node, node.Entrance.HopID)
+		status := &proxyNodeDetailView{}
+		h.attachProxyNodeOperationalStatus(status, node, state)
 		views = append(views, proxyNodeListView{
 			ID: node.ID, Name: node.Name, URL: proxyNodeURL(node.ID),
-			Entrance: protocolLabel(node.Entrance.Endpoint.Protocol), EntranceAgent: root.AgentID,
+			Entrance: protocolLabel(node.Entrance.Endpoint.Protocol), EntranceAgent: h.agentDisplayName(root.AgentID),
 			HopCount: len(node.Hops), MemberCount: len(node.Memberships),
-			UpdatedAt: node.UpdatedAt.In(proxynode.BillingLocation()).Format("2006-01-02 15:04 UTC+8"),
+			UpdatedAt:       node.UpdatedAt.In(proxynode.BillingLocation()).Format("2006-01-02 15:04 UTC+8"),
+			PendingApply:    proxyNodeTopologyPending(node, state.AppliedProxyNodes),
+			EntranceOffline: len(status.OperationalStatus.EntranceOffline) > 0,
+			RelayOffline:    len(status.OperationalStatus.RelayOffline) > 0,
+		})
+	}
+	// An offline Agent can keep the last-applied topology after the desired
+	// Proxy Node has been deleted. Keep that runtime visible as a read-only card
+	// until fleet deployment retires it; never turn it into an editable ghost.
+	for _, node := range state.AppliedProxyNodes {
+		if _, desired := desiredIDs[node.ID]; desired {
+			continue
+		}
+		root, _ := proxyHop(node, node.Entrance.HopID)
+		views = append(views, proxyNodeListView{
+			ID: node.ID, Name: node.Name,
+			Entrance: protocolLabel(node.Entrance.Endpoint.Protocol), EntranceAgent: h.agentDisplayName(root.AgentID),
+			HopCount: len(node.Hops), MemberCount: len(node.Memberships),
+			UpdatedAt:      node.UpdatedAt.In(proxynode.BillingLocation()).Format("2006-01-02 15:04 UTC+8"),
+			PendingRemoval: true,
 		})
 	}
 	sort.Slice(views, func(left, right int) bool {
@@ -425,8 +475,10 @@ func (h *Handler) proxyNodePage(response http.ResponseWriter, request *http.Requ
 	if !ok {
 		return
 	}
-	detail := h.proxyNodeDetail(node)
-	h.attachProxyNodeUsers(detail, node, h.proxyNodes.Snapshot().Users)
+	state := h.proxyNodes.Snapshot()
+	detail := h.proxyNodeDetail(node, state)
+	h.attachProxyNodeUsers(detail, node, state.Users)
+	h.attachProxyNodeOperationalStatus(detail, node, state)
 	setProxyTreeCSRF(detail.Tree, session.CSRFToken)
 	h.render(response, http.StatusOK, "proxy-node.html", pageData{
 		Title: node.Name, ActiveNav: "proxy-nodes", CSRFToken: session.CSRFToken,
@@ -594,12 +646,17 @@ func (h *Handler) updateProxyEntrance(response http.ResponseWriter, request *htt
 	if !ok {
 		return
 	}
-	endpoint, err := parseEndpointForm(form)
+	id := request.PathValue("proxy_id")
+	node, exists := h.proxyNodes.ProxyNode(id)
+	if !exists {
+		http.NotFound(response, request)
+		return
+	}
+	endpoint, err := parseEndpointForm(form, node.Entrance.Endpoint)
 	if err != nil {
 		http.Error(response, err.Error(), http.StatusBadRequest)
 		return
 	}
-	id := request.PathValue("proxy_id")
 	if !h.applyProxyTopologyMutation(response, func() error {
 		return h.proxyNodes.UpdateEntrance(id, endpoint)
 	}) {
@@ -640,13 +697,21 @@ func (h *Handler) updateProxyHop(response http.ResponseWriter, request *http.Req
 		http.NotFound(response, request)
 		return
 	}
-	if _, exists := proxyHop(node, hopID); !exists {
+	hop, exists := proxyHop(node, hopID)
+	if !exists {
 		http.NotFound(response, request)
 		return
 	}
+	targetAgent := strings.TrimSpace(form.Get("agent_id"))
+	if targetAgent != hop.AgentID {
+		if endpoint, exists := proxyHopEndpoint(node, hopID); exists && endpoint.TLS.Mode == proxynode.TLSModeFiles {
+			http.Error(response, "legacy file certificate endpoints cannot move to another Agent", http.StatusBadRequest)
+			return
+		}
+	}
 	isEntrance := hopID == node.Entrance.HopID
 	if !h.applyProxyTopologyMutation(response, func() error {
-		return h.proxyNodes.MoveHop(nodeID, hopID, form.Get("agent_id"))
+		return h.proxyNodes.MoveHop(nodeID, hopID, targetAgent)
 	}) {
 		return
 	}
@@ -795,20 +860,20 @@ func (h *Handler) updateProxyLink(response http.ResponseWriter, request *http.Re
 	if !ok {
 		return
 	}
-	endpoint, err := parseEndpointForm(form)
-	if err != nil {
-		http.Error(response, err.Error(), http.StatusBadRequest)
-		return
-	}
 	nodeID, linkID := request.PathValue("proxy_id"), request.PathValue("link_id")
 	node, exists := h.proxyNodes.ProxyNode(nodeID)
 	if !exists {
 		http.NotFound(response, request)
 		return
 	}
-	_, exists = proxyLink(node, linkID)
+	link, exists := proxyLink(node, linkID)
 	if !exists {
 		http.NotFound(response, request)
+		return
+	}
+	endpoint, err := parseEndpointForm(form, link.Endpoint)
+	if err != nil {
+		http.Error(response, err.Error(), http.StatusBadRequest)
 		return
 	}
 	if !h.applyProxyTopologyMutation(response, func() error {
@@ -1144,7 +1209,7 @@ func (h *Handler) endUserPage(response http.ResponseWriter, request *http.Reques
 		access := userProxyAccessView{
 			UserName: user.Name, ProxyID: node.ID, ProxyName: node.Name, ProxyURL: proxyNodeURL(node.ID),
 			DialogID: "user-proxy-access-" + node.ID, Initial: nodeInitial(node.Name), Tone: nodeRoleTone(node.Name),
-			EntranceLabel: protocolLabel(activeNode.Entrance.Endpoint.Protocol), EntranceAgent: root.AgentID,
+			EntranceLabel: protocolLabel(activeNode.Entrance.Endpoint.Protocol), EntranceAgent: h.agentDisplayName(root.AgentID),
 		}
 		assigned := false
 		for _, membership := range node.Memberships {
@@ -1152,7 +1217,7 @@ func (h *Handler) endUserPage(response http.ResponseWriter, request *http.Reques
 				continue
 			}
 			assigned = true
-			access.AuthUser = proxynode.AuthenticatedUserLabel(activeNode.Name, user.Name, membership.ID)
+			access.AuthUser = proxynode.AuthenticatedUserLabel(membership.ID)
 			if active {
 				access.URIs = h.membershipURIs(activeNode, user, membership)
 			}
@@ -1502,7 +1567,7 @@ func (h *Handler) triggerProxyUserSync() {
 	}
 }
 
-func (h *Handler) proxyNodeDetail(node proxynode.ProxyNode) *proxyNodeDetailView {
+func (h *Handler) proxyNodeDetail(node proxynode.ProxyNode, state proxynode.State) *proxyNodeDetailView {
 	compensationEnd := h.now().In(proxynode.BillingLocation()).Truncate(time.Minute)
 	compensationStart := compensationEnd.Add(-time.Hour)
 	detail := &proxyNodeDetailView{
@@ -1516,25 +1581,126 @@ func (h *Handler) proxyNodeDetail(node proxynode.ProxyNode) *proxyNodeDetailView
 	}
 	if entrance, ok := proxyHop(node, node.Entrance.HopID); ok {
 		detail.Entrance = endpointViewForAgent(node.Entrance.Endpoint, entrance.AgentID)
-		detail.EntranceFallback = targetLabel(node, entrance.Final)
+		detail.EntranceFallback = targetLabelWithNames(node, entrance.Final, h.agentDisplayName)
 	}
-	detail.Tree, detail.TerminalCount, detail.UnusedLinkCount = buildProxyTree(node)
+	detail.Tree, detail.TerminalCount, detail.UnusedLinkCount = buildProxyTreeWithNames(node, h.agentDisplayName)
 	h.attachProxyTreeControls(node, detail.Tree)
-	h.attachProxyTreeLatencies(node, detail.Tree)
+	h.attachProxyTreeLatencies(node, state.AppliedProxyNodes, detail.Tree)
+	h.attachProxyTreeAvailability(detail.Tree)
 	return detail
 }
 
-func (h *Handler) attachProxyTreeLatencies(node proxynode.ProxyNode, tree *proxyTreeHopView) {
+func (h *Handler) attachProxyTreeAvailability(tree *proxyTreeHopView) {
 	if tree == nil {
 		return
 	}
-	hops := make(map[string]proxynode.Hop, len(node.Hops))
-	for _, hop := range node.Hops {
-		hops[hop.ID] = hop
+	tree.Offline = !h.sessions.IsOnline(tree.AgentID)
+	for index := range tree.Children {
+		h.attachProxyTreeAvailability(tree.Children[index].Child)
+	}
+	for index := range tree.Branches {
+		h.attachProxyTreeAvailability(tree.Branches[index].Child)
+	}
+}
+
+func (h *Handler) attachProxyNodeOperationalStatus(detail *proxyNodeDetailView, desired proxynode.ProxyNode, state proxynode.State) {
+	if detail == nil {
+		return
+	}
+	detail.OperationalStatus.TopologyPending = proxyNodeTopologyPending(desired, state.AppliedProxyNodes)
+
+	type role struct {
+		entranceDesired bool
+		entranceApplied bool
+		relayDesired    bool
+		relayApplied    bool
+	}
+	roles := make(map[string]role)
+	collect := func(node proxynode.ProxyNode, applied bool) {
+		for _, hop := range node.Hops {
+			current := roles[hop.AgentID]
+			entrance := hop.ID == node.Entrance.HopID
+			if applied {
+				current.entranceApplied = current.entranceApplied || entrance
+				current.relayApplied = current.relayApplied || !entrance
+			} else {
+				current.entranceDesired = current.entranceDesired || entrance
+				current.relayDesired = current.relayDesired || !entrance
+			}
+			roles[hop.AgentID] = current
+		}
+	}
+	collect(desired, false)
+	for _, node := range state.AppliedProxyNodes {
+		if node.ID == desired.ID {
+			collect(node, true)
+			break
+		}
+	}
+
+	entrances := make([]proxyNodeOfflineAgentView, 0)
+	relays := make([]proxyNodeOfflineAgentView, 0)
+	for agentID, current := range roles {
+		if h.sessions.IsOnline(agentID) {
+			continue
+		}
+		name := h.agentDisplayName(agentID)
+		if current.entranceDesired || current.entranceApplied {
+			entrances = append(entrances, proxyNodeOfflineAgentView{Name: name, Applied: current.entranceApplied})
+		}
+		// Entrance severity wins within one plane. When a server changes roles
+		// between the saved and currently applied topology, retain both truthful
+		// role summaries until the pending topology is committed.
+		relayDesired := current.relayDesired && !current.entranceDesired
+		relayApplied := current.relayApplied && !current.entranceApplied
+		if !relayDesired && !relayApplied {
+			continue
+		}
+		relays = append(relays, proxyNodeOfflineAgentView{Name: name, Applied: relayApplied})
+	}
+	sort.Slice(entrances, func(left, right int) bool { return entrances[left].Name < entrances[right].Name })
+	sort.Slice(relays, func(left, right int) bool { return relays[left].Name < relays[right].Name })
+	detail.OperationalStatus.EntranceOffline = entrances
+	detail.OperationalStatus.RelayOffline = relays
+}
+
+func proxyNodeTopologyPending(desired proxynode.ProxyNode, applied []proxynode.ProxyNode) bool {
+	for _, node := range applied {
+		if node.ID == desired.ID {
+			return !reflect.DeepEqual(normalizeProxyNodeTopology(desired), normalizeProxyNodeTopology(node))
+		}
+	}
+	return true
+}
+
+func normalizeProxyNodeTopology(node proxynode.ProxyNode) proxynode.ProxyNode {
+	node.Memberships = nil
+	node.SubscriptionAddressMode = ""
+	node.CreatedAt = time.Time{}
+	node.UpdatedAt = time.Time{}
+	for index := range node.Hops {
+		node.Hops[index].Name = ""
+		node.Hops[index].CreatedAt = time.Time{}
+		node.Hops[index].UpdatedAt = time.Time{}
+	}
+	for index := range node.Links {
+		node.Links[index].CreatedAt = time.Time{}
+		node.Links[index].UpdatedAt = time.Time{}
+	}
+	for index := range node.BlockBranches {
+		node.BlockBranches[index].CreatedAt = time.Time{}
+		node.BlockBranches[index].UpdatedAt = time.Time{}
+	}
+	return node
+}
+
+func (h *Handler) attachProxyTreeLatencies(node proxynode.ProxyNode, appliedNodes []proxynode.ProxyNode, tree *proxyTreeHopView) {
+	if tree == nil {
+		return
 	}
 	views := make(map[string]linkLatencyView, len(node.Links))
 	for _, link := range node.Links {
-		views[link.ID] = h.linkLatencyView(hops[link.ParentHopID].AgentID, link)
+		views[link.ID] = h.topologyLinkLatencyView(node, appliedNodes, link)
 	}
 	var visit func(*proxyTreeHopView)
 	visit = func(hop *proxyTreeHopView) {
@@ -1555,6 +1721,72 @@ func (h *Handler) attachProxyTreeLatencies(node proxynode.ProxyNode, tree *proxy
 	visit(tree)
 }
 
+type proxyLinkProbeIdentity struct {
+	ParentAgent string
+	ChildAgent  string
+	Protocol    proxynode.Protocol
+	Port        int
+	Family      string
+	ServerName  string
+	ObfsType    string
+	ObfsSecret  string
+}
+
+func proxyLinkPhysicalProbeIdentity(node proxynode.ProxyNode, link proxynode.Link) (proxyLinkProbeIdentity, bool) {
+	parent, parentExists := proxyHop(node, link.ParentHopID)
+	child, childExists := proxyHop(node, link.ChildHopID)
+	if !parentExists || !childExists {
+		return proxyLinkProbeIdentity{}, false
+	}
+	identity := proxyLinkProbeIdentity{
+		ParentAgent: parent.AgentID,
+		ChildAgent:  child.AgentID,
+		Protocol:    link.Endpoint.Protocol,
+		Port:        link.Endpoint.ListenPort,
+		Family:      link.Endpoint.Family,
+	}
+	if link.Endpoint.Protocol == proxynode.ProtocolAnyTLS || link.Endpoint.Protocol == proxynode.ProtocolHysteria2 {
+		identity.ServerName = link.Endpoint.TLS.ServerName
+	}
+	if link.Endpoint.Protocol == proxynode.ProtocolHysteria2 {
+		identity.ObfsType = link.Endpoint.ObfsType
+		identity.ObfsSecret = link.Endpoint.ObfsSecret
+	}
+	return identity, true
+}
+
+func proxyLinkMatchesAppliedPath(desired proxynode.ProxyNode, appliedNodes []proxynode.ProxyNode, link proxynode.Link) bool {
+	desiredIdentity, ok := proxyLinkPhysicalProbeIdentity(desired, link)
+	if !ok {
+		return false
+	}
+	for _, appliedNode := range appliedNodes {
+		if appliedNode.ID != desired.ID {
+			continue
+		}
+		for _, appliedLink := range appliedNode.Links {
+			if appliedLink.ID != link.ID {
+				continue
+			}
+			appliedIdentity, valid := proxyLinkPhysicalProbeIdentity(appliedNode, appliedLink)
+			return valid && appliedIdentity == desiredIdentity
+		}
+		return false
+	}
+	return false
+}
+
+func (h *Handler) topologyLinkLatencyView(node proxynode.ProxyNode, appliedNodes []proxynode.ProxyNode, link proxynode.Link) linkLatencyView {
+	if !proxyLinkMatchesAppliedPath(node, appliedNodes, link) {
+		return linkLatencyView{Status: "pending", Label: "Pending Apply"}
+	}
+	parent, exists := proxyHop(node, link.ParentHopID)
+	if !exists {
+		return linkLatencyView{Status: "pending", Label: "—"}
+	}
+	return h.linkLatencyView(parent.AgentID, link)
+}
+
 func (h *Handler) linkLatencyView(parentAgent string, link proxynode.Link) linkLatencyView {
 	if h.controller == nil {
 		return linkLatencyView{Status: "pending", Label: "—"}
@@ -1562,6 +1794,9 @@ func (h *Handler) linkLatencyView(parentAgent string, link proxynode.Link) linkL
 	sample, exists := h.controller.LinkLatency(parentAgent, proxynode.LinkOutboundTag(link.ID))
 	if !exists {
 		return linkLatencyView{Status: "pending", Label: "—"}
+	}
+	if !link.UpdatedAt.IsZero() && sample.ObservedAt.Before(link.UpdatedAt) {
+		return linkLatencyView{Status: "pending", Label: "Pending Apply"}
 	}
 	observed := sample.ObservedAt.Format(time.RFC3339)
 	if h.now().Sub(sample.ObservedAt) > 90*time.Second {
@@ -1582,13 +1817,10 @@ func (h *Handler) proxyNodeLatencies(response http.ResponseWriter, request *http
 	if !ok {
 		return
 	}
-	hops := make(map[string]proxynode.Hop, len(node.Hops))
-	for _, hop := range node.Hops {
-		hops[hop.ID] = hop
-	}
 	result := make(map[string]linkLatencyView, len(node.Links))
+	appliedNodes := h.proxyNodes.Snapshot().AppliedProxyNodes
 	for _, link := range node.Links {
-		result[link.ID] = h.linkLatencyView(hops[link.ParentHopID].AgentID, link)
+		result[link.ID] = h.topologyLinkLatencyView(node, appliedNodes, link)
 	}
 	response.Header().Set("Content-Type", "application/json")
 	response.Header().Set("Cache-Control", "no-store")
@@ -1628,9 +1860,18 @@ func (h *Handler) proxyLinkLatencyHistory(response http.ResponseWriter, request 
 		http.Error(response, "invalid Link monitor range", http.StatusBadRequest)
 		return
 	}
+	appliedNodes := h.proxyNodes.Snapshot().AppliedProxyNodes
+	if !proxyLinkMatchesAppliedPath(node, appliedNodes, link) {
+		response.Header().Set("Content-Type", "application/json")
+		response.Header().Set("Cache-Control", "no-store")
+		_ = json.NewEncoder(response).Encode(map[string]any{
+			"range": rangeName, "current": linkLatencyView{Status: "pending", Label: "Pending Apply"}, "points": []linkLatencyPointView{},
+		})
+		return
+	}
 	sample, sampled := h.controller.LinkLatency(parent.AgentID, proxynode.LinkOutboundTag(link.ID))
 	points := make([]linkLatencyPointView, 0)
-	if sampled && sample.TargetID != "" {
+	if sampled && sample.TargetID != "" && (link.UpdatedAt.IsZero() || !sample.ObservedAt.Before(link.UpdatedAt)) {
 		buckets, err := h.proxyNodes.LinkLatencyHistory(parent.AgentID, sample.TargetID, h.now().Add(-duration), interval)
 		if err != nil {
 			h.logger.Error("load Link latency history", "proxy_id", node.ID, "link_id", link.ID, "error", err)
@@ -2033,6 +2274,7 @@ func (h *Handler) proxyDestinationAgentOptions(node proxynode.ProxyNode, parentH
 		links   []string
 	}
 	paths := make(map[string]pathView)
+	appliedNodes := h.proxyNodes.Snapshot().AppliedProxyNodes
 	for _, link := range node.Links {
 		if hops[link.ParentHopID] != parentAgent {
 			continue
@@ -2040,7 +2282,7 @@ func (h *Handler) proxyDestinationAgentOptions(node proxynode.ProxyNode, parentH
 		childAgent := hops[link.ChildHopID]
 		path := paths[childAgent]
 		path.links = append(path.links, link.ID)
-		candidate := h.linkLatencyView(parentAgent, link)
+		candidate := h.topologyLinkLatencyView(node, appliedNodes, link)
 		if path.latency.ObservedAt == "" || candidate.ObservedAt > path.latency.ObservedAt {
 			path.latency = candidate
 		}
@@ -2079,6 +2321,10 @@ func (h *Handler) proxyDestinationAgentOptions(node proxynode.ProxyNode, parentH
 }
 
 func buildProxyTree(node proxynode.ProxyNode) (*proxyTreeHopView, int, int) {
+	return buildProxyTreeWithNames(node, func(agentID string) string { return agentID })
+}
+
+func buildProxyTreeWithNames(node proxynode.ProxyNode, displayName func(string) string) (*proxyTreeHopView, int, int) {
 	hops := make(map[string]proxynode.Hop, len(node.Hops))
 	for _, hop := range node.Hops {
 		hops[hop.ID] = hop
@@ -2109,15 +2355,15 @@ func buildProxyTree(node proxynode.ProxyNode) (*proxyTreeHopView, int, int) {
 			ingressProtocol = protocolLabel(incoming.Endpoint.Protocol)
 			ingressLabel = "Incoming Link · port " + strconv.Itoa(incoming.Endpoint.ListenPort)
 		}
-		fallback := proxyTreeRoute(node, hop, "Fallback", "", "", hop.Final)
+		fallback := proxyTreeRouteWithNames(node, hop, "Fallback", "", "", hop.Final, displayName)
 		for _, link := range children[hopID] {
 			if link.Fallback {
-				fallback = proxyTreeRoute(node, hop, "Fallback", "When no conditional Link matches", "", proxynode.Target{Type: proxynode.TargetLink, LinkID: link.ID})
+				fallback = proxyTreeRouteWithNames(node, hop, "Fallback", "When no conditional Link matches", "", proxynode.Target{Type: proxynode.TargetLink, LinkID: link.ID}, displayName)
 				break
 			}
 		}
 		view := &proxyTreeHopView{
-			ProxyID: node.ID, ID: hop.ID, Name: hop.AgentID, AgentID: hop.AgentID, URL: proxyHopURL(node.ID, hop.ID),
+			ProxyID: node.ID, ID: hop.ID, Name: displayName(hop.AgentID), AgentID: hop.AgentID, URL: proxyHopURL(node.ID, hop.ID),
 			IsEntrance: hop.ID == node.Entrance.HopID, IngressProtocol: ingressProtocol, IngressLabel: ingressLabel,
 			Fallback: fallback,
 		}
@@ -2132,7 +2378,7 @@ func buildProxyTree(node proxynode.ProxyNode) (*proxyTreeHopView, int, int) {
 		if includeDetails {
 			for _, branch := range blocks[hopID] {
 				views := proxyRuleViews([]proxynode.Rule{branch.Rule}, totalRules)
-				view.BlockRules = append(view.BlockRules, proxyBlockRuleView{Rule: views[0], AgentID: hop.AgentID, ParentID: hop.ID})
+				view.BlockRules = append(view.BlockRules, proxyBlockRuleView{Rule: views[0], AgentID: hop.AgentID, Name: displayName(hop.AgentID), ParentID: hop.ID})
 			}
 			sort.SliceStable(view.BlockRules, func(left, right int) bool {
 				return view.BlockRules[left].Rule.Position < view.BlockRules[right].Rule.Position
@@ -2194,7 +2440,7 @@ func buildProxyTree(node proxynode.ProxyNode) (*proxyTreeHopView, int, int) {
 					view.Branches = append(view.Branches, proxyTreeBranchView{
 						RuleID: route.rule.ID, RulePosition: route.rule.Order + 1, RuleLabel: matchLabel(route.rule.Match),
 						RuleValues: strings.Join(route.rule.Values, ", "), Used: true, Block: true,
-						InspectorID: "block-rule-" + route.rule.ID, AgentID: hop.AgentID, Uncertain: uncertain,
+						InspectorID: "block-rule-" + route.rule.ID, AgentID: hop.AgentID, Name: displayName(hop.AgentID), Uncertain: uncertain,
 					})
 					view.TerminalCount++
 				} else {
@@ -2271,20 +2517,20 @@ func buildProxyTree(node proxynode.ProxyNode) (*proxyTreeHopView, int, int) {
 	return root, root.TerminalCount, unusedLinks
 }
 
-func proxyTreeRoute(node proxynode.ProxyNode, hop proxynode.Hop, label, match, values string, target proxynode.Target) proxyTreeRouteView {
+func proxyTreeRouteWithNames(node proxynode.ProxyNode, hop proxynode.Hop, label, match, values string, target proxynode.Target, displayName func(string) string) proxyTreeRouteView {
 	view := proxyTreeRouteView{Label: label, Match: match, Values: values, TargetKind: string(target.Type)}
 	switch target.Type {
 	case proxynode.TargetDirect:
 		view.TargetLabel = "Direct"
-		view.TargetDetail = "Terminal on " + hop.AgentID
+		view.TargetDetail = "Terminal on " + displayName(hop.AgentID)
 	case proxynode.TargetReject:
 		view.TargetLabel = "Reject"
-		view.TargetDetail = "Terminal on " + hop.AgentID
+		view.TargetDetail = "Terminal on " + displayName(hop.AgentID)
 	case proxynode.TargetLink:
-		view.TargetLabel = targetLabel(node, target)
+		view.TargetLabel = targetLabelWithNames(node, target, displayName)
 		if link, ok := proxyLink(node, target.LinkID); ok {
 			if child, exists := proxyHop(node, link.ChildHopID); exists {
-				view.TargetDetail = "Relay to " + child.AgentID
+				view.TargetDetail = "Relay to " + displayName(child.AgentID)
 				view.TargetURL = proxyHopURL(node.ID, child.ID)
 			}
 		}
@@ -2390,9 +2636,14 @@ func (h *Handler) proxyAgentOptions(selected string) []agentOptionView {
 		if snapshot.State != identity.AgentStateEnrolled {
 			continue
 		}
-		options = append(options, agentOptionView{ID: snapshot.ID, Selected: snapshot.ID == selected, Online: h.sessions.IsOnline(snapshot.ID)})
+		options = append(options, agentOptionView{ID: snapshot.ID, Name: snapshot.DisplayName, Selected: snapshot.ID == selected, Online: h.sessions.IsOnline(snapshot.ID)})
 	}
-	sort.Slice(options, func(left, right int) bool { return options[left].ID < options[right].ID })
+	sort.Slice(options, func(left, right int) bool {
+		if options[left].Name != options[right].Name {
+			return options[left].Name < options[right].Name
+		}
+		return options[left].ID < options[right].ID
+	})
 	return options
 }
 
@@ -2400,17 +2651,48 @@ func (h *Handler) proxyDeploymentView() *proxyDeploymentView {
 	if h.proxyDeployer == nil {
 		return nil
 	}
+	state := h.proxyNodes.Snapshot()
+	topologyPending := state.Revision != state.AppliedRevision
 	job, exists := h.proxyDeployer.Current()
 	if !exists {
-		return nil
+		if !topologyPending {
+			return nil
+		}
+		return &proxyDeploymentView{
+			Status: string(proxynode.FleetDeploymentPending), Label: "Pending", Class: "pending",
+		}
+	}
+	metadata, metadataExists := h.proxyDeployer.DeploymentMetadata(job.ID)
+	currentTopologyJob := metadataExists &&
+		metadata.Kind == proxynode.FleetDeploymentKindTopology &&
+		metadata.TopologyRevision == state.Revision
+	currentRecoveryFailure := metadataExists &&
+		metadata.Kind == proxynode.FleetDeploymentKindRecovery &&
+		metadata.RecoveryStillNeeded
+	// A completed applied-refresh or stale topology job may share this
+	// presentation slot with a newer desired topology. It must not imply those
+	// edits are active. Conversely, retain a failure for the current desired
+	// revision (or an unfinished rollback): that diagnostic is the reason the
+	// reconciler stopped retrying and must not be hidden behind generic Pending.
+	terminal := job.Status == proxynode.FleetDeploymentApplied || job.Status == proxynode.FleetDeploymentFailed
+	showCurrentFailure := job.Status == proxynode.FleetDeploymentFailed &&
+		(currentTopologyJob || currentRecoveryFailure)
+	if topologyPending && terminal && !showCurrentFailure {
+		return &proxyDeploymentView{
+			Status: string(proxynode.FleetDeploymentPending), Label: "Pending", Class: "pending",
+		}
 	}
 	labels := map[proxynode.FleetDeploymentStatus]string{
 		proxynode.FleetDeploymentQueued:    "Queued",
 		proxynode.FleetDeploymentDeploying: "Deploying",
+		proxynode.FleetDeploymentPending:   "Pending",
 		proxynode.FleetDeploymentApplied:   "Applied",
 		proxynode.FleetDeploymentFailed:    "Failed",
 	}
-	view := &proxyDeploymentView{ID: job.ID, Status: string(job.Status), Label: labels[job.Status], Class: "pending", Error: job.Error, Agents: job.Agents}
+	view := &proxyDeploymentView{ID: job.ID, Status: string(job.Status), Label: labels[job.Status], Class: "pending", Error: job.Error}
+	for _, agent := range job.Agents {
+		view.Agents = append(view.Agents, proxyDeploymentAgentView{AgentID: agent.AgentID, AgentName: h.agentDisplayName(agent.AgentID), Status: agent.Status})
+	}
 	view.Active = job.Status == proxynode.FleetDeploymentQueued || job.Status == proxynode.FleetDeploymentDeploying
 	if job.Status == proxynode.FleetDeploymentApplied {
 		view.Class = "online"
@@ -2422,7 +2704,10 @@ func (h *Handler) proxyDeploymentView() *proxyDeploymentView {
 
 var endpointFormFields = []string{"protocol", "listen", "listen_port", "family", "method", "mux_enabled", "mux_padding", "mux_brutal", "mux_brutal_up_mbps", "mux_brutal_down_mbps", "tls_mode", "server_name", "email", "certificate_path", "key_path", "up_mbps", "down_mbps", "obfs_type"}
 
-func parseEndpointForm(form url.Values) (proxynode.Endpoint, error) {
+func parseEndpointForm(form url.Values, current ...proxynode.Endpoint) (proxynode.Endpoint, error) {
+	if len(current) > 1 {
+		return proxynode.Endpoint{}, errors.New("endpoint form has ambiguous edit context")
+	}
 	port, err := strconv.Atoi(form.Get("listen_port"))
 	if err != nil {
 		return proxynode.Endpoint{}, errors.New("listen port must be a number")
@@ -2441,6 +2726,20 @@ func parseEndpointForm(form url.Values) (proxynode.Endpoint, error) {
 		endpoint.Multiplex = multiplex
 	case proxynode.ProtocolAnyTLS, proxynode.ProtocolHysteria2:
 		endpoint.TLS = proxynode.TLSConfig{Mode: proxynode.TLSMode(form.Get("tls_mode")), ServerName: form.Get("server_name"), Email: form.Get("email"), CertificatePath: form.Get("certificate_path"), KeyPath: form.Get("key_path")}
+		if endpoint.TLS.Mode == proxynode.TLSModeFiles {
+			if len(current) != 1 || current[0].TLS.Mode != proxynode.TLSModeFiles {
+				return proxynode.Endpoint{}, errors.New("legacy file certificate mode cannot be selected for a new endpoint")
+			}
+			if endpoint.TLS.CertificatePath != current[0].TLS.CertificatePath || endpoint.TLS.KeyPath != current[0].TLS.KeyPath {
+				return proxynode.Endpoint{}, errors.New("legacy file certificate paths cannot be changed")
+			}
+		} else {
+			// File paths are accepted only as an exact round-trip of an existing
+			// legacy endpoint. Never let hidden or crafted fields survive a move
+			// to an Agent-managed certificate mode.
+			endpoint.TLS.CertificatePath = ""
+			endpoint.TLS.KeyPath = ""
+		}
 		if endpoint.Protocol == proxynode.ProtocolHysteria2 {
 			up, err := optionalPositiveInt(form.Get("up_mbps"))
 			if err != nil {
@@ -2602,6 +2901,10 @@ func proxyRuleViews(rules []proxynode.Rule, total int) []proxyRuleView {
 }
 
 func targetLabel(node proxynode.ProxyNode, target proxynode.Target) string {
+	return targetLabelWithNames(node, target, func(agentID string) string { return agentID })
+}
+
+func targetLabelWithNames(node proxynode.ProxyNode, target proxynode.Target, displayName func(string) string) string {
 	if target.Type == proxynode.TargetDirect {
 		return "Direct"
 	}
@@ -2610,7 +2913,7 @@ func targetLabel(node proxynode.ProxyNode, target proxynode.Target) string {
 	}
 	if link, ok := proxyLink(node, target.LinkID); ok {
 		if child, exists := proxyHop(node, link.ChildHopID); exists {
-			return "Link to " + child.AgentID
+			return "Link to " + displayName(child.AgentID)
 		}
 	}
 	return "Unknown Link"
@@ -2632,6 +2935,18 @@ func proxyLink(node proxynode.ProxyNode, id string) (proxynode.Link, bool) {
 		}
 	}
 	return proxynode.Link{}, false
+}
+
+func proxyHopEndpoint(node proxynode.ProxyNode, hopID string) (proxynode.Endpoint, bool) {
+	if hopID == node.Entrance.HopID {
+		return node.Entrance.Endpoint, true
+	}
+	for _, link := range node.Links {
+		if link.ChildHopID == hopID {
+			return link.Endpoint, true
+		}
+	}
+	return proxynode.Endpoint{}, false
 }
 
 func proxyNodeURL(id string) string      { return "/proxy-nodes/" + url.PathEscape(id) + "/manage" }

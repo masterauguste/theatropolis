@@ -185,6 +185,10 @@ func (e *BillingEnforcer) appliedRefreshLoop(ctx context.Context) {
 				continue
 			}
 			if joinedExisting {
+				if !waitBillingRetry(ctx, billingDeploymentRetry) {
+					e.finishAppliedRefreshLoop()
+					return
+				}
 				continue
 			}
 		}

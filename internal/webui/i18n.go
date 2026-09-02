@@ -47,9 +47,19 @@ var simplifiedChinese = map[string]string{
 	"sing-box update control is unavailable until this server is online with a compatible agent.": "服务器上线并运行兼容代理端后，才能使用 sing-box 更新控制。",
 	"The agent could not accept the sing-box update request.":                                     "代理端无法接受 sing-box 更新请求。",
 	"The server entry could not be created.":                                                      "无法创建服务器条目。",
-	"Use a valid server ID: letters, numbers, dots, underscores, and hyphens only.":               "请输入有效的服务器 ID，只能使用字母、数字、点、下划线和连字符。",
-	"That server ID is already enrolled.":                                                         "该服务器 ID 已注册。",
-	"That server already has a valid enrollment command. Use it or wait for it to expire.":        "该服务器已有有效的注册命令，请使用现有命令或等待其过期。",
+	"Use 1–60 letters or numbers; ordinary spaces and . _ - are allowed.":                         "名称应为 1 至 60 个字母或数字，可包含普通空格及 .、_、-。",
+	"That server name is already in use.":                                                         "该服务器名称已被使用。",
+	"The server name could not be changed.":                                                       "无法修改服务器名称。",
+	"This Server is still used by one or more Proxy Nodes. Move the affected Hops, or delete the branches or Proxy Nodes that use them before removing it.":        "此服务器仍被一个或多个代理节点使用。请先迁移受影响的节点，或删除使用这些节点的分支或代理节点。",
+	"This Server is still used by Proxy Node topology. Review its assignments and finish the topology change before removing it.":                                  "此服务器仍被代理节点拓扑使用。请检查分配情况并完成拓扑变更后再移除。",
+	"This Server still owns an applied Proxy Node configuration. Finish or retry the topology change before removing it.":                                          "此服务器仍保留着已应用的代理节点配置。请先完成或重试拓扑变更，再移除此服务器。",
+	"Wait for the current Proxy Node change to finish, then try removing this Server again.":                                                                       "请等待当前代理节点变更完成，再重新尝试移除此服务器。",
+	"This Server cannot be removed while Proxy Nodes use it. Move the affected Hops to another Server, or delete the branches or Proxy Nodes that use them first.": "此服务器仍被代理节点使用，无法移除。请先把受影响的节点迁移到其他服务器，或删除使用这些节点的分支或代理节点。",
+	"This Server still owns an applied managed configuration. Finish or retry the Proxy Node change before removing it.":                                           "此服务器仍保留着已应用的托管配置。请先完成或重试代理节点变更，再移除此服务器。",
+	"This Server is not used by any Proxy Node.":                                           "此服务器尚未用于任何代理节点。",
+	"Use a valid server ID: letters, numbers, dots, underscores, and hyphens only.":        "请输入有效的服务器 ID，只能使用字母、数字、点、下划线和连字符。",
+	"That server ID is already enrolled.":                                                  "该服务器 ID 已注册。",
+	"That server already has a valid enrollment command. Use it or wait for it to expire.": "该服务器已有有效的注册命令，请使用现有命令或等待其过期。",
 	"The current Agent remains authorized until the replacement uses its one-time token. At that moment the old connection is closed and this master immediately deploys the retained profile to the replacement.": "在替换服务器使用一次性令牌前，当前代理端仍保持授权。令牌被使用后，旧连接会关闭，主控端会立即向替换服务器部署保留的配置。",
 	"This immediately closes an active control session and invalidates enrollment credentials. It does not uninstall the remote agent or stop its current sing-box process.":                                       "此操作会立即关闭活动控制会话并使注册凭据失效，但不会卸载远程代理端，也不会停止当前 sing-box 进程。",
 	"I understand that this agent will need a new enrollment credential to reconnect.":                                                                                                                             "我了解此代理端需要新的注册凭据才能重新连接。",
@@ -228,7 +238,7 @@ var simplifiedChinese = map[string]string{
 	"Assign a Node": "添加节点", "Assign role": "确认添加", "Authenticated sessions": "登录会话",
 	"Authenticated user": "认证用户", "Automatic": "自动", "Automatic IP addresses": "自动使用 IP 地址", "Awaiting installation": "等待安装",
 	"Bandwidth": "带宽", "Branch": "分支", "Calendar months": "自然月",
-	"Cancel": "取消", "Certificate identity": "证书标识", "Certificate mode": "证书模式", "Certificate path": "证书路径",
+	"Cancel": "取消", "Certificate mode": "证书模式", "TLS Certificate Domain/IP": "TLS 证书域名/IP",
 	"Change sing-box version": "更改 sing-box 版本", "Check again": "重新检查", "Checking for updates…": "正在检查更新…",
 	"Child exit": "子节点默认出口", "Choose a Node": "选择节点", "Close": "关闭", "Command lifetime": "命令有效期",
 	"Compensate": "补偿", "Compensation": "补偿", "Conditional": "条件", "Configure manually": "手动配置",
@@ -241,13 +251,13 @@ var simplifiedChinese = map[string]string{
 	"Delete and apply": "删除并应用", "Delete Branch": "删除分支", "Delete Proxy Node": "删除代理节点",
 	"Delete rule": "删除规则", "Delete user": "删除用户", "Destination": "目标", "Destination port": "目标端口",
 	"Details": "详情", "Direct": "直连", "Disabled": "已禁用", "Disconnect and invalidate this identity": "断开连接并使此身份失效", "offline": "离线",
-	"Domain keyword": "域名关键词", "Domain or certificate identity": "域名或证书标识", "Domain regex": "域名正则",
+	"Domain keyword": "域名关键词", "Domain regex": "域名正则",
 	"Domain suffix": "域名后缀", "Domain": "域名", "Done": "完成", "Download Mbps": "下载 Mbps",
 	"Downstream": "下游", "Duration": "时长", "Edit Relay": "编辑中继", "Edit rule": "编辑规则", "Edit": "编辑",
 	"Enabled (smux)": "已启用（smux）", "End user": "用户", "End users": "用户列表", "Enrollment": "注册",
 	"Enrollment lifetime": "注册有效期", "Enrollment ready": "注册已就绪", "Entrance Agent": "入口代理端",
 	"Entrance configuration": "入口设置", "Entrance exit": "入口默认出口", "Entrance protocol": "入口协议", "Entrance server": "入口服务器", "Entrance": "入口",
-	"Entry name": "条目名称", "Existing files": "现有文件", "Exit": "出口", "Expire after a duration": "按时长过期",
+	"Entry name": "条目名称", "Legacy file certificate": "旧版文件证书", "Exit": "出口", "Expire after a duration": "按时长过期",
 	"Extend by": "延长", "Extend subscription": "延长订阅", "Failure": "失败", "Fallback": "回退",
 	"Fleet maintenance": "批量维护", "Fleet outbound pool": "全局出口池", "Fleet": "服务器组", "Global identities": "用户管理",
 	"Global settings": "系统设置", "Global user": "用户", "Grant access": "添加权限", "Hop": "节点",
@@ -274,7 +284,7 @@ var simplifiedChinese = map[string]string{
 	"Outbound JSON": "出口 JSON", "Outbound pool": "出口池", "Password": "密码", "Pending": "待处理",
 	"Physical listener": "物理监听器", "Port": "端口", "Port 80 remains reserved for ACME.": "端口 80 保留给 ACME。",
 	"Private-key path": "私钥路径", "Process name": "进程名称",
-	"Protocol": "协议", "Proxy Node name": "代理节点名称", "Proxy Node readiness": "代理节点状态", "Proxy Node roles": "代理节点访问权限",
+	"Protocol": "协议", "Proxy Node name": "代理节点名称", "Proxy Node readiness": "代理节点状态", "Proxy Node roles": "代理节点访问权限", "Proxy Node Assignments": "代理节点分配",
 	"Proxy Node settings": "代理节点设置", "Proxy Nodes": "代理节点", "Proxy Node": "代理节点", "Proxy runtime": "代理运行时",
 	"Proxy URI or outbound JSON": "代理 URI 或出口 JSON", "Proxy": "代理", "Quota (GiB)": "配额（GiB）", "Ready": "就绪",
 	"Reject": "拒绝", "Relay address family": "中继地址族", "Relay Branch": "中继分支", "Relay map": "路由拓扑", "Relay": "中继",
@@ -285,7 +295,7 @@ var simplifiedChinese = map[string]string{
 	"Reset ": "重置 ", " credential?": " 的凭据？", "Reset all credentials": "重置全部凭据", "Reset all credentials?": "重置全部凭据？", "Reset credential": "重置凭据",
 	"Reset link and credentials": "重置链接和凭据", "Reset subscription link": "重置订阅链接", "Reset subscription link?": "重置订阅链接？",
 	"Reset traffic": "重置流量", "Resets after": "下次重置", "Return to servers": "返回服务器", "Return to settings": "返回设置",
-	"Revision": "版本", "Revoke access": "撤销权限", "Revoke link": "撤销链接", "Role allowance": "配额与有效期",
+	"Revision": "版本", "Revoke access": "撤销权限", "Revoke link": "撤销链接", "Review Proxy Nodes": "查看代理节点", "Role allowance": "配额与有效期",
 	"Route ALL": "路由全部流量", "Routes to": "路由至", "Routing mode": "路由模式", "Routing resources": "路由资源",
 	"Routing Rule": "路由规则", "Routing trees": "路由拓扑", "Route": "路由", "Rule Sets": "规则集", "Rules": "规则", "Rule": "规则",
 	"Running version": "运行版本", "Save address overrides": "保存地址覆盖", "Save allowance": "保存额度",
@@ -295,7 +305,7 @@ var simplifiedChinese = map[string]string{
 	"Filter by user name": "按用户名筛选", "Clear affected-user search": "清除受影响用户筛选",
 	"Search users": "搜索用户", "Secure enrollment": "安全注册", "Select Agent": "选择服务器", "Select an enrolled Agent": "选择已注册的服务器",
 	"Self-signed by Agent": "由代理端自签名", "Server addresses": "服务器地址", "Server and software actions": "服务器与软件操作",
-	"Server ID": "服务器 ID", "Server identity": "服务器身份", "Server management": "服务器管理", "Server settings": "服务器设置",
+	"Server ID": "服务器 ID", "Server Name": "服务器名称", "Server Record ID": "服务器记录 ID", "Rename Server": "重命名服务器", "Save Name": "保存名称", "Server identity": "服务器身份", "Server management": "服务器管理", "Server settings": "服务器设置",
 	"Servers": "服务器", "Set a monthly quota": "设置每月配额", "Settings": "设置", "Shown once.": "仅显示一次。",
 	"Sign in to continue": "登录以继续", "Sign in": "登录", "Sign out": "退出登录", "Single use": "仅限一次",
 	"Skip to content": "跳至内容", "Source port": "源端口", "Status": "状态", "Subscription compensation": "订阅补偿",
@@ -313,7 +323,13 @@ var simplifiedChinese = map[string]string{
 	"Close outbound details": "关闭出口详情", "Clear Node search": "清除节点搜索", "Clear user search": "清除用户搜索", "Available Proxy Nodes": "可用代理节点",
 	"Assigned Proxy Node roles": "已分配的代理节点权限", "Monthly traffic": "每月流量", "Access key": "访问密钥",
 	"Enrolled": "已注册", "Expired": "已过期", "Not connected": "未连接", "Offline": "离线", "Queued": "已排队",
+	"Topology Pending": "拓扑等待应用", "Entrance Offline": "入口失联", "Relay Offline": "中继失联", "Current topology": "当前运行拓扑",
+	"Proxy Node status": "代理节点状态", "Saved changes are not yet active.": "变更已保存，但尚未生效。",
+	"Saved changes are not yet active. The relay map shows the saved topology.": "变更已保存，但尚未生效。路由拓扑显示的是已保存的版本。",
+	"Entrance is not available until topology is applied.":                      "拓扑应用前，入口暂不可用。",
+	"ready": "已就绪", "waiting for Agent": "等待服务器上线", "waiting for address": "等待可用地址",
 	"Validating": "正在验证", "Validated": "验证通过", "Deploying": "正在部署", "Applied": "已应用",
+	"Configured": "已配置", "Pending Apply": "等待应用", "Pending Removal": "等待删除", "Old configuration is still running.": "旧配置仍在运行。", "Pending Retirement": "等待移除", "Topology Retirement Pending": "等待清理旧拓扑", "Move Proxy Node Hops First": "请先迁移代理节点",
 	"Runtime failure": "运行失败", "Validation failed": "验证失败", "Activation failed": "激活失败",
 	"Agent error": "代理端错误", "Delivery failed": "交付失败", "Quota reached": "已达到配额",
 	"Entrance sample collection failed": "入口采样失败", "Master could not persist usage": "主控端无法保存用量",
@@ -384,6 +400,8 @@ func localizedCount(locale string, count int, kind string) string {
 		switch kind {
 		case "hop", "node":
 			return fmt.Sprintf("%d 个节点", count)
+		case "relay-hop":
+			return fmt.Sprintf("%d 个中继节点", count)
 		case "link":
 			return fmt.Sprintf("%d 条链路", count)
 		case "user":
@@ -401,7 +419,7 @@ func localizedCount(locale string, count int, kind string) string {
 		}
 	}
 	noun := map[string]string{
-		"hop": "Hop", "node": "Node", "link": "Link", "user": "user", "exit": "exit",
+		"hop": "Hop", "node": "Node", "relay-hop": "Relay Hop", "link": "Link", "user": "user", "exit": "exit",
 		"available-node": "Node available",
 		"proxy-access":   "Proxy Node access grant", "reference": "reference",
 	}[kind]
@@ -722,6 +740,9 @@ func localizePageData(locale string, data *pageData) {
 	if data.ProxyDeployment != nil {
 		data.ProxyDeployment.Label = localizedText(locale, data.ProxyDeployment.Label)
 		data.ProxyDeployment.Error = localizedText(locale, data.ProxyDeployment.Error)
+		for index := range data.ProxyDeployment.Agents {
+			data.ProxyDeployment.Agents[index].Status = localizedText(locale, data.ProxyDeployment.Agents[index].Status)
+		}
 	}
 	for index := range data.ProxyNodes {
 		data.ProxyNodes[index].Entrance = localizedText(locale, data.ProxyNodes[index].Entrance)
@@ -779,6 +800,11 @@ func localizeAgentDetail(locale string, view *agentDetailView) {
 	view.SingBoxUpdateHint = localizedText(locale, view.SingBoxUpdateHint)
 	view.UpdateHint = localizedText(locale, view.UpdateHint)
 	view.RevokeLabel = localizedText(locale, view.RevokeLabel)
+	for index := range view.ProxyNodeReferences {
+		reference := &view.ProxyNodeReferences[index]
+		reference.DesiredRelayHopLabel = localizedCount(locale, reference.DesiredRelayHops, "relay-hop")
+		reference.AppliedRelayHopLabel = localizedCount(locale, reference.AppliedRelayHops, "relay-hop")
+	}
 	if view.Deployment != nil {
 		view.Deployment.StatusLabel = localizedText(locale, view.Deployment.StatusLabel)
 		view.Deployment.Diagnostic = localizedText(locale, view.Deployment.Diagnostic)

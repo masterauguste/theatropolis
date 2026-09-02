@@ -8,7 +8,7 @@
   {{range .Pool.Inbounds}}
   <button class="pool-summary-card" type="button" data-dialog-open="{{.DialogID}}" aria-haspopup="dialog">
     <span class="pool-summary-card__heading">
-      <strong>{{.AgentID}}</strong>
+      <strong>{{.AgentName}}</strong>
       <code>{{.Tag}}</code>
     </span>
     <span class="pool-summary-card__facts">
@@ -24,7 +24,7 @@
     <div class="modal__surface">
       <header class="modal__header">
         <div>
-          <p class="eyebrow">{{.AgentID}}</p>
+          <p class="eyebrow">{{.AgentName}}</p>
           <h2 id="{{.DialogID}}-title">{{.Tag}}</h2>
           <p>{{.Type}} on port {{.Port}}</p>
         </div>
@@ -43,9 +43,8 @@
           <h3 id="{{.DialogID}}-users">Users</h3>
           <div class="pool-user-list">
             {{range .Users}}
-            <div class="pool-user">
+            <div class="pool-user" data-pool-ref="{{.Ref}}">
               <strong>{{.Label}}</strong>
-              <code>{{.Ref}}</code>
             </div>
             {{end}}
           </div>

@@ -401,7 +401,9 @@ func (s *Store) ApplyTrafficDeltaReport(agentID string, observedAt time.Time, us
 		for _, usage := range users {
 			membership := targets[trafficKey(usage.InboundPath, usage.Username)]
 			if membership == nil {
-				membership = aliases[trafficAliasKey(usage.InboundPath, usage.Username)]
+				if aliasKey, ok := trafficAliasKey(usage.InboundPath, usage.Username); ok {
+					membership = aliases[aliasKey]
+				}
 			}
 			if membership == nil {
 				continue
@@ -465,7 +467,9 @@ func (s *Store) ApplyTrafficReport(agentID, epoch string, observedAt time.Time, 
 			key := trafficKey(usage.InboundPath, usage.Username)
 			membership := targets[key]
 			if membership == nil {
-				membership = aliases[trafficAliasKey(usage.InboundPath, usage.Username)]
+				if aliasKey, ok := trafficAliasKey(usage.InboundPath, usage.Username); ok {
+					membership = aliases[aliasKey]
+				}
 			}
 			if membership == nil {
 				continue
@@ -512,7 +516,10 @@ func trafficObservationMembership(
 	if membership := targets[trafficKey(observation.InboundPath, observation.Username)]; membership != nil {
 		return membership
 	}
-	return aliases[trafficAliasKey(observation.InboundPath, observation.Username)]
+	if aliasKey, ok := trafficAliasKey(observation.InboundPath, observation.Username); ok {
+		return aliases[aliasKey]
+	}
+	return nil
 }
 
 // AdvanceBilling applies quota period and subscription transitions in UTC+8.
@@ -656,13 +663,20 @@ func trafficMemberships(state *State, agentID string) (map[string]*Membership, m
 		for membershipIndex := range node.Memberships {
 			membership := &node.Memberships[membershipIndex]
 			userName := users[membership.UserID]
-			label := AuthenticatedUserLabel(appliedNode.Name, userName, membership.ID)
+			label := AuthenticatedUserLabel(membership.ID)
 			key := trafficKey(path, label)
 			if targets[key] != nil {
 				return nil, nil, errors.New("ambiguous managed-user traffic identity")
 			}
 			targets[key] = membership
-			aliases[trafficAliasKey(path, label)] = membership
+			aliasKey, ok := trafficAliasKey(path, label)
+			if !ok {
+				return nil, nil, errors.New("invalid managed-user traffic identity")
+			}
+			if existing := aliases[aliasKey]; existing != nil && existing.ID != membership.ID {
+				return nil, nil, errors.New("ambiguous managed-user traffic identity")
+			}
+			aliases[aliasKey] = membership
 			// Accept the pre-stable-membership-suffix label until every existing Agent has
 			// received its first user synchronization after upgrade.
 			legacyKey := trafficKey(path, appliedNode.Name+"-"+userName)
@@ -674,12 +688,24 @@ func trafficMemberships(state *State, agentID string) (map[string]*Membership, m
 	return targets, aliases, nil
 }
 
-func trafficAliasKey(path, username string) string {
-	separator := strings.LastIndexByte(username, '-')
-	if separator < 0 {
-		return ""
+func trafficAliasKey(path, username string) (string, bool) {
+	const membershipSuffixBytes = 12
+	marker := strings.LastIndex(username, "-m-")
+	if marker < 0 {
+		return "", false
 	}
-	return path + "\x00" + username[separator+1:]
+	suffix := username[marker+len("-m-"):]
+	if len(suffix) != membershipSuffixBytes {
+		return "", false
+	}
+	for _, character := range suffix {
+		if character >= 'A' && character <= 'Z' || character >= 'a' && character <= 'z' ||
+			character >= '0' && character <= '9' || character == '_' || character == '-' {
+			continue
+		}
+		return "", false
+	}
+	return path + "\x00" + suffix, true
 }
 
 func observationFor(state *State, agentID, path, username string) *TrafficObservation {

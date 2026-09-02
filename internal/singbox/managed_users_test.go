@@ -17,6 +17,47 @@ func (function roundTripFunc) RoundTrip(request *http.Request) (*http.Response, 
 	return function(request)
 }
 
+const testFullMembershipID = "mem_ABCDEFGHIJKLMMMMMMMMMMMM"
+
+func testRollingMembershipLabel(fullID string) string {
+	return fullID + "-m-" + fullID[len(managedMembershipIDPrefix):len(managedMembershipIDPrefix)+managedMembershipLegacyLen]
+}
+
+func TestManagedMembershipIdentityAcceptsLegacyAndRollingLabels(t *testing.T) {
+	t.Parallel()
+	legacy := "电影院-用户 一-m-ABCDEFGHIJKL"
+	if key, ok := managedMembershipKey(legacy); !ok || key != "ABCDEFGHIJKL" {
+		t.Fatalf("managedMembershipKey(%q) = %q, %v", legacy, key, ok)
+	}
+	rolling := testRollingMembershipLabel(testFullMembershipID)
+	if len(rolling) != 43 {
+		t.Fatalf("rolling Membership label length = %d, want 43", len(rolling))
+	}
+	if key, ok := managedMembershipKey(rolling); !ok || key != testFullMembershipID {
+		t.Fatalf("managedMembershipKey(%q) = %q, %v", rolling, key, ok)
+	}
+	for _, fullID := range []string{
+		"mem_ABCDEFGHIJKLmnopqrst",
+		"mem_ABCDEFGHIJKLmnopqrst0123456789AB",
+	} {
+		if key, ok := managedMembershipKey(testRollingMembershipLabel(fullID)); !ok || key != fullID {
+			t.Errorf("persisted-length managedMembershipKey(%q) = %q, %v", fullID, key, ok)
+		}
+	}
+	identity, membership, err := parseManagedMembershipIdentity(
+		testFullMembershipID + "-m-ZZZZZZZZZZZZ",
+	)
+	if err == nil || !membership || identity != (managedMembershipIdentity{}) {
+		t.Fatalf("mismatched compatibility suffix = %#v, %v, %v; want malformed Membership", identity, membership, err)
+	}
+	if _, membership, err := parseManagedMembershipIdentity("cinema-link-l-ABCDEFGHIJKL"); err != nil || membership {
+		t.Fatalf("Link label classified as Membership: membership=%v err=%v", membership, err)
+	}
+	if _, membership, err := parseManagedMembershipIdentity(testFullMembershipID); err == nil || !membership {
+		t.Fatalf("markerless full Membership ID = membership=%v err=%v; want fail closed", membership, err)
+	}
+}
+
 func TestManagedUserConfigRecognizesUsersOnlyChanges(t *testing.T) {
 	t.Parallel()
 	previous := managedUserTestConfig(`[{"name":"cinema-alice","password":"old-secret"}]`)
@@ -113,6 +154,27 @@ func TestCollectManagedUserTrafficUsesPublishedCounterSchema(t *testing.T) {
 		snapshot.Users[0].Username != "cinema-alice-m-AAAAAAAAAAAA" ||
 		snapshot.Users[0].UplinkBytes != 1024 || snapshot.Users[0].DownlinkBytes != 2048 {
 		t.Fatalf("traffic snapshot = %#v", snapshot)
+	}
+}
+
+func TestCollectManagedUserTrafficRecognizesRollingMembershipLabel(t *testing.T) {
+	t.Parallel()
+	username := testRollingMembershipLabel(testFullMembershipID)
+	config := managedUserTestConfig(`[{"name":"` + username + `","password":"secret"}]`)
+	client := &http.Client{Transport: roundTripFunc(func(*http.Request) (*http.Response, error) {
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Body: io.NopCloser(strings.NewReader(
+				`{"users":[{"username":"` + username + `","uplinkBytes":10,"downlinkBytes":20}]}`,
+			)),
+			Header: make(http.Header),
+		}, nil
+	})}
+	snapshot, err := collectManagedUserTrafficWithClient(context.Background(), config, client)
+	if err != nil || snapshot.SuccessfulEndpoints != 1 || len(snapshot.Users) != 1 ||
+		snapshot.Users[0].Username != username || snapshot.Users[0].UplinkBytes != 10 ||
+		snapshot.Users[0].DownlinkBytes != 20 {
+		t.Fatalf("rolling-label traffic snapshot = %#v, err=%v", snapshot, err)
 	}
 }
 
@@ -264,6 +326,65 @@ func TestTopologyRetainsOnlyAgentAuthorizedMemberships(t *testing.T) {
 	}
 }
 
+func TestTopologyRetainsMembershipAcrossLegacyAndRollingLabels(t *testing.T) {
+	t.Parallel()
+	legacy := "cinema-alice-m-ABCDEFGHIJKL"
+	rolling := testRollingMembershipLabel(testFullMembershipID)
+	for _, testCase := range []struct {
+		name         string
+		active       string
+		candidate    string
+		wantUsername string
+	}{
+		{name: "legacy active to rolling candidate", active: legacy, candidate: rolling, wantUsername: rolling},
+		{name: "rolling active to legacy candidate", active: rolling, candidate: legacy, wantUsername: legacy},
+		{name: "pre-marker active to rolling candidate", active: "cinema-alice-ABCDEFGHIJKL", candidate: rolling, wantUsername: rolling},
+	} {
+		t.Run(testCase.name, func(t *testing.T) {
+			active := managedUserTestConfig(`[{"name":"` + testCase.active + `","password":"old"}]`)
+			candidate := managedUserTestConfig(`[{"name":"` + testCase.candidate + `","password":"current"}]`)
+			filtered, err := retainAuthorizedMemberships(active, candidate)
+			if err != nil {
+				t.Fatal(err)
+			}
+			parsed, err := parseManagedUserConfig(filtered)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if users := parsed.Endpoints[0].Users; len(users) != 1 || users[0].Username != testCase.wantUsername {
+				t.Fatalf("retained users = %#v, want %q", users, testCase.wantUsername)
+			}
+		})
+	}
+}
+
+func TestTopologyMembershipAliasCollisionsFailClosed(t *testing.T) {
+	t.Parallel()
+	otherFullID := "mem_ABCDEFGHIJKLNNNNNNNNNNNN"
+	first := testRollingMembershipLabel(testFullMembershipID)
+	second := testRollingMembershipLabel(otherFullID)
+
+	active := managedUserTestConfig(`[{"name":"` + first + `","password":"first"}]`)
+	candidate := managedUserTestConfig(`[{"name":"` + second + `","password":"second"}]`)
+	if _, err := retainAuthorizedMemberships(active, candidate); !errors.Is(err, errAmbiguousManagedMembershipIdentity) {
+		t.Fatalf("cross-generation alias collision error = %v", err)
+	}
+
+	candidate = managedUserTestConfig(`[
+		{"name":"` + first + `","password":"first"},
+		{"name":"` + second + `","password":"second"}
+	]`)
+	if _, err := retainAuthorizedMemberships(DisabledManagedConfig(), candidate); !errors.Is(err, errAmbiguousManagedMembershipIdentity) {
+		t.Fatalf("candidate alias collision error = %v", err)
+	}
+
+	malformed := testFullMembershipID + "-m-ZZZZZZZZZZZZ"
+	candidate = managedUserTestConfig(`[{"name":"` + malformed + `","password":"malformed"}]`)
+	if _, err := retainAuthorizedMemberships(DisabledManagedConfig(), candidate); !errors.Is(err, errInvalidManagedMembershipIdentity) {
+		t.Fatalf("malformed rolling identity error = %v", err)
+	}
+}
+
 func TestTopologyWithoutActiveAuthorityCannotIntroduceMembership(t *testing.T) {
 	t.Parallel()
 	candidate := managedUserTestConfig(`[
@@ -311,6 +432,22 @@ func TestManagedUserAuthorityReplacesMembershipsButPreservesLinkCredentials(t *t
 		users[0].Password != "alice-current" || users[1].Username != "cinema-link-l-NEWLINK00000" ||
 		users[1].Password != "new-link" {
 		t.Fatalf("overlaid users = %#v", users)
+	}
+}
+
+func TestManagedUserAuthorityRecognizesRollingMembershipLabel(t *testing.T) {
+	t.Parallel()
+	rolling := testRollingMembershipLabel(testFullMembershipID)
+	variant, err := BuildManagedUserAuthorityVariant(managedUserTestConfig(`[
+		{"name":"` + rolling + `","password":"membership"},
+		{"name":"cinema-link-l-LLLLLLLLLLLL","password":"link"}
+	]`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(variant.Endpoints) != 1 || len(variant.Endpoints[0].Users) != 1 ||
+		variant.Endpoints[0].Users[0].Username != rolling {
+		t.Fatalf("rolling authority variant = %#v", variant)
 	}
 }
 

@@ -109,6 +109,11 @@
 
 .resource-card strong { font-size: 1.08rem; }
 .resource-card > span:not(.protocol-badge) { color: var(--ink-500); }
+.resource-card__heading { display: flex; min-width: 0; align-items: center; justify-content: space-between; gap: 0.75rem; }
+.resource-card__heading strong { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.resource-card__heading .status { flex: 0 0 auto; }
+.resource-card--pending-apply { border-color: var(--amber-400); }
+.resource-card--pending-removal { border-color: var(--amber-400); background: color-mix(in srgb, var(--amber-100) 36%, var(--surface)); }
 .resource-card__eyebrow { text-transform: uppercase; letter-spacing: .08em; font-size: .72rem; }
 .resource-card dl { display: flex; gap: 1.5rem; margin: .25rem 0; }
 .resource-card dl div { display: grid; }
@@ -245,9 +250,25 @@
   outline: 0;
 }
 
-.proxy-map__node > span:last-child { display: grid; min-width: 0; gap: 0.08rem; }
+.proxy-map__node-copy,
+.proxy-map__node > span:nth-child(2) { display: grid; min-width: 0; gap: 0.08rem; }
 .proxy-map__node strong { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .proxy-map__node small { overflow: hidden; color: var(--ink-500); font-size: 0.72rem; text-overflow: ellipsis; white-space: nowrap; }
+
+.proxy-map__node-status {
+  position: absolute;
+  top: -0.5rem;
+  right: 0.7rem;
+  padding: 0.18rem 0.48rem;
+  border: 1px solid currentColor;
+  border-radius: 999px;
+  font-size: 0.68rem;
+  font-weight: 700;
+  line-height: 1.2;
+}
+
+.proxy-map__node-status--entrance { color: var(--red-700); background: var(--red-100); }
+.proxy-map__node-status--relay { color: var(--amber-700); background: var(--amber-100); }
 
 .proxy-map__node-mark {
   display: grid;
@@ -270,6 +291,32 @@
 
 .proxy-map__node--entrance small { color: var(--accent-100); }
 .proxy-map__node--entrance .proxy-map__node-mark { color: var(--accent-700); background: var(--surface); }
+
+.proxy-node-health {
+  display: flex;
+  margin: 0 0 1rem;
+  flex-wrap: wrap;
+  gap: 0.6rem;
+}
+
+.proxy-node-health__item {
+  display: flex;
+  min-width: 0;
+  padding: 0.55rem 0.7rem;
+  align-items: center;
+  gap: 0.65rem;
+  background: var(--surface);
+  border: 1px solid var(--ink-200);
+  border-radius: var(--radius-sm);
+}
+
+.proxy-node-health__item small {
+  overflow: hidden;
+  color: var(--ink-500);
+  font-size: 0.78rem;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
 
 .proxy-map__node--terminal { width: 8.5rem; min-height: 3.8rem; }
 .proxy-map__node--direct { background: var(--green-100); border-color: var(--green-700); }
@@ -667,6 +714,9 @@ dialog.proxy-inspector { width: min(60rem, calc(100vw - 2rem)); height: min(82vh
 @media (max-width: 760px) {
   .proxy-node-page-header__actions { width: 100%; margin-left: 0; }
   .proxy-node-page-header__actions .button { flex: 1 1 auto; }
+  .proxy-node-health { display: grid; }
+  .proxy-node-health__item { align-items: flex-start; flex-direction: column; gap: 0.35rem; }
+  .proxy-node-health__item small { max-width: 100%; white-space: normal; }
   .proxy-map { padding: 1.25rem; }
   .proxy-map__pan-hint {
     position: sticky;

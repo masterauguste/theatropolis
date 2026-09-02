@@ -533,9 +533,11 @@ fi
 case "$ROLE" in
 agent | all)
 	if [ "$ROLE" = "all" ]; then
-		printf '%s' "$SERVER_NAME" |
-			grep -Eq '^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$' ||
-			fail "--server is invalid"
+		[ -n "$SERVER_NAME" ] || fail "--server is required"
+		SERVER_NAME_BYTES="$(printf '%s' "$SERVER_NAME" | LC_ALL=C wc -c | tr -d ' ')"
+		[ "$SERVER_NAME_BYTES" -le 240 ] || fail "--server exceeds the display-name size limit"
+		printf '%s' "$SERVER_NAME" | LC_ALL=C grep -q '[[:cntrl:]]' &&
+			fail "--server contains a control character"
 	fi
 	if [ "$ROLE" = "all" ] && [ -z "$MASTER_ADDRESS" ]; then
 		MASTER_ADDRESS="${DOMAIN}:${HTTPS_PORT}"

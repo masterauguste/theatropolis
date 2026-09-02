@@ -9,7 +9,7 @@
       <nav class="breadcrumbs" aria-label="Breadcrumb">
         <a href="/servers">Servers</a>
         <span aria-hidden="true">/</span>
-        <span aria-current="page">{{.Created.AgentID}}</span>
+        <span aria-current="page">{{.Created.DisplayName}}</span>
       </nav>
 
       <section class="result-card" data-enrollment-result>
@@ -17,7 +17,7 @@
           <svg viewBox="0 0 24 24"><path d="m7 12 3 3 7-7"/></svg>
         </div>
         <p class="eyebrow">Enrollment ready</p>
-        <h1>Install {{.Created.AgentID}}</h1>
+        <h1>Install {{.Created.DisplayName}}</h1>
         <p class="result-card__lead">Run this command as a sudo-capable user on the destination server.</p>
 
         <div class="copy-section">

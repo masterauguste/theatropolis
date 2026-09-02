@@ -24,9 +24,17 @@ func (s *Store) EntranceUsageForAgent(agentID string) (AgentEntranceUsage, error
 
 	var result AgentEntranceUsage
 	unlimited := make(map[string]struct{})
+	liveNodes := make(map[string]ProxyNode, len(s.state.ProxyNodes))
 	for _, node := range s.state.ProxyNodes {
-		root := slices.IndexFunc(node.Hops, func(hop Hop) bool { return hop.ID == node.Entrance.HopID })
-		if root < 0 || node.Hops[root].AgentID != agentID {
+		liveNodes[node.ID] = node
+	}
+	for _, applied := range s.state.AppliedProxyNodes {
+		root := slices.IndexFunc(applied.Hops, func(hop Hop) bool { return hop.ID == applied.Entrance.HopID })
+		if root < 0 || applied.Hops[root].AgentID != agentID {
+			continue
+		}
+		node, exists := liveNodes[applied.ID]
+		if !exists {
 			continue
 		}
 		for _, membership := range node.Memberships {

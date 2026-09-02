@@ -6,7 +6,7 @@ import "time"
 
 const (
 	SchemaID      = "theatropolis/proxy-node-state"
-	SchemaVersion = 16
+	SchemaVersion = 17
 
 	SystemAdministratorUserID   = "usr_theatropolis_admin00"
 	SystemAdministratorUserName = "Administrator"

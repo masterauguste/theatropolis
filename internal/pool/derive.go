@@ -108,13 +108,14 @@ func Derive(input DeriveInput) []Entry {
 				continue
 			}
 			for _, user := range inbound.Users {
-				component := user.Name
-				if component == "" {
-					component = serverKeyRefComponent
+				userName := user.Name
+				if userName == "" {
+					userName = serverKeyRefComponent
 				}
-				if !validUserComponent(component) {
+				component, valid := encodeUserRefComponent(userName)
+				if !valid {
 					input.note(
-						"agent %s: inbound %s: user %q skipped: not a valid ref component",
+						"agent %s: inbound %s: user %q skipped: invalid managed-user name",
 						agentID, inbound.Tag, user.Name,
 					)
 					continue

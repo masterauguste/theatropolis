@@ -17,6 +17,38 @@ type AddressResolver interface {
 	AgentAddressForFamily(agentID string, family pool.Family) (string, bool)
 }
 
+// ErrAgentAddressUnavailable marks a topology which is structurally valid but
+// cannot yet be rendered because a relay destination has no routable address.
+// Callers may keep that topology as a pending desired revision and retry after
+// the Agent reports or probes an address.
+var ErrAgentAddressUnavailable = errors.New("Proxy Node Agent address is unavailable")
+
+// AgentAddressUnavailableError identifies the exact relay whose destination
+// address is temporarily unavailable. It deliberately carries stable entity
+// IDs in addition to the operator-facing diagnostic so retry classification
+// never depends on matching error text.
+type AgentAddressUnavailableError struct {
+	ProxyNodeID   string
+	ProxyNodeName string
+	LinkID        string
+	AgentID       string
+	Family        pool.Family
+}
+
+func (e *AgentAddressUnavailableError) Error() string {
+	return fmt.Sprintf(
+		"Link %q in Proxy Node %q has no routable %s address for Agent %q",
+		e.LinkID,
+		e.ProxyNodeName,
+		e.Family.String(),
+		e.AgentID,
+	)
+}
+
+func (e *AgentAddressUnavailableError) Unwrap() error {
+	return ErrAgentAddressUnavailable
+}
+
 type CompileResult struct {
 	Configs    map[string][]byte
 	AgentDepth map[string]int
@@ -66,10 +98,6 @@ func Compile(state State, resolver AddressResolver) (CompileResult, error) {
 	if err := validateState(state); err != nil {
 		return CompileResult{}, err
 	}
-	users := make(map[string]User, len(state.Users))
-	for _, user := range state.Users {
-		users[user.ID] = user
-	}
 	byAgent := make(map[string]*agentRender)
 	depths := make(map[string]int)
 	allCandidates := make([]*ingressCandidate, 0)
@@ -96,8 +124,7 @@ func Compile(state State, resolver AddressResolver) (CompileResult, error) {
 			if membership.DisabledReason != MembershipEnabled {
 				continue
 			}
-			user := users[membership.UserID]
-			label := AuthenticatedUserLabel(node.Name, user.Name, membership.ID)
+			label := AuthenticatedUserLabel(membership.ID)
 			rootUsers = append(rootUsers, renderUser{Name: label, Secret: membership.Credential.Secret})
 		}
 		allCandidates = append(allCandidates, &ingressCandidate{
@@ -107,7 +134,7 @@ func Compile(state State, resolver AddressResolver) (CompileResult, error) {
 		for linkIndex := range node.Links {
 			link := &node.Links[linkIndex]
 			child := hops[link.ChildHopID]
-			label := linkUserLabel(node.Name, link.ID)
+			label := linkUserLabel(link.ID)
 			allCandidates = append(allCandidates, &ingressCandidate{
 				node: node, hop: child, endpoint: link.Endpoint, link: link,
 				users: []renderUser{{Name: label, Secret: link.Credential.Secret}},
@@ -632,7 +659,10 @@ func renderLinkOutbound(node ProxyNode, link Link, child Hop, resolver AddressRe
 	}
 	address, ok := resolver.AgentAddressForFamily(child.AgentID, family)
 	if !ok {
-		return nil, fmt.Errorf("Link %q in Proxy Node %q has no routable %s address for Agent %q", link.ID, node.Name, family.String(), child.AgentID)
+		return nil, &AgentAddressUnavailableError{
+			ProxyNodeID: node.ID, ProxyNodeName: node.Name,
+			LinkID: link.ID, AgentID: child.AgentID, Family: family,
+		}
 	}
 	endpoint := link.Endpoint
 	outbound := map[string]any{
@@ -730,21 +760,19 @@ func customRuleSet(node ProxyNode, tag string) (CustomRuleSet, bool) {
 	return CustomRuleSet{}, false
 }
 
-// AuthenticatedUserLabel keeps the requested human-readable names while the
-// membership suffix makes delimiter ambiguities collision-free. The bounded
-// length is accepted by both sing-box's managed-user API and traffic reports.
-func AuthenticatedUserLabel(proxyName, userName, membershipID string) string {
-	const maxAuthenticatedUserBytes = 128
-	suffix := "-m-" + shortID(membershipID)
-	prefix := proxyName + "-" + userName
-	if len(prefix)+len(suffix) > maxAuthenticatedUserBytes {
-		prefix = prefix[:maxAuthenticatedUserBytes-len(suffix)]
-	}
-	return prefix + suffix
+// AuthenticatedUserLabel is derived only from the immutable Membership ID.
+// The complete ID is retained without truncation; the 12-character tail is a
+// rolling-upgrade marker understood by Agents released before full IDs were
+// embedded in managed-user labels.
+func AuthenticatedUserLabel(membershipID string) string {
+	return membershipID + "-m-" + shortID(membershipID)
 }
 
-func linkUserLabel(proxyName, linkID string) string {
-	return proxyName + "-link-l-" + shortID(linkID)
+// linkUserLabel follows the same rule for topology-owned relay credentials.
+// Link users are not part of the managed end-user authority, but retaining the
+// legacy tail lets saved pool references resolve across a rolling upgrade.
+func linkUserLabel(linkID string) string {
+	return linkID + "-link-l-" + shortID(linkID)
 }
 
 func linkOutboundTag(linkID string) string {

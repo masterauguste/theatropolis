@@ -94,6 +94,118 @@ func TestStorePersistsUsersTopologyAndGeneratedCredentials(t *testing.T) {
 	}
 }
 
+func TestSchemaSixteenMigrationOnlyAdvancesUserAuthorityRevision(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "proxy-node-state.json")
+	store, err := Open(path, testBuild())
+	if err != nil {
+		t.Fatal(err)
+	}
+	user, err := store.CreateUser("用户 一")
+	if err != nil {
+		t.Fatal(err)
+	}
+	node, err := store.CreateProxyNode(CreateProxyNodeInput{
+		Name: "上海 节点", RootAgent: "edge-a", Entrance: testTLSEndpoint(ProtocolAnyTLS, 443),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.AddMembership(node.ID, user.ID); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := store.AddLink(node.ID, AddLinkInput{
+		ParentHopID: node.Entrance.HopID,
+		ChildAgent:  "edge-b",
+		Endpoint:    testTLSEndpoint(ProtocolHysteria2, 8443),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	contents, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var legacy envelope
+	if err := json.Unmarshal(contents, &legacy); err != nil {
+		t.Fatal(err)
+	}
+	legacy.SchemaVersion = 16
+	before := cloneState(legacy.Data)
+	encoded, err := json.MarshalIndent(legacy, "", "  ")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, append(encoded, '\n'), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	migrated, err := Open(path, testBuild())
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = migrated.Close() })
+	want := cloneState(before)
+	want.UserRevision++
+	normalizeTimes := func(state *State) {
+		for index := range state.Users {
+			state.Users[index].CreatedAt = state.Users[index].CreatedAt.UTC()
+			state.Users[index].UpdatedAt = state.Users[index].UpdatedAt.UTC()
+			state.Users[index].Subscription.UpdatedAt = state.Users[index].Subscription.UpdatedAt.UTC()
+		}
+		for nodeIndex := range state.ProxyNodes {
+			node := &state.ProxyNodes[nodeIndex]
+			node.CreatedAt = node.CreatedAt.UTC()
+			node.UpdatedAt = node.UpdatedAt.UTC()
+			for hopIndex := range node.Hops {
+				node.Hops[hopIndex].CreatedAt = node.Hops[hopIndex].CreatedAt.UTC()
+				node.Hops[hopIndex].UpdatedAt = node.Hops[hopIndex].UpdatedAt.UTC()
+			}
+			for linkIndex := range node.Links {
+				node.Links[linkIndex].CreatedAt = node.Links[linkIndex].CreatedAt.UTC()
+				node.Links[linkIndex].UpdatedAt = node.Links[linkIndex].UpdatedAt.UTC()
+			}
+			for membershipIndex := range node.Memberships {
+				membership := &node.Memberships[membershipIndex]
+				membership.QuotaPeriodStartedOn = membership.QuotaPeriodStartedOn.UTC()
+				membership.QuotaResetsAfter = membership.QuotaResetsAfter.UTC()
+				membership.SubscriptionStartedAt = membership.SubscriptionStartedAt.UTC()
+				membership.SubscriptionEndsAfter = membership.SubscriptionEndsAfter.UTC()
+				membership.CreatedAt = membership.CreatedAt.UTC()
+			}
+		}
+	}
+	got := migrated.Snapshot()
+	normalizeTimes(&got)
+	normalizeTimes(&want)
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("schema v16 migration changed data besides UserRevision:\n got: %#v\nwant: %#v", got, want)
+	}
+	if err := migrated.MarkReady(); err != nil {
+		t.Fatal(err)
+	}
+	contents, err = os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var persisted envelope
+	if err := json.Unmarshal(contents, &persisted); err != nil {
+		t.Fatal(err)
+	}
+	if SchemaVersion != 17 {
+		t.Fatalf("test requires current schema v17, got v%d", SchemaVersion)
+	}
+	if persisted.SchemaVersion != SchemaVersion {
+		t.Fatalf("persisted schema version = %d, want %d", persisted.SchemaVersion, SchemaVersion)
+	}
+	normalizeTimes(&persisted.Data)
+	if !reflect.DeepEqual(persisted.Data, want) {
+		t.Fatal("MarkReady changed migrated state while persisting schema v17")
+	}
+}
+
 func TestAddBranchAtomicallyCreatesRuleLinkAndChildBeforeFallback(t *testing.T) {
 	store, err := Open(filepath.Join(t.TempDir(), "proxy-node-state.json"), testBuild())
 	if err != nil {
@@ -819,8 +931,8 @@ func TestCompileCombinesCompatibleEntrancesAndRoutesByMembership(t *testing.T) {
 	for _, compiledUser := range config.Inbounds[0].Users {
 		compiledNames = append(compiledNames, compiledUser.Name)
 	}
-	if !slices.Contains(compiledNames, AuthenticatedUserLabel("archive", "bob", secondMembership.ID)) ||
-		!slices.Contains(compiledNames, AuthenticatedUserLabel("cinema", "alice", firstMembership.ID)) {
+	if !slices.Contains(compiledNames, AuthenticatedUserLabel(secondMembership.ID)) ||
+		!slices.Contains(compiledNames, AuthenticatedUserLabel(firstMembership.ID)) {
 		t.Fatalf("compiled users = %#v", config.Inbounds[0].Users)
 	}
 	if len(config.Route.Rules) != 2 {
@@ -1405,7 +1517,7 @@ func TestDeletingSharedLinkRemovesOnlyItsUserUntilLastReference(t *testing.T) {
 				t.Fatal(err)
 			}
 			if len(childConfig.Inbounds) != 1 || len(childConfig.Inbounds[0].Users) != 1 ||
-				!strings.HasPrefix(childConfig.Inbounds[0].Users[0].Name, "second-link-") {
+				childConfig.Inbounds[0].Users[0].Name != linkUserLabel(secondLink.ID) {
 				t.Fatalf("listener after deleting one shared Link = %#v", childConfig.Inbounds)
 			}
 

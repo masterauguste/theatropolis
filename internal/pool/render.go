@@ -288,10 +288,14 @@ func parseAgentRef(ref string) (agentID, inboundTag, userComponent string, ok bo
 	if len(parts) != 3 {
 		return "", "", "", false
 	}
-	if !validComponent(parts[0]) || !validComponent(parts[1]) || !validUserComponent(parts[2]) {
+	if !validComponent(parts[0]) || !validComponent(parts[1]) {
 		return "", "", "", false
 	}
-	return parts[0], parts[1], parts[2], true
+	user, valid := decodeUserRefComponent(parts[2])
+	if !valid {
+		return "", "", "", false
+	}
+	return parts[0], parts[1], user, true
 }
 
 // materializeAgentInbound builds the concrete outbound for one resolved
@@ -382,9 +386,33 @@ func materializeAgentInbound(
 // _server component matches an unnamed user, or — for shadowsocks — the
 // server key alone (serverKey=true), which is the zero-user inbound case.
 func findUser(inbound inboundConfig, userComponent string) (user inboundUser, serverKey, found bool) {
+	// Exact identity always wins, including while both label generations are
+	// temporarily present during a rolling deployment.
 	for _, candidate := range inbound.Users {
 		if candidate.Name == userComponent {
 			return candidate, false, true
+		}
+	}
+	// A saved pool ref may outlive the readable-prefix label used by the
+	// deployment that created it. Resolve across that migration only when the
+	// stable membership/Link tail identifies exactly one current user. Any
+	// collision is ambiguous and therefore remains a dead ref.
+	if aliasKey, valid := managedUserAliasKey(userComponent); valid {
+		var alias inboundUser
+		matches := 0
+		for _, candidate := range inbound.Users {
+			candidateKey, candidateValid := managedUserAliasKey(candidate.Name)
+			if !candidateValid || candidateKey != aliasKey {
+				continue
+			}
+			alias = candidate
+			matches++
+			if matches > 1 {
+				return inboundUser{}, false, false
+			}
+		}
+		if matches == 1 {
+			return alias, false, true
 		}
 	}
 	if userComponent == serverKeyRefComponent {

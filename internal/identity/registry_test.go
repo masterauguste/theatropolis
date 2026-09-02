@@ -12,6 +12,7 @@ import (
 	"path/filepath"
 	"reflect"
 	"runtime"
+	"strings"
 	"testing"
 	"time"
 )
@@ -356,16 +357,19 @@ func TestRegistrySnapshotIsSortedAndClassifiesIdentities(t *testing.T) {
 	snapshot := registry.Snapshot(now.Add(90 * time.Minute))
 	expected := []AgentSnapshot{
 		{
-			ID:    "alpha-enrolled",
-			State: AgentStateEnrolled,
+			ID:          "alpha-enrolled",
+			DisplayName: "alpha-enrolled",
+			State:       AgentStateEnrolled,
 		},
 		{
 			ID:                  "middle-expired",
+			DisplayName:         "middle-expired",
 			State:               AgentStateExpired,
 			EnrollmentExpiresAt: expiredExpiry,
 		},
 		{
 			ID:                  "zulu-pending",
+			DisplayName:         "zulu-pending",
 			State:               AgentStatePending,
 			EnrollmentExpiresAt: pendingExpiry,
 		},
@@ -408,6 +412,280 @@ func TestCreateEnrollmentRejectsActivePendingCredential(t *testing.T) {
 		time.Now(),
 	); err != nil {
 		t.Fatalf("first token was invalidated by rejected duplicate: %v", err)
+	}
+}
+
+func TestOpaqueEnrollmentDisplayNameRenamePersistsWithoutChangingIdentity(t *testing.T) {
+	t.Parallel()
+
+	path := filepath.Join(t.TempDir(), "identities.json")
+	registry, err := OpenRegistry(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	expiresAt := time.Now().Add(time.Hour)
+	agentID, token, err := registry.CreateEnrollmentForDisplayName(
+		context.Background(),
+		"  上海 中继  ",
+		expiresAt,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.HasPrefix(agentID, "agt_") || agentID == "上海 中继" || !ValidAgentID(agentID) {
+		t.Fatalf("opaque agent ID = %q", agentID)
+	}
+	if got := registry.DisplayName(agentID); got != "上海 中继" {
+		t.Fatalf("display name = %q, want 上海 中继", got)
+	}
+	publicKey, _, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := enrollByTokenForTest(registry, context.Background(), token, publicKey, time.Now()); err != nil {
+		t.Fatal(err)
+	}
+	if err := registry.RenameDisplayName(agentID, "东京 出口"); err != nil {
+		t.Fatal(err)
+	}
+
+	reopened, err := OpenRegistry(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := reopened.DisplayName(agentID); got != "东京 出口" {
+		t.Fatalf("reopened display name = %q, want 东京 出口", got)
+	}
+	resolved, err := reopened.AgentIDForPublicKey(context.Background(), publicKey)
+	if err != nil || resolved != agentID {
+		t.Fatalf("resolved ID after rename = %q, %v; want %q", resolved, err, agentID)
+	}
+}
+
+func TestLegacyLongAgentIDUsesUnpersistedDisplayFallback(t *testing.T) {
+	t.Parallel()
+
+	legacyID := strings.Repeat("a", 128)
+	publicKey, _, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	stored := diskRegistry{
+		Version: 1,
+		Pending: map[string]diskPending{},
+		Enrolled: map[string]string{
+			legacyID: base64.RawURLEncoding.EncodeToString(publicKey),
+		},
+	}
+	encoded, err := json.Marshal(stored)
+	if err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(t.TempDir(), "identities.json")
+	if err := os.WriteFile(path, encoded, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	registry, err := OpenRegistry(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := registry.DisplayName(legacyID); got != legacyID {
+		t.Fatalf("legacy display fallback = %q", got)
+	}
+	if _, _, err := registry.CreateEnrollmentForDisplayName(
+		context.Background(),
+		"新服务器",
+		time.Now().Add(time.Hour),
+	); err != nil {
+		t.Fatal(err)
+	}
+	reopened, err := OpenRegistry(path)
+	if err != nil {
+		t.Fatalf("reopen migrated registry: %v", err)
+	}
+	if got := reopened.DisplayName(legacyID); got != legacyID {
+		t.Fatalf("migrated legacy display fallback = %q", got)
+	}
+}
+
+func TestDisplayNamesAreUniqueByUnicodeCaseFold(t *testing.T) {
+	t.Parallel()
+
+	registry := NewRegistry()
+	firstID, _, err := registry.CreateEnrollmentForDisplayName(
+		context.Background(),
+		"Édge 上海",
+		time.Now().Add(time.Hour),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := registry.CreateEnrollmentForDisplayName(
+		context.Background(),
+		"e\u0301DGE 上海",
+		time.Now().Add(time.Hour),
+	); !errors.Is(err, ErrDisplayNameExists) {
+		t.Fatalf("case-fold duplicate create error = %v, want ErrDisplayNameExists", err)
+	}
+	if err := registry.RenameDisplayName(firstID, "另一个 名称"); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := registry.CreateEnrollmentForDisplayName(
+		context.Background(),
+		"ÉDGE 上海",
+		time.Now().Add(time.Hour),
+	); err != nil {
+		t.Fatalf("old display name remained reserved after rename: %v", err)
+	}
+}
+
+func TestLegacyCaseFoldDuplicateFallbacksDoNotBlockOpen(t *testing.T) {
+	t.Parallel()
+
+	publicKeyA, _, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	publicKeyB, _, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	stored := diskRegistry{
+		Version: 1,
+		Pending: map[string]diskPending{},
+		Enrolled: map[string]string{
+			"EDGE": base64.RawURLEncoding.EncodeToString(publicKeyA),
+			"edge": base64.RawURLEncoding.EncodeToString(publicKeyB),
+		},
+	}
+	encoded, err := json.Marshal(stored)
+	if err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(t.TempDir(), "identities.json")
+	if err := os.WriteFile(path, encoded, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	registry, err := OpenRegistry(path)
+	if err != nil {
+		t.Fatalf("legacy duplicate fallback names must load: %v", err)
+	}
+	if _, _, err := registry.CreateEnrollmentForDisplayName(
+		context.Background(),
+		"Edge",
+		time.Now().Add(time.Hour),
+	); !errors.Is(err, ErrDisplayNameExists) {
+		t.Fatalf("new name colliding with legacy fallback error = %v", err)
+	}
+	if _, _, err := registry.CreateEnrollmentForDisplayName(
+		context.Background(),
+		"东京 中继",
+		time.Now().Add(time.Hour),
+	); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := OpenRegistry(path); err != nil {
+		t.Fatalf("v2 registry must preserve legacy fallback-only duplicates: %v", err)
+	}
+}
+
+func TestOpenRegistryRejectsExplicitDisplayNameConflictsAndNonCanonicalValues(t *testing.T) {
+	t.Parallel()
+
+	publicKeyA, _, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	publicKeyB, _, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	encodedA := base64.RawURLEncoding.EncodeToString(publicKeyA)
+	encodedB := base64.RawURLEncoding.EncodeToString(publicKeyB)
+	tests := []struct {
+		name         string
+		enrolled     map[string]string
+		displayNames map[string]string
+	}{
+		{
+			name: "two explicit names",
+			enrolled: map[string]string{
+				"server-a": encodedA,
+				"server-b": encodedB,
+			},
+			displayNames: map[string]string{
+				"server-a": "上海 Edge",
+				"server-b": "上海 EDGE",
+			},
+		},
+		{
+			name: "explicit name and legacy fallback",
+			enrolled: map[string]string{
+				"EDGE":     encodedA,
+				"server-b": encodedB,
+			},
+			displayNames: map[string]string{
+				"server-b": "edge",
+			},
+		},
+		{
+			name: "non canonical value",
+			enrolled: map[string]string{
+				"server-a": encodedA,
+			},
+			displayNames: map[string]string{
+				"server-a": " Cafe\u0301 ",
+			},
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), "identities.json")
+			encoded, err := json.Marshal(diskRegistry{
+				Version:      2,
+				Pending:      map[string]diskPending{},
+				Enrolled:     test.enrolled,
+				DisplayNames: test.displayNames,
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(path, encoded, 0o600); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := OpenRegistry(path); err == nil {
+				t.Fatal("OpenRegistry() accepted conflicting or non-canonical display names")
+			}
+		})
+	}
+}
+
+func TestCompatibilityEnrollmentChecksExplicitDisplayNamesButAllowsLegacyFallbacks(t *testing.T) {
+	t.Parallel()
+
+	registry := NewRegistry()
+	if _, _, err := registry.CreateEnrollmentForDisplayName(
+		context.Background(),
+		"Edge",
+		time.Now().Add(time.Hour),
+	); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := registry.CreateEnrollment(
+		context.Background(),
+		"EDGE",
+		time.Now().Add(time.Hour),
+	); !errors.Is(err, ErrDisplayNameExists) {
+		t.Fatalf("fallback colliding with explicit display name error = %v, want ErrDisplayNameExists", err)
+	}
+
+	registry = NewRegistry()
+	if _, err := registry.CreateEnrollment(context.Background(), "EDGE", time.Now().Add(time.Hour)); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := registry.CreateEnrollment(context.Background(), "edge", time.Now().Add(time.Hour)); err != nil {
+		t.Fatalf("legacy fallback-only duplicate was rejected: %v", err)
 	}
 }
 
@@ -670,6 +948,7 @@ func TestAgentSnapshotContainsNoCredentialFields(t *testing.T) {
 	recordType := reflect.TypeOf(AgentSnapshot{})
 	expectedFields := map[string]reflect.Type{
 		"ID":                  reflect.TypeOf(""),
+		"DisplayName":         reflect.TypeOf(""),
 		"State":               reflect.TypeOf(AgentState("")),
 		"EnrollmentExpiresAt": reflect.TypeOf(time.Time{}),
 	}

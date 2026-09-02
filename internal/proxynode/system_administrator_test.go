@@ -127,7 +127,7 @@ func TestSchemaFourteenMigrationKeepsAdministratorProxyAccessOff(t *testing.T) {
 	}
 	t.Cleanup(func() { _ = migrated.Close() })
 	migratedState := migrated.Snapshot()
-	if migratedState.UserRevision != beforeRevision || migratedState.AdministratorProxyAccessEnabled {
+	if migratedState.UserRevision != beforeRevision+1 || migratedState.AdministratorProxyAccessEnabled {
 		t.Fatalf("migrated state = %#v", migratedState)
 	}
 	if administrator, exists := migrated.User(SystemAdministratorUserID); exists {
@@ -241,6 +241,9 @@ func TestEntranceUsageForAgentExcludesUnlimitedTrafficAndDeduplicatesUsers(t *te
 	}); err != nil {
 		t.Fatal(err)
 	}
+	if err := store.MarkTopologyApplied(store.Snapshot().Revision, []string{"edge-a", "edge-b"}); err != nil {
+		t.Fatal(err)
+	}
 
 	usage, err := store.EntranceUsageForAgent("edge-a")
 	if err != nil {
@@ -266,5 +269,52 @@ func TestEntranceUsageForAgentExcludesUnlimitedTrafficAndDeduplicatesUsers(t *te
 	}
 	if _, err := store.EntranceUsageForAgent("invalid agent id!"); !errors.Is(err, ErrInvalidState) {
 		t.Fatalf("invalid Agent ID error = %v", err)
+	}
+}
+
+func TestEntranceUsageFollowsAppliedEntranceDuringPendingMove(t *testing.T) {
+	store, err := Open(filepath.Join(t.TempDir(), "state.json"), testBuild())
+	if err != nil {
+		t.Fatal(err)
+	}
+	user, err := store.CreateUser("alice")
+	if err != nil {
+		t.Fatal(err)
+	}
+	node, err := store.CreateProxyNode(CreateProxyNodeInput{
+		Name: "cinema", RootAgent: "edge-a", Entrance: testTLSEndpoint(ProtocolAnyTLS, 443),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.AddMembershipWithPlan(node.ID, user.ID, MembershipPlan{MonthlyQuotaBytes: 100}); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.MarkTopologyApplied(store.Snapshot().Revision, []string{"edge-a"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.MoveHop(node.ID, node.Entrance.HopID, "edge-b"); err != nil {
+		t.Fatal(err)
+	}
+
+	oldUsage, err := store.EntranceUsageForAgent("edge-a")
+	if err != nil {
+		t.Fatal(err)
+	}
+	newUsage, err := store.EntranceUsageForAgent("edge-b")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if oldUsage.AllocatedBytes != 100 || newUsage.AllocatedBytes != 0 {
+		t.Fatalf("pending move usage old=%#v new=%#v", oldUsage, newUsage)
+	}
+
+	if err := store.MarkTopologyApplied(store.Snapshot().Revision, []string{"edge-b"}); err != nil {
+		t.Fatal(err)
+	}
+	oldUsage, _ = store.EntranceUsageForAgent("edge-a")
+	newUsage, _ = store.EntranceUsageForAgent("edge-b")
+	if oldUsage.AllocatedBytes != 0 || newUsage.AllocatedBytes != 100 {
+		t.Fatalf("committed move usage old=%#v new=%#v", oldUsage, newUsage)
 	}
 }

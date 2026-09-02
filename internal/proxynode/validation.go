@@ -12,12 +12,26 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	"unicode"
+	"unicode/utf8"
+
+	"golang.org/x/text/cases"
+	"golang.org/x/text/unicode/norm"
 )
 
 const (
 	maxStateBytes = 16 << 20
-	maxNameBytes  = 96
 	maxValueBytes = 1024
+	// Proxy Node and end-user management names are display names rather than
+	// resource or login identifiers. The public mutation contract matches the
+	// browser editor; four bytes per rune is the maximum UTF-8 representation.
+	maxDisplayNameRunes = 60
+	maxDisplayNameBytes = maxDisplayNameRunes * utf8.UTFMax
+	// Before display names were introduced the backend accepted as many as 96
+	// ASCII identifier characters. Keep that exact persisted-state allowance so
+	// an older Master can still start, without letting a crafted mutation create
+	// a name that its UI cannot subsequently edit.
+	maxLegacyDisplayNameBytes = 96
 	// Branch duplication and the schema-v4 migration clone downstream trees.
 	// Keep malformed or pathological state from causing unbounded expansion.
 	maxTopologyEntities = 10_000
@@ -26,10 +40,11 @@ const (
 var (
 	ErrNotFound            = errors.New("proxy node resource not found")
 	ErrConflict            = errors.New("proxy node resource conflicts with existing state")
+	ErrAgentReferenced     = fmt.Errorf("%w: Agent is referenced by Proxy Node topology", ErrConflict)
 	ErrInvalidState        = errors.New("invalid proxy node state")
 	ErrNewerSchema         = errors.New("proxy node state uses a newer schema")
 	ErrUnsafeStorage       = errors.New("unsafe proxy node storage")
-	namePattern            = regexp.MustCompile(`\A[A-Za-z0-9][A-Za-z0-9._-]{0,95}\z`)
+	legacyNamePattern      = regexp.MustCompile(`\A[A-Za-z0-9][A-Za-z0-9._-]{0,95}\z`)
 	agentIDPattern         = regexp.MustCompile(`\A[A-Za-z0-9][A-Za-z0-9._-]{0,127}\z`)
 	idPattern              = regexp.MustCompile(`\A[a-z]{2,4}_[A-Za-z0-9_-]{20,32}\z`)
 	ruleSetTagPattern      = regexp.MustCompile(`\A[A-Za-z0-9][A-Za-z0-9._-]{0,127}\z`)
@@ -114,7 +129,7 @@ func validateStateCore(state State) error {
 	userNames := make(map[string]UserRole, len(state.Users))
 	subscriptionTokens := make(map[string]struct{}, len(state.Users))
 	for _, user := range state.Users {
-		if !validID(user.ID, "usr_") || !validName(user.Name) || user.CreatedAt.IsZero() || user.UpdatedAt.IsZero() {
+		if !validID(user.ID, "usr_") || !validStoredDisplayName(user.Name) || user.Name != normalizeDisplayName(user.Name) || user.CreatedAt.IsZero() || user.UpdatedAt.IsZero() {
 			return fmt.Errorf("%w: invalid end user", ErrInvalidState)
 		}
 		if err := validateUserSubscription(user.Subscription); err != nil {
@@ -138,7 +153,7 @@ func validateStateCore(state State) error {
 			}
 			subscriptionTokens[user.Subscription.Token] = struct{}{}
 		}
-		key := strings.ToLower(user.Name)
+		key := displayNameKey(user.Name)
 		if _, exists := userIDs[user.ID]; exists {
 			return fmt.Errorf("%w: duplicate end user ID", ErrInvalidState)
 		}
@@ -157,10 +172,10 @@ func validateStateCore(state State) error {
 	}
 	for index := range state.ProxyNodes {
 		node := &state.ProxyNodes[index]
-		if !validID(node.ID, "pn_") || !validName(node.Name) || node.CreatedAt.IsZero() || node.UpdatedAt.IsZero() {
+		if !validID(node.ID, "pn_") || !validStoredDisplayName(node.Name) || node.Name != normalizeDisplayName(node.Name) || node.CreatedAt.IsZero() || node.UpdatedAt.IsZero() {
 			return fmt.Errorf("%w: invalid Proxy Node identity", ErrInvalidState)
 		}
-		key := strings.ToLower(node.Name)
+		key := displayNameKey(node.Name)
 		if _, exists := proxyIDs[node.ID]; exists {
 			return fmt.Errorf("%w: duplicate Proxy Node ID", ErrInvalidState)
 		}
@@ -790,8 +805,41 @@ func validID(value, prefix string) bool {
 	return strings.HasPrefix(value, prefix) && idPattern.MatchString(value)
 }
 
-func validName(value string) bool {
-	return len(value) <= maxNameBytes && namePattern.MatchString(value)
+func normalizeDisplayName(value string) string {
+	return norm.NFC.String(strings.TrimSpace(value))
+}
+
+func displayNameKey(value string) string {
+	return norm.NFC.String(cases.Fold().String(normalizeDisplayName(value)))
+}
+
+func validDisplayName(value string) bool {
+	if !utf8.ValidString(value) || value == "" || len(value) > maxDisplayNameBytes || utf8.RuneCountInString(value) > maxDisplayNameRunes {
+		return false
+	}
+	for index, character := range value {
+		if index == 0 {
+			if !unicode.IsLetter(character) && !unicode.IsDigit(character) {
+				return false
+			}
+			continue
+		}
+		if unicode.IsLetter(character) || unicode.IsDigit(character) || unicode.IsMark(character) {
+			continue
+		}
+		switch character {
+		case ' ', '.', '_', '-':
+			continue
+		default:
+			return false
+		}
+	}
+	return true
+}
+
+func validStoredDisplayName(value string) bool {
+	return validDisplayName(value) ||
+		(len(value) <= maxLegacyDisplayNameBytes && legacyNamePattern.MatchString(value))
 }
 
 func validAgentID(value string) bool {

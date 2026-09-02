@@ -382,7 +382,7 @@ if (configTextarea && configurationForm && configurationEditor) {
       const name = entry.ref.replace(/^manual\//, "");
       return entry.remark ? `External · ${entry.remark} (${name})` : `External · ${name}`;
     }
-    return `${entry.agent_id} · ${entry.inbound_tag} · ${entry.user || "unnamed user"}`;
+    return `${entry.agent_name || entry.agent_id} · ${entry.inbound_tag} · ${entry.user || "unnamed user"}`;
   }
 
   function destinationKey(ref, family = "", server = "") {

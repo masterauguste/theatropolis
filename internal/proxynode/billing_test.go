@@ -488,12 +488,74 @@ func TestTrafficAtPeriodBoundaryIsAttributedOnlyToCurrentPeriod(t *testing.T) {
 	}
 }
 
-func TestAuthenticatedUserLabelsAreBoundedAndMembershipStable(t *testing.T) {
-	left := AuthenticatedUserLabel(strings.Repeat("p", 96), strings.Repeat("u", 96), "mem_AAAAAAAAAAAA11111111")
-	right := AuthenticatedUserLabel(strings.Repeat("p", 96), strings.Repeat("u", 96), "mem_BBBBBBBBBBBB22222222")
+func TestAuthenticatedUserLabelsPreserveFullMembershipIdentity(t *testing.T) {
+	leftID := "mem_" + strings.Repeat("A", 12) + strings.Repeat("1", 20)
+	rightID := "mem_" + strings.Repeat("B", 12) + strings.Repeat("2", 20)
+	left := AuthenticatedUserLabel(leftID)
+	right := AuthenticatedUserLabel(rightID)
 	if len(left) > 128 || len(right) > 128 || left == right ||
-		!strings.HasSuffix(left, "-m-AAAAAAAAAAAA") || !strings.HasSuffix(right, "-m-BBBBBBBBBBBB") {
+		left != leftID+"-m-AAAAAAAAAAAA" || right != rightID+"-m-BBBBBBBBBBBB" ||
+		!strings.HasPrefix(left, leftID) || !strings.HasPrefix(right, rightID) {
 		t.Fatalf("authenticated labels = %q, %q", left, right)
+	}
+}
+
+func TestTrafficAliasKeyPreservesHyphenInsideMembershipSuffix(t *testing.T) {
+	const (
+		path   = "/tp-in-0123456789abcdef"
+		suffix = "ABC-DEF12345"
+	)
+	key, ok := trafficAliasKey(path, "旧节点-旧用户-m-"+suffix)
+	if !ok || key != trafficKey(path, suffix) {
+		t.Fatalf("trafficAliasKey() = %q, %v; want %q, true", key, ok, trafficKey(path, suffix))
+	}
+	for _, invalid := range []string{
+		"旧节点-旧用户-" + suffix,
+		"旧节点-旧用户-m-ABC-DEF1234",
+		"旧节点-旧用户-m-ABC-DEF123456",
+		"旧节点-旧用户-m-ABC+DEF12345",
+	} {
+		if key, ok := trafficAliasKey(path, invalid); ok || key != "" {
+			t.Errorf("trafficAliasKey(%q) = %q, %v; want rejected", invalid, key, ok)
+		}
+	}
+}
+
+func TestTrafficMembershipAliasesFailClosedOnShortSuffixCollision(t *testing.T) {
+	store, err := Open(filepath.Join(t.TempDir(), "state.json"), testBuild())
+	if err != nil {
+		t.Fatal(err)
+	}
+	firstUser, err := store.CreateUser("alice")
+	if err != nil {
+		t.Fatal(err)
+	}
+	secondUser, err := store.CreateUser("bob")
+	if err != nil {
+		t.Fatal(err)
+	}
+	node, err := store.CreateProxyNode(CreateProxyNodeInput{
+		Name: "cinema", RootAgent: "edge-a", Entrance: testTLSEndpoint(ProtocolAnyTLS, 443),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.AddMembership(node.ID, firstUser.ID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.AddMembership(node.ID, secondUser.ID); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.MarkTopologyApplied(store.Snapshot().Revision, []string{"edge-a"}); err != nil {
+		t.Fatal(err)
+	}
+
+	state := store.Snapshot()
+	const sharedSuffix = "ABC-DEF12345"
+	state.ProxyNodes[0].Memberships[0].ID = "mem_" + sharedSuffix + strings.Repeat("A", 12)
+	state.ProxyNodes[0].Memberships[1].ID = "mem_" + sharedSuffix + strings.Repeat("B", 12)
+	if _, _, err := trafficMemberships(&state, "edge-a"); err == nil || !strings.Contains(err.Error(), "ambiguous") {
+		t.Fatalf("trafficMemberships() error = %v, want ambiguous identity", err)
 	}
 }
 

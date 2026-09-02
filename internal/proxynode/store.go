@@ -169,6 +169,18 @@ func Open(path string, build BuildInfo) (*Store, error) {
 		}
 		stored.SchemaVersion = 16
 	}
+	if stored.SchemaVersion == 16 {
+		if stored.Data.UserRevision == ^uint64(0) {
+			return nil, fmt.Errorf("%w: user revision is exhausted", ErrInvalidState)
+		}
+		// Schema v17 removes mutable display names from generated auth_user
+		// values. Reserve a new user-plane revision so an Agent holding the old
+		// readable label cannot reject the replacement authority as a conflicting
+		// payload at the same revision. The authoritative profile replay on Agent
+		// reconnect updates topology-owned Link labels independently.
+		stored.Data.UserRevision++
+		stored.SchemaVersion = 17
+	}
 	if stored.SchemaVersion != SchemaVersion {
 		return nil, fmt.Errorf("%w: unsupported schema version %d", ErrInvalidState, stored.SchemaVersion)
 	}
@@ -445,8 +457,8 @@ func (s *Store) AppliedProxyNode(id string) (ProxyNode, bool) {
 }
 
 func (s *Store) CreateUser(name string) (User, error) {
-	name = strings.TrimSpace(name)
-	if !validName(name) {
+	name = normalizeDisplayName(name)
+	if !validDisplayName(name) {
 		return User{}, fmt.Errorf("%w: invalid end user name", ErrInvalidState)
 	}
 	id, err := randomID("usr")
@@ -461,7 +473,7 @@ func (s *Store) CreateUser(name string) (User, error) {
 	created := User{ID: id, Name: name, Subscription: UserSubscription{Token: token, UpdatedAt: now}, CreatedAt: now, UpdatedAt: now}
 	err = s.mutateUser(func(state *State) error {
 		for _, user := range state.Users {
-			if strings.EqualFold(user.Name, name) {
+			if displayNameKey(user.Name) == displayNameKey(name) {
 				return ErrConflict
 			}
 		}
@@ -475,13 +487,13 @@ func (s *Store) RenameUser(id, name string) error {
 	if id == SystemAdministratorUserID {
 		return fmt.Errorf("%w: administrator user is immutable", ErrConflict)
 	}
-	name = strings.TrimSpace(name)
-	if !validName(name) {
+	name = normalizeDisplayName(name)
+	if !validDisplayName(name) {
 		return fmt.Errorf("%w: invalid end user name", ErrInvalidState)
 	}
 	return s.mutateUser(func(state *State) error {
 		for _, user := range state.Users {
-			if user.ID != id && strings.EqualFold(user.Name, name) {
+			if user.ID != id && displayNameKey(user.Name) == displayNameKey(name) {
 				return ErrConflict
 			}
 		}
@@ -518,14 +530,17 @@ func (s *Store) DeleteUser(id string) error {
 }
 
 func (s *Store) CreateProxyNode(input CreateProxyNodeInput) (ProxyNode, error) {
-	input.Name = strings.TrimSpace(input.Name)
+	input.Name = normalizeDisplayName(input.Name)
 	input.RootAgent = strings.TrimSpace(input.RootAgent)
 	input.Entrance = normalizeEndpoint(input.Entrance)
 	if input.Final.Type == "" {
 		input.Final = Target{Type: TargetDirect}
 	}
-	if !validName(input.Name) || !validAgentID(input.RootAgent) {
-		return ProxyNode{}, fmt.Errorf("%w: invalid Proxy Node fields", ErrInvalidState)
+	if !validDisplayName(input.Name) {
+		return ProxyNode{}, fmt.Errorf("%w: invalid Proxy Node name", ErrInvalidState)
+	}
+	if !validAgentID(input.RootAgent) {
+		return ProxyNode{}, fmt.Errorf("%w: invalid entrance Agent", ErrInvalidState)
 	}
 	if (input.Final.Type != TargetDirect && input.Final.Type != TargetReject) || input.Final.LinkID != "" {
 		return ProxyNode{}, fmt.Errorf("%w: initial terminal exit must be Direct or Reject", ErrInvalidState)
@@ -556,7 +571,7 @@ func (s *Store) CreateProxyNode(input CreateProxyNodeInput) (ProxyNode, error) {
 	}
 	err = s.mutate(func(state *State) error {
 		for _, node := range state.ProxyNodes {
-			if strings.EqualFold(node.Name, created.Name) {
+			if displayNameKey(node.Name) == displayNameKey(created.Name) {
 				return ErrConflict
 			}
 		}
@@ -575,13 +590,13 @@ func (s *Store) CreateProxyNode(input CreateProxyNodeInput) (ProxyNode, error) {
 }
 
 func (s *Store) RenameProxyNode(id, name string) error {
-	name = strings.TrimSpace(name)
-	if !validName(name) {
+	name = normalizeDisplayName(name)
+	if !validDisplayName(name) {
 		return fmt.Errorf("%w: invalid Proxy Node name", ErrInvalidState)
 	}
 	return s.mutateProxyNode(id, func(state *State, node *ProxyNode) error {
 		for _, candidate := range state.ProxyNodes {
-			if candidate.ID != id && strings.EqualFold(candidate.Name, name) {
+			if candidate.ID != id && displayNameKey(candidate.Name) == displayNameKey(name) {
 				return ErrConflict
 			}
 		}
@@ -1441,7 +1456,6 @@ func (s *Store) MarkTopologyApplied(expectedRevision uint64, agentIDs []string) 
 		return ErrConflict
 	}
 	next := cloneState(s.state)
-	credentialsChanged := false
 	for nodeIndex := range next.ProxyNodes {
 		for membershipIndex := range next.ProxyNodes[nodeIndex].Memberships {
 			membership := &next.ProxyNodes[nodeIndex].Memberships[membershipIndex]
@@ -1450,15 +1464,17 @@ func (s *Store) MarkTopologyApplied(expectedRevision uint64, agentIDs []string) 
 			}
 			membership.Credential = *membership.PendingCredential
 			membership.PendingCredential = nil
-			credentialsChanged = true
 		}
 	}
 	next.AppliedProxyNodes = topologySnapshot(next.ProxyNodes)
 	next.AppliedRevision = next.Revision
 	next.ManagedAgents = agentIDs
-	if credentialsChanged {
-		next.UserRevision++
-	}
+	// Activating a topology also changes the authoritative user projection:
+	// labels can change, entrances can move between Agents, and empty managed
+	// endpoints can be added or retired without touching a Membership. Reserve
+	// a fresh user revision in this same transaction so a concurrent user sync
+	// can never install the post-apply authority under an already-used revision.
+	next.UserRevision++
 	if err := validateStoredState(next); err != nil {
 		return err
 	}

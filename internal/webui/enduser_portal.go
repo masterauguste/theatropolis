@@ -44,6 +44,7 @@ type endUserPortalNodeView struct {
 	Tone            string
 	Protocol        string
 	EntranceAgent   string
+	PendingApply    bool
 	UsageLabel      string
 	QuotaLabel      string
 	ResetLabel      string
@@ -341,19 +342,25 @@ func (h *Handler) endUserPortal(response http.ResponseWriter, request *http.Requ
 		if membership == nil {
 			continue
 		}
-		activeNode, applied := h.proxyNodes.AppliedProxyNode(node.ID)
-		if !applied {
-			activeNode = node
-		}
-		root, _ := proxyHop(activeNode, activeNode.Entrance.HopID)
 		plan := membershipPlanViewFor(*membership)
-		view.Nodes = append(view.Nodes, endUserPortalNodeView{
+		nodeView := endUserPortalNodeView{
 			Name: node.Name, Initial: nodeInitial(node.Name), Tone: nodeRoleTone(node.Name),
-			Protocol: protocolLabel(activeNode.Entrance.Endpoint.Protocol), EntranceAgent: root.AgentID,
 			UsageLabel: plan.UsageLabel, QuotaLabel: plan.QuotaLabel, ResetLabel: plan.ResetLabel,
 			ResetAt: plan.ResetAt, ExpirationLabel: plan.ExpirationLabel, ExpirationAt: plan.ExpirationAt,
 			StatusLabel: plan.StatusLabel, StatusClass: plan.StatusClass,
-		})
+		}
+		if activeNode, applied := h.proxyNodes.AppliedProxyNode(node.ID); applied {
+			root, _ := proxyHop(activeNode, activeNode.Entrance.HopID)
+			nodeView.Protocol = protocolLabel(activeNode.Entrance.Endpoint.Protocol)
+			nodeView.EntranceAgent = h.agentDisplayName(root.AgentID)
+		} else {
+			// A desired-only Node has no running entrance yet. Keep the granted
+			// access visible without presenting its draft endpoint as usable.
+			nodeView.PendingApply = true
+			nodeView.StatusLabel = "Pending Apply"
+			nodeView.StatusClass = "pending"
+		}
+		view.Nodes = append(view.Nodes, nodeView)
 	}
 	sort.Slice(view.Nodes, func(i, j int) bool { return strings.ToLower(view.Nodes[i].Name) < strings.ToLower(view.Nodes[j].Name) })
 	h.render(response, http.StatusOK, "portal.html", pageData{

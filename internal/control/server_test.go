@@ -985,6 +985,61 @@ func TestRevokeAgentDurablyInvalidatesActiveSession(t *testing.T) {
 	server.Sessions.Unregister(replacement)
 }
 
+func TestRevokeAgentGuardFailsBeforeRevocation(t *testing.T) {
+	ctx := context.Background()
+	now := time.Now().UTC()
+	identities := identity.NewRegistry()
+	server := NewServer(
+		identities,
+		deployment.NewMemoryStore(),
+		nil,
+		nil,
+		slog.New(slog.NewTextHandler(io.Discard, nil)),
+	)
+	token, err := identities.CreateEnrollment(ctx, "edge-referenced", now.Add(time.Hour))
+	if err != nil {
+		t.Fatal(err)
+	}
+	publicKey, _, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := identities.EnrollByToken(ctx, token, publicKey, now); err != nil {
+		t.Fatal(err)
+	}
+	active := newSession("edge-referenced")
+	if err := server.Sessions.Register(active); err != nil {
+		t.Fatal(err)
+	}
+
+	guardErr := errors.New("Agent is referenced")
+	guardCalled := false
+	server.SetAgentRevocationGuard(func(agentID string, revoke func() error) error {
+		guardCalled = true
+		if agentID != "edge-referenced" {
+			t.Fatalf("guard Agent ID = %q", agentID)
+		}
+		if revoke == nil {
+			t.Fatal("guard revocation callback is nil")
+		}
+		return guardErr
+	})
+	if err := server.RevokeAgent(ctx, "edge-referenced"); !errors.Is(err, guardErr) {
+		t.Fatalf("RevokeAgent() error = %v, want guard error", err)
+	}
+	if !guardCalled || !server.Sessions.IsOnline("edge-referenced") {
+		t.Fatalf("guard called=%v online=%v", guardCalled, server.Sessions.IsOnline("edge-referenced"))
+	}
+	select {
+	case <-active.done:
+		t.Fatal("guarded revocation disconnected the active Agent")
+	default:
+	}
+	if got, err := identities.PublicKey(ctx, "edge-referenced"); err != nil || !bytes.Equal(got, publicKey) {
+		t.Fatalf("guarded revocation changed identity: key=%x error=%v", got, err)
+	}
+}
+
 func enrollTestIdentity(
 	t *testing.T,
 	registry *identity.Registry,

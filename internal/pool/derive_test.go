@@ -1,6 +1,7 @@
 package pool
 
 import (
+	"encoding/base64"
 	"encoding/json"
 	"strings"
 	"testing"
@@ -99,7 +100,7 @@ func TestDeriveSkipsAndDiagnostics(t *testing.T) {
 	badShapeConfig := `{"inbounds":[
 		{"type":"trojan","tag":"trojan-in","listen_port":443,"users":[{"name":"u","password":"p"}]},
 		{"type":"anytls","tag":"bad tag!","listen_port":8443,"users":[{"name":"u","password":"p"}]},
-		{"type":"anytls","tag":"ok-in","listen_port":8444,"users":[{"name":"bad user!","password":"p"},{"name":"good","password":"p"}]},
+		{"type":"anytls","tag":"ok-in","listen_port":8444,"users":[{"name":"bad\u0000user","password":"p"},{"name":"good","password":"p"}]},
 		"not-an-object"
 	]}`
 	var diagnostics []string
@@ -120,10 +121,47 @@ func TestDeriveSkipsAndDiagnostics(t *testing.T) {
 		t.Fatalf("refs = %v, want only the valid user", gotRefs)
 	}
 	joined := strings.Join(diagnostics, "\n")
-	for _, want := range []string{"edge-broken", "bad tag!", "bad user!", "an inbound was skipped"} {
+	for _, want := range []string{"edge-broken", "bad tag!", "invalid managed-user name", "an inbound was skipped"} {
 		if !strings.Contains(joined, want) {
 			t.Errorf("diagnostics missing %q; got:\n%s", want, joined)
 		}
+	}
+}
+
+func TestDeriveUnicodeAndSpaceUserRef(t *testing.T) {
+	registry := deriveTestRegistry(t)
+	const unicodeUser = "上海 用户"
+	config := `{"inbounds":[
+		{"type":"anytls","tag":"tls-in","listen_port":8443,"users":[
+			{"name":"alice","password":"pa"},
+			{"name":"上海 用户","password":"p-utf8"}
+		]}
+	]}`
+	var diagnostics []string
+	entries := Derive(DeriveInput{
+		AgentIDs: []string{"edge-paris-1"},
+		Deployments: map[string]*deployment.Record{
+			"edge-paris-1": deploymentRecord(t, "edge-paris-1", config),
+		},
+		Registry:    registry,
+		Diagnostics: &diagnostics,
+	})
+	if len(diagnostics) != 0 {
+		t.Fatalf("Derive() diagnostics = %v, want none", diagnostics)
+	}
+	if len(entries) != 2 {
+		t.Fatalf("Derive() = %v entries, want 2", entries)
+	}
+	byUser := make(map[string]Entry, len(entries))
+	for _, entry := range entries {
+		byUser[entry.User] = entry
+	}
+	if got := byUser["alice"].Ref; got != "agent/edge-paris-1/tls-in/alice" {
+		t.Fatalf("legacy ASCII ref = %q, want unchanged", got)
+	}
+	wantComponent := encodedUserRefPrefix + base64.RawURLEncoding.EncodeToString([]byte(unicodeUser))
+	if got := byUser[unicodeUser].Ref; got != "agent/edge-paris-1/tls-in/"+wantComponent {
+		t.Fatalf("Unicode user ref = %q, want encoded component %q", got, wantComponent)
 	}
 }
 

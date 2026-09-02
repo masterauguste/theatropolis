@@ -125,7 +125,7 @@
             {{range .AccountingFailures}}
             <tr>
               <td data-label="Time"><time>{{.OccurredAt}}</time></td>
-              <td data-label="Server"><a href="/servers/{{.AgentID}}/manage"><code>{{.AgentID}}</code></a></td>
+              <td data-label="Server"><a href="/servers/{{.AgentID}}/manage">{{.AgentName}}</a></td>
               <td data-label="Failure">{{.Reason}}</td>
             </tr>
             {{end}}

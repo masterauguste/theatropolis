@@ -43,6 +43,12 @@ An Agent is an enrolled physical or virtual server running the Theatropolis
 agent and sing-box. Enrollment does not make an Agent a Proxy Node or assign it
 any proxy role.
 
+New server records receive an opaque immutable `agt_...` ID and a separate
+mutable display name. The display name may contain Unicode letters or numbers
+(including Chinese), ordinary spaces, and `.`, `_`, or `-`; renaming it changes
+only administrator-facing labels. Existing installations retain their prior
+server-record IDs and use those IDs as a display fallback until renamed.
+
 An Agent can host entrances and relay hops for any number of Proxy Nodes,
 subject to listener compatibility and resource constraints.
 
@@ -50,6 +56,11 @@ subject to listener compatibility and resource constraints.
 
 An End User is a global administrator-managed identity. It exists above Proxy
 Nodes and can be assigned to any number of them.
+
+Its administrator-facing management name follows the same normalized Unicode
+display-name rules as a Proxy Node. The immutable `usr_...` ID, subscription
+token, Membership credentials, and separately claimed login username remain
+independent of that display name.
 
 Deleting an End User revokes all of its Proxy Node memberships. Removing one
 membership revokes access only to that Proxy Node.
@@ -65,10 +76,11 @@ A Proxy Node is an independently managed logical proxy service. It contains:
 - links from a hop to child hops; and
 - terminal `direct` or `reject` outcomes.
 
-The Proxy Node name is also the human-readable namespace used in generated
-sing-box tags and authenticated-user labels. There is no separate immutable
-slug exposed to administrators. The opaque Proxy Node ID remains stable across
-renames.
+The Proxy Node name is a normalized display name that may contain Unicode
+letters or numbers (including Chinese), ordinary spaces, and `.`, `_`, or `-`;
+it is not a path, resource identifier, sing-box tag, or authenticated-user
+identity. There is no separate immutable slug exposed to administrators. The
+opaque Proxy Node ID remains stable across renames.
 
 ### Entrance and logical inbounds
 
@@ -197,15 +209,22 @@ several Proxy Nodes or the Proxy Nodes currently have distinct entrances.
 The generated authenticated-user label follows:
 
 ```text
-<proxy-node-name>-<end-user-name>-m-<stable-membership-suffix>
+<complete-membership-id>-m-<legacy-compatible-membership-suffix>
 ```
 
-For example, global End User `alice` can have:
+For example, two Memberships belonging to the same global End User can have:
 
 ```text
-cinema-alice-m-AbCdEf012345  -> generated membership secret A
-archive-alice-m-ZyXwVu987654 -> generated membership secret B
+mem_AbCdEf012345MnOpQrStUvWx-m-AbCdEf012345 -> generated membership secret A
+mem_ZyXwVu987654GhIjKlMnOpQr-m-ZyXwVu987654 -> generated membership secret B
 ```
+
+The complete opaque Membership ID is always present and is never truncated.
+The final 12-character marker is derived from that same ID and exists only for
+rolling compatibility with older Agents. Proxy Node and End User display names
+do not enter the label, so either may be renamed or contain multibyte text
+without changing protocol identity. Relay users follow the equivalent complete
+Link-ID form.
 
 Membership-specific credentials are required when compatible logical
 entrances share a physical listener. For protocols such as AnyTLS, the client
@@ -254,8 +273,14 @@ automatically synchronized onto the last successfully applied topology. There
 is no separate user Apply action. Routing Rules, Links, Hop placement, listener
 settings, and Link credentials are changed as one completed operation at a
 time. Each operation validates the complete topology and immediately starts an
-atomic fleet deployment; there is no separate topology Apply action. Further
-topology edits are locked until that transaction applies or rolls back.
+atomic fleet deployment when every changed Agent is ready; there is no separate
+topology Apply action. If a changed Agent is offline, its routable address is
+temporarily unavailable, or its authoritative reconnect replay still occupies
+the deployment slot, the valid desired revision remains saved as Pending while
+the applied topology and managed-Agent set remain unchanged. Further edits
+merge into that newest desired revision. A coalesced reconciler retries after
+reconnect/address events and with a bounded backoff, including after master
+restart; unchanged offline Agents do not block unrelated edits.
 
 Topology comparison is compiled without end-user credentials. User authority
 has its own revisioned control command and does not create, overwrite, or wait
@@ -289,7 +314,10 @@ the master writes a private atomic journal containing every affected Agent's
 exact last-applied profile. Each Agent is marked before delivery. Any validation,
 activation, revision, or persistence failure rolls every touched Agent back in
 the previous topology's receiver-before-sender order; an interrupted master
-resumes that same recorded order after restart. A committing marker plus
+resumes that same recorded order after restart. Rollback never discards the
+accepted desired revision: after recovery it remains Pending and can be edited
+again, while a structurally invalid mutation is the only case restored before
+acceptance. A committing marker plus
 the persisted applied topology revision distinguishes a completed transaction
 from one requiring recovery. When a protocol replacement reuses a socket, the
 old conflicting listener is removed in a separate first deployment while
@@ -437,9 +465,9 @@ by the Agent's system resolver and set it as the default domain resolver; they
 never rely on a zero-server implicit fallback. Earlier final Rules can still
 terminate routing without incurring either operation.
 
-Generated sing-box tags must include opaque IDs or an equivalent collision-free
-component. Human-readable names are included for clarity but are never relied
-on for uniqueness.
+Generated sing-box tags and authenticated-user labels use opaque IDs or an
+equivalent collision-free component. Human-readable names remain UI metadata
+and do not enter protocol identity.
 
 Configuration activation remains atomic on each Agent. Fleet-wide changes are
 not literally simultaneous, so operations that change both sides of a Link

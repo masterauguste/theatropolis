@@ -93,6 +93,8 @@ type Server struct {
 	managedUserTrafficWaiters        map[string]chan error
 	proxyNodeAddressHandler          func()
 	proxyNodeUserHandler             func()
+	proxyNodeTopologyHandler         func()
+	agentRevocationGuard             func(string, func() error) error
 	authoritativeProfileProvider     func(context.Context, string) ([]byte, bool, error)
 	managedUserAuthorityMu           sync.Mutex
 	managedUserAuthorityWaiters      map[string]chan *controlv1.ManagedUserAuthorityReport
@@ -212,6 +214,20 @@ func (s *Server) SetProxyNodeUserHandler(handler func()) {
 	s.proxyNodeUserHandler = handler
 }
 
+// SetProxyNodeTopologyHandler requests a retry of saved desired topology
+// after the reconnecting Agent's authoritative applied profile has already
+// been queued. Unlike user authority, this applies to every deploy-capable
+// Agent and does not depend on managed-user capability support.
+func (s *Server) SetProxyNodeTopologyHandler(handler func()) {
+	s.proxyNodeTopologyHandler = handler
+}
+
+// SetAgentRevocationGuard installs the Proxy Node topology barrier used by
+// master-local Agent removal. It must be configured before serving requests.
+func (s *Server) SetAgentRevocationGuard(guard func(string, func() error) error) {
+	s.agentRevocationGuard = guard
+}
+
 // SetAuthoritativeProfileProvider lets the Proxy Node store rebuild the
 // currently applied topology with the running master's compiler. Historical
 // deployment records remain the fallback for Agents outside that store.
@@ -296,6 +312,14 @@ func (s *Server) Enroll(
 // invalidates its active control session before returning. It is the
 // revocation entry point for master-local callers such as the web interface.
 func (s *Server) RevokeAgent(ctx context.Context, agentID string) error {
+	revoke := func() error { return s.revokeAgent(ctx, agentID) }
+	if s.agentRevocationGuard != nil {
+		return s.agentRevocationGuard(agentID, revoke)
+	}
+	return revoke()
+}
+
+func (s *Server) revokeAgent(ctx context.Context, agentID string) error {
 	s.authorizationMu.Lock()
 	if err := s.Deployments.RemoveAgent(ctx, agentID); err != nil &&
 		!errors.Is(err, deployment.ErrNotFound) {
@@ -436,7 +460,7 @@ func (s *Server) Connect(stream controlv1.AgentControlService_ConnectServer) err
 	// QueueDeployment, which acquires it.
 	s.syncPoolAddresses(ctx, agentID, session.info.ReportedIPv4, session.info.ReportedIPv6)
 	s.syncObservedAddress(ctx, agentID, observedAddress(ctx))
-	if err := s.syncProfileOnConnect(ctx, agentID); err != nil {
+	if err := s.syncProfileOnSession(ctx, agentID, session); err != nil {
 		s.Logger.Error(
 			"authoritative Agent profile could not be queued",
 			"agent_id", agentID,
@@ -459,6 +483,7 @@ func (s *Server) Connect(stream controlv1.AgentControlService_ConnectServer) err
 	if s.proxyNodeUserHandler != nil && s.Sessions.Supports(agentID, ManagedUserAuthorityCapability) {
 		go s.proxyNodeUserHandler()
 	}
+	s.notifyProxyNodeTopologyReady(agentID)
 	s.Logger.Info("agent connected", "agent_id", agentID)
 	defer s.Logger.Info("agent disconnected", "agent_id", agentID)
 
@@ -700,6 +725,19 @@ func (s *Server) QueueDeployment(
 	config []byte,
 	timeout time.Duration,
 ) (deployment.Record, error) {
+	return s.queueDeployment(ctx, agentID, deploymentID, revisionID, config, timeout, false, nil)
+}
+
+func (s *Server) queueDeployment(
+	ctx context.Context,
+	agentID string,
+	deploymentID string,
+	revisionID string,
+	config []byte,
+	timeout time.Duration,
+	allowInitialProfile bool,
+	expectedSession *session,
+) (deployment.Record, error) {
 	// config is the logical document and may contain pool refs. Only the
 	// rendered document is size/policy checked, digested, and sent to the
 	// agent; the record keeps the logical bytes plus the rendered digest.
@@ -718,7 +756,11 @@ func (s *Server) QueueDeployment(
 	if _, err := s.Identities.PublicKey(ctx, agentID); err != nil {
 		return deployment.Record{}, err
 	}
-	if !s.CanDeployProxyNodeConfiguration(agentID) {
+	canDeploy := s.CanDeployProxyNodeConfiguration(agentID)
+	if allowInitialProfile {
+		canDeploy = s.Sessions.SupportsSession(expectedSession, ProxyNodeDeployCapability, false)
+	}
+	if !canDeploy {
 		return deployment.Record{}, ErrAgentOffline
 	}
 	if current, err := s.Deployments.LatestForAgent(ctx, agentID); err == nil {
@@ -779,7 +821,13 @@ func (s *Server) QueueDeployment(
 			},
 		},
 	}
-	if err := s.Sessions.Send(ctx, agentID, command); err != nil {
+	var sendErr error
+	if allowInitialProfile {
+		sendErr = s.Sessions.SendToSession(ctx, expectedSession, command)
+	} else {
+		_, sendErr = s.Sessions.SendReady(ctx, agentID, ProxyNodeDeployCapability, command)
+	}
+	if sendErr != nil {
 		failed, transitionErr := s.Deployments.Transition(
 			ctx,
 			record.ID,
@@ -794,7 +842,7 @@ func (s *Server) QueueDeployment(
 			})
 			record = failed
 		}
-		return record, err
+		return record, sendErr
 	}
 	return deploying, nil
 }
@@ -972,7 +1020,7 @@ func (s *Server) QueueManagedUserAuthority(
 	variants []singbox.ManagedUserAuthorityVariant,
 ) error {
 	if ctx == nil || revision == 0 || len(variants) == 0 ||
-		!s.Sessions.Supports(agentID, ManagedUserAuthorityCapability) {
+		!s.CanSyncManagedUserAuthority(agentID) {
 		return ErrAgentOffline
 	}
 	requestID, err := randomOpaqueID("usr")
@@ -1003,9 +1051,10 @@ func (s *Server) QueueManagedUserAuthority(
 		delete(s.managedUserAuthorityWaiters, key)
 		s.managedUserAuthorityMu.Unlock()
 	}()
-	if err := s.Sessions.Send(ctx, agentID, &controlv1.MasterFrame{
+	authoritySession, err := s.Sessions.SendReady(ctx, agentID, ManagedUserAuthorityCapability, &controlv1.MasterFrame{
 		Payload: &controlv1.MasterFrame_ManagedUserAuthority{ManagedUserAuthority: command},
-	}); err != nil {
+	})
+	if err != nil {
 		return err
 	}
 	select {
@@ -1019,10 +1068,11 @@ func (s *Server) QueueManagedUserAuthority(
 				diagnostic = "Agent rejected managed-user authority"
 			}
 			if diagnostic == singbox.ManagedUserAuthorityTopologyMismatchDiagnostic {
-				if repairErr := s.queueAuthoritativeProfile(
+				if repairErr := s.queueAuthoritativeProfileForSession(
 					ctx,
 					agentID,
 					"managed-user authority did not match the active topology",
+					authoritySession,
 				); repairErr != nil {
 					return fmt.Errorf("%s; authoritative profile repair failed: %w", diagnostic, repairErr)
 				}
@@ -1581,6 +1631,7 @@ type session struct {
 	commands     chan *controlv1.MasterFrame
 	done         chan struct{}
 	capabilities map[string]struct{}
+	profileReady bool
 	info         AgentInfo
 }
 
@@ -1602,11 +1653,16 @@ func newSession(agentID string) *session {
 		commands:     make(chan *controlv1.MasterFrame, DefaultCommandQueue),
 		done:         make(chan struct{}),
 		capabilities: make(map[string]struct{}),
+		// Direct unit-test sessions model an already established control
+		// stream. Connect-created sessions reset this until their authoritative
+		// profile has been queued.
+		profileReady: true,
 	}
 }
 
 func newSessionFromHello(agentID string, hello *controlv1.AgentHello) *session {
 	session := newSession(agentID)
+	session.profileReady = false
 	session.info = AgentInfo{
 		Version:         hello.GetAgentVersion(),
 		SingBoxVersion:  hello.GetSingBoxVersion(),
@@ -1795,6 +1851,71 @@ func (r *SessionRegistry) Send(
 	if !exists {
 		return ErrAgentOffline
 	}
+	return sendSession(ctx, session, frame)
+}
+
+// Current returns the exact authenticated session generation currently bound
+// to agentID. Callers that perform a multi-step session bootstrap must retain
+// this pointer and use SendToSession/MarkProfileReady so an old connection can
+// never authorize or send work to a newly registered replacement connection.
+func (r *SessionRegistry) Current(agentID string) (*session, bool) {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	session, exists := r.sessions[agentID]
+	return session, exists
+}
+
+// SendToSession sends only if expected is still the current authenticated
+// session for its Agent. It is used for the initial authoritative replay,
+// before that session is ready for ordinary topology/user-plane commands.
+func (r *SessionRegistry) SendToSession(
+	ctx context.Context,
+	expected *session,
+	frame *controlv1.MasterFrame,
+) error {
+	if expected == nil {
+		return ErrAgentOffline
+	}
+	r.mu.RLock()
+	current, exists := r.sessions[expected.agentID]
+	r.mu.RUnlock()
+	if !exists || current != expected {
+		return ErrAgentOffline
+	}
+	return sendSession(ctx, expected, frame)
+}
+
+// SendReady binds the readiness/capability check and the eventual send to the
+// same session generation. A replacement session starts unready and cannot
+// receive a command merely because its predecessor passed an earlier check.
+func (r *SessionRegistry) SendReady(
+	ctx context.Context,
+	agentID string,
+	capability string,
+	frame *controlv1.MasterFrame,
+) (*session, error) {
+	r.mu.RLock()
+	session, exists := r.sessions[agentID]
+	if !exists || !session.profileReady {
+		r.mu.RUnlock()
+		return nil, ErrAgentOffline
+	}
+	_, supported := session.capabilities[capability]
+	r.mu.RUnlock()
+	if !supported {
+		return nil, ErrAgentOffline
+	}
+	if err := sendSession(ctx, session, frame); err != nil {
+		return nil, err
+	}
+	return session, nil
+}
+
+func sendSession(
+	ctx context.Context,
+	session *session,
+	frame *controlv1.MasterFrame,
+) error {
 
 	select {
 	case <-session.done:
@@ -1834,16 +1955,61 @@ func (r *SessionRegistry) Supports(agentID, capability string) bool {
 	return supported
 }
 
+func (r *SessionRegistry) SupportsReady(agentID, capability string) bool {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	session, exists := r.sessions[agentID]
+	if !exists || !session.profileReady {
+		return false
+	}
+	_, supported := session.capabilities[capability]
+	return supported
+}
+
+func (r *SessionRegistry) SupportsSession(expected *session, capability string, requireReady bool) bool {
+	if expected == nil {
+		return false
+	}
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	current, exists := r.sessions[expected.agentID]
+	if !exists || current != expected || (requireReady && !expected.profileReady) {
+		return false
+	}
+	_, supported := expected.capabilities[capability]
+	return supported
+}
+
+func (r *SessionRegistry) MarkProfileReady(expected *session) bool {
+	if expected == nil {
+		return false
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	current, exists := r.sessions[expected.agentID]
+	if !exists || current != expected {
+		return false
+	}
+	expected.profileReady = true
+	return true
+}
+
+func (s *Server) notifyProxyNodeTopologyReady(agentID string) {
+	if s.proxyNodeTopologyHandler != nil && s.CanDeployProxyNodeConfiguration(agentID) {
+		go s.proxyNodeTopologyHandler()
+	}
+}
+
 func (s *Server) CanDeployConfiguration(agentID string) bool {
-	return s.Sessions.Supports(agentID, ConfigDeployCapability)
+	return s.Sessions.SupportsReady(agentID, ConfigDeployCapability)
 }
 
 func (s *Server) CanDeployProxyNodeConfiguration(agentID string) bool {
-	return s.Sessions.Supports(agentID, ProxyNodeDeployCapability)
+	return s.Sessions.SupportsReady(agentID, ProxyNodeDeployCapability)
 }
 
 func (s *Server) CanSyncManagedUserAuthority(agentID string) bool {
-	return s.Sessions.Supports(agentID, ManagedUserAuthorityCapability)
+	return s.Sessions.SupportsReady(agentID, ManagedUserAuthorityCapability)
 }
 
 func (s *Server) CanUpdateAgent(agentID string) bool {

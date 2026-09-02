@@ -5,6 +5,7 @@ import (
 	"crypto/ed25519"
 	"crypto/rand"
 	"encoding/json"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -149,6 +150,51 @@ func TestRestoreRejectsNonEmptyTarget(t *testing.T) {
 	}
 	if _, err := service.StageRestore(context.Background(), []byte("not-an-archive"), "correct horse battery staple"); err != ErrTargetNotEmpty {
 		t.Fatalf("error = %v, want ErrTargetNotEmpty", err)
+	}
+}
+
+func TestExportAllowsPendingTopologyWithoutTransactionJournal(t *testing.T) {
+	service, closeService := testService(t, t.TempDir(), "admin")
+	defer closeService()
+	if _, err := service.ProxyNodes.CreateProxyNode(proxynode.CreateProxyNodeInput{
+		Name:      "pending node",
+		RootAgent: "edge-a",
+		Entrance: proxynode.Endpoint{
+			Protocol:   proxynode.ProtocolAnyTLS,
+			Listen:     "::",
+			ListenPort: 443,
+			Family:     "ipv4",
+			TLS: proxynode.TLSConfig{
+				Mode:       proxynode.TLSModeSelfSigned,
+				ServerName: "proxy.example.com",
+			},
+		},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	state := service.ProxyNodes.Snapshot()
+	if state.Revision == state.AppliedRevision {
+		t.Fatalf("test setup did not create pending topology: revision %d", state.Revision)
+	}
+
+	if _, err := service.Export(context.Background(), "correct horse battery staple"); err != nil {
+		t.Fatalf("export pending topology without transaction journal: %v", err)
+	}
+}
+
+func TestExportRejectsActiveTopologyTransactionJournal(t *testing.T) {
+	service, closeService := testService(t, t.TempDir(), "admin")
+	defer closeService()
+	journalPath := filepath.Join(service.StateDirectory, "proxy-node-topology-transaction.json")
+	// Existence is sufficient: even a partial or corrupt journal means the
+	// migration snapshot cannot safely choose between the old and new fleet.
+	if err := os.WriteFile(journalPath, []byte("{\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	_, err := service.Export(context.Background(), "correct horse battery staple")
+	if !errors.Is(err, ErrSnapshotBusy) {
+		t.Fatalf("Export() error = %v, want ErrSnapshotBusy", err)
 	}
 }
 

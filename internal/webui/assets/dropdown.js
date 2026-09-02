@@ -116,6 +116,7 @@
       value: option.value,
       label: option.textContent,
       disabled: option.disabled,
+      hidden: option.hidden,
       detail: option.dataset.optionDetail || "",
       status: option.dataset.optionStatus || "",
     }));
@@ -134,10 +135,12 @@
       clearRenderedOptions(control);
       const normalized = control.query.trim().toLocaleLowerCase();
       control.filteredRecords = control.optionRecords.filter((record) =>
-        !normalized ||
-        record.label.toLocaleLowerCase().includes(normalized) ||
-        record.detail.toLocaleLowerCase().includes(normalized) ||
-        record.value.toLocaleLowerCase().includes(normalized),
+        !record.hidden && (
+          !normalized ||
+          record.label.toLocaleLowerCase().includes(normalized) ||
+          record.detail.toLocaleLowerCase().includes(normalized) ||
+          record.value.toLocaleLowerCase().includes(normalized)
+        ),
       );
     }
     if (control.filteredRecords.length === 0) {

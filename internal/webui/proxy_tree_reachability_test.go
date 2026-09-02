@@ -78,6 +78,27 @@ func TestBuildProxyTreePropagatesRuleConstraints(t *testing.T) {
 	}
 }
 
+func TestBuildProxyTreeUsesDisplayNamesWithoutChangingAgentIDs(t *testing.T) {
+	node := proxyReachabilityNode(
+		proxynode.Rule{ID: "rule-http", Match: proxynode.MatchProtocol, Values: []string{"http"}},
+		nil,
+	)
+	names := map[string]string{"agent-a": "入口 上海", "agent-b": "东京 出口"}
+	tree, _, _ := buildProxyTreeWithNames(node, func(agentID string) string {
+		if name := names[agentID]; name != "" {
+			return name
+		}
+		return agentID
+	})
+	if tree == nil || tree.Name != "入口 上海" || tree.AgentID != "agent-a" {
+		t.Fatalf("root display/identity = %#v", tree)
+	}
+	if len(tree.Branches) != 1 || tree.Branches[0].Child == nil ||
+		tree.Branches[0].Child.Name != "东京 出口" || tree.Branches[0].Child.AgentID != "agent-b" {
+		t.Fatalf("child display/identity = %#v", tree.Branches)
+	}
+}
+
 func TestBuildProxyTreePlacesExactDomainOnlyUnderCompatibleParentSuffix(t *testing.T) {
 	endpoint := proxynode.Endpoint{Protocol: proxynode.ProtocolShadowsocks, Listen: "::", ListenPort: 20048}
 	netCoffee := proxynode.Rule{ID: "rule-net-coffee", Order: 0, Match: proxynode.MatchDomainSuffix, Values: []string{"net.coffee"}}

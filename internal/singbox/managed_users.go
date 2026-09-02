@@ -191,7 +191,11 @@ func collectManagedUserTrafficWithClient(
 	for _, endpoint := range parsed.Endpoints {
 		membershipUsers := make(map[string]struct{})
 		for _, user := range endpoint.Users {
-			if _, membership := managedMembershipKey(user.Username); membership {
+			_, membership, identityErr := parseManagedMembershipIdentity(user.Username)
+			if identityErr != nil {
+				return result, identityErr
+			}
+			if membership {
 				membershipUsers[user.Username] = struct{}{}
 			}
 		}
@@ -261,12 +265,8 @@ func managedConfigHasMemberships(encoded []byte) (bool, error) {
 	if err := decodeManagedDocument(encoded, &document); err != nil {
 		return false, err
 	}
-	for _, name := range managedDocumentUserNames(document) {
-		if _, membership := managedMembershipKey(name); membership {
-			return true, nil
-		}
-	}
-	return false, nil
+	_, count, err := managedMembershipIdentityIndexForNames(managedDocumentUserNames(document))
+	return count > 0, err
 }
 
 func parseManagedUserConfig(encoded []byte) (managedUserConfig, error) {
@@ -423,18 +423,38 @@ func retainAuthorizedMemberships(activeConfig, candidateConfig []byte) ([]byte, 
 	if err := decodeManagedDocument(candidateConfig, &candidate); err != nil {
 		return nil, err
 	}
-	candidateKeys := managedMembershipKeys(candidate)
-	if len(candidateKeys) == 0 {
+	candidateIdentities, candidateCount, err := managedMembershipIdentityIndexForNames(managedDocumentUserNames(candidate))
+	if err != nil {
+		return nil, err
+	}
+	if candidateCount == 0 {
 		return append([]byte(nil), candidateConfig...), nil
 	}
-	authorized := make(map[string]struct{}, len(candidateKeys))
+	authorized := newManagedMembershipIdentityIndex()
 	var active map[string]any
 	if len(bytes.TrimSpace(activeConfig)) > 0 && decodeManagedDocument(activeConfig, &active) == nil {
 		for _, name := range managedDocumentUserNames(active) {
-			for key := range candidateKeys {
-				if strings.HasSuffix(name, "-m-"+key) || strings.HasSuffix(name, "-"+key) {
-					authorized[key] = struct{}{}
+			identity, membership, identityErr := parseManagedMembershipIdentity(name)
+			if identityErr != nil {
+				return nil, identityErr
+			}
+			if membership {
+				if err := authorized.add(identity); err != nil {
+					return nil, err
 				}
+				continue
+			}
+			// Before the stable -m- marker, readable Membership labels ended in
+			// -<12>. Retain that one-way active-profile compatibility until old
+			// profiles have all been replaced; candidate identities remain strict.
+			for legacyKey := range candidateIdentities.byLegacy {
+				if !strings.HasSuffix(name, "-"+legacyKey) {
+					continue
+				}
+				if err := authorized.add(managedMembershipIdentity{LegacyKey: legacyKey}); err != nil {
+					return nil, err
+				}
+				break
 			}
 		}
 	}
@@ -446,9 +466,16 @@ func retainAuthorizedMemberships(activeConfig, candidateConfig []byte) ([]byte, 
 		for _, rawUser := range rawUsers {
 			user, _ := rawUser.(map[string]any)
 			name, _ := user["name"].(string)
-			key, membership := managedMembershipKey(name)
+			identity, membership, identityErr := parseManagedMembershipIdentity(name)
+			if identityErr != nil {
+				return nil, identityErr
+			}
 			if membership {
-				if _, exists := authorized[key]; !exists {
+				allowed, matchErr := authorized.authorizes(identity)
+				if matchErr != nil {
+					return nil, matchErr
+				}
+				if !allowed {
 					continue
 				}
 			}
@@ -476,16 +503,6 @@ func decodeManagedDocument(encoded []byte, target *map[string]any) error {
 	return nil
 }
 
-func managedMembershipKeys(document map[string]any) map[string]struct{} {
-	result := make(map[string]struct{})
-	for _, name := range managedDocumentUserNames(document) {
-		if key, ok := managedMembershipKey(name); ok {
-			result[key] = struct{}{}
-		}
-	}
-	return result
-}
-
 func managedDocumentUserNames(document map[string]any) []string {
 	var result []string
 	inbounds, _ := document["inbounds"].([]any)
@@ -500,20 +517,4 @@ func managedDocumentUserNames(document map[string]any) []string {
 		}
 	}
 	return result
-}
-
-func managedMembershipKey(name string) (string, bool) {
-	marker := strings.LastIndex(name, "-m-")
-	if marker < 0 || len(name)-marker-3 != 12 {
-		return "", false
-	}
-	key := name[marker+3:]
-	for _, character := range key {
-		if character >= 'A' && character <= 'Z' || character >= 'a' && character <= 'z' ||
-			character >= '0' && character <= '9' || character == '_' || character == '-' {
-			continue
-		}
-		return "", false
-	}
-	return key, true
 }

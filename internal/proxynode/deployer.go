@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net/netip"
 	"slices"
 	"sort"
 	"strings"
@@ -14,6 +15,7 @@ import (
 	"time"
 
 	"github.com/masterauguste/theatropolis/internal/deployment"
+	"github.com/masterauguste/theatropolis/internal/pool"
 	"github.com/masterauguste/theatropolis/internal/singbox"
 )
 
@@ -36,6 +38,7 @@ type DeploymentController interface {
 type FleetDeploymentStatus string
 
 const (
+	FleetDeploymentPending   FleetDeploymentStatus = "pending"
 	FleetDeploymentQueued    FleetDeploymentStatus = "queued"
 	FleetDeploymentDeploying FleetDeploymentStatus = "deploying"
 	FleetDeploymentApplied   FleetDeploymentStatus = "applied"
@@ -56,6 +59,13 @@ type FleetDeployment struct {
 	Error     string
 	StartedAt time.Time
 	UpdatedAt time.Time
+
+	// plane and topologyRevision are local reconciliation metadata. They are
+	// intentionally not part of the Web/API contract, but let the retry loop
+	// distinguish a failed desired-topology attempt from an applied-refresh
+	// job that happens to share the same presentation slot.
+	plane            deploymentPlane
+	topologyRevision uint64
 }
 
 type Deployer struct {
@@ -69,6 +79,8 @@ type Deployer struct {
 	userJob               *FleetDeployment
 	mutationReserved      bool
 	onTopologyApplied     func()
+	onTopologyDesired     func()
+	onUserPlaneChanged    func()
 	transaction           *topologyTransaction
 	transactionPath       string
 	inFlightAuthority     map[string]singbox.ManagedUserAuthorityVariant
@@ -82,11 +94,47 @@ type deploymentPlane uint8
 const (
 	deploymentTopology deploymentPlane = iota
 	deploymentAppliedRefresh
+	deploymentRecovery
 )
 
 type desiredRevision struct {
 	topology uint64
 	users    uint64
+}
+
+type retainedAddressResolver struct {
+	primary AddressResolver
+	byAgent map[string]map[pool.Family]string
+}
+
+var (
+	retainedCGNATPrefix       = netip.MustParsePrefix("100.64.0.0/10")
+	retainedReserved240Prefix = netip.MustParsePrefix("240.0.0.0/4")
+)
+
+func retainedAddressIsRoutable(address netip.Addr) bool {
+	return address.IsGlobalUnicast() &&
+		!address.IsPrivate() &&
+		!retainedCGNATPrefix.Contains(address) &&
+		!retainedReserved240Prefix.Contains(address)
+}
+
+func (r retainedAddressResolver) AgentAddressForFamily(agentID string, family pool.Family) (string, bool) {
+	if address, ok := r.primary.AgentAddressForFamily(agentID, family); ok {
+		return address, true
+	}
+	addresses := r.byAgent[agentID]
+	if family == pool.FamilyAuto {
+		if address := addresses[pool.FamilyIPv4]; address != "" {
+			return address, true
+		}
+		if address := addresses[pool.FamilyIPv6]; address != "" {
+			return address, true
+		}
+		return "", false
+	}
+	address := addresses[family]
+	return address, address != ""
 }
 
 func NewDeployer(store *Store, resolver AddressResolver, controller DeploymentController) (*Deployer, error) {
@@ -110,8 +158,137 @@ func NewDeployer(store *Store, resolver AddressResolver, controller DeploymentCo
 	}, nil
 }
 
+// resolverForState supplements the live pool with addresses retained in the
+// last confirmed Agent profiles. Losing an observed address while an Agent is
+// offline must not make an otherwise unrelated topology impossible to render.
+// Live pool data always wins; retained addresses are only a last-known-good
+// fallback and will be replaced by the next applied address refresh.
+func (d *Deployer) resolverForState(state State) AddressResolver {
+	d.mu.RLock()
+	transaction := cloneTopologyTransactionForResolver(d.transaction)
+	d.mu.RUnlock()
+	return d.resolverForStateWithTransaction(state, transaction)
+}
+
+func (d *Deployer) resolverForStateLocked(state State) AddressResolver {
+	return d.resolverForStateWithTransaction(state, d.transaction)
+}
+
+func (d *Deployer) resolverForStateWithTransaction(
+	state State,
+	transaction *topologyTransaction,
+) AddressResolver {
+	targets := make(map[string]map[string]string)
+	for _, node := range state.AppliedProxyNodes {
+		hops := make(map[string]Hop, len(node.Hops))
+		for _, hop := range node.Hops {
+			hops[hop.ID] = hop
+		}
+		for _, link := range node.Links {
+			parent, parentExists := hops[link.ParentHopID]
+			child, childExists := hops[link.ChildHopID]
+			if !parentExists || !childExists {
+				continue
+			}
+			if targets[parent.AgentID] == nil {
+				targets[parent.AgentID] = make(map[string]string)
+			}
+			targets[parent.AgentID][linkOutboundTag(link.ID)] = child.AgentID
+		}
+	}
+	rollbackConfigs := make(map[string][]byte)
+	if transaction != nil {
+		for _, agent := range transaction.Agents {
+			rollbackConfigs[agent.AgentID] = agent.RollbackConfig
+		}
+	}
+	fallback := make(map[string]map[pool.Family]string)
+	for parentAgent, tags := range targets {
+		config := rollbackConfigs[parentAgent]
+		if len(config) == 0 {
+			record, err := d.controller.LatestDeployment(context.Background(), parentAgent)
+			if err != nil {
+				continue
+			}
+			var exists bool
+			config, _, exists = record.AppliedConfiguration()
+			if !exists {
+				continue
+			}
+		}
+		var document struct {
+			Outbounds []struct {
+				Tag    string `json:"tag"`
+				Server string `json:"server"`
+			} `json:"outbounds"`
+		}
+		if err := json.Unmarshal(config, &document); err != nil {
+			continue
+		}
+		for _, outbound := range document.Outbounds {
+			childAgent := tags[outbound.Tag]
+			address, err := netip.ParseAddr(outbound.Server)
+			if childAgent == "" || err != nil || !retainedAddressIsRoutable(address) {
+				continue
+			}
+			family := pool.FamilyIPv6
+			if address.Is4() {
+				family = pool.FamilyIPv4
+			}
+			if fallback[childAgent] == nil {
+				fallback[childAgent] = make(map[pool.Family]string)
+			}
+			if fallback[childAgent][family] == "" {
+				fallback[childAgent][family] = address.String()
+			}
+		}
+	}
+	return retainedAddressResolver{primary: d.resolver, byAgent: fallback}
+}
+
+func cloneTopologyTransactionForResolver(transaction *topologyTransaction) *topologyTransaction {
+	if transaction == nil {
+		return nil
+	}
+	clone := &topologyTransaction{Agents: make([]topologyTransactionAgent, len(transaction.Agents))}
+	for index, agent := range transaction.Agents {
+		clone.Agents[index] = topologyTransactionAgent{
+			AgentID:        agent.AgentID,
+			RollbackConfig: append([]byte(nil), agent.RollbackConfig...),
+		}
+	}
+	return clone
+}
+
 func (d *Deployer) Preview() (CompileResult, error) {
-	return CompileTopology(d.store.Snapshot(), d.resolver)
+	state := d.store.Snapshot()
+	return CompileTopology(state, d.resolverForState(state))
+}
+
+// GuardAgentRemoval serializes a control-plane revocation with topology
+// mutations and refuses it until every desired/applied Hop and managed
+// retirement profile has stopped referencing the Agent.
+func (d *Deployer) GuardAgentRemoval(agentID string, removal func() error) error {
+	if removal == nil {
+		return errors.New("Agent removal callback is required")
+	}
+	d.mu.Lock()
+	if d.mutationReserved || d.transaction != nil ||
+		(d.job != nil && (d.job.Status == FleetDeploymentQueued || d.job.Status == FleetDeploymentDeploying)) {
+		d.mu.Unlock()
+		return ErrDeploymentActive
+	}
+	// Use the same reservation as MutateAndStart, but release d.mu before the
+	// control-plane callback performs disk I/O and pool propagation. Every
+	// production topology mutation observes the reservation, so the reference
+	// check remains atomic without creating a cross-component lock cycle.
+	d.mutationReserved = true
+	d.mu.Unlock()
+	defer d.releaseMutationReservation()
+	if err := d.store.RequireAgentUnreferenced(agentID); err != nil {
+		return err
+	}
+	return removal()
 }
 
 // AuthoritativeAppliedProfile rebuilds one managed Agent from the last
@@ -123,11 +300,22 @@ func (d *Deployer) AuthoritativeAppliedProfile(
 	_ context.Context,
 	agentID string,
 ) ([]byte, bool, error) {
+	// Once an Agent has confirmed part of an in-flight topology, its latest
+	// deployment record is more authoritative than Store.AppliedProxyNodes
+	// until the fleet-wide commit completes. Rebuilding the old Store snapshot
+	// during a reconnect would silently roll this Agent back while the original
+	// rollout could still commit the new topology. Let profile_sync replay the
+	// latest confirmed record for touched Agents; transaction recovery retains
+	// the exact pre-change RollbackConfig separately.
+	if d.transactionTouchedAgent(agentID) {
+		return nil, false, nil
+	}
 	state := d.store.Snapshot()
 	if !slices.Contains(state.ManagedAgents, agentID) {
 		return nil, false, nil
 	}
-	compiled, err := CompileAppliedUsers(state, d.resolver)
+	resolver := d.resolverForState(state)
+	compiled, err := CompileAppliedUsers(state, resolver)
 	if err != nil {
 		return nil, true, err
 	}
@@ -138,6 +326,20 @@ func (d *Deployer) AuthoritativeAppliedProfile(
 	return append([]byte(nil), config...), true, nil
 }
 
+func (d *Deployer) transactionTouchedAgent(agentID string) bool {
+	d.mu.RLock()
+	defer d.mu.RUnlock()
+	if d.transaction == nil {
+		return false
+	}
+	for _, agent := range d.transaction.Agents {
+		if agent.AgentID == agentID {
+			return agent.Touched
+		}
+	}
+	return false
+}
+
 func (d *Deployer) Start() (FleetDeployment, error) {
 	return d.start(deploymentTopology, nil, false)
 }
@@ -145,14 +347,17 @@ func (d *Deployer) Start() (FleetDeployment, error) {
 // MutateAndStart serializes one complete topology edit with its fleet
 // deployment. The reservation is acquired before the Store mutation so two
 // browser requests cannot both create draft revisions before either starts.
-// Synchronous preflight failures restore the prior topology before returning;
-// asynchronous deployment failures use the same snapshot after fleet rollback.
+// Structural synchronous failures restore the prior desired topology before
+// returning. Temporary address, connection, or deployment-slot unavailability
+// leaves the new desired revision pending without touching the applied plane.
+// Once a fleet deployment starts, a later Agent failure rolls back only the
+// fleet: the accepted desired revision remains editable and retryable.
 func (d *Deployer) MutateAndStart(mutation func() error) (FleetDeployment, error) {
 	if mutation == nil {
 		return FleetDeployment{}, errors.New("topology mutation is required")
 	}
 	d.mu.Lock()
-	if d.mutationReserved || d.transaction != nil ||
+	if d.mutationReserved ||
 		(d.job != nil && (d.job.Status == FleetDeploymentQueued || d.job.Status == FleetDeploymentDeploying)) {
 		var current FleetDeployment
 		if d.job != nil {
@@ -169,8 +374,19 @@ func (d *Deployer) MutateAndStart(mutation func() error) (FleetDeployment, error
 		d.releaseMutationReservation()
 		return FleetDeployment{}, err
 	}
-	job, err := d.start(deploymentTopology, &previous, true)
+	mutated := d.store.Snapshot()
+	job, err := d.start(deploymentTopology, nil, true)
 	if err == nil {
+		d.mu.RLock()
+		topologyHook := d.onTopologyDesired
+		userHook := d.onUserPlaneChanged
+		d.mu.RUnlock()
+		if topologyHook != nil && job.Status == FleetDeploymentPending {
+			topologyHook()
+		}
+		if userHook != nil && mutated.UserRevision != previous.UserRevision {
+			userHook()
+		}
 		return job, nil
 	}
 	currentRevision := d.store.Snapshot().Revision
@@ -211,6 +427,27 @@ func (d *Deployer) SetTopologyAppliedHook(hook func()) {
 	d.mu.Unlock()
 }
 
+// SetTopologyDesiredHook installs a lightweight wake-up callback for the
+// coalesced pending-topology reconciler. It runs only after an accepted edit
+// could not start because a changed Agent or address is unavailable;
+// validation errors and already-started fleet jobs do not wake the retry loop.
+func (d *Deployer) SetTopologyDesiredHook(hook func()) {
+	d.mu.Lock()
+	d.onTopologyDesired = hook
+	d.mu.Unlock()
+}
+
+// SetUserPlaneChangedHook installs the independent authority reconciler wake
+// up used when an accepted topology mutation also adds, removes, or rotates
+// Membership authority. It is intentionally separate from topology success:
+// an old applied entrance must revoke a deleted Membership even while a relay
+// or retirement remains pending offline.
+func (d *Deployer) SetUserPlaneChangedHook(hook func()) {
+	d.mu.Lock()
+	d.onUserPlaneChanged = hook
+	d.mu.Unlock()
+}
+
 func (d *Deployer) start(plane deploymentPlane, rollbackState *State, reserved bool) (FleetDeployment, error) {
 	d.mu.Lock()
 	defer d.mu.Unlock()
@@ -227,10 +464,24 @@ func (d *Deployer) start(plane deploymentPlane, rollbackState *State, reserved b
 		return cloneFleetDeployment(*d.job), ErrDeploymentActive
 	}
 	if d.transaction != nil {
+		if plane != deploymentTopology {
+			if d.job != nil {
+				return cloneFleetDeployment(*d.job), ErrDeploymentActive
+			}
+			return FleetDeployment{}, ErrDeploymentActive
+		}
 		return d.startTransactionRecoveryLocked()
 	}
-	compiled, revision, err := d.compileCompleteFleet(plane)
+	compiled, revision, err := d.compileCompleteFleetLocked(plane)
 	if err != nil {
+		var unavailable *AgentAddressUnavailableError
+		if plane == deploymentTopology && errors.As(err, &unavailable) {
+			return d.pendingTopologyDeploymentLocked(
+				[]string{unavailable.AgentID},
+				map[string]string{unavailable.AgentID: "waiting for address"},
+				err.Error(),
+			)
+		}
 		return FleetDeployment{}, err
 	}
 	var agents []string
@@ -242,9 +493,36 @@ func (d *Deployer) start(plane deploymentPlane, rollbackState *State, reserved b
 	if err != nil {
 		return FleetDeployment{}, err
 	}
-	for _, agentID := range agents {
-		if plane == deploymentTopology && !d.controller.CanDeployProxyNodeConfiguration(agentID) {
-			return FleetDeployment{}, fmt.Errorf("Agent %q is offline or cannot deploy configuration", agentID)
+	if plane == deploymentTopology {
+		waiting := make(map[string]string)
+		for _, agentID := range agents {
+			if !d.controller.CanDeployProxyNodeConfiguration(agentID) {
+				waiting[agentID] = "waiting for Agent"
+				continue
+			}
+			record, recordErr := d.controller.LatestDeployment(context.Background(), agentID)
+			if errors.Is(recordErr, deployment.ErrNotFound) {
+				continue
+			}
+			if recordErr != nil {
+				return FleetDeployment{}, fmt.Errorf("inspect latest deployment for Agent %q: %w", agentID, recordErr)
+			}
+			if deploymentRecordBusy(record) {
+				waiting[agentID] = "waiting for current deployment"
+			}
+		}
+		if len(waiting) > 0 {
+			waitingAgents := make([]string, 0, len(waiting))
+			for _, agentID := range agents {
+				if _, exists := waiting[agentID]; exists {
+					waitingAgents = append(waitingAgents, agentID)
+				}
+			}
+			return d.pendingTopologyDeploymentLocked(
+				agents,
+				waiting,
+				"Topology saved; deployment is waiting for "+strings.Join(waitingAgents, ", "),
+			)
 		}
 	}
 	rollback := CompileResult{}
@@ -262,6 +540,8 @@ func (d *Deployer) start(plane deploymentPlane, rollbackState *State, reserved b
 	}
 	now := d.now().UTC()
 	job := &FleetDeployment{ID: jobID, Status: FleetDeploymentQueued, StartedAt: now, UpdatedAt: now}
+	job.plane = plane
+	job.topologyRevision = revision.topology
 	for _, agentID := range agents {
 		job.Agents = append(job.Agents, AgentDeploymentProgress{AgentID: agentID, Status: "queued"})
 	}
@@ -306,6 +586,64 @@ func (d *Deployer) start(plane deploymentPlane, rollbackState *State, reserved b
 	result := cloneFleetDeployment(*job)
 	go d.run(jobID, compiled, rollback, agents, rollbackAgents, revision, plane, rollbackState)
 	return result, nil
+}
+
+func (d *Deployer) pendingTopologyDeploymentLocked(
+	agents []string,
+	waiting map[string]string,
+	message string,
+) (FleetDeployment, error) {
+	jobID, err := randomID("job")
+	if err != nil {
+		return FleetDeployment{}, err
+	}
+	now := d.now().UTC()
+	job := &FleetDeployment{
+		ID: jobID, Status: FleetDeploymentPending, Error: message,
+		StartedAt: now, UpdatedAt: now, plane: deploymentTopology,
+		topologyRevision: d.store.Snapshot().Revision,
+	}
+	for _, agentID := range agents {
+		status := "ready"
+		if pendingStatus := waiting[agentID]; pendingStatus != "" {
+			status = pendingStatus
+		}
+		job.Agents = append(job.Agents, AgentDeploymentProgress{
+			AgentID: agentID, Status: status,
+		})
+	}
+	d.job = job
+	return cloneFleetDeployment(*job), nil
+}
+
+func deploymentRecordBusy(record deployment.Record) bool {
+	switch record.Status {
+	case deployment.StatusQueued, deployment.StatusValidating, deployment.StatusDeploying:
+		return true
+	default:
+		return false
+	}
+}
+
+// ReconcilePending starts the newest desired topology only when it is ahead of
+// the last applied revision. Control-plane readiness and address-change hooks
+// call this after an Agent becomes usable; repeated calls coalesce through the
+// ordinary Deployer reservation.
+func (d *Deployer) ReconcilePending() (FleetDeployment, error) {
+	state := d.store.Snapshot()
+	if state.Revision == state.AppliedRevision {
+		if current, exists := d.Current(); exists {
+			return current, nil
+		}
+		return FleetDeployment{}, nil
+	}
+	return d.Start()
+}
+
+func (d *Deployer) hasPendingTransaction() bool {
+	d.mu.RLock()
+	defer d.mu.RUnlock()
+	return d.transaction != nil
 }
 
 func (d *Deployer) startUserSync() (FleetDeployment, error) {
@@ -357,7 +695,8 @@ func (d *Deployer) compileUserAuthorities(
 	pending map[string]singbox.ManagedUserAuthorityVariant,
 	inFlight map[string]singbox.ManagedUserAuthorityVariant,
 ) (map[string][]singbox.ManagedUserAuthorityVariant, error) {
-	applied, err := CompileAppliedUsers(state, d.resolver)
+	resolver := d.resolverForState(state)
+	applied, err := CompileAppliedUsers(state, resolver)
 	if err != nil {
 		return nil, err
 	}
@@ -379,27 +718,79 @@ func (d *Deployer) compileUserAuthorities(
 			return nil, fmt.Errorf("project applied user authority for Agent %q: %w", agentID, err)
 		}
 	}
-	// The desired shape lets an immediate user mutation remain authoritative if
-	// its topology candidate is already queued. A draft that cannot currently
-	// resolve does not block applied-topology user enforcement.
-	if desired, desiredErr := compileTopologyDeployment(state, d.resolver); desiredErr == nil {
-		for agentID, config := range desired.Configs {
-			if err := addConfig(agentID, config); err != nil {
-				return nil, fmt.Errorf("project desired user authority for Agent %q: %w", agentID, err)
+	// A desired topology that has not reserved a fleet transaction is not a
+	// valid authority variant: an offline/address-pending Agent may never have
+	// received that listener shape. Only start() publishes a candidate into
+	// inFlight after the transaction is durable; commit moves it to pending
+	// until the applied projection catches up.
+	if len(inFlight) > 0 {
+		// Prefer a fresh projection of the already-reserved candidate so a
+		// concurrent grant/revoke/reset is reflected on candidate-shaped Agents.
+		// If an address vanished after partial deployment, fail closed by
+		// filtering the retained shape to currently enabled Memberships. That
+		// fallback can omit a concurrent grant, but can never resurrect a revoked
+		// credential.
+		if desired, desiredErr := compileTopologyDeployment(state, resolver); desiredErr == nil {
+			for agentID, config := range desired.Configs {
+				if _, reserved := inFlight[agentID]; !reserved {
+					continue
+				}
+				if err := addConfig(agentID, config); err != nil {
+					return nil, fmt.Errorf("project current in-flight user authority for Agent %q: %w", agentID, err)
+				}
+			}
+		} else {
+			for agentID, variant := range inFlight {
+				variant = refreshAuthorityVariantUsers(variant, state, true)
+				if err := addAuthorityVariant(result, agentID, variant); err != nil {
+					return nil, fmt.Errorf("project fail-closed in-flight user authority for Agent %q: %w", agentID, err)
+				}
 			}
 		}
 	}
 	for agentID, variant := range pending {
+		variant = refreshAuthorityVariantUsers(variant, state, false)
 		if err := addAuthorityVariant(result, agentID, variant); err != nil {
 			return nil, fmt.Errorf("project pending committed user authority for Agent %q: %w", agentID, err)
 		}
 	}
-	for agentID, variant := range inFlight {
-		if err := addAuthorityVariant(result, agentID, variant); err != nil {
-			return nil, fmt.Errorf("project in-flight user authority for Agent %q: %w", agentID, err)
+	return result, nil
+}
+
+func refreshAuthorityVariantUsers(
+	variant singbox.ManagedUserAuthorityVariant,
+	state State,
+	usePendingCredential bool,
+) singbox.ManagedUserAuthorityVariant {
+	authorized := make(map[string]string)
+	for _, node := range state.ProxyNodes {
+		for _, membership := range node.Memberships {
+			if membership.DisabledReason != MembershipEnabled {
+				continue
+			}
+			credential := membership.Credential
+			if usePendingCredential && membership.PendingCredential != nil {
+				credential = *membership.PendingCredential
+			}
+			authorized[AuthenticatedUserLabel(membership.ID)] = credential.Secret
 		}
 	}
-	return result, nil
+	refreshed := singbox.ManagedUserAuthorityVariant{TopologySHA256: variant.TopologySHA256}
+	for _, endpoint := range variant.Endpoints {
+		item := singbox.ManagedUserAuthorityEndpoint{Path: endpoint.Path, Users: []singbox.ManagedUserAuthorityUser{}}
+		for _, user := range endpoint.Users {
+			secret, exists := authorized[user.Username]
+			if !exists {
+				continue
+			}
+			item.Users = append(item.Users, singbox.ManagedUserAuthorityUser{
+				Username: user.Username,
+				Password: secret,
+			})
+		}
+		refreshed.Endpoints = append(refreshed.Endpoints, item)
+	}
+	return refreshed
 }
 
 func addAuthorityVariant(
@@ -486,29 +877,49 @@ func (d *Deployer) CurrentUserSync() (FleetDeployment, bool) {
 func (d *Deployer) startTransactionRecoveryLocked() (FleetDeployment, error) {
 	transaction := d.transaction
 	agents := make([]string, 0, len(transaction.Agents))
+	waiting := make(map[string]string)
 	for _, agent := range transaction.Agents {
 		if !agent.Touched {
 			continue
 		}
-		if !d.controller.CanDeployProxyNodeConfiguration(agent.AgentID) {
-			return FleetDeployment{}, fmt.Errorf("Agent %q is offline; interrupted topology rollback is pending", agent.AgentID)
-		}
 		agents = append(agents, agent.AgentID)
+		if !d.controller.CanDeployProxyNodeConfiguration(agent.AgentID) {
+			waiting[agent.AgentID] = "waiting for Agent"
+			continue
+		}
+		record, err := d.controller.LatestDeployment(context.Background(), agent.AgentID)
+		if errors.Is(err, deployment.ErrNotFound) {
+			continue
+		}
+		if err != nil {
+			return FleetDeployment{}, fmt.Errorf("inspect interrupted deployment for Agent %q: %w", agent.AgentID, err)
+		}
+		if deploymentRecordBusy(record) {
+			waiting[agent.AgentID] = "waiting for current deployment"
+		}
+	}
+	if len(waiting) > 0 {
+		return d.pendingTopologyDeploymentLocked(
+			agents,
+			waiting,
+			"Interrupted topology rollback is waiting for the affected Agents",
+		)
 	}
 	if len(agents) == 0 {
-		if transaction.RollbackState != nil {
-			if err := d.store.RestoreTopology(transaction.TopologyRevision, *transaction.RollbackState); err != nil {
-				return FleetDeployment{}, fmt.Errorf("restore untouched interrupted topology: %w", err)
-			}
-		}
 		if err := removeTopologyTransaction(d.transactionPath); err != nil {
 			return FleetDeployment{}, err
 		}
 		d.transaction = nil
-		return FleetDeployment{}, errors.New("discarded an untouched interrupted topology transaction; retry the operation")
+		return d.pendingTopologyDeploymentLocked(
+			nil,
+			nil,
+			"Interrupted topology deployment was cleared; the saved topology will be retried",
+		)
 	}
 	now := d.now().UTC()
 	job := &FleetDeployment{ID: transaction.ID, Status: FleetDeploymentQueued, StartedAt: now, UpdatedAt: now}
+	job.plane = deploymentRecovery
+	job.topologyRevision = transaction.TopologyRevision
 	for _, agentID := range agents {
 		job.Agents = append(job.Agents, AgentDeploymentProgress{AgentID: agentID, Status: "queued for recovery"})
 	}
@@ -520,35 +931,33 @@ func (d *Deployer) startTransactionRecoveryLocked() (FleetDeployment, error) {
 
 func (d *Deployer) compileAppliedFleet() (CompileResult, error) {
 	state := d.store.Snapshot()
-	compiled, err := CompileAppliedUsers(state, d.resolver)
-	if err != nil {
-		return CompileResult{}, err
-	}
-	for _, agentID := range state.ManagedAgents {
-		if record, recordErr := d.controller.LatestDeployment(context.Background(), agentID); recordErr == nil {
-			if applied, _, exists := record.AppliedConfiguration(); exists {
-				compiled.Configs[agentID] = applied
-				continue
-			}
+	compiled := CompileResult{Configs: make(map[string][]byte), AgentDepth: appliedAgentDepths(state)}
+	agents := managedAndAppliedAgents(state)
+	for _, agentID := range agents {
+		record, recordErr := d.controller.LatestDeployment(context.Background(), agentID)
+		if errors.Is(recordErr, deployment.ErrNotFound) {
+			compiled.Configs[agentID] = emptyManagedConfig()
+			continue
 		}
-		if _, exists := compiled.Configs[agentID]; !exists {
+		if recordErr != nil {
+			return CompileResult{}, fmt.Errorf("inspect rollback deployment for Agent %q: %w", agentID, recordErr)
+		}
+		if applied, _, exists := record.AppliedConfiguration(); exists {
+			compiled.Configs[agentID] = applied
+		} else {
 			compiled.Configs[agentID] = emptyManagedConfig()
 		}
-		compiled.AgentDepth[agentID] = -1
 	}
 	return compiled, nil
 }
 
 func (d *Deployer) changedTopologyAgents(candidate CompileResult) ([]string, error) {
-	previous, err := compileAppliedTopology(d.store.Snapshot(), d.resolver)
-	if err != nil {
-		return nil, err
-	}
-	seen := make(map[string]struct{}, len(candidate.Configs)+len(previous.Configs))
+	state := d.store.Snapshot()
+	seen := make(map[string]struct{}, len(candidate.Configs)+len(state.ManagedAgents))
 	for agentID := range candidate.Configs {
 		seen[agentID] = struct{}{}
 	}
-	for agentID := range previous.Configs {
+	for _, agentID := range managedAndAppliedAgents(state) {
 		seen[agentID] = struct{}{}
 	}
 	agents := make([]string, 0, len(seen))
@@ -559,11 +968,27 @@ func (d *Deployer) changedTopologyAgents(candidate CompileResult) ([]string, err
 			candidate.Configs[agentID] = candidateConfig
 			candidate.AgentDepth[agentID] = -1
 		}
-		previousConfig := previous.Configs[agentID]
-		if previousConfig == nil {
-			previousConfig = emptyManagedConfig()
+		record, err := d.controller.LatestDeployment(context.Background(), agentID)
+		if errors.Is(err, deployment.ErrNotFound) {
+			// No acknowledgement exists. This is always a changed Agent,
+			// including a ManagedAgents-only retirement which still needs an
+			// explicit empty profile before it may be forgotten.
+			agents = append(agents, agentID)
+			continue
 		}
-		if !bytes.Equal(candidateConfig, previousConfig) {
+		if err != nil {
+			return nil, fmt.Errorf("inspect latest deployment for Agent %q: %w", agentID, err)
+		}
+		previousConfig, _, exists := record.AppliedConfiguration()
+		if !exists {
+			agents = append(agents, agentID)
+			continue
+		}
+		equal, err := managedTopologyConfigsEqual(candidateConfig, previousConfig)
+		if err != nil {
+			return nil, fmt.Errorf("compare applied topology for Agent %q: %w", agentID, err)
+		}
+		if !equal {
 			agents = append(agents, agentID)
 		}
 	}
@@ -575,6 +1000,61 @@ func (d *Deployer) changedTopologyAgents(candidate CompileResult) ([]string, err
 		return agents[left] < agents[right]
 	})
 	return agents, nil
+}
+
+func managedTopologyConfigsEqual(left, right []byte) (bool, error) {
+	if bytes.Equal(bytes.TrimSpace(left), bytes.TrimSpace(right)) {
+		return true, nil
+	}
+	leftVariant, err := singbox.BuildManagedUserAuthorityVariant(left)
+	if err != nil {
+		return false, err
+	}
+	rightVariant, err := singbox.BuildManagedUserAuthorityVariant(right)
+	if err != nil {
+		return false, err
+	}
+	return leftVariant.TopologySHA256 == rightVariant.TopologySHA256, nil
+}
+
+func managedAndAppliedAgents(state State) []string {
+	seen := make(map[string]struct{}, len(state.ManagedAgents))
+	for _, agentID := range state.ManagedAgents {
+		seen[agentID] = struct{}{}
+	}
+	for _, node := range state.AppliedProxyNodes {
+		for _, hop := range node.Hops {
+			seen[hop.AgentID] = struct{}{}
+		}
+	}
+	agents := make([]string, 0, len(seen))
+	for agentID := range seen {
+		agents = append(agents, agentID)
+	}
+	sort.Strings(agents)
+	return agents
+}
+
+func appliedAgentDepths(state State) map[string]int {
+	depths := make(map[string]int)
+	for _, node := range state.AppliedProxyNodes {
+		hops := make(map[string]Hop, len(node.Hops))
+		for _, hop := range node.Hops {
+			hops[hop.ID] = hop
+		}
+		for hopID, depth := range topologyDepths(node) {
+			agentID := hops[hopID].AgentID
+			if current, exists := depths[agentID]; !exists || depth > current {
+				depths[agentID] = depth
+			}
+		}
+	}
+	for _, agentID := range state.ManagedAgents {
+		if _, exists := depths[agentID]; !exists {
+			depths[agentID] = -1
+		}
+	}
+	return depths
 }
 
 func (d *Deployer) changedAgents(compiled CompileResult) ([]string, error) {
@@ -608,19 +1088,34 @@ func (d *Deployer) Current() (FleetDeployment, bool) {
 
 func (d *Deployer) compileCompleteFleet(plane deploymentPlane) (CompileResult, desiredRevision, error) {
 	state := d.store.Snapshot()
+	resolver := d.resolverForState(state)
+	return d.compileCompleteFleetWithResolver(state, plane, resolver)
+}
+
+func (d *Deployer) compileCompleteFleetLocked(plane deploymentPlane) (CompileResult, desiredRevision, error) {
+	state := d.store.Snapshot()
+	resolver := d.resolverForStateLocked(state)
+	return d.compileCompleteFleetWithResolver(state, plane, resolver)
+}
+
+func (d *Deployer) compileCompleteFleetWithResolver(
+	state State,
+	plane deploymentPlane,
+	resolver AddressResolver,
+) (CompileResult, desiredRevision, error) {
 	var (
 		compiled CompileResult
 		err      error
 	)
 	if plane == deploymentTopology {
-		compiled, err = compileTopologyDeployment(state, d.resolver)
+		compiled, err = compileTopologyDeployment(state, resolver)
 	} else {
-		compiled, err = CompileAppliedUsers(state, d.resolver)
+		compiled, err = CompileAppliedUsers(state, resolver)
 	}
 	if err != nil {
 		return CompileResult{}, desiredRevision{}, err
 	}
-	for _, previous := range state.ManagedAgents {
+	for _, previous := range managedAndAppliedAgents(state) {
 		if _, exists := compiled.Configs[previous]; exists {
 			continue
 		}
@@ -724,6 +1219,17 @@ func (d *Deployer) run(
 		d.setJobStatus(jobID, FleetDeploymentFailed, "Desired Proxy Node state changed during deployment; the newest revision will be reconciled next.")
 		return
 	}
+	if plane == deploymentTopology {
+		for _, agentID := range agents {
+			if err := d.confirmExpectedConfiguration(agentID, compiled.Configs[agentID]); err != nil {
+				d.rollbackTopology(
+					jobID, rollback, agents, rollbackAgents, touched, rollbackState, revision.topology,
+					fmt.Errorf("confirm Agent %q before topology commit: %w", agentID, err),
+				)
+				return
+			}
+		}
+	}
 	seen := make(map[string]struct{})
 	for _, node := range state.ProxyNodes {
 		for _, hop := range node.Hops {
@@ -759,6 +1265,42 @@ func (d *Deployer) run(
 		d.mu.RUnlock()
 		if hook != nil {
 			hook()
+		}
+	}
+}
+
+func (d *Deployer) confirmExpectedConfiguration(agentID string, expected []byte) error {
+	ctx, cancel := context.WithTimeout(context.Background(), deploymentTimeout)
+	defer cancel()
+	ticker := time.NewTicker(pollInterval)
+	defer ticker.Stop()
+	for {
+		record, err := d.controller.LatestDeployment(ctx, agentID)
+		if err == nil {
+			if deploymentRecordBusy(record) {
+				// A reconnect profile replay may supersede the original
+				// deployment record. Wait for the replacement session to
+				// confirm the same candidate before committing fleet-wide.
+			} else if record.Status != deployment.StatusApplied {
+				diagnostic := strings.TrimSpace(record.Diagnostic)
+				if diagnostic == "" {
+					diagnostic = "latest Agent deployment is not applied"
+				}
+				return errors.New(diagnostic)
+			} else {
+				applied, _, exists := record.AppliedConfiguration()
+				if !exists || !bytes.Equal(bytes.TrimSpace(applied), bytes.TrimSpace(expected)) {
+					return errors.New("latest Agent deployment does not match the topology candidate")
+				}
+				return nil
+			}
+		} else if !errors.Is(err, deployment.ErrNotFound) {
+			return err
+		}
+		select {
+		case <-ctx.Done():
+			return fmt.Errorf("timed out waiting for Agent confirmation: %w", ctx.Err())
+		case <-ticker.C:
 		}
 	}
 }
@@ -862,7 +1404,7 @@ func (d *Deployer) recoverTopologyTransaction(transaction *topologyTransaction, 
 	}
 	d.setJobStatus(transaction.ID, FleetDeploymentDeploying, "")
 	d.rollbackTopology(
-		transaction.ID, rollback, agents, agents, agents, transaction.RollbackState, transaction.TopologyRevision,
+		transaction.ID, rollback, agents, agents, agents, nil, transaction.TopologyRevision,
 		errors.New("recovering an interrupted topology transaction"),
 	)
 }

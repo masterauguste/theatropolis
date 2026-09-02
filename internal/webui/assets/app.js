@@ -52,6 +52,90 @@ for (const option of document.querySelectorAll("[data-language-option]")) {
   });
 }
 
+const utf8Length = (value) => new TextEncoder().encode(value).length;
+const displayNamePattern = /^[\p{L}\p{N}][\p{L}\p{N}\p{M} ._-]*$/u;
+
+const isIPv4Address = (value) => {
+  const parts = value.split(".");
+  return parts.length === 4 && parts.every((part) =>
+    /^\d{1,3}$/.test(part) && (part === "0" || !part.startsWith("0")) &&
+    Number(part) >= 0 && Number(part) <= 255,
+  );
+};
+
+const isIPv6Address = (value) => {
+  if (!value.includes(":") || !/^[0-9a-f:.]+$/i.test(value)) return false;
+  try {
+    const parsed = new URL(`http://[${value}]/`);
+    return parsed.hostname.startsWith("[") && parsed.hostname.endsWith("]");
+  } catch {
+    return false;
+  }
+};
+
+const isLiteralIPAddress = (value) => isIPv4Address(value) || isIPv6Address(value);
+
+const isTLSServerName = (rawValue) => {
+  const value = rawValue.trim();
+  if (!value || utf8Length(value) > 253 || value.includes("/") || value.includes("\\") || value.includes("\0")) return false;
+  if (isLiteralIPAddress(value)) return true;
+  return value.split(".").every((label) =>
+    label.length >= 1 && label.length <= 63 &&
+    !label.startsWith("-") && !label.endsWith("-") &&
+    /^[A-Za-z0-9-]+$/.test(label),
+  );
+};
+
+const updateOwnedControlValidity = (control) => {
+  if (!(control instanceof HTMLInputElement || control instanceof HTMLSelectElement || control instanceof HTMLTextAreaElement)) return;
+  const chinese = window.theatropolisLocale === "zh-CN";
+  if (control.matches("[data-display-name]")) {
+    const rawValue = control.value;
+    const value = rawValue.normalize("NFC").trim();
+    const runes = Array.from(value);
+    const valid = !rawValue || (
+      value.length > 0 &&
+      runes.length <= 60 && utf8Length(value) <= 240 && displayNamePattern.test(value)
+    );
+    control.setCustomValidity(valid ? "" : chinese
+      ? "名称应为 1 至 60 个字母或数字，可包含普通空格及 .、_、-。"
+      : "Use 1–60 letters or numbers; ordinary spaces and . _ - are allowed.");
+    return;
+  }
+  if (control.matches("[data-literal-ip]")) {
+    const rawValue = control.value;
+    const value = rawValue.trim();
+    control.setCustomValidity(!rawValue || (value.length > 0 && isLiteralIPAddress(value)) ? "" : chinese
+      ? "请输入 IPv4 或 IPv6 地址。"
+      : "Enter an IPv4 or IPv6 address.");
+    return;
+  }
+  if (control.matches("[data-tls-server-name]")) {
+    const rawValue = control.value;
+    const value = rawValue.trim();
+    control.setCustomValidity(!control.required || !rawValue || (value.length > 0 && isTLSServerName(value)) ? "" : chinese
+      ? "请输入有效的 TLS 证书域名或 IP 地址。"
+      : "Enter a valid TLS certificate domain or IP address.");
+    return;
+  }
+  if (control.matches("[data-proxy-listen-port]")) {
+    const value = Number(control.value);
+    let message = "";
+    if (control.value && value === 80) {
+      message = chinese ? "端口 80 保留给 ACME。" : "Port 80 is reserved for ACME.";
+    } else if (control.dataset.listenerConflict) {
+      message = control.dataset.listenerConflict;
+    }
+    control.setCustomValidity(message);
+  }
+};
+
+const clearInactiveControlValidation = (control) => {
+  if (!control) return;
+  control.setCustomValidity("");
+  window.theatropolisClearFieldValidation?.(control);
+};
+
 function updateProxyEndpointForm(select) {
   const form = select.closest("form");
   if (!form) return;
@@ -62,11 +146,27 @@ function updateProxyEndpointForm(select) {
       kind === "tls" ? protocol === "shadowsocks" : protocol !== kind;
   }
   const tlsMode = form.querySelector("[data-proxy-tls-mode]")?.value;
+  const tlsActive = protocol !== "shadowsocks";
   for (const field of form.querySelectorAll("[data-proxy-acme]")) {
-    field.hidden = protocol === "shadowsocks" || tlsMode !== "acme";
+    const hidden = !tlsActive || tlsMode !== "acme";
+    field.hidden = hidden;
+    const email = field.querySelector('input[type="email"], input[name="email"]');
+    if (email) {
+      email.type = hidden ? "text" : "email";
+      if (hidden) clearInactiveControlValidation(email);
+    }
   }
-  for (const field of form.querySelectorAll("[data-proxy-files]")) {
-    field.hidden = protocol === "shadowsocks" || tlsMode !== "files";
+  const serverName = form.querySelector("[data-tls-server-name]");
+  if (serverName) {
+    serverName.required = tlsActive && tlsMode !== "files";
+    if (serverName.required) updateOwnedControlValidity(serverName);
+    else clearInactiveControlValidation(serverName);
+  }
+  for (const section of form.querySelectorAll('[data-proxy-section="hysteria2"]')) {
+    for (const input of section.querySelectorAll('input[type="number"], input[name="up_mbps"], input[name="down_mbps"]')) {
+      input.type = protocol === "hysteria2" ? "number" : "text";
+      if (protocol !== "hysteria2") clearInactiveControlValidation(input);
+    }
   }
 }
 
@@ -83,6 +183,7 @@ const proxyListenerCatalog = [...document.querySelectorAll(
   "[data-proxy-listener-catalog] [data-listener-id]",
 )].map((element) => ({
   ...element.dataset,
+  selectable: element.dataset.selectable !== "0",
   port: Number(element.dataset.port || 0),
   upMbps: Number(element.dataset.upMbps || 0),
   downMbps: Number(element.dataset.downMbps || 0),
@@ -154,7 +255,7 @@ const proxyListenerFieldLabels = {
   muxBrutalUp: "TCP Brutal upload rate",
   muxBrutalDown: "TCP Brutal download rate",
   tlsMode: "certificate mode",
-  serverName: "domain or certificate identity",
+  serverName: "TLS certificate domain/IP",
   email: "ACME email",
   certificatePath: "certificate path",
   keyPath: "private-key path",
@@ -210,7 +311,7 @@ const showProxyListenerSummary = (editor, preset) => {
   const summary = editor.querySelector("[data-proxy-listener-summary]");
   if (!summary) return;
   const identity = preset.protocol === "shadowsocks" ? preset.method.replace("2022-blake3-", "") :
-    `${preset.tlsMode.replace("_", "-")} · ${preset.serverName || "certificate identity pending"}`;
+    `${preset.tlsMode.replace("_", "-")} · ${preset.serverName || t("TLS certificate domain/IP pending")}`;
   summary.replaceChildren();
   const title = document.createElement("strong");
   title.textContent = `${preset.protocolLabel} ${t("on")} ${preset.listen}:${preset.port}`;
@@ -222,14 +323,38 @@ const showProxyListenerSummary = (editor, preset) => {
   summary.hidden = false;
 };
 
-const validateProxyListener = (editor) => {
+const validateProxyListener = (editor, live = false) => {
   const port = editor.querySelector('[name="listen_port"]');
   if (!(port instanceof HTMLInputElement)) return;
-  port.setCustomValidity("");
+  delete port.dataset.listenerConflict;
+  updateOwnedControlValidity(port);
+  const refresh = (control) => {
+    if (live || control?.dataset.validationErrorId) {
+      window.theatropolisRefreshFieldValidation?.(control);
+    }
+  };
+  const visibleControls = [...editor.querySelectorAll("input, select, textarea")].filter(
+    (control) => control.willValidate && !control.closest("[hidden]"),
+  );
+  for (const control of visibleControls) updateOwnedControlValidity(control);
+  const invalidControl = visibleControls.find((control) => !control.validity.valid);
+  if (invalidControl) {
+    setProxyListenerStatus(
+      editor,
+      live
+        ? (window.theatropolisLocale === "zh-CN" ? "请先修正标出的字段。" : "Correct the highlighted fields first.")
+        : t("Complete the listener settings to check availability."),
+      live ? "conflict" : "",
+    );
+    refresh(invalidControl);
+    refresh(port);
+    return;
+  }
   const agent = proxyListenerAgent(editor);
   const candidate = proxyListenerModel(editor);
   if (!agent || !candidate.listen || !candidate.port) {
     setProxyListenerStatus(editor, t("Select an Agent and complete the socket to check availability."));
+    refresh(port);
     return;
   }
   const claims = new Set(proxyListenerClaims(agent, candidate));
@@ -241,6 +366,7 @@ const validateProxyListener = (editor) => {
       ? `与“${compatible.label}”完全兼容，可直接在上方选择并复用。`
       : `Fully compatible with “${compatible.label}”. Select it above to reuse the listener.`;
     setProxyListenerStatus(editor, message, "compatible", t("Listener available"));
+    refresh(port);
     return;
   }
   const conflict = others.find((preset) => proxyListenerClaims(agent, preset).some((claim) => claims.has(claim)));
@@ -253,8 +379,10 @@ const validateProxyListener = (editor) => {
     const message = window.theatropolisLocale === "zh-CN"
       ? `“${conflict.label}”已使用同一监听地址与端口，但${fields}不同。请复用该监听器，或更换地址/端口。`
       : `“${conflict.label}” uses the same socket, but these settings differ: ${fields}. Reuse that listener or choose another address or port.`;
-    port.setCustomValidity(message);
+    port.dataset.listenerConflict = message;
+    updateOwnedControlValidity(port);
     setProxyListenerStatus(editor, message, "conflict", t("Listener conflict"));
+    refresh(port);
     return;
   }
   const current = proxyListenerCatalog.find((preset) => preset.listenerId === currentID && preset.agent === agent);
@@ -263,12 +391,15 @@ const validateProxyListener = (editor) => {
       ? `该监听器由 ${current.referenceCount} 个配置共享；保存后会同步更新全部引用。`
       : `This listener is shared by ${current.referenceCount} configurations. Saving updates every reference together.`;
     setProxyListenerStatus(editor, message, "warning", t("Shared listener"));
+    refresh(port);
     return;
   }
   if (current) {
     setProxyListenerStatus(editor, t("Saving will update this physical listener atomically."), "compatible", t("Listener ready"));
+    refresh(port);
     return;
   }
+  refresh(port);
   setProxyListenerStatus(editor, t("This socket is available for a new physical listener."), "compatible", t("Listener ready"));
 };
 
@@ -278,7 +409,9 @@ const updateProxyListenerChoices = (editor) => {
   const previous = select.value;
   const agent = proxyListenerAgent(editor);
   select.replaceChildren(new Option(t("Configure manually"), "manual"));
-  for (const preset of proxyListenerCatalog.filter((item) => item.agent === agent)) {
+  for (const preset of proxyListenerCatalog.filter((item) =>
+    item.agent === agent && (item.selectable || item.listenerId === editor.dataset.currentListener),
+  )) {
     select.add(new Option(preset.label, preset.listenerId));
   }
   const currentID = editor.dataset.currentListener || "";
@@ -298,7 +431,12 @@ for (const editor of document.querySelectorAll("[data-proxy-listener-editor]")) 
       applyProxyListenerPreset(editor, preset);
       if (fields) fields.hidden = true;
       showProxyListenerSummary(editor, preset);
-      editor.querySelector('[name="listen_port"]')?.setCustomValidity("");
+      const port = editor.querySelector('[name="listen_port"]');
+      if (port) {
+        delete port.dataset.listenerConflict;
+        updateOwnedControlValidity(port);
+        window.theatropolisRefreshFieldValidation?.(port);
+      }
       setProxyListenerStatus(editor, t("Using the existing physical listener keeps all shared settings consistent."), "compatible");
     } else {
       if (fields) fields.hidden = false;
@@ -308,8 +446,8 @@ for (const editor of document.querySelectorAll("[data-proxy-listener-editor]")) 
   };
   select?.addEventListener("change", updateSelection);
   for (const input of editor.querySelectorAll("[data-proxy-listener-fields] input, [data-proxy-listener-fields] select")) {
-    input.addEventListener("input", () => validateProxyListener(editor));
-    input.addEventListener("change", () => validateProxyListener(editor));
+    input.addEventListener("input", () => validateProxyListener(editor, true));
+    input.addEventListener("change", () => validateProxyListener(editor, true));
   }
   for (const agentSelect of form?.querySelectorAll('[name="child_agent"], [name="agent_id"]') || []) {
     agentSelect.addEventListener("change", () => updateProxyListenerChoices(editor));
@@ -459,7 +597,9 @@ let proxyBranchDropAccepted = false;
 
 const topologyWorkflow = document.querySelector("[data-topology-workflow]");
 const proxyDeployment = document.querySelector("[data-proxy-deployment][data-status-url]");
-let topologyPolling = false;
+let topologyPollMode = "";
+let topologyPollTimer = 0;
+let topologyReloadOnComplete = false;
 
 const linkLatencyURL = topologyWorkflow?.dataset.linkLatencyUrl;
 let linkLatencyLoading = false;
@@ -740,55 +880,110 @@ const renderTopologyStatus = (status) => {
   if (!proxyDeployment) return;
   proxyDeployment.hidden = false;
   proxyDeployment.classList.toggle("notice--error", status.status === "failed");
+  proxyDeployment.classList.toggle("notice--warning", status.status === "pending" || status.active === true);
+  proxyDeployment.classList.toggle("notice--success", status.status === "applied");
   const heading = proxyDeployment.querySelector("strong");
-  if (heading) heading.textContent = `${t("Topology change")}: ${status.label || status.status || t("Applying")}`;
+  if (heading) heading.textContent = status.status === "pending"
+    ? t("Topology Pending")
+    : `${t("Topology change")}: ${status.label || status.status || t("Applying")}`;
   let error = proxyDeployment.querySelector("p");
-  if (status.error) {
+  const detail = status.status === "pending"
+    ? t("Saved changes are not yet active. The relay map shows the saved topology.")
+    : status.error;
+  if (detail) {
     if (!error) {
       error = document.createElement("p");
       proxyDeployment.append(error);
     }
-    error.textContent = status.error;
+    error.textContent = detail;
   } else if (error) {
     error.remove();
   }
 };
 
-const pollTopologyDeployment = async (reloadOnComplete) => {
+const stopTopologyPolling = () => {
+  if (topologyPollTimer) window.clearTimeout(topologyPollTimer);
+  topologyPollTimer = 0;
+  topologyPollMode = "";
+};
+
+const scheduleTopologyPoll = (delay) => {
+  if (!topologyPollMode) return;
+  if (topologyPollTimer) window.clearTimeout(topologyPollTimer);
+  topologyPollTimer = window.setTimeout(() => {
+    topologyPollTimer = 0;
+    pollTopologyDeployment();
+  }, delay);
+};
+
+const pollTopologyDeployment = async () => {
   try {
     const response = await fetch(proxyDeployment?.dataset.statusUrl || "/proxy-nodes/deployment-status", {
       credentials: "same-origin",
+      cache: "no-store",
       headers: { Accept: "application/json" },
     });
+    if (redirectForExpiredSession(response)) return;
     if (!response.ok) throw new Error("status unavailable");
     const status = await response.json();
-    renderTopologyStatus(status);
-    if (!status.active) {
-      topologyPolling = false;
+    if (!status) {
+      const reload = topologyReloadOnComplete;
+      stopTopologyPolling();
+      topologyReloadOnComplete = false;
       setTopologyLocked(false);
-      document.dispatchEvent(new CustomEvent("topologyapplycomplete", { detail: status }));
-      if (reloadOnComplete) window.location.reload();
+      if (reload) window.location.reload();
       return;
     }
+    renderTopologyStatus(status);
+    if (status.active) {
+      topologyPollMode = "active";
+      setTopologyLocked(true);
+      scheduleTopologyPoll(2000);
+      return;
+    }
+    setTopologyLocked(false);
+    if (status.status === "pending") {
+      topologyPollMode = "watch";
+      scheduleTopologyPoll(10000);
+      return;
+    }
+    const reload = topologyReloadOnComplete && status.status === "applied";
+    stopTopologyPolling();
+    topologyReloadOnComplete = false;
+    document.dispatchEvent(new CustomEvent("topologyapplycomplete", { detail: status }));
+    if (reload) window.location.reload();
+    return;
   } catch (_) {
     // Keep the current status visible and retry transient failures.
   }
-  window.setTimeout(() => pollTopologyDeployment(reloadOnComplete), 2000);
+  scheduleTopologyPoll(topologyPollMode === "active" ? 2000 : 10000);
 };
 
 const beginTopologyApply = (reloadOnComplete) => {
+  topologyPollMode = "active";
+  topologyReloadOnComplete = topologyReloadOnComplete || reloadOnComplete;
   setTopologyLocked(true);
   if (proxyDeployment) {
     proxyDeployment.hidden = false;
     const heading = proxyDeployment.querySelector("strong");
     if (heading) heading.textContent = t("Applying topology change…");
   }
-  if (topologyPolling) return;
-  topologyPolling = true;
-  window.setTimeout(() => pollTopologyDeployment(reloadOnComplete), 500);
+  scheduleTopologyPoll(500);
 };
 
-if (topologyWorkflow?.dataset.topologyLocked === "true") beginTopologyApply(true);
+const beginTopologyWatch = () => {
+  if (topologyPollMode === "active") return;
+  topologyPollMode = "watch";
+  topologyReloadOnComplete = true;
+  setTopologyLocked(false);
+  scheduleTopologyPoll(5000);
+};
+
+if (topologyWorkflow?.dataset.topologyLocked === "true") {
+  beginTopologyApply(true);
+} else if (topologyWorkflow?.dataset.topologyPending === "true") {
+  beginTopologyWatch();
+}
 
 document.addEventListener("click", (event) => {
   const createLink = event.target instanceof Element ? event.target.closest("[data-topology-create]") : null;
@@ -935,14 +1130,25 @@ document.addEventListener("dragend", () => {
     if (response.status === 202) {
       const status = await response.json();
       renderTopologyStatus(status);
-      document.addEventListener("topologyapplycomplete", (completion) => {
-        if (completion.detail?.status === "failed") {
-          restoreOrder();
-          showAppNotice(completion.detail.error || t("The topology change failed and the previous branch order was restored."));
-        }
+      if (!status.active) {
+        setTopologyLocked(false);
         delete list.dataset.reorderPending;
-      }, { once: true });
-      beginTopologyApply(false);
+        if (status.status === "failed") {
+          restoreOrder();
+          showAppNotice(status.error || t("The topology change failed and the previous branch order was restored."));
+        } else if (status.status === "pending") {
+          beginTopologyWatch();
+        }
+      } else {
+        document.addEventListener("topologyapplycomplete", (completion) => {
+          if (completion.detail?.status === "failed") {
+            restoreOrder();
+            showAppNotice(completion.detail.error || t("The topology change failed and the previous branch order was restored."));
+          }
+          delete list.dataset.reorderPending;
+        }, { once: true });
+        beginTopologyApply(false);
+      }
     } else {
       delete list.dataset.reorderPending;
     }
@@ -1263,27 +1469,47 @@ const clearFieldValidation = (control) => {
 };
 
 const showFieldValidation = (control) => {
-  clearFieldValidation(control);
-  const error = document.createElement("span");
-  error.className = "form-field-error";
-  error.id = `form-field-error-${++formValidationSequence}`;
+  let error = control.dataset.validationErrorId
+    ? document.getElementById(control.dataset.validationErrorId)
+    : null;
+  if (!error) {
+    error = document.createElement("span");
+    error.className = "form-field-error";
+    error.id = `form-field-error-${++formValidationSequence}`;
+    error.setAttribute("role", "alert");
+    control.dataset.validationErrorId = error.id;
+    control.dataset.validationDescribedBy = control.getAttribute("aria-describedby") || "";
+    const field = control.closest(".field");
+    const anchor = control instanceof HTMLSelectElement
+      ? control.closest(".select-box") || control
+      : control;
+    if (field) field.append(error);
+    else anchor.insertAdjacentElement("afterend", error);
+  }
   error.textContent = fieldValidationMessage(control);
-  error.setAttribute("role", "alert");
-  control.dataset.validationErrorId = error.id;
-  control.dataset.validationDescribedBy = control.getAttribute("aria-describedby") || "";
   control.setAttribute("aria-invalid", "true");
   if (control instanceof HTMLSelectElement) {
     control.closest(".select-box")?.classList.add("is-invalid");
   }
   const describedBy = [control.dataset.validationDescribedBy, error.id].filter(Boolean).join(" ");
   control.setAttribute("aria-describedby", describedBy);
-  const anchor = control instanceof HTMLSelectElement
-    ? control.closest(".select-box") || control
-    : control;
-  const field = control.closest(".field");
-  if (field) field.append(error);
-  else anchor.insertAdjacentElement("afterend", error);
 };
+
+const refreshFieldValidation = (control) => {
+  updateOwnedControlValidity(control);
+  if (control.validity.valid) {
+    if (control.dataset.validationErrorId) clearFieldValidation(control);
+  } else {
+    showFieldValidation(control);
+  }
+  const form = control.form;
+  if (form && !form.querySelector('[aria-invalid="true"]')) {
+    form.querySelector("[data-client-validation-summary]")?.remove();
+  }
+};
+
+window.theatropolisClearFieldValidation = clearFieldValidation;
+window.theatropolisRefreshFieldValidation = refreshFieldValidation;
 
 const focusInvalidControl = (control) => {
   const dialog = control.closest("dialog");
@@ -1300,6 +1526,7 @@ const validateOwnedForm = (form) => {
   const radioNames = new Set();
   for (const control of form.elements) {
     if (!(control instanceof HTMLInputElement || control instanceof HTMLSelectElement || control instanceof HTMLTextAreaElement)) continue;
+    updateOwnedControlValidity(control);
     if (!control.willValidate || control.validity.valid) {
       if (control.dataset.validationErrorId) clearFieldValidation(control);
       continue;
@@ -1346,15 +1573,25 @@ document.addEventListener("submit", (event) => {
 document.addEventListener("input", (event) => {
   const control = event.target;
   if (control instanceof HTMLInputElement || control instanceof HTMLSelectElement || control instanceof HTMLTextAreaElement) {
-    if (control.validity.valid && control.dataset.validationErrorId) clearFieldValidation(control);
+    updateOwnedControlValidity(control);
+    if (control.dataset.validateLive !== undefined || control.dataset.validationErrorId) {
+      refreshFieldValidation(control);
+    }
   }
-}, true);
+});
 document.addEventListener("change", (event) => {
   const control = event.target;
   if (control instanceof HTMLInputElement || control instanceof HTMLSelectElement || control instanceof HTMLTextAreaElement) {
-    if (control.validity.valid && control.dataset.validationErrorId) clearFieldValidation(control);
+    refreshFieldValidation(control);
   }
-}, true);
+});
+document.addEventListener("focusout", (event) => {
+  const control = event.target;
+  if (!(control instanceof HTMLInputElement || control instanceof HTMLSelectElement || control instanceof HTMLTextAreaElement)) return;
+  if (control.matches("[data-display-name]")) control.value = control.value.normalize("NFC").trim();
+  if (control.matches("[data-tls-server-name], [data-literal-ip]")) control.value = control.value.trim();
+  refreshFieldValidation(control);
+});
 
 const configurationDeploymentForm = document.querySelector("form.configuration-form");
 if (configurationDeploymentForm) {

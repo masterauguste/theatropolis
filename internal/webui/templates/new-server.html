@@ -39,23 +39,22 @@
 
           <div class="stack">
             <label class="field">
-              <span>Server ID</span>
+              <span>Server Name</span>
               <input
-                id="agent-id"
-                name="agent_id"
+                id="server-name"
+                name="display_name"
                 type="text"
-                value="{{.AgentID}}"
-                placeholder="edge-paris-1"
+                value="{{.AgentName}}"
+                placeholder="Paris Edge"
                 autocomplete="off"
                 spellcheck="false"
-                pattern="[A-Za-z0-9][A-Za-z0-9._-]{0,127}"
-                maxlength="128"
+                data-display-name
+                data-validate-live
                 required
-                {{if or (not .Error) (eq .ErrorField "agent_id")}}autofocus{{end}}
-                aria-invalid="{{if eq .ErrorField "agent_id"}}true{{else}}false{{end}}"
-                aria-describedby="server-id-help{{if eq .ErrorField "agent_id"}} server-form-error{{end}}"
+                {{if or (not .Error) (eq .ErrorField "display_name")}}autofocus{{end}}
+                aria-invalid="{{if eq .ErrorField "display_name"}}true{{else}}false{{end}}"
+                {{if eq .ErrorField "display_name"}}aria-describedby="server-form-error"{{end}}
               >
-              <small id="server-id-help">Letters, numbers, dots, underscores, and hyphens. Start with a letter or number.</small>
             </label>
 
             <label class="field">

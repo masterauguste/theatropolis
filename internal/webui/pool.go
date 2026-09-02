@@ -29,6 +29,7 @@ type poolUserView struct {
 type poolInboundView struct {
 	DialogID   string
 	AgentID    string
+	AgentName  string
 	Tag        string
 	Type       string
 	Port       int
@@ -58,6 +59,7 @@ type poolOption struct {
 	Ref        string `json:"ref"`
 	Remark     string `json:"remark,omitempty"`
 	AgentID    string `json:"agent_id,omitempty"`
+	AgentName  string `json:"agent_name,omitempty"`
 	InboundTag string `json:"inbound_tag,omitempty"`
 	User       string `json:"user,omitempty"`
 	Type       string `json:"type"`
@@ -103,7 +105,31 @@ func (h *Handler) derivePoolEntries(
 		Registry:    h.controller.PoolRegistry(),
 		Diagnostics: &diagnostics,
 	})
-	return entries, diagnostics
+	return entries, h.displayPoolDiagnostics(diagnostics, agentIDs)
+}
+
+// displayPoolDiagnostics keeps immutable Agent record IDs out of operator-facing
+// warnings while leaving the pool package's internal reference format intact.
+// Pool diagnostics always identify their Agent at the beginning of the note;
+// matching that prefix avoids rewriting coincidental text inside parser errors.
+func (h *Handler) displayPoolDiagnostics(diagnostics, agentIDs []string) []string {
+	result := append([]string(nil), diagnostics...)
+	for index, diagnostic := range result {
+		for _, agentID := range agentIDs {
+			quotedPrefix := "agent " + strconv.Quote(agentID)
+			plainPrefix := "agent " + agentID
+			switch {
+			case strings.HasPrefix(diagnostic, quotedPrefix+" "), strings.HasPrefix(diagnostic, quotedPrefix+":"):
+				result[index] = "server " + strconv.Quote(h.agentDisplayName(agentID)) + diagnostic[len(quotedPrefix):]
+			case strings.HasPrefix(diagnostic, plainPrefix+" "), strings.HasPrefix(diagnostic, plainPrefix+":"):
+				result[index] = "server " + strconv.Quote(h.agentDisplayName(agentID)) + diagnostic[len(plainPrefix):]
+			default:
+				continue
+			}
+			break
+		}
+	}
+	return result
 }
 
 // poolPageView builds the read-only derived pool view for the pool page,
@@ -129,6 +155,7 @@ func (h *Handler) poolPageView(ctx context.Context) *poolView {
 			view.Inbounds = append(view.Inbounds, poolInboundView{
 				DialogID:   "pool-inbound-" + strconv.Itoa(len(view.Inbounds)),
 				AgentID:    entry.AgentID,
+				AgentName:  h.agentDisplayName(entry.AgentID),
 				Tag:        entry.InboundTag,
 				Type:       entry.Type,
 				Port:       entry.Port,
@@ -419,6 +446,7 @@ func (h *Handler) serverPoolOptions(response http.ResponseWriter, request *http.
 				Ref:        entry.Ref,
 				Remark:     manualRemarks[entry.Ref],
 				AgentID:    entry.AgentID,
+				AgentName:  h.agentDisplayName(entry.AgentID),
 				InboundTag: entry.InboundTag,
 				User:       poolUserLabel(entry),
 				Type:       entry.Type,

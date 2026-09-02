@@ -90,7 +90,11 @@ func BuildManagedUserAuthorityVariant(config []byte) (ManagedUserAuthorityVarian
 	for _, endpoint := range parsed.Endpoints {
 		item := ManagedUserAuthorityEndpoint{Path: endpoint.Path, Users: []ManagedUserAuthorityUser{}}
 		for _, user := range endpoint.Users {
-			if _, membership := managedMembershipKey(user.Username); !membership {
+			_, membership, identityErr := parseManagedMembershipIdentity(user.Username)
+			if identityErr != nil {
+				return ManagedUserAuthorityVariant{}, identityErr
+			}
+			if !membership {
 				continue
 			}
 			item.Users = append(item.Users, ManagedUserAuthorityUser{
@@ -161,7 +165,11 @@ func applyManagedUserAuthority(
 		}
 		users := make([]managedUser, 0, len(endpoint.Users)+len(authority[endpoint.Path]))
 		for _, user := range endpoint.Users {
-			if _, membership := managedMembershipKey(user.Username); !membership {
+			_, membership, identityErr := parseManagedMembershipIdentity(user.Username)
+			if identityErr != nil {
+				return nil, false, identityErr
+			}
+			if !membership {
 				users = append(users, user)
 			}
 		}
@@ -230,7 +238,7 @@ func validateManagedUserAuthorityVariant(variant ManagedUserAuthorityVariant) er
 		return errors.New("managed-user authority topology digest is required")
 	}
 	seenPaths := make(map[string]struct{}, len(variant.Endpoints))
-	seenMemberships := make(map[string]struct{})
+	seenMemberships := newManagedMembershipIdentityIndex()
 	for _, endpoint := range variant.Endpoints {
 		if !validManagedUserPath(endpoint.Path) {
 			return errors.New("managed-user authority contains an invalid endpoint")
@@ -240,15 +248,15 @@ func validateManagedUserAuthorityVariant(variant ManagedUserAuthorityVariant) er
 		}
 		seenPaths[endpoint.Path] = struct{}{}
 		for _, user := range endpoint.Users {
-			key, membership := managedMembershipKey(user.Username)
-			if !membership || strings.TrimSpace(user.Password) == "" || len(user.Username) > 128 ||
+			identity, membership, identityErr := parseManagedMembershipIdentity(user.Username)
+			if identityErr != nil || !membership || strings.TrimSpace(user.Password) == "" || len(user.Username) > maxManagedUsernameBytes ||
+				strings.ContainsRune(user.Username, '\x00') ||
 				len(user.Password) > 256 || strings.ContainsAny(user.Password, "\x00\r\n") {
 				return errors.New("managed-user authority contains an invalid user")
 			}
-			if _, exists := seenMemberships[key]; exists {
+			if err := seenMemberships.add(identity); err != nil {
 				return errors.New("managed-user authority contains a duplicate membership")
 			}
-			seenMemberships[key] = struct{}{}
 		}
 	}
 	return nil

@@ -1,6 +1,7 @@
 package pool
 
 import (
+	"encoding/base64"
 	"encoding/json"
 	"strings"
 	"testing"
@@ -132,6 +133,182 @@ func TestRenderShadowsocks(t *testing.T) {
 	}
 	if carol["method"] != "2022-blake3-aes-256-gcm" {
 		t.Fatalf("method = %v", carol["method"])
+	}
+}
+
+func TestRenderUnicodeAndSpaceUserRef(t *testing.T) {
+	registry := renderTestRegistry(t)
+	const unicodeUser = "上海 用户"
+	config := `{"inbounds":[
+		{"type":"anytls","tag":"tls-unicode","listen_port":9443,"users":[
+			{"name":"上海 用户","password":"unicode-password"}
+		],"tls":{"enabled":true,"certificate_path":"/cert.pem","key_path":"/key.pem"}}
+	]}`
+	record := deploymentRecord(t, "edge-paris-1", config)
+	source := func(agentID string) *deployment.Record {
+		if agentID == "edge-paris-1" {
+			return record
+		}
+		return nil
+	}
+	component := encodedUserRefPrefix + base64.RawURLEncoding.EncodeToString([]byte(unicodeUser))
+	ref := "agent/edge-paris-1/tls-unicode/" + component
+	logical := logicalConfig(`[
+		{"type":"theatropolis-pool-ref","tag":"via-unicode","ref":"` + ref + `"}
+	]`)
+	if scanned := Refs(logical); len(scanned) != 1 || scanned[0] != ref {
+		t.Fatalf("Refs() = %v, want encoded ref %q unchanged", scanned, ref)
+	}
+	rendered, refs, err := Render(registry, logical, source)
+	if err != nil {
+		t.Fatalf("Render() error = %v", err)
+	}
+	if len(refs) != 1 || refs[0] != ref {
+		t.Fatalf("refs = %v, want %q", refs, ref)
+	}
+	outbound := renderOutbound(t, rendered, "via-unicode")
+	if outbound["type"] != "anytls" || outbound["password"] != "unicode-password" {
+		t.Fatalf("Unicode user outbound = %v", outbound)
+	}
+}
+
+func TestFindUserManagedLabelRollingAliases(t *testing.T) {
+	const (
+		membershipTail   = "AbC_def-1234"
+		linkTail         = "Link_ID-1234"
+		fullMembershipID = "mem_" + membershipTail + "qwertyuiopas"
+		fullLinkID       = "lnk_" + linkTail + "qwertyuiopas"
+	)
+	tests := []struct {
+		name       string
+		requested  string
+		users      []inboundUser
+		wantSecret string
+		wantFound  bool
+	}{
+		{
+			name:      "old membership ref resolves new ID label",
+			requested: "电影院-李 四-m-" + membershipTail,
+			users: []inboundUser{{
+				Name: fullMembershipID + "-m-" + membershipTail, Password: "new-membership",
+			}},
+			wantSecret: "new-membership", wantFound: true,
+		},
+		{
+			name:      "new membership ref resolves old readable label",
+			requested: fullMembershipID + "-m-" + membershipTail,
+			users: []inboundUser{{
+				Name: "电影院-李 四-m-" + membershipTail, Password: "old-membership",
+			}},
+			wantSecret: "old-membership", wantFound: true,
+		},
+		{
+			name:      "old Link ref resolves new ID label",
+			requested: "电影院-link-l-" + linkTail,
+			users: []inboundUser{{
+				Name: fullLinkID + "-link-l-" + linkTail, Password: "new-link",
+			}},
+			wantSecret: "new-link", wantFound: true,
+		},
+		{
+			name:      "exact match wins over alias",
+			requested: "电影院-李 四-m-" + membershipTail,
+			users: []inboundUser{
+				{Name: fullMembershipID + "-m-" + membershipTail, Password: "alias"},
+				{Name: "电影院-李 四-m-" + membershipTail, Password: "exact"},
+			},
+			wantSecret: "exact", wantFound: true,
+		},
+		{
+			name:      "ambiguous aliases fail closed",
+			requested: "电影院-李 四-m-" + membershipTail,
+			users: []inboundUser{
+				{Name: fullMembershipID + "-m-" + membershipTail, Password: "first"},
+				{Name: "另一个旧标签-m-" + membershipTail, Password: "second"},
+			},
+			wantFound: false,
+		},
+		{
+			name:      "membership and Link tails do not alias",
+			requested: "电影院-李 四-m-" + membershipTail,
+			users: []inboundUser{{
+				Name: "lnk_" + membershipTail + "qwertyuiopas-link-l-" + membershipTail, Password: "link",
+			}},
+			wantFound: false,
+		},
+		{
+			name:      "invalid tail character does not alias",
+			requested: "电影院-李 四-m-ABC+DEF12345",
+			users: []inboundUser{{
+				Name: "另一个标签-m-ABC+DEF12345", Password: "invalid",
+			}},
+			wantFound: false,
+		},
+	}
+
+	for _, testCase := range tests {
+		t.Run(testCase.name, func(t *testing.T) {
+			user, serverKey, found := findUser(inboundConfig{Type: "anytls", Users: testCase.users}, testCase.requested)
+			if found != testCase.wantFound || serverKey {
+				t.Fatalf("findUser() = %#v, serverKey %v, found %v", user, serverKey, found)
+			}
+			if found && user.Password != testCase.wantSecret {
+				t.Fatalf("findUser() password = %q, want %q", user.Password, testCase.wantSecret)
+			}
+		})
+	}
+}
+
+func TestParseAgentRefLegacyEncodedAndMalformedUsers(t *testing.T) {
+	encodedUser := "上海 / 用户"
+	encodedComponent := encodedUserRefPrefix + base64.RawURLEncoding.EncodeToString([]byte(encodedUser))
+	maxUser := strings.Repeat("x", maxRawUserRefBytes-1) + " "
+	maxComponent := encodedUserRefPrefix + base64.RawURLEncoding.EncodeToString([]byte(maxUser))
+	if got, want := len(strings.TrimPrefix(maxComponent, encodedUserRefPrefix)), base64.RawURLEncoding.EncodedLen(maxRawUserRefBytes); got != want {
+		t.Fatalf("128-byte user payload length = %d, want RawURL encoded length %d", got, want)
+	}
+	validCases := []struct {
+		name string
+		ref  string
+		user string
+	}{
+		{name: "legacy ASCII", ref: "agent/edge-paris-1/tls-in/alice", user: "alice"},
+		{name: "server key", ref: "agent/edge-paris-1/ss-key/_server", user: serverKeyRefComponent},
+		{name: "encoded UTF-8 space and slash", ref: "agent/edge-paris-1/tls-in/" + encodedComponent, user: encodedUser},
+		{name: "encoded 128-byte boundary", ref: "agent/edge-paris-1/tls-in/" + maxComponent, user: maxUser},
+	}
+	for _, testCase := range validCases {
+		t.Run(testCase.name, func(t *testing.T) {
+			agentID, inboundTag, user, ok := parseAgentRef(testCase.ref)
+			if !ok || agentID != "edge-paris-1" || user != testCase.user {
+				t.Fatalf("parseAgentRef(%q) = %q, %q, %q, %v", testCase.ref, agentID, inboundTag, user, ok)
+			}
+		})
+	}
+
+	encoded := func(value []byte) string {
+		return encodedUserRefPrefix + base64.RawURLEncoding.EncodeToString(value)
+	}
+	malformed := []struct {
+		name string
+		ref  string
+	}{
+		{name: "empty payload", ref: "agent/edge-paris-1/tls-in/" + encodedUserRefPrefix},
+		{name: "invalid base64", ref: "agent/edge-paris-1/tls-in/" + encodedUserRefPrefix + "***"},
+		{name: "padded base64", ref: "agent/edge-paris-1/tls-in/" + encodedUserRefPrefix + "5LiK="},
+		{name: "invalid UTF-8", ref: "agent/edge-paris-1/tls-in/" + encoded([]byte{0xff})},
+		{name: "NUL", ref: "agent/edge-paris-1/tls-in/" + encoded([]byte("bad\x00user"))},
+		{name: "over length", ref: "agent/edge-paris-1/tls-in/" + encoded([]byte(strings.Repeat("x", maxRawUserRefBytes+1)))},
+		{name: "encoded legacy alias", ref: "agent/edge-paris-1/tls-in/" + encoded([]byte("alice"))},
+		{name: "encoded server alias", ref: "agent/edge-paris-1/tls-in/" + encoded([]byte(serverKeyRefComponent))},
+		{name: "literal extra slash", ref: "agent/edge-paris-1/tls-in/上海/用户"},
+	}
+	for _, testCase := range malformed {
+		t.Run(testCase.name, func(t *testing.T) {
+			if agentID, inboundTag, user, ok := parseAgentRef(testCase.ref); ok {
+				t.Fatalf("parseAgentRef(%q) = %q, %q, %q, true; want fail closed", testCase.ref, agentID, inboundTag, user)
+			}
+		})
 	}
 }
 

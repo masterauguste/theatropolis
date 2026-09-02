@@ -19,12 +19,20 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"unicode"
+	"unicode/utf8"
+
+	"golang.org/x/text/cases"
+	"golang.org/x/text/unicode/norm"
 )
 
 const (
 	EnrollmentTokenBytes = 32
 	ChallengeNonceBytes  = 32
 	maxRegistryFileBytes = 4 << 20
+	maxDisplayNameRunes  = 60
+	maxDisplayNameBytes  = maxDisplayNameRunes * utf8.UTFMax
+	agentRecordIDBytes   = 18
 )
 
 var (
@@ -35,12 +43,46 @@ var (
 	ErrInvalidPublicKey      = errors.New("invalid Ed25519 public key")
 	ErrPublicKeyEnrolled     = errors.New("Ed25519 public key is already enrolled")
 	ErrInvalidAgentID        = errors.New("invalid agent ID")
+	ErrInvalidDisplayName    = errors.New("invalid server display name")
+	ErrDisplayNameExists     = errors.New("server display name already exists")
 )
 
 var agentIDPattern = regexp.MustCompile(`\A[a-zA-Z0-9][a-zA-Z0-9._-]{0,127}\z`)
 
 func ValidAgentID(agentID string) bool {
 	return agentIDPattern.MatchString(agentID)
+}
+
+func NormalizeDisplayName(value string) string {
+	return norm.NFC.String(strings.TrimSpace(value))
+}
+
+func foldedDisplayName(value string) string {
+	return norm.NFC.String(cases.Fold().String(NormalizeDisplayName(value)))
+}
+
+func ValidDisplayName(value string) bool {
+	if !utf8.ValidString(value) || value == "" || len(value) > maxDisplayNameBytes || utf8.RuneCountInString(value) > maxDisplayNameRunes {
+		return false
+	}
+	for index, character := range value {
+		if index == 0 {
+			if !unicode.IsLetter(character) && !unicode.IsDigit(character) {
+				return false
+			}
+			continue
+		}
+		if unicode.IsLetter(character) || unicode.IsDigit(character) || unicode.IsMark(character) {
+			continue
+		}
+		switch character {
+		case ' ', '.', '_', '-':
+			continue
+		default:
+			return false
+		}
+	}
+	return true
 }
 
 type pendingEnrollment struct {
@@ -60,21 +102,24 @@ const (
 // EnrollmentExpiresAt is set only for pending and expired identities.
 type AgentSnapshot struct {
 	ID                  string
+	DisplayName         string
 	State               AgentState
 	EnrollmentExpiresAt time.Time
 }
 
 type Registry struct {
-	mu          sync.RWMutex
-	pending     map[string]pendingEnrollment
-	enrolled    map[string]ed25519.PublicKey
-	persistPath string
+	mu           sync.RWMutex
+	pending      map[string]pendingEnrollment
+	enrolled     map[string]ed25519.PublicKey
+	displayNames map[string]string
+	persistPath  string
 }
 
 func NewRegistry() *Registry {
 	return &Registry{
-		pending:  make(map[string]pendingEnrollment),
-		enrolled: make(map[string]ed25519.PublicKey),
+		pending:      make(map[string]pendingEnrollment),
+		enrolled:     make(map[string]ed25519.PublicKey),
+		displayNames: make(map[string]string),
 	}
 }
 
@@ -115,7 +160,7 @@ func OpenRegistry(path string) (*Registry, error) {
 	if err := decoder.Decode(&stored); err != nil {
 		return nil, fmt.Errorf("decode identity registry: %w", err)
 	}
-	if stored.Version != 1 {
+	if stored.Version != 1 && stored.Version != 2 {
 		return nil, fmt.Errorf("unsupported identity registry version %d", stored.Version)
 	}
 	if err := ensureJSONEOF(decoder); err != nil {
@@ -147,6 +192,23 @@ func OpenRegistry(path string) (*Registry, error) {
 		}
 		registry.enrolled[agentID] = append(ed25519.PublicKey(nil), publicKey...)
 	}
+	for agentID, displayName := range stored.DisplayNames {
+		if !agentIDPattern.MatchString(agentID) {
+			return nil, errors.New("identity registry contains a display name for an invalid agent ID")
+		}
+		if _, pending := registry.pending[agentID]; !pending {
+			if _, enrolled := registry.enrolled[agentID]; !enrolled {
+				return nil, errors.New("identity registry contains an orphaned display name")
+			}
+		}
+		if displayName != NormalizeDisplayName(displayName) || !ValidDisplayName(displayName) {
+			return nil, errors.New("identity registry contains an invalid server display name")
+		}
+		registry.displayNames[agentID] = displayName
+	}
+	if registry.hasDisplayNameConflictLocked() {
+		return nil, errors.New("identity registry contains conflicting server display names")
+	}
 	return registry, nil
 }
 
@@ -155,7 +217,50 @@ func (r *Registry) CreateEnrollment(
 	agentID string,
 	expiresAt time.Time,
 ) ([]byte, error) {
-	return r.createEnrollment(agentID, expiresAt, false)
+	return r.createEnrollment(agentID, "", expiresAt, false, false)
+}
+
+func (r *Registry) CreateEnrollmentWithDisplayName(
+	_ context.Context,
+	agentID string,
+	displayName string,
+	expiresAt time.Time,
+) ([]byte, error) {
+	displayName = NormalizeDisplayName(displayName)
+	if !ValidDisplayName(displayName) {
+		return nil, ErrInvalidDisplayName
+	}
+	return r.createEnrollment(agentID, displayName, expiresAt, false, false)
+}
+
+// CreateEnrollmentForDisplayName atomically creates a private opaque record ID
+// and a public, mutable server display name. Callers must not expose or derive
+// authorization from the generated ID.
+func (r *Registry) CreateEnrollmentForDisplayName(
+	_ context.Context,
+	displayName string,
+	expiresAt time.Time,
+) (string, []byte, error) {
+	displayName = NormalizeDisplayName(displayName)
+	if !ValidDisplayName(displayName) {
+		return "", nil, ErrInvalidDisplayName
+	}
+	for attempt := 0; attempt < 4; attempt++ {
+		randomID := make([]byte, agentRecordIDBytes)
+		if _, err := rand.Read(randomID); err != nil {
+			return "", nil, fmt.Errorf("generate server record ID: %w", err)
+		}
+		agentID := "agt_" + base64.RawURLEncoding.EncodeToString(randomID)
+		token, err := r.createEnrollment(agentID, displayName, expiresAt, false, true)
+		if errors.Is(err, ErrEnrollmentPending) || errors.Is(err, ErrAgentAlreadyEnrolled) {
+			continue
+		}
+		if err != nil {
+			return "", nil, err
+		}
+		return agentID, token, nil
+	}
+	return "", nil, errors.New("generate unique server record ID")
 }
 
 // CreateReplacementEnrollment creates a single-use credential that replaces
@@ -167,19 +272,27 @@ func (r *Registry) CreateReplacementEnrollment(
 	agentID string,
 	expiresAt time.Time,
 ) ([]byte, error) {
-	return r.createEnrollment(agentID, expiresAt, true)
+	return r.createEnrollment(agentID, "", expiresAt, true, false)
 }
 
 func (r *Registry) createEnrollment(
 	agentID string,
+	displayName string,
 	expiresAt time.Time,
 	replacement bool,
+	requireUnused bool,
 ) ([]byte, error) {
 	if !agentIDPattern.MatchString(agentID) {
 		return nil, ErrInvalidAgentID
 	}
 	if expiresAt.IsZero() || !expiresAt.After(time.Now()) {
 		return nil, errors.New("enrollment expiry must be in the future")
+	}
+	if !replacement && displayName != "" {
+		displayName = NormalizeDisplayName(displayName)
+		if !ValidDisplayName(displayName) {
+			return nil, ErrInvalidDisplayName
+		}
 	}
 
 	token := make([]byte, EnrollmentTokenBytes)
@@ -190,6 +303,14 @@ func (r *Registry) createEnrollment(
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	_, enrolled := r.enrolled[agentID]
+	_, pendingExists := r.pending[agentID]
+	if requireUnused && (enrolled || pendingExists) {
+		clear(token)
+		if enrolled {
+			return nil, ErrAgentAlreadyEnrolled
+		}
+		return nil, ErrEnrollmentPending
+	}
 	if replacement && !enrolled {
 		clear(token)
 		return nil, ErrAgentNotFound
@@ -198,7 +319,20 @@ func (r *Registry) createEnrollment(
 		clear(token)
 		return nil, ErrAgentAlreadyEnrolled
 	}
+	if !replacement {
+		effectiveDisplayName := displayName
+		explicitDisplayName := displayName != ""
+		if effectiveDisplayName == "" {
+			effectiveDisplayName = r.displayNameLocked(agentID)
+			_, explicitDisplayName = r.displayNames[agentID]
+		}
+		if r.displayNameConflictsLocked(agentID, effectiveDisplayName, explicitDisplayName) {
+			clear(token)
+			return nil, ErrDisplayNameExists
+		}
+	}
 	previous, hadPrevious := r.pending[agentID]
+	previousDisplayName, hadPreviousDisplayName := r.displayNames[agentID]
 	if hadPrevious && !time.Now().After(previous.expiresAt) {
 		clear(token)
 		return nil, ErrEnrollmentPending
@@ -207,11 +341,19 @@ func (r *Registry) createEnrollment(
 		tokenSHA256: sha256.Sum256(token),
 		expiresAt:   expiresAt.UTC(),
 	}
+	if !replacement && displayName != "" {
+		r.displayNames[agentID] = displayName
+	}
 	if err := r.persistLocked(); err != nil {
 		if hadPrevious {
 			r.pending[agentID] = previous
 		} else {
 			delete(r.pending, agentID)
+		}
+		if hadPreviousDisplayName {
+			r.displayNames[agentID] = previousDisplayName
+		} else {
+			delete(r.displayNames, agentID)
 		}
 		return nil, err
 	}
@@ -290,6 +432,120 @@ func (r *Registry) PublicKey(_ context.Context, agentID string) (ed25519.PublicK
 	return append(ed25519.PublicKey(nil), publicKey...), nil
 }
 
+// DisplayName resolves the mutable human-readable name for a private server
+// record. Unknown records deliberately fall back to the supplied ID so display
+// lookups never change authorization or routing decisions.
+func (r *Registry) DisplayName(agentID string) string {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	return r.displayNameLocked(agentID)
+}
+
+func (r *Registry) displayNameLocked(agentID string) string {
+	if displayName := r.displayNames[agentID]; displayName != "" {
+		return displayName
+	}
+	return agentID
+}
+
+func (r *Registry) displayNameExistsLocked(exceptAgentID, displayName string) bool {
+	return r.displayNameConflictsLocked(exceptAgentID, displayName, true)
+}
+
+func (r *Registry) displayNameConflictsLocked(exceptAgentID, displayName string, explicitDisplayName bool) bool {
+	folded := foldedDisplayName(displayName)
+	visited := make(map[string]struct{}, len(r.pending)+len(r.enrolled))
+	conflicts := func(agentID string) bool {
+		if agentID == exceptAgentID {
+			return false
+		}
+		if _, exists := visited[agentID]; exists {
+			return false
+		}
+		visited[agentID] = struct{}{}
+		_, otherExplicit := r.displayNames[agentID]
+		return foldedDisplayName(r.displayNameLocked(agentID)) == folded && (explicitDisplayName || otherExplicit)
+	}
+	for agentID := range r.pending {
+		if conflicts(agentID) {
+			return true
+		}
+	}
+	for agentID := range r.enrolled {
+		if conflicts(agentID) {
+			return true
+		}
+	}
+	return false
+}
+
+func (r *Registry) hasDisplayNameConflictLocked() bool {
+	type displayNameClaim struct {
+		agentID  string
+		explicit bool
+	}
+	claims := make(map[string]displayNameClaim, len(r.pending)+len(r.enrolled))
+	visited := make(map[string]struct{}, len(r.pending)+len(r.enrolled))
+	visit := func(agentID string) bool {
+		if _, exists := visited[agentID]; exists {
+			return false
+		}
+		visited[agentID] = struct{}{}
+		_, explicit := r.displayNames[agentID]
+		key := foldedDisplayName(r.displayNameLocked(agentID))
+		if previous, exists := claims[key]; exists {
+			return previous.agentID != agentID && (previous.explicit || explicit)
+		}
+		claims[key] = displayNameClaim{agentID: agentID, explicit: explicit}
+		return false
+	}
+	for agentID := range r.pending {
+		if visit(agentID) {
+			return true
+		}
+	}
+	for agentID := range r.enrolled {
+		if visit(agentID) {
+			return true
+		}
+	}
+	return false
+}
+
+// RenameDisplayName changes only the human-readable label. The immutable
+// server-record ID, enrolled key, topology references, and URLs are untouched.
+func (r *Registry) RenameDisplayName(agentID, displayName string) error {
+	if !agentIDPattern.MatchString(agentID) {
+		return ErrInvalidAgentID
+	}
+	displayName = NormalizeDisplayName(displayName)
+	if !ValidDisplayName(displayName) {
+		return ErrInvalidDisplayName
+	}
+
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if _, pending := r.pending[agentID]; !pending {
+		if _, enrolled := r.enrolled[agentID]; !enrolled {
+			return ErrAgentNotFound
+		}
+	}
+	if r.displayNameExistsLocked(agentID, displayName) {
+		return ErrDisplayNameExists
+	}
+	previous, hadPrevious := r.displayNames[agentID]
+	r.displayNames[agentID] = displayName
+	if err := r.persistLocked(); err != nil {
+		if hadPrevious {
+			r.displayNames[agentID] = previous
+		} else {
+			delete(r.displayNames, agentID)
+		}
+		return fmt.Errorf("persist server display name: %w", err)
+	}
+	return nil
+}
+
 // AgentIDForPublicKey resolves an authenticated transport key to the master's
 // private server record. Agents never receive or submit that record ID.
 func (r *Registry) AgentIDForPublicKey(
@@ -332,17 +588,22 @@ func (r *Registry) Revoke(_ context.Context, agentID string) error {
 
 	pending, hadPending := r.pending[agentID]
 	publicKey, hadPublicKey := r.enrolled[agentID]
+	displayName, hadDisplayName := r.displayNames[agentID]
 	if !hadPending && !hadPublicKey {
 		return ErrAgentNotFound
 	}
 	delete(r.pending, agentID)
 	delete(r.enrolled, agentID)
+	delete(r.displayNames, agentID)
 	if err := r.persistLocked(); err != nil {
 		if hadPending {
 			r.pending[agentID] = pending
 		}
 		if hadPublicKey {
 			r.enrolled[agentID] = publicKey
+		}
+		if hadDisplayName {
+			r.displayNames[agentID] = displayName
 		}
 		return fmt.Errorf("persist agent revocation: %w", err)
 	}
@@ -355,8 +616,9 @@ func (r *Registry) Snapshot(now time.Time) []AgentSnapshot {
 	records := make([]AgentSnapshot, 0, len(r.pending)+len(r.enrolled))
 	for agentID := range r.enrolled {
 		records = append(records, AgentSnapshot{
-			ID:    agentID,
-			State: AgentStateEnrolled,
+			ID:          agentID,
+			DisplayName: r.displayNameLocked(agentID),
+			State:       AgentStateEnrolled,
 		})
 	}
 	for agentID, pending := range r.pending {
@@ -369,6 +631,7 @@ func (r *Registry) Snapshot(now time.Time) []AgentSnapshot {
 		}
 		records = append(records, AgentSnapshot{
 			ID:                  agentID,
+			DisplayName:         r.displayNameLocked(agentID),
 			State:               state,
 			EnrollmentExpiresAt: pending.expiresAt.UTC(),
 		})
@@ -376,6 +639,9 @@ func (r *Registry) Snapshot(now time.Time) []AgentSnapshot {
 	r.mu.RUnlock()
 
 	sort.Slice(records, func(left, right int) bool {
+		if records[left].DisplayName != records[right].DisplayName {
+			return records[left].DisplayName < records[right].DisplayName
+		}
 		return records[left].ID < records[right].ID
 	})
 	return records
@@ -389,12 +655,16 @@ func (r *Registry) MigrationSnapshot() ([]byte, error) {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
 	stored := diskRegistry{
-		Version:  1,
-		Pending:  map[string]diskPending{},
-		Enrolled: make(map[string]string, len(r.enrolled)),
+		Version:      2,
+		Pending:      map[string]diskPending{},
+		Enrolled:     make(map[string]string, len(r.enrolled)),
+		DisplayNames: make(map[string]string, len(r.enrolled)),
 	}
 	for agentID, publicKey := range r.enrolled {
 		stored.Enrolled[agentID] = base64.RawURLEncoding.EncodeToString(publicKey)
+		if displayName := r.displayNames[agentID]; displayName != "" {
+			stored.DisplayNames[agentID] = displayName
+		}
 	}
 	encoded, err := json.MarshalIndent(stored, "", "  ")
 	if err != nil {
@@ -433,9 +703,10 @@ func VerifyProof(publicKey ed25519.PublicKey, nonce, signature []byte) bool {
 }
 
 type diskRegistry struct {
-	Version  int                    `json:"version"`
-	Pending  map[string]diskPending `json:"pending"`
-	Enrolled map[string]string      `json:"enrolled"`
+	Version      int                    `json:"version"`
+	Pending      map[string]diskPending `json:"pending"`
+	Enrolled     map[string]string      `json:"enrolled"`
+	DisplayNames map[string]string      `json:"display_names,omitempty"`
 }
 
 type diskPending struct {
@@ -448,9 +719,10 @@ func (r *Registry) persistLocked() error {
 		return nil
 	}
 	stored := diskRegistry{
-		Version:  1,
-		Pending:  make(map[string]diskPending, len(r.pending)),
-		Enrolled: make(map[string]string, len(r.enrolled)),
+		Version:      2,
+		Pending:      make(map[string]diskPending, len(r.pending)),
+		Enrolled:     make(map[string]string, len(r.enrolled)),
+		DisplayNames: make(map[string]string, len(r.displayNames)),
 	}
 	for agentID, pending := range r.pending {
 		stored.Pending[agentID] = diskPending{
@@ -460,6 +732,14 @@ func (r *Registry) persistLocked() error {
 	}
 	for agentID, publicKey := range r.enrolled {
 		stored.Enrolled[agentID] = base64.RawURLEncoding.EncodeToString(publicKey)
+	}
+	for agentID, displayName := range r.displayNames {
+		if _, pending := r.pending[agentID]; !pending {
+			if _, enrolled := r.enrolled[agentID]; !enrolled {
+				continue
+			}
+		}
+		stored.DisplayNames[agentID] = displayName
 	}
 	encoded, err := json.MarshalIndent(stored, "", "  ")
 	if err != nil {

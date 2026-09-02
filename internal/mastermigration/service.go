@@ -172,6 +172,9 @@ func (s *Service) snapshotFiles(ctx context.Context) (map[string][]byte, error) 
 }
 
 func (s *Service) snapshotFilesOnce() (map[string][]byte, error) {
+	if err := s.requireNoTopologyTransaction(); err != nil {
+		return nil, err
+	}
 	proxyState, accounting, err := s.ProxyNodes.MigrationSnapshot()
 	if err != nil {
 		return nil, err
@@ -202,7 +205,21 @@ func (s *Service) snapshotFilesOnce() (map[string][]byte, error) {
 	for name, encoded := range deployments {
 		files[filepath.ToSlash(filepath.Join("deployments", name))] = encoded
 	}
+	if err := s.requireNoTopologyTransaction(); err != nil {
+		return nil, err
+	}
 	return files, nil
+}
+
+func (s *Service) requireNoTopologyTransaction() error {
+	active, err := s.ProxyNodes.HasActiveTopologyTransaction()
+	if err != nil {
+		return fmt.Errorf("inspect active topology transaction: %w", err)
+	}
+	if active {
+		return ErrSnapshotBusy
+	}
+	return nil
 }
 
 func equalSnapshotFiles(left, right map[string][]byte) bool {

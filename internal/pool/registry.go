@@ -107,8 +107,9 @@ func (s AddressSource) String() string {
 }
 
 // componentPattern is shared by manual names, agent IDs, inbound tags, and
-// user names so every ref component round-trips through ref parsing. It is
-// the same charset as agent IDs in internal/identity.
+// legacy ASCII user components. It is the same charset as agent IDs in
+// internal/identity. New user names outside this grammar use the explicit
+// encoding in ref.go rather than weakening the slash-delimited ref grammar.
 var componentPattern = regexp.MustCompile(`\A[a-zA-Z0-9][a-zA-Z0-9._-]{0,127}\z`)
 
 // cgnatPrefix is the shared carrier-grade NAT space (RFC 6598) and
@@ -136,13 +137,6 @@ func globallyRoutable(addr netip.Addr) bool {
 
 func validComponent(component string) bool {
 	return componentPattern.MatchString(component)
-}
-
-// validUserComponent additionally accepts the _server placeholder, which
-// deliberately falls outside the agent-ID charset so it can never collide
-// with a real user name, tag, or manual name.
-func validUserComponent(component string) bool {
-	return component == serverKeyRefComponent || validComponent(component)
 }
 
 // ManualEntry is one operator-provided shared outbound.

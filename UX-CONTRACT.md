@@ -69,14 +69,30 @@ Security and domain rules in the Go implementation remain authoritative.
   IPv6 configuration-subscription domains belong to the enrolled Server's
   settings dialog and save atomically. Invalid values reopen that dialog with
   both entered values preserved and the invalid field focused.
+- Server names, Proxy Node names, and end-user management names are mutable,
+  NFC-normalized display names. Their editors accept up to 60 Unicode letters,
+  numbers, and combining marks plus ordinary spaces and `.`, `_`, or `-`.
+  Immutable `agt_…`, `pn_…`, and `usr_…` IDs remain the routing, storage, and
+  URL identities; renaming a Server updates labels without rewriting topology.
+  An end user's separately claimed login username remains an ASCII login
+  credential and is not derived from the management name.
 - Visible button labels use title case.
 - Danger actions remain visually and spatially distinct from routine saves.
+- Revoking a Server is blocked while any desired or last-applied Proxy Node Hop
+  uses that Agent, while its managed retirement profile is pending, or while a
+  topology transaction is active. The administrator must first move or remove
+  those Hops and let the old Agent receive its empty retirement configuration;
+  revocation never silently deletes Proxy Node branches.
 - Existing server-side validation is authoritative. Invalid submissions retain
   field values, expose an inline error summary, and identify invalid fields.
 - Every product form disables browser-owned validation bubbles. The shared
   client validator renders localized inline errors, associates them with their
   fields, and focuses the first invalid control; server validation remains the
   final authority.
+- Once a field is edited, syntax and range errors update in place on input,
+  selection change, and focus exit; an untouched form does not begin in an
+  error state. Proxy listener socket conflicts use the same field-owned error
+  surface rather than appearing only after submission.
 - A submitted form keeps button geometry stable and prevents duplicate submit.
 - Credentials and tokens are masked by default and use the shared reveal
   control. Secrets never appear in URL state.
@@ -159,6 +175,17 @@ Security and domain rules in the Go implementation remain authoritative.
 - Proxy Node topology Rules use the same searchable catalog selector for
   single-value Geosite and GeoIP matches; all other match types keep their
   established value editor.
+- The persisted-state validator retains the older 96-character ASCII name
+  ceiling only for upgrade compatibility; every new create or rename follows
+  the 60-code-point editor contract. Display names never become protocol
+  identities: generated authenticated-user labels contain the complete opaque
+  Membership or Link ID without truncation. A trailing 12-character marker is
+  retained only so older Agents can recognize the label during rolling upgrade.
+- New AnyTLS and Hysteria2 listeners offer ACME or Agent-generated self-signed
+  certificates and validate the certificate domain/IP while it is edited.
+  Legacy file-backed certificate listeners remain loadable and compilable, but
+  cannot be selected for a new listener or reused by another endpoint; editing
+  one preserves its paths until the operator explicitly converts its mode.
 - Link latency is advisory physical-path telemetry measured by the parent Agent
   every 30 seconds. AnyTLS and Shadowsocks 2022 use a TCP connect; Hysteria2
   uses an actual QUIC handshake, including the listener's configured
@@ -194,6 +221,22 @@ Security and domain rules in the Go implementation remain authoritative.
 
 - Proxy topology edits remain immediate and return to the relay map with no
   inspector opened unless the user explicitly selected one.
+- When a saved topology cannot yet replace the running topology, the Proxy Node
+  page persistently says that the relay map is showing saved, not active, state.
+  Operational health is derived from both saved and last-applied snapshots:
+  offline entrance roles use danger emphasis, offline relay roles use warning
+  emphasis, and applied-only servers remain summarized as current topology until
+  retirement completes. The relay map badges only offline Hops that actually
+  exist in the saved tree; it never renders last-applied Hops as ghost nodes.
+- A Proxy Node removed from saved state remains visible on the list as a
+  read-only **Pending Removal** card while its last-applied configuration may
+  still be running on an offline Agent. It disappears only after retirement is
+  applied and never links back into the normal topology editor.
+- A Link keeps showing active latency history only while its saved and applied
+  physical probe identities match. A pending parent, destination, protocol,
+  socket, TLS identity, or Hysteria2 obfuscation change shows Pending Apply with
+  no historical samples until the new topology becomes active; draft probes in
+  an open editor remain available.
 - Moving a Hop changes only its assigned Agent and preserves the Hop identity,
   terminal, and downstream branches. Replacing a Link destination is an
   explicitly destructive dialog action: it preserves that Link's match and

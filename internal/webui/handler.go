@@ -20,6 +20,7 @@ import (
 	"net/url"
 	"regexp"
 	"slices"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -229,6 +230,7 @@ type pageData struct {
 	LegacyLogin                     bool
 	UnifiedLogin                    bool
 	AgentID                         string
+	AgentName                       string
 	TTLSeconds                      int64
 	Stats                           fleetStats
 	Agents                          []agentView
@@ -268,6 +270,7 @@ type pageData struct {
 
 type accountingFailureView struct {
 	AgentID    string
+	AgentName  string
 	Reason     string
 	OccurredAt string
 }
@@ -281,6 +284,7 @@ type fleetStats struct {
 
 type agentView struct {
 	ID              string
+	Name            string
 	EnrollmentLabel string
 	EnrollmentClass string
 	ConnectionLabel string
@@ -295,6 +299,7 @@ type agentView struct {
 
 type agentDetailView struct {
 	ID                    string
+	Name                  string
 	URL                   string
 	Online                bool
 	DeploymentStatusURL   string
@@ -329,6 +334,23 @@ type agentDetailView struct {
 	EntranceAllocated     string
 	EntranceUsed          string
 	EntranceUnlimited     int
+	ProxyNodeReferences   []agentProxyNodeReferenceView
+	RemovalBlocked        bool
+	RetirementPending     bool
+}
+
+type agentProxyNodeReferenceView struct {
+	ID                   string
+	Name                 string
+	URL                  string
+	Desired              bool
+	DesiredEntrance      bool
+	DesiredRelayHops     int
+	DesiredRelayHopLabel string
+	Applied              bool
+	AppliedEntrance      bool
+	AppliedRelayHops     int
+	AppliedRelayHopLabel string
 }
 
 type agentUpdateView struct {
@@ -358,6 +380,7 @@ type deploymentView struct {
 
 type createdServerView struct {
 	AgentID        string
+	DisplayName    string
 	InstallCommand string
 	ExpiresAt      string
 	ExpiresAtISO   string
@@ -604,6 +627,7 @@ func (h *Handler) routes() {
 		h.requestAddressProbe,
 	)
 	h.mux.HandleFunc("POST /servers/{agent_id}/revoke", h.revokeServer)
+	h.mux.HandleFunc("POST /servers/{agent_id}/rename", h.renameServer)
 	h.mux.HandleFunc("POST /servers/{agent_id}/replace", h.replaceServer)
 	h.mux.HandleFunc("POST /servers/agent-update-all", h.updateAllAgents)
 	h.mux.HandleFunc("POST /servers/sing-box-update-all", h.updateAllSingBox)
@@ -985,6 +1009,7 @@ func (h *Handler) settingsPageData(session Session) pageData {
 			failure := recorded[index]
 			failures = append(failures, accountingFailureView{
 				AgentID:    failure.AgentID,
+				AgentName:  h.agentDisplayName(failure.AgentID),
 				Reason:     accountingFailureLabel(failure.Reason),
 				OccurredAt: failure.OccurredAt.In(proxynode.BillingLocation()).Format("2 Jan 2006, 15:04:05 UTC+8"),
 			})
@@ -1614,7 +1639,8 @@ func (h *Handler) revokeServer(response http.ResponseWriter, request *http.Reque
 		http.Error(response, "request was not authorized", http.StatusForbidden)
 		return
 	}
-	if _, err := h.authenticateSession(response, sessionToken); err != nil {
+	session, err := h.authenticateSession(response, sessionToken)
+	if err != nil {
 		h.redirectToLogin(response, request)
 		return
 	}
@@ -1625,13 +1651,36 @@ func (h *Handler) revokeServer(response http.ResponseWriter, request *http.Reque
 		http.Error(response, "request was not authorized", http.StatusForbidden)
 		return
 	}
-	if _, ok := h.agentSnapshot(agentID); !ok {
+	snapshot, ok := h.agentSnapshot(agentID)
+	if !ok {
 		http.NotFound(response, request)
+		return
+	}
+	if references, retirementPending := h.agentProxyNodeReferences(agentID); len(references) > 0 || retirementPending {
+		message := "This Server is still used by one or more Proxy Nodes. Move the affected Hops, or delete the branches or Proxy Nodes that use them before removing it."
+		if len(references) == 0 {
+			message = "This Server still owns an applied Proxy Node configuration. Finish or retry the topology change before removing it."
+		}
+		h.renderServerRevokeError(response, request, session, snapshot, message)
 		return
 	}
 	if err := h.controller.RevokeAgent(request.Context(), agentID); err != nil {
 		if errors.Is(err, identity.ErrAgentNotFound) {
 			http.NotFound(response, request)
+			return
+		}
+		if errors.Is(err, proxynode.ErrAgentReferenced) {
+			h.renderServerRevokeError(
+				response, request, session, snapshot,
+				"This Server is still used by Proxy Node topology. Review its assignments and finish the topology change before removing it.",
+			)
+			return
+		}
+		if errors.Is(err, proxynode.ErrDeploymentActive) {
+			h.renderServerRevokeError(
+				response, request, session, snapshot,
+				"Wait for the current Proxy Node change to finish, then try removing this Server again.",
+			)
 			return
 		}
 		h.logger.Error("revoke server", "agent_id", agentID, "error", err)
@@ -1641,6 +1690,86 @@ func (h *Handler) revokeServer(response http.ResponseWriter, request *http.Reque
 	h.removeEnrollmentResultsForAgent(agentID)
 	h.logger.Info("server access revoked", "agent_id", agentID)
 	http.Redirect(response, request, "/servers", http.StatusSeeOther)
+}
+
+func (h *Handler) renderServerRevokeError(
+	response http.ResponseWriter,
+	request *http.Request,
+	session Session,
+	snapshot identity.AgentSnapshot,
+	message string,
+) {
+	data, err := h.serverPageData(request.Context(), session, snapshot, "")
+	if err != nil {
+		h.logger.Error("render server removal error", "agent_id", snapshot.ID, "error", err)
+		http.Error(response, "server details could not be loaded", http.StatusInternalServerError)
+		return
+	}
+	data.Error = message
+	data.ErrorField = "revoke"
+	h.render(response, http.StatusConflict, "server.html", data)
+}
+
+func (h *Handler) renameServer(response http.ResponseWriter, request *http.Request) {
+	sessionToken, ok := h.sessionToken(request)
+	if !ok {
+		h.redirectToLogin(response, request)
+		return
+	}
+	if h.rejectInvalidMutationOrigin(response, request) {
+		return
+	}
+	form, err := readExactForm(
+		response,
+		request,
+		maxEnrollmentBodyBytes,
+		"csrf_token",
+		"display_name",
+	)
+	if err != nil || !h.authorizeCSRF(response, sessionToken, form.Get("csrf_token")) {
+		http.Error(response, "request was not authorized", http.StatusForbidden)
+		return
+	}
+	session, err := h.authenticateSession(response, sessionToken)
+	if err != nil {
+		h.redirectToLogin(response, request)
+		return
+	}
+	agentID := request.PathValue("agent_id")
+	snapshot, exists := h.agentSnapshot(agentID)
+	if !exists {
+		http.NotFound(response, request)
+		return
+	}
+	if err := h.registry.RenameDisplayName(agentID, form.Get("display_name")); err != nil {
+		status := http.StatusInternalServerError
+		message := "The server name could not be changed."
+		switch {
+		case errors.Is(err, identity.ErrInvalidDisplayName):
+			status = http.StatusBadRequest
+			message = "Use 1–60 letters or numbers; ordinary spaces and . _ - are allowed."
+		case errors.Is(err, identity.ErrDisplayNameExists):
+			status = http.StatusConflict
+			message = "That server name is already in use."
+		case errors.Is(err, identity.ErrAgentNotFound):
+			http.NotFound(response, request)
+			return
+		default:
+			h.logger.Error("rename server", "agent_id", agentID, "error", err)
+		}
+		data, dataErr := h.serverPageData(request.Context(), session, snapshot, "")
+		if dataErr != nil {
+			http.Error(response, "server details could not be loaded", http.StatusInternalServerError)
+			return
+		}
+		data.Error = message
+		data.ErrorField = "display_name"
+		data.AgentName = identity.NormalizeDisplayName(form.Get("display_name"))
+		h.render(response, status, "server.html", data)
+		return
+	}
+	h.logger.Info("server renamed", "agent_id", agentID, "display_name", h.registry.DisplayName(agentID))
+	http.Redirect(response, request, "/servers/"+url.PathEscape(agentID)+"/manage", http.StatusSeeOther)
 }
 
 func (h *Handler) replaceServer(response http.ResponseWriter, request *http.Request) {
@@ -1714,6 +1843,7 @@ func (h *Handler) replaceServer(response http.ResponseWriter, request *http.Requ
 	defer clear(token)
 	created := createdServerView{
 		AgentID:        agentID,
+		DisplayName:    snapshot.DisplayName,
 		InstallCommand: h.installCommand(encodedToken),
 		ExpiresAt:      expiresAt.In(proxynode.BillingLocation()).Format("2 Jan 2006, 15:04 UTC+8"),
 		ExpiresAtISO:   expiresAt.In(proxynode.BillingLocation()).Format(time.RFC3339),
@@ -2282,6 +2412,7 @@ func (h *Handler) serverPageData(
 	summary := agentViewFor(snapshot, now, online)
 	detail := &agentDetailView{
 		ID:                  snapshot.ID,
+		Name:                snapshot.DisplayName,
 		URL:                 "/servers/" + url.PathEscape(snapshot.ID) + "/manage",
 		Online:              online,
 		DeploymentStatusURL: "/servers/" + url.PathEscape(snapshot.ID) + "/deployment-status",
@@ -2305,6 +2436,8 @@ func (h *Handler) serverPageData(
 		detail.EntranceAllocated = formatByteCount(usage.AllocatedBytes)
 		detail.EntranceUsed = formatByteCount(usage.UsedBytes)
 		detail.EntranceUnlimited = usage.UnlimitedUsers
+		detail.ProxyNodeReferences, detail.RetirementPending = h.agentProxyNodeReferences(snapshot.ID)
+		detail.RemovalBlocked = len(detail.ProxyNodeReferences) > 0 || detail.RetirementPending
 	}
 	if info, exists := h.sessions.AgentInfo(snapshot.ID); exists {
 		detail.AgentVersion = info.Version
@@ -2375,11 +2508,93 @@ func (h *Handler) serverPageData(
 		detail.SingBoxUpdate = singBoxUpdateViewFor(update)
 	}
 	return pageData{
-		Title:     snapshot.ID,
+		Title:     snapshot.DisplayName,
 		ActiveNav: "servers",
 		CSRFToken: session.CSRFToken,
+		AgentName: snapshot.DisplayName,
 		Agent:     detail,
 	}, nil
+}
+
+func (h *Handler) agentProxyNodeReferences(agentID string) ([]agentProxyNodeReferenceView, bool) {
+	if h.proxyNodes == nil {
+		return nil, false
+	}
+	state := h.proxyNodes.Snapshot()
+	desiredNodeIDs := make(map[string]struct{}, len(state.ProxyNodes))
+	for _, node := range state.ProxyNodes {
+		desiredNodeIDs[node.ID] = struct{}{}
+	}
+	type referenceAccumulator struct {
+		view               agentProxyNodeReferenceView
+		desiredRelayHopIDs map[string]struct{}
+		appliedRelayHopIDs map[string]struct{}
+	}
+	references := make(map[string]*referenceAccumulator)
+	collect := func(nodes []proxynode.ProxyNode, desired bool) {
+		for _, node := range nodes {
+			var reference *referenceAccumulator
+			for _, hop := range node.Hops {
+				if hop.AgentID != agentID {
+					continue
+				}
+				if reference == nil {
+					reference = references[node.ID]
+					if reference == nil {
+						reference = &referenceAccumulator{
+							view: agentProxyNodeReferenceView{
+								ID: node.ID, Name: node.Name, URL: proxyNodeURL(node.ID),
+							},
+							desiredRelayHopIDs: make(map[string]struct{}),
+							appliedRelayHopIDs: make(map[string]struct{}),
+						}
+						references[node.ID] = reference
+					}
+				}
+				if desired {
+					reference.view.Desired = true
+					reference.view.Name = node.Name
+					if hop.ID == node.Entrance.HopID {
+						reference.view.DesiredEntrance = true
+					} else {
+						reference.desiredRelayHopIDs[hop.ID] = struct{}{}
+					}
+				} else {
+					reference.view.Applied = true
+					if hop.ID == node.Entrance.HopID {
+						reference.view.AppliedEntrance = true
+					} else {
+						reference.appliedRelayHopIDs[hop.ID] = struct{}{}
+					}
+				}
+			}
+		}
+	}
+	collect(state.AppliedProxyNodes, false)
+	collect(state.ProxyNodes, true)
+
+	views := make([]agentProxyNodeReferenceView, 0, len(references))
+	for _, reference := range references {
+		reference.view.DesiredRelayHops = len(reference.desiredRelayHopIDs)
+		reference.view.DesiredRelayHopLabel = localizedCount(localeEnglish, reference.view.DesiredRelayHops, "relay-hop")
+		reference.view.AppliedRelayHops = len(reference.appliedRelayHopIDs)
+		reference.view.AppliedRelayHopLabel = localizedCount(localeEnglish, reference.view.AppliedRelayHops, "relay-hop")
+		if _, nodeStillDesired := desiredNodeIDs[reference.view.ID]; reference.view.Applied && !nodeStillDesired {
+			// The desired Node no longer has an editor. Keep the runtime
+			// assignment visible without linking to a guaranteed 404 page.
+			reference.view.URL = "/proxy-nodes"
+		}
+		views = append(views, reference.view)
+	}
+	sort.Slice(views, func(left, right int) bool {
+		leftName := strings.ToLower(views[left].Name)
+		rightName := strings.ToLower(views[right].Name)
+		if leftName == rightName {
+			return views[left].ID < views[right].ID
+		}
+		return leftName < rightName
+	})
+	return views, slices.Contains(state.ManagedAgents, agentID) && len(views) == 0
 }
 
 func containsRelease(releases []AgentRelease, target string) bool {
@@ -2713,7 +2928,7 @@ func (h *Handler) createServer(response http.ResponseWriter, request *http.Reque
 		response,
 		request,
 		maxEnrollmentBodyBytes,
-		"agent_id",
+		"display_name",
 		"csrf_token",
 		"ttl_seconds",
 	)
@@ -2727,7 +2942,8 @@ func (h *Handler) createServer(response http.ResponseWriter, request *http.Reque
 		return
 	}
 
-	agentID := strings.TrimSpace(form.Get("agent_id"))
+	agentID := ""
+	agentName := identity.NormalizeDisplayName(form.Get("display_name"))
 	ttlSeconds, parseErr := strconv.ParseInt(form.Get("ttl_seconds"), 10, 64)
 	ttl, ttlAllowed := allowedTTLs[ttlSeconds]
 	if parseErr != nil || !ttlAllowed {
@@ -2736,6 +2952,7 @@ func (h *Handler) createServer(response http.ResponseWriter, request *http.Reque
 			http.StatusBadRequest,
 			session,
 			agentID,
+			agentName,
 			900,
 			"Choose a supported enrollment lifetime.",
 			"ttl_seconds",
@@ -2749,6 +2966,7 @@ func (h *Handler) createServer(response http.ResponseWriter, request *http.Reque
 			http.StatusTooManyRequests,
 			session,
 			agentID,
+			agentName,
 			ttlSeconds,
 			"Too many enrollment credentials were created. Wait one minute and try again.",
 			"",
@@ -2759,16 +2977,21 @@ func (h *Handler) createServer(response http.ResponseWriter, request *http.Reque
 	expiresAt := h.currentTime().Add(ttl)
 	h.agentMutationMu.Lock()
 	defer h.agentMutationMu.Unlock()
-	token, err := h.registry.CreateEnrollment(request.Context(), agentID, expiresAt)
+	agentID, token, err := h.registry.CreateEnrollmentForDisplayName(request.Context(), agentName, expiresAt)
 	if err != nil {
 		message := "The server entry could not be created."
 		status := http.StatusInternalServerError
 		errorField := ""
 		switch {
-		case errors.Is(err, identity.ErrInvalidAgentID):
+		case errors.Is(err, identity.ErrInvalidAgentID),
+			errors.Is(err, identity.ErrInvalidDisplayName):
 			status = http.StatusBadRequest
-			message = "Use a valid server ID: letters, numbers, dots, underscores, and hyphens only."
-			errorField = "agent_id"
+			message = "Use 1–60 letters or numbers; ordinary spaces and . _ - are allowed."
+			errorField = "display_name"
+		case errors.Is(err, identity.ErrDisplayNameExists):
+			status = http.StatusConflict
+			message = "That server name is already in use."
+			errorField = "display_name"
 		case errors.Is(err, identity.ErrAgentAlreadyEnrolled):
 			status = http.StatusConflict
 			message = "That server ID is already enrolled."
@@ -2789,6 +3012,7 @@ func (h *Handler) createServer(response http.ResponseWriter, request *http.Reque
 			status,
 			session,
 			agentID,
+			agentName,
 			ttlSeconds,
 			message,
 			errorField,
@@ -2799,6 +3023,7 @@ func (h *Handler) createServer(response http.ResponseWriter, request *http.Reque
 	defer clear(token)
 	created := createdServerView{
 		AgentID:        agentID,
+		DisplayName:    agentName,
 		InstallCommand: h.installCommand(encodedToken),
 		ExpiresAt:      expiresAt.In(proxynode.BillingLocation()).Format("2 Jan 2006, 15:04 UTC+8"),
 		ExpiresAtISO:   expiresAt.In(proxynode.BillingLocation()).Format(time.RFC3339),
@@ -2822,6 +3047,7 @@ func (h *Handler) renderNewServerError(
 	status int,
 	session Session,
 	agentID string,
+	agentName string,
 	ttlSeconds int64,
 	message string,
 	errorField string,
@@ -2831,6 +3057,7 @@ func (h *Handler) renderNewServerError(
 		ActiveNav:  "servers",
 		CSRFToken:  session.CSRFToken,
 		AgentID:    agentID,
+		AgentName:  agentName,
 		TTLSeconds: ttlSeconds,
 		Error:      message,
 		ErrorField: errorField,
@@ -2839,8 +3066,9 @@ func (h *Handler) renderNewServerError(
 
 func agentViewFor(snapshot identity.AgentSnapshot, now time.Time, online bool) agentView {
 	view := agentView{
-		ID:  snapshot.ID,
-		URL: "/servers/" + url.PathEscape(snapshot.ID) + "/manage",
+		ID:   snapshot.ID,
+		Name: snapshot.DisplayName,
+		URL:  "/servers/" + url.PathEscape(snapshot.ID) + "/manage",
 	}
 	switch snapshot.State {
 	case identity.AgentStatePending:
@@ -2934,6 +3162,13 @@ func (h *Handler) agentSnapshot(agentID string) (identity.AgentSnapshot, bool) {
 		}
 	}
 	return identity.AgentSnapshot{}, false
+}
+
+func (h *Handler) agentDisplayName(agentID string) string {
+	if h.registry == nil {
+		return agentID
+	}
+	return h.registry.DisplayName(agentID)
 }
 
 func validateConfigurationJSON(config []byte) error {
