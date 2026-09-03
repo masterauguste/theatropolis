@@ -683,6 +683,84 @@ func TestDeletingProxyNodePrunesAlreadyDeletedAgentReference(t *testing.T) {
 	}
 }
 
+// TestForcedAgentRemovalUnblocksPendingDeletion reproduces the lost-hardware
+// deadlock: a wiped entrance Agent keeps its Proxy Node deletion pending
+// forever, while the deletion's stale applied/managed references block the
+// revocation. A forced removal of the verifiably offline identity must let
+// the pending revision commit locally without a remote wipe.
+func TestForcedAgentRemovalUnblocksPendingDeletion(t *testing.T) {
+	store, err := Open(filepath.Join(t.TempDir(), "state.json"), testBuild())
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+	node, err := store.CreateProxyNode(CreateProxyNodeInput{
+		Name: "Cinema", RootAgent: "edge-lost",
+		Entrance: testTLSEndpoint(ProtocolAnyTLS, 443),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.MarkTopologyApplied(store.Snapshot().Revision, []string{"edge-lost"}); err != nil {
+		t.Fatal(err)
+	}
+	controller := &applyingController{
+		store:      deployment.NewMemoryStore(),
+		deployable: map[string]bool{"edge-lost": false},
+	}
+	deployer, err := NewDeployer(store, testResolver{"edge-lost": "192.0.2.10"}, controller)
+	if err != nil {
+		t.Fatal(err)
+	}
+	reconcile := make(chan struct{}, 1)
+	deployer.SetTopologyDesiredHook(func() { reconcile <- struct{}{} })
+
+	job, err := deployer.MutateAndStart(func() error { return store.DeleteProxyNode(node.ID) })
+	if err != nil {
+		t.Fatal(err)
+	}
+	if job.Status != FleetDeploymentPending {
+		t.Fatalf("deletion job status = %q, want pending for the wiped Agent", job.Status)
+	}
+	// MutateAndStart wakes the reconciler once for the pending revision.
+	select {
+	case <-reconcile:
+	default:
+		t.Fatal("pending deletion did not wake the pending-topology reconciler")
+	}
+	if err := store.RequireAgentUnreferenced("edge-lost"); !errors.Is(err, ErrAgentReferenced) {
+		t.Fatalf("ordinary removal guard error = %v, want ErrAgentReferenced", err)
+	}
+
+	// The removal callback models the control plane deleting the identity
+	// record after its own offline check.
+	if err := deployer.GuardAgentRemoval("edge-lost", true, func() error {
+		controller.mu.Lock()
+		controller.missingIdentities = map[string]bool{"edge-lost": true}
+		controller.mu.Unlock()
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-reconcile:
+	default:
+		t.Fatal("forced removal did not wake the pending-topology reconciler")
+	}
+
+	if _, err := deployer.ReconcilePending(); err != nil {
+		t.Fatal(err)
+	}
+	waitForFleetDeployment(t, deployer)
+	state := store.Snapshot()
+	if state.Revision != state.AppliedRevision {
+		t.Fatalf("revision %d still pending after forced removal, applied %d", state.Revision, state.AppliedRevision)
+	}
+	if len(state.AppliedProxyNodes) != 0 || len(state.ManagedAgents) != 0 {
+		t.Fatalf("wiped Agent references remain: applied=%d managed=%v", len(state.AppliedProxyNodes), state.ManagedAgents)
+	}
+}
+
 func TestOfflineEnrolledAgentStillRequiresConfirmedRetirement(t *testing.T) {
 	store, err := Open(filepath.Join(t.TempDir(), "state.json"), testBuild())
 	if err != nil {

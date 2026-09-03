@@ -270,8 +270,12 @@ func (d *Deployer) Preview() (CompileResult, error) {
 
 // GuardAgentRemoval serializes a control-plane revocation with topology
 // mutations and refuses it until every desired/applied Hop and managed
-// retirement profile has stopped referencing the Agent.
-func (d *Deployer) GuardAgentRemoval(agentID string, removal func() error) error {
+// retirement profile has stopped referencing the Agent. A forced removal
+// skips that reference check: the control plane offers it only for an Agent
+// with no connected session, asserting the hardware is permanently gone.
+// Remaining references become ordinary deleted-Server references that a
+// later topology commit prunes locally without a remote wipe.
+func (d *Deployer) GuardAgentRemoval(agentID string, force bool, removal func() error) error {
 	if removal == nil {
 		return errors.New("Agent removal callback is required")
 	}
@@ -288,10 +292,31 @@ func (d *Deployer) GuardAgentRemoval(agentID string, removal func() error) error
 	d.mutationReserved = true
 	d.mu.Unlock()
 	defer d.releaseMutationReservation()
-	if err := d.store.RequireAgentUnreferenced(agentID); err != nil {
+	if !force {
+		if err := d.store.RequireAgentUnreferenced(agentID); err != nil {
+			return err
+		}
+	}
+	if err := removal(); err != nil {
 		return err
 	}
-	return removal()
+	if force {
+		// The deleted identity may be the only blocker of a pending desired
+		// revision: changedTopologyAgents now skips its impossible remote
+		// wipe, so wake the coalesced reconciler instead of waiting for the
+		// next control-plane event. The hook is a debounced signal and runs
+		// after this reservation has long been released.
+		d.mu.RLock()
+		hook := d.onTopologyDesired
+		d.mu.RUnlock()
+		if hook != nil {
+			state := d.store.Snapshot()
+			if state.Revision != state.AppliedRevision {
+				hook()
+			}
+		}
+	}
+	return nil
 }
 
 // AuthoritativeAppliedProfile rebuilds one managed Agent from the last

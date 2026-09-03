@@ -321,6 +321,22 @@
               <p>This Server still owns an applied managed configuration. Finish or retry the Proxy Node change before removing it.</p>
               {{end}}
               <a class="button button--secondary button--full" href="/proxy-nodes">Review Proxy Nodes</a>
+              {{if .Agent.CanForceRemove}}
+              <p>Only when this machine is permanently gone: forget this Server without delivering a retirement profile. Remaining Proxy Node references turn into deleted-Server entries that you redirect or delete afterwards, and pending changes that wait for this Server finish locally. If the machine ever comes back, its Agent stays locked out and must be reinstalled.</p>
+              <form novalidate
+                action="/servers/{{.Agent.ID}}/revoke"
+                method="post"
+              >
+                <input type="hidden" name="csrf_token" value="{{.CSRFToken}}">
+                <input type="hidden" name="agent_id" value="{{.Agent.ID}}">
+                <input type="hidden" name="force" value="yes">
+                <label class="danger-confirm">
+                  <input type="checkbox" name="confirm_revoke" value="yes" required>
+                  <span>I understand the machine is permanently gone and its last configuration cannot be withdrawn remotely.</span>
+                </label>
+                <button class="button button--danger button--full" type="submit">Force remove offline Server</button>
+              </form>
+              {{end}}
               {{else}}
               <p>This immediately closes an active control session and invalidates enrollment credentials. It does not uninstall the remote agent or stop its current sing-box process.</p>
               <form novalidate

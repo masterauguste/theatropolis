@@ -364,7 +364,7 @@ func TestRevokeAgentRedeploysDependentWithDirectFallback(t *testing.T) {
 	deployThroughServer(t, ctx, server, sessionA, "agent-a", poolSourceConfig(8443))
 	deployThroughServer(t, ctx, server, sessionB, "agent-b", poolDependentConfig())
 
-	if err := server.RevokeAgent(ctx, "agent-a"); err != nil {
+	if err := server.RevokeAgent(ctx, "agent-a", false); err != nil {
 		t.Fatal(err)
 	}
 	if _, exists := registry.AgentAddress("agent-a"); exists {

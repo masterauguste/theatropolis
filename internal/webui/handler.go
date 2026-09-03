@@ -91,7 +91,7 @@ type AgentController interface {
 		[]byte,
 		time.Duration,
 	) (deployment.Record, error)
-	RevokeAgent(context.Context, string) error
+	RevokeAgent(context.Context, string, bool) error
 	// DeploymentRecords lists the latest deployment record per agent for
 	// outbound-pool derivation.
 	DeploymentRecords(context.Context) ([]deployment.Record, error)
@@ -337,6 +337,7 @@ type agentDetailView struct {
 	ProxyNodeReferences   []agentProxyNodeReferenceView
 	RemovalBlocked        bool
 	RetirementPending     bool
+	CanForceRemove        bool
 }
 
 type agentProxyNodeReferenceView struct {
@@ -1627,13 +1628,12 @@ func (h *Handler) revokeServer(response http.ResponseWriter, request *http.Reque
 	if h.rejectInvalidMutationOrigin(response, request) {
 		return
 	}
-	form, err := readExactForm(
+	form, err := readFormWithOptional(
 		response,
 		request,
 		maxEnrollmentBodyBytes,
-		"agent_id",
-		"confirm_revoke",
-		"csrf_token",
+		[]string{"agent_id", "confirm_revoke", "csrf_token"},
+		"force",
 	)
 	if err != nil || !h.authorizeCSRF(response, sessionToken, form.Get("csrf_token")) {
 		http.Error(response, "request was not authorized", http.StatusForbidden)
@@ -1656,7 +1656,16 @@ func (h *Handler) revokeServer(response http.ResponseWriter, request *http.Reque
 		http.NotFound(response, request)
 		return
 	}
-	if references, retirementPending := h.agentProxyNodeReferences(agentID); len(references) > 0 || retirementPending {
+	force := form.Get("force") == "yes"
+	if force {
+		if snapshot.State != identity.AgentStateEnrolled || h.sessions.IsOnline(agentID) {
+			h.renderServerRevokeError(
+				response, request, session, snapshot,
+				"Force removal is only available while the Server is enrolled and offline. Wait for the Agent to disconnect, then try again.",
+			)
+			return
+		}
+	} else if references, retirementPending := h.agentProxyNodeReferences(agentID); len(references) > 0 || retirementPending {
 		message := "This Server is still used by one or more Proxy Nodes. Move the affected Hops, or delete the branches or Proxy Nodes that use them before removing it."
 		if len(references) == 0 {
 			message = "This Server still owns an applied Proxy Node configuration. Finish or retry the topology change before removing it."
@@ -1664,9 +1673,16 @@ func (h *Handler) revokeServer(response http.ResponseWriter, request *http.Reque
 		h.renderServerRevokeError(response, request, session, snapshot, message)
 		return
 	}
-	if err := h.controller.RevokeAgent(request.Context(), agentID); err != nil {
+	if err := h.controller.RevokeAgent(request.Context(), agentID, force); err != nil {
 		if errors.Is(err, identity.ErrAgentNotFound) {
 			http.NotFound(response, request)
+			return
+		}
+		if errors.Is(err, control.ErrAgentOnline) {
+			h.renderServerRevokeError(
+				response, request, session, snapshot,
+				"This Server reconnected before it could be removed. Wait until the Agent is offline, then try again.",
+			)
 			return
 		}
 		if errors.Is(err, proxynode.ErrAgentReferenced) {
@@ -2438,6 +2454,8 @@ func (h *Handler) serverPageData(
 		detail.EntranceUnlimited = usage.UnlimitedUsers
 		detail.ProxyNodeReferences, detail.RetirementPending = h.agentProxyNodeReferences(snapshot.ID)
 		detail.RemovalBlocked = len(detail.ProxyNodeReferences) > 0 || detail.RetirementPending
+		detail.CanForceRemove = detail.RemovalBlocked &&
+			snapshot.State == identity.AgentStateEnrolled && !online
 	}
 	if info, exists := h.sessions.AgentInfo(snapshot.ID); exists {
 		detail.AgentVersion = info.Version
@@ -3594,6 +3612,61 @@ func readExactForm(
 	maxBytes int64,
 	fields ...string,
 ) (url.Values, error) {
+	values, err := readFormValues(response, request, maxBytes)
+	if err != nil {
+		return nil, err
+	}
+	if len(values) != len(fields) {
+		return nil, errors.New("form contains unexpected fields")
+	}
+	slices.Sort(fields)
+	for _, field := range fields {
+		value, exists := values[field]
+		if !exists || len(value) != 1 {
+			return nil, errors.New("form is missing a field or contains duplicates")
+		}
+	}
+	return values, nil
+}
+
+// readFormWithOptional enforces the same strict single-value shape as
+// readExactForm while allowing the listed optional fields to be absent.
+func readFormWithOptional(
+	response http.ResponseWriter,
+	request *http.Request,
+	maxBytes int64,
+	required []string,
+	optional ...string,
+) (url.Values, error) {
+	values, err := readFormValues(response, request, maxBytes)
+	if err != nil {
+		return nil, err
+	}
+	allowed := make(map[string]struct{}, len(required)+len(optional))
+	for _, field := range required {
+		allowed[field] = struct{}{}
+	}
+	for _, field := range optional {
+		allowed[field] = struct{}{}
+	}
+	for field, value := range values {
+		if _, ok := allowed[field]; !ok || len(value) != 1 {
+			return nil, errors.New("form contains unexpected fields")
+		}
+	}
+	for _, field := range required {
+		if _, exists := values[field]; !exists {
+			return nil, errors.New("form is missing a field or contains duplicates")
+		}
+	}
+	return values, nil
+}
+
+func readFormValues(
+	response http.ResponseWriter,
+	request *http.Request,
+	maxBytes int64,
+) (url.Values, error) {
 	if request.Body == nil {
 		return nil, errors.New("request body is required")
 	}
@@ -3616,15 +3689,8 @@ func readExactForm(
 		return nil, err
 	}
 	values, err := url.ParseQuery(string(encoded))
-	if err != nil || len(values) != len(fields) {
-		return nil, errors.New("form contains unexpected fields")
-	}
-	slices.Sort(fields)
-	for _, field := range fields {
-		value, exists := values[field]
-		if !exists || len(value) != 1 {
-			return nil, errors.New("form is missing a field or contains duplicates")
-		}
+	if err != nil {
+		return nil, err
 	}
 	return values, nil
 }

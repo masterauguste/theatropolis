@@ -688,6 +688,19 @@ Agent then receives the retained deployment through the same connection-time
 profile synchronization. Ordinary revocation remains deletion, not
 replacement.
 
+When the hardware is permanently lost instead — a wiped or discarded machine
+that will never reconnect — the ordinary retire-then-revoke order cannot run,
+because the lost Agent can never acknowledge its empty retirement profile and
+its stale applied references would otherwise block revocation forever. For an
+enrolled Agent with no connected control session, the web UI therefore offers
+an explicit forced removal: the master deletes the identity without delivering
+a retirement profile, remaining topology references become ordinary
+deleted-Server entries that the administrator redirects or deletes, and any
+pending topology revision that was waiting on the lost Agent is reconciled
+locally without a remote wipe. Forced removal is refused while a session is
+connected; if the machine ever comes back, its Agent stays locked out and
+must be reinstalled.
+
 ### Quarantine rather than immediate destruction
 
 "Discard" means that legacy data is no longer authoritative or executable. It

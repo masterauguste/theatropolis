@@ -91,6 +91,7 @@ type testAgentController struct {
 	singBoxUpdates      map[string]control.SingBoxUpdateState
 	queueErr            error
 	revokeErr           error
+	revokeForce         bool
 	poolRegistry        *pool.Registry
 	propagateCalls      int
 	deploymentListCalls int
@@ -369,10 +370,12 @@ func (c *testAgentController) QueueDeployment(
 func (c *testAgentController) RevokeAgent(
 	ctx context.Context,
 	agentID string,
+	force bool,
 ) error {
 	if c.revokeErr != nil {
 		return c.revokeErr
 	}
+	c.revokeForce = force
 	if err := c.registry.Revoke(ctx, agentID); err != nil {
 		return err
 	}
@@ -5196,6 +5199,159 @@ func TestRevokeServerReportsReferencedProxyNodeConflict(t *testing.T) {
 	}
 	if _, err := fixture.registry.PublicKey(context.Background(), "edge-online"); err != nil {
 		t.Fatalf("referenced revoke removed identity: %v", err)
+	}
+}
+
+func TestRevokeServerForceRemovesPermanentlyOfflineAgent(t *testing.T) {
+	t.Parallel()
+
+	fixture := newWebFixture(t)
+	// edge-lost is enrolled but has no session in the fixture, modelling a
+	// wiped machine that can never reconnect.
+	enrollAgent(t, fixture.registry, "edge-lost")
+	if _, err := fixture.proxyNodes.CreateProxyNode(proxynode.CreateProxyNodeInput{
+		Name:      "Cinema",
+		RootAgent: "edge-lost",
+		Entrance: proxynode.Endpoint{
+			Protocol: proxynode.ProtocolAnyTLS, Listen: "::", ListenPort: 443,
+			TLS: proxynode.TLSConfig{Mode: proxynode.TLSModeSelfSigned, ServerName: "cinema.example"},
+		},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := fixture.proxyNodes.MarkTopologyApplied(
+		fixture.proxyNodes.Snapshot().Revision,
+		[]string{"edge-lost"},
+	); err != nil {
+		t.Fatal(err)
+	}
+
+	// The blocked page exposes the force-removal form for the offline Server.
+	request := fixture.authenticatedRequest(http.MethodGet, "/servers/edge-lost/manage", "")
+	response := httptest.NewRecorder()
+	fixture.handler.ServeHTTP(response, request)
+	body := response.Body.String()
+	for _, expected := range []string{
+		`name="force"`,
+		"Force remove offline Server",
+		"Only when this machine is permanently gone",
+	} {
+		if !strings.Contains(body, expected) {
+			t.Errorf("offline referenced server page omitted %q", expected)
+		}
+	}
+	request = fixture.authenticatedRequestWithLocale(
+		http.MethodGet, "/servers/edge-lost/manage", "", localeSimplifiedChinese,
+	)
+	response = httptest.NewRecorder()
+	fixture.handler.ServeHTTP(response, request)
+	if localized := response.Body.String(); !strings.Contains(localized, "强制移除离线服务器") {
+		t.Error("localized server page omitted the force-removal action")
+	}
+
+	// The ordinary revoke path stays blocked.
+	form := url.Values{
+		"agent_id":       {"edge-lost"},
+		"confirm_revoke": {"yes"},
+		"csrf_token":     {fixture.session.CSRFToken},
+	}.Encode()
+	request = fixture.authenticatedMutationRequest(http.MethodPost, "/servers/edge-lost/revoke", form)
+	response = httptest.NewRecorder()
+	fixture.handler.ServeHTTP(response, request)
+	if response.Code != http.StatusConflict ||
+		!strings.Contains(response.Body.String(), "This Server is still used by one or more Proxy Nodes") {
+		t.Fatalf("ordinary referenced revoke response = %d %q", response.Code, response.Body.String())
+	}
+
+	// Force removal still requires the explicit confirmation.
+	unconfirmed := url.Values{
+		"agent_id":       {"edge-lost"},
+		"confirm_revoke": {"no"},
+		"force":          {"yes"},
+		"csrf_token":     {fixture.session.CSRFToken},
+	}.Encode()
+	request = fixture.authenticatedMutationRequest(http.MethodPost, "/servers/edge-lost/revoke", unconfirmed)
+	response = httptest.NewRecorder()
+	fixture.handler.ServeHTTP(response, request)
+	if response.Code != http.StatusForbidden {
+		t.Fatalf("unconfirmed force revoke status = %d, want 403", response.Code)
+	}
+
+	force := url.Values{
+		"agent_id":       {"edge-lost"},
+		"confirm_revoke": {"yes"},
+		"force":          {"yes"},
+		"csrf_token":     {fixture.session.CSRFToken},
+	}.Encode()
+	request = fixture.authenticatedMutationRequest(http.MethodPost, "/servers/edge-lost/revoke", force)
+	response = httptest.NewRecorder()
+	fixture.handler.ServeHTTP(response, request)
+	if response.Code != http.StatusSeeOther ||
+		response.Header().Get("Location") != "/servers" {
+		t.Fatalf(
+			"force revoke response = %d %q",
+			response.Code,
+			response.Header().Get("Location"),
+		)
+	}
+	if !fixture.controller.revokeForce {
+		t.Fatal("force revoke did not reach the controller as a forced removal")
+	}
+	if _, err := fixture.registry.PublicKey(context.Background(), "edge-lost"); !errors.Is(err, identity.ErrAgentNotFound) {
+		t.Fatalf("force-revoked identity remains: %v", err)
+	}
+}
+
+func TestRevokeServerForceRejectsOnlineAgent(t *testing.T) {
+	t.Parallel()
+
+	fixture := newWebFixture(t)
+	// edge-online holds a live session in the fixture.
+	enrollAgent(t, fixture.registry, "edge-online")
+	if _, err := fixture.proxyNodes.CreateProxyNode(proxynode.CreateProxyNodeInput{
+		Name:      "Cinema",
+		RootAgent: "edge-online",
+		Entrance: proxynode.Endpoint{
+			Protocol: proxynode.ProtocolAnyTLS, Listen: "::", ListenPort: 443,
+			TLS: proxynode.TLSConfig{Mode: proxynode.TLSModeSelfSigned, ServerName: "cinema.example"},
+		},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := fixture.proxyNodes.MarkTopologyApplied(
+		fixture.proxyNodes.Snapshot().Revision,
+		[]string{"edge-online"},
+	); err != nil {
+		t.Fatal(err)
+	}
+
+	// A reachable Server must retire through the ordinary topology path, so
+	// the blocked page must not offer force removal.
+	request := fixture.authenticatedRequest(http.MethodGet, "/servers/edge-online/manage", "")
+	response := httptest.NewRecorder()
+	fixture.handler.ServeHTTP(response, request)
+	if strings.Contains(response.Body.String(), `name="force"`) {
+		t.Fatal("online referenced server page exposed the force-removal form")
+	}
+
+	form := url.Values{
+		"agent_id":       {"edge-online"},
+		"confirm_revoke": {"yes"},
+		"force":          {"yes"},
+		"csrf_token":     {fixture.session.CSRFToken},
+	}.Encode()
+	request = fixture.authenticatedMutationRequest(http.MethodPost, "/servers/edge-online/revoke", form)
+	response = httptest.NewRecorder()
+	fixture.handler.ServeHTTP(response, request)
+	if response.Code != http.StatusConflict ||
+		!strings.Contains(response.Body.String(), "enrolled and offline") {
+		t.Fatalf("online force revoke response = %d %q", response.Code, response.Body.String())
+	}
+	if _, err := fixture.registry.PublicKey(context.Background(), "edge-online"); err != nil {
+		t.Fatalf("rejected force revoke removed identity: %v", err)
+	}
+	if !fixture.controller.sessions["edge-online"] {
+		t.Fatal("rejected force revoke disconnected the online Agent")
 	}
 }
 

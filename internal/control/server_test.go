@@ -944,7 +944,7 @@ func TestRevokeAgentDurablyInvalidatesActiveSession(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if err := server.RevokeAgent(ctx, "edge-revoke-active"); err != nil {
+	if err := server.RevokeAgent(ctx, "edge-revoke-active", false); err != nil {
 		t.Fatal(err)
 	}
 	if server.Sessions.IsOnline("edge-revoke-active") {
@@ -985,6 +985,69 @@ func TestRevokeAgentDurablyInvalidatesActiveSession(t *testing.T) {
 	server.Sessions.Unregister(replacement)
 }
 
+func TestRevokeAgentForceRequiresOfflineSession(t *testing.T) {
+	ctx := context.Background()
+	now := time.Now().UTC()
+	identities := identity.NewRegistry()
+	server := NewServer(
+		identities,
+		deployment.NewMemoryStore(),
+		nil,
+		nil,
+		slog.New(slog.NewTextHandler(io.Discard, nil)),
+	)
+	token, err := identities.CreateEnrollment(ctx, "edge-force-lost", now.Add(time.Hour))
+	if err != nil {
+		t.Fatal(err)
+	}
+	publicKey, _, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := identities.EnrollByToken(
+		ctx,
+		token,
+		publicKey,
+		now,
+	); err != nil {
+		t.Fatal(err)
+	}
+	active := newSession("edge-force-lost")
+	if err := server.Sessions.Register(active); err != nil {
+		t.Fatal(err)
+	}
+
+	// A forced removal declares lost hardware; a live session contradicts
+	// that, so the revocation must fail before touching any state.
+	if err := server.RevokeAgent(ctx, "edge-force-lost", true); !errors.Is(err, ErrAgentOnline) {
+		t.Fatalf("forced online revocation error = %v, want ErrAgentOnline", err)
+	}
+	if _, err := identities.PublicKey(ctx, "edge-force-lost"); err != nil {
+		t.Fatalf("rejected forced revocation removed identity: %v", err)
+	}
+	if !server.Sessions.IsOnline("edge-force-lost") {
+		t.Fatal("rejected forced revocation disconnected the active Agent")
+	}
+	select {
+	case <-active.done:
+		t.Fatal("rejected forced revocation signalled the active session")
+	default:
+	}
+
+	// Once the session is gone the forced path performs the ordinary
+	// revocation cleanup.
+	server.Sessions.Unregister(active)
+	if err := server.RevokeAgent(ctx, "edge-force-lost", true); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := identities.PublicKey(
+		ctx,
+		"edge-force-lost",
+	); !errors.Is(err, identity.ErrAgentNotFound) {
+		t.Fatalf("PublicKey() error = %v, want ErrAgentNotFound", err)
+	}
+}
+
 func TestRevokeAgentGuardFailsBeforeRevocation(t *testing.T) {
 	ctx := context.Background()
 	now := time.Now().UTC()
@@ -1014,17 +1077,20 @@ func TestRevokeAgentGuardFailsBeforeRevocation(t *testing.T) {
 
 	guardErr := errors.New("Agent is referenced")
 	guardCalled := false
-	server.SetAgentRevocationGuard(func(agentID string, revoke func() error) error {
+	server.SetAgentRevocationGuard(func(agentID string, force bool, revoke func() error) error {
 		guardCalled = true
 		if agentID != "edge-referenced" {
 			t.Fatalf("guard Agent ID = %q", agentID)
+		}
+		if force {
+			t.Fatal("guard received an unexpected forced removal")
 		}
 		if revoke == nil {
 			t.Fatal("guard revocation callback is nil")
 		}
 		return guardErr
 	})
-	if err := server.RevokeAgent(ctx, "edge-referenced"); !errors.Is(err, guardErr) {
+	if err := server.RevokeAgent(ctx, "edge-referenced", false); !errors.Is(err, guardErr) {
 		t.Fatalf("RevokeAgent() error = %v, want guard error", err)
 	}
 	if !guardCalled || !server.Sessions.IsOnline("edge-referenced") {

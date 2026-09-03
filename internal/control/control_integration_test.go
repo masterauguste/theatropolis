@@ -319,7 +319,7 @@ func TestRevocationDuringChallengeCannotRegisterSession(t *testing.T) {
 
 	// Connect has already cached the public key at this point. Revocation must
 	// still prevent the subsequently valid proof from registering a session.
-	if err := controlServer.RevokeAgent(ctx, agentID); err != nil {
+	if err := controlServer.RevokeAgent(ctx, agentID, false); err != nil {
 		t.Fatal(err)
 	}
 	signature := ed25519.Sign(
@@ -424,7 +424,7 @@ func TestRevocationDisconnectsAuthenticatedControlStream(t *testing.T) {
 		}
 	}
 
-	if err := controlServer.RevokeAgent(ctx, agentID); err != nil {
+	if err := controlServer.RevokeAgent(ctx, agentID, false); err != nil {
 		t.Fatal(err)
 	}
 	if controlServer.Sessions.IsOnline(agentID) {
@@ -886,7 +886,7 @@ func TestPoolRefRenderedAndPropagatedEndToEnd(t *testing.T) {
 	agentB.reportApplied(t, followupB)
 
 	// Revoking A removes it from the pool and degrades B's ref to direct.
-	if err := controlServer.RevokeAgent(ctx, "edge-a"); err != nil {
+	if err := controlServer.RevokeAgent(ctx, "edge-a", false); err != nil {
 		t.Fatal(err)
 	}
 	if _, exists := poolRegistry.AgentAddress("edge-a"); exists {

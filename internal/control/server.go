@@ -94,7 +94,7 @@ type Server struct {
 	proxyNodeAddressHandler          func()
 	proxyNodeUserHandler             func()
 	proxyNodeTopologyHandler         func()
-	agentRevocationGuard             func(string, func() error) error
+	agentRevocationGuard             func(string, bool, func() error) error
 	authoritativeProfileProvider     func(context.Context, string) ([]byte, bool, error)
 	managedUserAuthorityMu           sync.Mutex
 	managedUserAuthorityWaiters      map[string]chan *controlv1.ManagedUserAuthorityReport
@@ -224,7 +224,7 @@ func (s *Server) SetProxyNodeTopologyHandler(handler func()) {
 
 // SetAgentRevocationGuard installs the Proxy Node topology barrier used by
 // master-local Agent removal. It must be configured before serving requests.
-func (s *Server) SetAgentRevocationGuard(guard func(string, func() error) error) {
+func (s *Server) SetAgentRevocationGuard(guard func(string, bool, func() error) error) {
 	s.agentRevocationGuard = guard
 }
 
@@ -311,16 +311,27 @@ func (s *Server) Enroll(
 // RevokeAgent durably revokes every enrollment credential for agentID and
 // invalidates its active control session before returning. It is the
 // revocation entry point for master-local callers such as the web interface.
-func (s *Server) RevokeAgent(ctx context.Context, agentID string) error {
-	revoke := func() error { return s.revokeAgent(ctx, agentID) }
+// A forced revocation declares the hardware permanently lost: it is rejected
+// while the Agent still holds a connected session, and the topology guard
+// then converts any remaining references into deleted-Server references
+// instead of requiring a delivered retirement profile.
+func (s *Server) RevokeAgent(ctx context.Context, agentID string, force bool) error {
+	revoke := func() error { return s.revokeAgent(ctx, agentID, force) }
 	if s.agentRevocationGuard != nil {
-		return s.agentRevocationGuard(agentID, revoke)
+		return s.agentRevocationGuard(agentID, force, revoke)
 	}
 	return revoke()
 }
 
-func (s *Server) revokeAgent(ctx context.Context, agentID string) error {
+func (s *Server) revokeAgent(ctx context.Context, agentID string, force bool) error {
 	s.authorizationMu.Lock()
+	if force && s.Sessions.IsOnline(agentID) {
+		// A reachable Agent must still receive its empty retirement profile
+		// through the ordinary unreferenced path; cutting off a live Agent
+		// here would strand its sing-box on the last delivered credentials.
+		s.authorizationMu.Unlock()
+		return ErrAgentOnline
+	}
 	if err := s.Deployments.RemoveAgent(ctx, agentID); err != nil &&
 		!errors.Is(err, deployment.ErrNotFound) {
 		s.authorizationMu.Unlock()

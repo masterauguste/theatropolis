@@ -82,7 +82,7 @@ func TestDeployerGuardAgentRemovalFailsBeforeCallback(t *testing.T) {
 
 	callbackErr := errors.New("callback failed")
 	called := false
-	if err := deployer.GuardAgentRemoval("edge-unused", func() error {
+	if err := deployer.GuardAgentRemoval("edge-unused", false, func() error {
 		called = true
 		deployer.mu.RLock()
 		reserved := deployer.mutationReserved
@@ -114,7 +114,7 @@ func TestDeployerGuardAgentRemovalFailsBeforeCallback(t *testing.T) {
 		t.Fatal(err)
 	}
 	called = false
-	if err := deployer.GuardAgentRemoval("edge-a", func() error {
+	if err := deployer.GuardAgentRemoval("edge-a", false, func() error {
 		called = true
 		return nil
 	}); !errors.Is(err, ErrAgentReferenced) || called {
@@ -122,10 +122,61 @@ func TestDeployerGuardAgentRemovalFailsBeforeCallback(t *testing.T) {
 	}
 
 	deployer.mutationReserved = true
-	if err := deployer.GuardAgentRemoval("edge-unused", func() error {
+	if err := deployer.GuardAgentRemoval("edge-unused", false, func() error {
 		called = true
 		return nil
 	}); !errors.Is(err, ErrDeploymentActive) || called {
 		t.Fatalf("reserved removal called=%v error=%v", called, err)
+	}
+}
+
+func TestDeployerGuardAgentRemovalForceSkipsReferences(t *testing.T) {
+	store, err := Open(filepath.Join(t.TempDir(), "state.json"), testBuild())
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+	deployer, err := NewDeployer(
+		store,
+		testResolver{"edge-a": "192.0.2.10"},
+		&applyingController{},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.CreateProxyNode(CreateProxyNodeInput{
+		Name: "Cinema", RootAgent: "edge-a", Entrance: testTLSEndpoint(ProtocolAnyTLS, 443),
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	// A forced removal declares the hardware permanently gone, so the
+	// desired/applied reference check no longer applies. The control plane
+	// independently guarantees the Agent is offline before offering this.
+	called := false
+	if err := deployer.GuardAgentRemoval("edge-a", true, func() error {
+		called = true
+		return nil
+	}); err != nil || !called {
+		t.Fatalf("forced referenced removal called=%v error=%v", called, err)
+	}
+
+	// An in-flight rollout or open mutation reservation still blocks it.
+	deployer.mutationReserved = true
+	called = false
+	if err := deployer.GuardAgentRemoval("edge-a", true, func() error {
+		called = true
+		return nil
+	}); !errors.Is(err, ErrDeploymentActive) || called {
+		t.Fatalf("reserved forced removal called=%v error=%v", called, err)
+	}
+	deployer.mutationReserved = false
+
+	// The reference check still applies to the ordinary path.
+	if err := deployer.GuardAgentRemoval("edge-a", false, func() error {
+		called = true
+		return nil
+	}); !errors.Is(err, ErrAgentReferenced) || called {
+		t.Fatalf("unforced referenced removal called=%v error=%v", called, err)
 	}
 }
