@@ -482,6 +482,14 @@ func retainAuthorizedMemberships(activeConfig, candidateConfig []byte) ([]byte, 
 			filtered = append(filtered, rawUser)
 		}
 		inbound["users"] = filtered
+		// An emptied Shadowsocks listener must re-enter managed multi-user mode,
+		// or sing-box builds a single-user inbound that the managed-user service
+		// cannot attach to. Mirrors installManagedEndpointUsers.
+		if inbound["type"] == "shadowsocks" && len(filtered) == 0 {
+			inbound["managed"] = true
+		} else {
+			delete(inbound, "managed")
+		}
 	}
 	encoded, err := json.MarshalIndent(candidate, "", "  ")
 	if err != nil {

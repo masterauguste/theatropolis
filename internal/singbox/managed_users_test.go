@@ -451,6 +451,37 @@ func TestManagedUserAuthorityRecognizesRollingMembershipLabel(t *testing.T) {
 	}
 }
 
+func TestTopologyFilteringRestoresShadowsocksManagedMode(t *testing.T) {
+	t.Parallel()
+	candidate := []byte(`{
+		"inbounds":[{"type":"shadowsocks","tag":"tp-in-0123456789abcdef","listen":"::","listen_port":443,"method":"2022-blake3-aes-128-gcm","password":"server-key","users":[
+			{"name":"cinema-alice-m-AAAAAAAAAAAA","password":"alice"}
+		]}],
+		"outbounds":[{"type":"direct","tag":"tp-direct"}],
+		"route":{"rules":[],"final":"tp-direct"},
+		"services":[{"type":"ssm-api","tag":"tp-managed-users","listen":"127.0.0.1","listen_port":19090,"servers":{"/tp-in-0123456789abcdef":"tp-in-0123456789abcdef"}}]
+	}`)
+	filtered, err := retainAuthorizedMemberships(DisabledManagedConfig(), candidate)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var document struct {
+		Inbounds []struct {
+			Managed bool             `json:"managed"`
+			Users   []map[string]any `json:"users"`
+		} `json:"inbounds"`
+	}
+	if err := json.Unmarshal(filtered, &document); err != nil {
+		t.Fatal(err)
+	}
+	// sing-box only builds the API-capable multi-user Shadowsocks inbound when
+	// managed mode is explicit on an empty listener; without it the managed-user
+	// service rejects the inbound and the whole deployment fails.
+	if len(document.Inbounds) != 1 || !document.Inbounds[0].Managed || len(document.Inbounds[0].Users) != 0 {
+		t.Fatalf("filtered Shadowsocks inbound = %#v", document.Inbounds)
+	}
+}
+
 func managedUserTestConfig(users string) []byte {
 	return []byte(`{
 		"inbounds":[{"type":"anytls","tag":"tp-in-0123456789abcdef","listen":"::","listen_port":443,"users":` + users + `}],
