@@ -59,6 +59,31 @@ Security and domain rules in the Go implementation remain authoritative.
 
 ## Actions and forms
 
+- Ordinary management POST forms use the shared submit handler in `app.js`:
+  serialize before disabling controls, block duplicate writes, retain the form
+  and focus its localized error on failure, and navigate only after success.
+  Network errors are uncertain outcomes, never an automatic retry of a mutation.
+- Background deployment or update completion must not reload a dirty document
+  or an open editor. Show the shared refresh notice instead. Drafts remain only
+  in document memory, never browser storage. Session expiry preserves drafts
+  and offers sign-in in another tab. The next explicit submit refreshes the
+  authenticated CSRF token before sending the retained form; it never replays
+  a mutation automatically. Unsent input cannot be recovered by the Master.
+- Migration export is an explicit download flow: await the archive, release the
+  button on success or failure, and report completion without navigating away.
+- The global Users list searches management names and login usernames and
+  renders at most 50 results per page. Query and page belong in the URL; clamp
+  an out-of-range page and distinguish an empty list from no search matches.
+- `messages.json` is the shared English/Chinese message catalog. Templates call
+  `t` explicitly; browser copy uses the same catalog. Do not reinstate substring
+  translation of HTML, attributes, or user-entered names.
+- Custom Rule Sets cannot be created or edited through the UI. Existing stored
+  rules stay active and visible until converted or deleted; never silently
+  discard legacy routing policy during an upgrade.
+- Client export policy targets are `DIRECT`, `REJECT`, and `PROXY`; generated
+  node names cannot collide with them. Protocol type names keep their required
+  lowercase schema spelling. Domain-regex export limitations for Surge are visible.
+
 - Primary buttons commit or create the page's main object. Secondary buttons
   save optional settings, cancel, close, refresh, or open supporting controls.
 - Settings exposes Master migration as one compact header action. A role chooser

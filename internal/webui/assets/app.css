@@ -2001,6 +2001,7 @@ tbody tr:last-child td {
 
 input:not([type]),
 input[type="text"],
+.field input[type="search"],
 input[type="password"],
 input[type="email"],
 input[type="number"],
@@ -4398,6 +4399,8 @@ dialog.fleet-settings-dialog {
 
   .global-nav a {
     padding: 0.48rem 0.25rem;
+    min-width: 0;
+    overflow-wrap: anywhere;
     font-size: 0.78rem;
     text-align: center;
   }

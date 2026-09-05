@@ -12,10 +12,10 @@
 
 {{define "membership-plan-fields"}}
 <div class="membership-plan-fields">
-  <label class="field"><span>Monthly traffic quota</span><select name="quota_mode" required><option value="unlimited"{{if eq .QuotaMode "unlimited"}} selected{{end}}>Unlimited</option><option value="limited"{{if eq .QuotaMode "limited"}} selected{{end}}>Set a monthly quota</option></select></label>
-  <label class="field"><span>Quota (GiB)</span><input type="number" name="monthly_quota_gib" min="1" max="1000000" step="1" value="{{.QuotaGiB}}" placeholder="100"></label>
-  <label class="field"><span>Subscription expiration</span><select name="expiration_mode" required><option value="none"{{if eq .ExpirationMode "none"}} selected{{end}}>No expiration</option><option value="finite"{{if eq .ExpirationMode "finite"}} selected{{end}}>Expire after a duration</option></select></label>
-  <div class="subscription-duration-fields"><label class="field"><span>Duration</span><input type="number" name="subscription_value" min="1" max="52560000" step="1" value="{{.SubscriptionValue}}"></label><label class="field"><span>Unit</span><select name="subscription_unit"><option value="minutes"{{if eq .SubscriptionUnit "minutes"}} selected{{end}}>Minutes</option><option value="hours"{{if eq .SubscriptionUnit "hours"}} selected{{end}}>Hours</option><option value="days"{{if eq .SubscriptionUnit "days"}} selected{{end}}>Days</option><option value="months"{{if eq .SubscriptionUnit "months"}} selected{{end}}>Calendar months</option></select></label></div>
+  <label class="field"><span>{{t "Monthly traffic quota"}}</span><select name="quota_mode" required><option value="unlimited"{{if eq .QuotaMode "unlimited"}} selected{{end}}>{{t "Unlimited"}}</option><option value="limited"{{if eq .QuotaMode "limited"}} selected{{end}}>{{t "Set a monthly quota"}}</option></select></label>
+  <label class="field"><span>{{t "Quota (GiB)"}}</span><input type="number" name="monthly_quota_gib" min="1" max="1000000" step="1" value="{{.QuotaGiB}}" placeholder="100"></label>
+  <label class="field"><span>{{t "Subscription expiration"}}</span><select name="expiration_mode" required><option value="none"{{if eq .ExpirationMode "none"}} selected{{end}}>{{t "No expiration"}}</option><option value="finite"{{if eq .ExpirationMode "finite"}} selected{{end}}>{{t "Expire after a duration"}}</option></select></label>
+  <div class="subscription-duration-fields"><label class="field"><span>{{t "Duration"}}</span><input type="number" name="subscription_value" min="1" max="52560000" step="1" value="{{.SubscriptionValue}}"></label><label class="field"><span>{{t "Unit"}}</span><select name="subscription_unit"><option value="minutes"{{if eq .SubscriptionUnit "minutes"}} selected{{end}}>{{t "Minutes"}}</option><option value="hours"{{if eq .SubscriptionUnit "hours"}} selected{{end}}>{{t "Hours"}}</option><option value="days"{{if eq .SubscriptionUnit "days"}} selected{{end}}>{{t "Days"}}</option><option value="months"{{if eq .SubscriptionUnit "months"}} selected{{end}}>{{t "Calendar months"}}</option></select></label></div>
 </div>
 {{end}}
 
@@ -23,17 +23,17 @@
 {{if .}}
 <div class="table-wrap daily-usage-table">
   <table>
-    <thead><tr><th>Date</th><th>Total</th><th>Nodes</th></tr></thead>
-    <tbody>{{range .}}<tr><td data-label="Date"><time datetime="{{.Date.Format "2006-01-02"}}">{{.DateLabel}}</time></td><td data-label="Total"><strong>{{.TotalLabel}}</strong></td><td data-label="Nodes"><div class="daily-usage-nodes">{{range .Nodes}}<span><span>{{.Name}}</span><strong>{{.UsageLabel}}</strong></span>{{end}}</div></td></tr>{{end}}</tbody>
+    <thead><tr><th>{{t "Date"}}</th><th>{{t "Total"}}</th><th>{{t "Nodes"}}</th></tr></thead>
+    <tbody>{{range .}}<tr><td data-label="{{t "Date"}}"><time datetime="{{.Date.Format "2006-01-02"}}">{{.DateLabel}}</time></td><td data-label="{{t "Total"}}"><strong>{{.TotalLabel}}</strong></td><td data-label="{{t "Nodes"}}"><div class="daily-usage-nodes">{{range .Nodes}}<span><span>{{.Name}}</span><strong>{{.UsageLabel}}</strong></span>{{end}}</div></td></tr>{{end}}</tbody>
   </table>
 </div>
 {{else}}
-<div class="panel__empty"><strong>No traffic recorded in the last 30 days.</strong></div>
+<div class="panel__empty"><strong>{{t "No traffic recorded in the last 30 days."}}</strong></div>
 {{end}}
 {{end}}
 
 {{define "brand"}}
-<a class="brand" href="/servers" aria-label="Theatropolis servers">
+<a class="brand" href="/servers" aria-label="{{t "Theatropolis servers"}}">
   <span class="brand__mark" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="5" cy="12" r="2"/><circle cx="19" cy="6" r="2"/><circle cx="19" cy="18" r="2"/><path d="M7 12h3.5c4.5 0 3.5-6 6.5-6M10.5 12H13c3 0 2 6 4 6"/></svg></span>
   <strong>Theatropolis</strong>
 </a>
@@ -43,12 +43,12 @@
 <header class="global-header">
   <div class="global-header__inner">
     {{template "brand" .}}
-    <nav class="global-nav" aria-label="Primary navigation">
-      <a href="/servers"{{if eq .ActiveNav "servers"}} class="is-active" aria-current="page"{{end}}>Servers</a>
-      <a href="/proxy-nodes"{{if eq .ActiveNav "proxy-nodes"}} class="is-active" aria-current="page"{{end}}>Proxy Nodes</a>
-      <a href="/users"{{if eq .ActiveNav "users"}} class="is-active" aria-current="page"{{end}}>Users</a>
-	  <a href="/subscriptions"{{if eq .ActiveNav "subscriptions"}} class="is-active" aria-current="page"{{end}}>Subscriptions</a>
-      <a href="/settings"{{if eq .ActiveNav "settings"}} class="is-active" aria-current="page"{{end}}>Settings</a>
+    <nav class="global-nav" aria-label="{{t "Primary navigation"}}">
+      <a href="/servers"{{if eq .ActiveNav "servers"}} class="is-active" aria-current="page"{{end}}>{{t "Servers"}}</a>
+      <a href="/proxy-nodes"{{if eq .ActiveNav "proxy-nodes"}} class="is-active" aria-current="page"{{end}}>{{t "Proxy Nodes"}}</a>
+      <a href="/users"{{if eq .ActiveNav "users"}} class="is-active" aria-current="page"{{end}}>{{t "Users"}}</a>
+	  <a href="/subscriptions"{{if eq .ActiveNav "subscriptions"}} class="is-active" aria-current="page"{{end}}>{{t "Subscriptions"}}</a>
+      <a href="/settings"{{if eq .ActiveNav "settings"}} class="is-active" aria-current="page"{{end}}>{{t "Settings"}}</a>
     </nav>
     {{if eq .Locale "zh-CN"}}
     <a class="language-switch" href="/language/en" hreflang="en" lang="en" data-language-option="en">English</a>
@@ -57,7 +57,7 @@
     {{end}}
     <form novalidate action="/logout" method="post">
       <input type="hidden" name="csrf_token" value="{{.CSRFToken}}">
-      <button class="button button--secondary button--small" type="submit">Sign out</button>
+      <button class="button button--secondary button--small" type="submit">{{t "Sign out"}}</button>
     </form>
   </div>
 </header>

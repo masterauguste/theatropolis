@@ -68,7 +68,18 @@ sudo sh -s -- all --server edge-1
 In all-in-one mode, the Agent automatically dials the local Caddy listener over
 loopback while retaining the public domain for TLS verification. The same
 detection applies when an Agent is installed separately beside a matching local
-Master. No NAT hairpin support or additional installer argument is required.
+Master. When both roles are installed on one server, the installer also keeps
+public port 80 on Caddy and relays only ACME HTTP-01 challenge requests to the
+Agent on loopback port `19091`. Remote and Agent-only servers continue to let
+sing-box use public port 80 directly. The Master applies the alternate port only
+to a capability-confirmed co-located Agent, and the server page reports
+**Local relay ready**. No NAT hairpin support or additional installer argument
+is required.
+
+Installing or upgrading the Master beside an existing Agent also upgrades that
+Agent binary from the same verified release, preserving its identity and
+settings. Removing only the Master restarts an active surviving Agent to return
+ACME to direct port-80 operation.
 
 ### 2. Add an Agent server
 
@@ -269,7 +280,15 @@ sudo sh -s -- all --server edge-1
 
 一体化安装时，代理端会自动通过 loopback 连接本机 Caddy，同时继续使用公网域
 名完成 TLS 验证。之后在同机单独安装代理端时，只要指定的主控地址与本机主控
-完全一致，也会自动启用该路径；无需 NAT 回环支持或额外安装参数。
+完全一致，也会自动启用该路径。主控端和代理端同机时，安装器会让 Caddy 继续
+占用公网 80 端口，并只把 ACME HTTP-01 验证请求转发到代理端的 loopback
+`19091` 端口。远程代理端和仅安装代理端的服务器仍由 sing-box 直接使用公网
+80 端口。主控端只会对已确认支持本机中继的代理端注入备用端口，服务器页面会
+显示**本地中继已就绪**；无需 NAT 回环支持或额外安装参数。
+
+在已有代理端的服务器上安装或升级主控端时，也会使用同一已验证发行版升级
+代理端程序，保留其身份和设置。仅卸载主控端时，会重启正在运行的代理端，
+让 ACME 恢复直接使用公网 80 端口。
 
 ### 2. 添加代理端服务器
 

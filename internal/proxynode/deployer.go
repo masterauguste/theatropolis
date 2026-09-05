@@ -3,7 +3,6 @@ package proxynode
 import (
 	"bytes"
 	"context"
-	"crypto/sha256"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -1163,8 +1162,10 @@ func (d *Deployer) changedAgents(compiled CompileResult) ([]string, error) {
 		if err != nil {
 			return nil, fmt.Errorf("inspect latest deployment for Agent %q: %w", agentID, err)
 		}
-		digest := sha256.Sum256(compiled.Configs[agentID])
-		if current.Status != deployment.StatusApplied || current.RenderedDigest() != digest {
+		// Both sides must be logical configurations; the rendered digest also
+		// includes installer-owned host settings such as the ACME relay port.
+		applied, _, exists := current.AppliedConfiguration()
+		if current.Status != deployment.StatusApplied || !exists || !bytes.Equal(applied, compiled.Configs[agentID]) {
 			changed = append(changed, agentID)
 		}
 	}

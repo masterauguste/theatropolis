@@ -45,30 +45,30 @@ func TestRenderProfilesKeepNodesAndRulesSeparate(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, want := range []string{`password: "server-key:user-key"`, `server: "v6.edge.example"`, `"DOMAIN-SUFFIX,example.com,Direct"`, `"GEOSITE,openai,Reject"`, "geodata-mode: true", "MetaCubeX/meta-rules-dat@release/geoip.dat"} {
+	for _, want := range []string{`password: "server-key:user-key"`, `server: "v6.edge.example"`, `"DOMAIN-SUFFIX,example.com,DIRECT"`, `"GEOSITE,openai,REJECT"`, "geodata-mode: true", "MetaCubeX/meta-rules-dat@release/geoip.dat"} {
 		if !strings.Contains(string(clash), want) {
 			t.Fatalf("Clash profile missing %q:\n%s", want, clash)
 		}
 	}
 	if !strings.Contains(string(clash), "      - DIRECT\n      - REJECT\n") {
-		t.Fatalf("Clash Proxy group does not offer Direct and Reject in order:\n%s", clash)
+		t.Fatalf("Clash PROXY group does not offer DIRECT and REJECT in order:\n%s", clash)
 	}
 	surge, _, err := Render(FormatSurge, profile)
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, want := range []string{"[Proxy Group]", "Proxy = select", "v6.edge.example", "DOMAIN-SUFFIX,example.com,Direct", "DOMAIN-SET,https://master.example/subscription-rule-sets/geosite/openai,Reject,update-interval=86400", "RULE-SET,https://master.example/subscription-rule-sets/geoip/cn,Direct,update-interval=86400"} {
+	for _, want := range []string{"[Proxy Group]", "PROXY = select", "v6.edge.example", "DOMAIN-SUFFIX,example.com,DIRECT", "DOMAIN-SET,https://master.example/subscription-rule-sets/geosite/openai,REJECT,update-interval=86400", "RULE-SET,https://master.example/subscription-rule-sets/geoip/cn,DIRECT,update-interval=86400"} {
 		if !strings.Contains(string(surge), want) {
 			t.Fatalf("Surge profile missing %q:\n%s", want, surge)
 		}
 	}
-	if !strings.Contains(string(surge), "Proxy = select, Cinema, Stage, DIRECT, REJECT") {
-		t.Fatalf("Surge Proxy group does not offer Direct and Reject after its Nodes:\n%s", surge)
+	if !strings.Contains(string(surge), "PROXY = select, Cinema, Stage, DIRECT, REJECT") {
+		t.Fatalf("Surge PROXY group does not offer DIRECT and REJECT after its Nodes:\n%s", surge)
 	}
 	if strings.Contains(string(surge), "URL-REGEX") || strings.Contains(string(surge), `^api\\.example`) {
 		t.Fatalf("Surge profile exported incompatible domain regex:\n%s", surge)
 	}
-	for _, want := range []string{"PROTOCOL,TCP,Proxy", "PROTOCOL,UDP,Proxy"} {
+	for _, want := range []string{"PROTOCOL,TCP,PROXY", "PROTOCOL,UDP,PROXY"} {
 		if !strings.Contains(string(surge), want) {
 			t.Fatalf("Surge profile missing uppercase network rule %q:\n%s", want, surge)
 		}
@@ -81,7 +81,7 @@ func TestRenderProfilesKeepNodesAndRulesSeparate(t *testing.T) {
 	if err := json.Unmarshal(singBox, &decoded); err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(string(singBox), `"tag": "Proxy"`) ||
+	if !strings.Contains(string(singBox), `"tag": "PROXY"`) ||
 		!strings.Contains(string(singBox), `"server": "v6.edge.example"`) ||
 		!strings.Contains(string(singBox), `"type": "mixed"`) ||
 		!strings.Contains(string(singBox), `"type": "tun"`) ||
@@ -91,7 +91,7 @@ func TestRenderProfilesKeepNodesAndRulesSeparate(t *testing.T) {
 		!strings.Contains(string(singBox), `"default_http_client": "rule-set-http"`) ||
 		!strings.Contains(string(singBox), `"default_domain_resolver": "local-dns"`) ||
 		!strings.Contains(string(singBox), `"tag": "proxy-dns"`) ||
-		!strings.Contains(string(singBox), `"detour": "Proxy"`) ||
+		!strings.Contains(string(singBox), `"detour": "PROXY"`) ||
 		!strings.Contains(string(singBox), `"action": "hijack-dns"`) ||
 		!strings.Contains(string(singBox), `"external_controller": "127.0.0.1:9090"`) ||
 		!strings.Contains(string(singBox), `"cache_file"`) ||
@@ -104,8 +104,8 @@ func TestRenderProfilesKeepNodesAndRulesSeparate(t *testing.T) {
 	if strings.Contains(string(singBox), `"download_detour"`) {
 		t.Fatalf("sing-box profile exported the deprecated rule-set download_detour field:\n%s", singBox)
 	}
-	if !singBoxSelectorHasMembers(decoded, "Proxy", []string{"Cinema", "Stage", "Direct", "Reject"}) {
-		t.Fatalf("sing-box Proxy selector does not offer Direct and Reject after its Nodes:\n%s", singBox)
+	if !singBoxSelectorHasMembers(decoded, "PROXY", []string{"Cinema", "Stage", "DIRECT", "REJECT"}) {
+		t.Fatalf("sing-box PROXY selector does not offer DIRECT and REJECT after its Nodes:\n%s", singBox)
 	}
 }
 
@@ -138,7 +138,7 @@ func TestSingBoxDNSFollowsDomainRoutingWithoutLocalResolutionLeak(t *testing.T) 
 	}
 	rules, ok := dns["rules"].([]any)
 	if !ok || len(rules) != 3 {
-		t.Fatalf("sing-box DNS rules = %#v, want two Direct and one Proxy domain rule", dns["rules"])
+		t.Fatalf("sing-box DNS rules = %#v, want two DIRECT and one PROXY domain rule", dns["rules"])
 	}
 	if !strings.Contains(string(content), `"server": "local-dns"`) ||
 		!strings.Contains(string(content), `"server": "proxy-dns"`) ||
@@ -200,7 +200,7 @@ func TestNoResolveIsExportedWithoutSingBoxResolveAction(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, want := range []string{"IP-CIDR,203.0.113.0/24,Direct,no-resolve", "GEOIP,CN,Direct,no-resolve"} {
+	for _, want := range []string{"IP-CIDR,203.0.113.0/24,DIRECT,no-resolve", "GEOIP,CN,DIRECT,no-resolve"} {
 		if !strings.Contains(string(clash), want) {
 			t.Fatalf("Clash profile missing %q:\n%s", want, clash)
 		}
@@ -209,7 +209,7 @@ func TestNoResolveIsExportedWithoutSingBoxResolveAction(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, want := range []string{"IP-CIDR,203.0.113.0/24,Direct,no-resolve", "geoip/cn?no-resolve=1"} {
+	for _, want := range []string{"IP-CIDR,203.0.113.0/24,DIRECT,no-resolve", "geoip/cn?no-resolve=1"} {
 		if !strings.Contains(string(surge), want) {
 			t.Fatalf("Surge profile missing %q:\n%s", want, surge)
 		}
@@ -257,18 +257,18 @@ func TestEmptyProxyGroupUsesDirect(t *testing.T) {
 			t.Fatalf("empty Clash profile has an invalid proxy list:\n%s", content)
 		}
 		if format == FormatClash && !strings.Contains(string(content), "      - DIRECT\n      - REJECT\n") {
-			t.Fatalf("empty Clash Proxy group does not offer Direct then Reject:\n%s", content)
+			t.Fatalf("empty Clash PROXY group does not offer DIRECT then REJECT:\n%s", content)
 		}
-		if format == FormatSurge && !strings.Contains(string(content), "Proxy = select, DIRECT, REJECT") {
-			t.Fatalf("empty Surge Proxy group does not offer Direct then Reject:\n%s", content)
+		if format == FormatSurge && !strings.Contains(string(content), "PROXY = select, DIRECT, REJECT") {
+			t.Fatalf("empty Surge PROXY group does not offer DIRECT then REJECT:\n%s", content)
 		}
 		if format == FormatSingBox {
 			var decoded map[string]any
 			if err := json.Unmarshal(content, &decoded); err != nil {
 				t.Fatal(err)
 			}
-			if !singBoxSelectorHasMembers(decoded, "Proxy", []string{"Direct", "Reject"}) {
-				t.Fatalf("empty sing-box Proxy selector does not offer Direct then Reject:\n%s", content)
+			if !singBoxSelectorHasMembers(decoded, "PROXY", []string{"DIRECT", "REJECT"}) {
+				t.Fatalf("empty sing-box PROXY selector does not offer DIRECT then REJECT:\n%s", content)
 			}
 		}
 	}

@@ -3,16 +3,16 @@
 <html lang="{{.Locale}}">
 {{template "document-head" .}}
 <body data-version-catalog-url="/settings/versions" data-master-version="{{.MasterVersion}}">
-  <a class="skip-link" href="#main">Skip to content</a>
+  <a class="skip-link" href="#main">{{t "Skip to content"}}</a>
   {{template "global-header" .}}
   <main class="main main--narrow" id="main">
     <header class="page-header page-header--compact">
       <div>
-        <p class="eyebrow">Global settings</p>
-        <h1>Master</h1>
+        <p class="eyebrow">{{t "Global settings"}}</p>
+        <h1>{{t "Master"}}</h1>
       </div>
       <div class="page-header__actions">
-        <button class="button button--secondary button--small" type="button" data-dialog-open="master-migration-menu" aria-haspopup="dialog">Migration</button>
+        <button class="button button--secondary button--small" type="button" data-dialog-open="master-migration-menu" aria-haspopup="dialog">{{t "Migration"}}</button>
       </div>
     </header>
     {{if .Error}}<div class="notice notice--error" role="alert">{{.Error}}</div>{{end}}
@@ -20,26 +20,26 @@
     {{if .MigrationNotice}}<div class="notice notice--success" role="status">{{.MigrationNotice}}</div>{{end}}
     <section class="panel settings-panel">
       <div class="panel__header">
-        <h2>Master software</h2>
+        <h2>{{t "Master software"}}</h2>
       </div>
       {{if .MasterUpdate}}
       <dl class="detail-list detail-list--compact">
-        <div><dt>Last update</dt><dd><span class="status status--{{.MasterUpdate.StatusClass}}"><span aria-hidden="true"></span>{{.MasterUpdate.StatusLabel}}</span></dd></div>
-        <div><dt>Target</dt><dd><code>{{.MasterUpdate.TargetVersion}}</code></dd></div>
-        <div><dt>Updated</dt><dd>{{.MasterUpdate.UpdatedAt}}</dd></div>
+        <div><dt>{{t "Last update"}}</dt><dd><span class="status status--{{.MasterUpdate.StatusClass}}"><span aria-hidden="true"></span>{{.MasterUpdate.StatusLabel}}</span></dd></div>
+        <div><dt>{{t "Target"}}</dt><dd><code>{{.MasterUpdate.TargetVersion}}</code></dd></div>
+        <div><dt>{{t "Updated"}}</dt><dd>{{.MasterUpdate.UpdatedAt}}</dd></div>
       </dl>
-      {{if .MasterUpdate.Diagnostic}}<div class="diagnostic"><strong>Update diagnostic</strong><pre>{{.MasterUpdate.Diagnostic}}</pre></div>{{end}}
+      {{if .MasterUpdate.Diagnostic}}<div class="diagnostic"><strong>{{t "Update diagnostic"}}</strong><pre>{{.MasterUpdate.Diagnostic}}</pre></div>{{end}}
       {{end}}
       <dl class="detail-list settings-version-list">
-        <div><dt>Running version</dt><dd><code>{{.MasterVersion}}</code></dd></div>
-        <div><dt>Latest available</dt><dd class="inline-loading"><span class="loading-spinner loading-spinner--small" data-agent-catalog-loading aria-hidden="true"></span><code data-master-latest-label>loading…</code></dd></div>
+        <div><dt>{{t "Running version"}}</dt><dd><code>{{.MasterVersion}}</code></dd></div>
+        <div><dt>{{t "Latest available"}}</dt><dd class="inline-loading"><span class="loading-spinner loading-spinner--small" data-agent-catalog-loading aria-hidden="true"></span><code data-master-latest-label>{{t "loading…"}}</code></dd></div>
       </dl>
-      <button class="button button--secondary button--small" type="button" data-master-version-refresh>Check again</button>
+      <button class="button button--secondary button--small" type="button" data-master-version-refresh>{{t "Check again"}}</button>
       <small data-agent-catalog-warning hidden class="field-warning"></small>
       <form novalidate action="/master-update" method="post" data-master-update-form>
         <input type="hidden" name="csrf_token" value="{{.CSRFToken}}">
-        <button class="button button--primary" type="submit" data-submit-button data-submit-label="Scheduling…" data-master-update-button disabled>
-          <span data-master-button-text>Checking for updates…</span>
+        <button class="button button--primary" type="submit" data-submit-button data-submit-label="{{t "Scheduling…"}}" data-master-update-button disabled>
+          <span data-master-button-text>{{t "Checking for updates…"}}</span>
         </button>
       </form>
       <div class="notice" data-master-update-progress hidden aria-live="polite"></div>
@@ -47,97 +47,97 @@
     <section class="panel settings-panel settings-toggle-panel" aria-labelledby="administrator-proxy-access-heading">
       <div class="settings-toggle-row">
         <div>
-          <h2 id="administrator-proxy-access-heading">Administrator Proxy Access</h2>
-          <p>All Proxy Nodes · Unlimited</p>
+          <h2 id="administrator-proxy-access-heading">{{t "Administrator Proxy Access"}}</h2>
+          <p>{{t "All Proxy Nodes · Unlimited"}}</p>
         </div>
-        <button class="settings-toggle" type="button" role="switch" aria-checked="{{if .AdministratorProxyAccessEnabled}}true{{else}}false{{end}}" aria-label="Administrator Proxy Access" data-dialog-open="administrator-proxy-access-confirm">
+        <button class="settings-toggle" type="button" role="switch" aria-checked="{{if .AdministratorProxyAccessEnabled}}true{{else}}false{{end}}" aria-label="{{t "Administrator Proxy Access"}}" data-dialog-open="administrator-proxy-access-confirm">
           <span class="settings-toggle__track" aria-hidden="true"><span></span></span>
-          <span class="settings-toggle__state">{{if .AdministratorProxyAccessEnabled}}Enabled{{else}}Off{{end}}</span>
+          <span class="settings-toggle__state">{{if .AdministratorProxyAccessEnabled}}{{t "Enabled"}}{{else}}{{t "Off"}}{{end}}</span>
         </button>
       </div>
     </section>
     <dialog class="modal" id="administrator-proxy-access-confirm" aria-labelledby="administrator-proxy-access-confirm-title">
       <div class="modal__surface modal__surface--compact">
-        <header class="modal__header"><div><p class="eyebrow">Administrator Access</p><h2 id="administrator-proxy-access-confirm-title">{{if .AdministratorProxyAccessEnabled}}Disable Proxy Access?{{else}}Enable Proxy Access?{{end}}</h2></div><button class="button button--secondary button--icon-only" type="button" data-dialog-close aria-label="Close">×</button></header>
-        <div class="modal__body"><p>{{if .AdministratorProxyAccessEnabled}}This revokes the administrator credential and configuration subscription on every Proxy Node.{{else}}This grants the administrator unlimited, non-expiring access to every Proxy Node.{{end}}</p></div>
-        <footer class="modal__footer"><button class="button button--secondary" type="button" data-dialog-close autofocus>Cancel</button><form action="/settings/administrator-proxy-access" method="post" novalidate><input type="hidden" name="csrf_token" value="{{.CSRFToken}}"><input type="hidden" name="enabled" value="{{if .AdministratorProxyAccessEnabled}}false{{else}}true{{end}}"><button class="button {{if .AdministratorProxyAccessEnabled}}button--danger{{else}}button--primary{{end}}" type="submit" data-submit-button data-submit-label="Updating…">{{if .AdministratorProxyAccessEnabled}}Disable Access{{else}}Enable Access{{end}}</button></form></footer>
+        <header class="modal__header"><div><p class="eyebrow">{{t "Administrator Access"}}</p><h2 id="administrator-proxy-access-confirm-title">{{if .AdministratorProxyAccessEnabled}}{{t "Disable Proxy Access?"}}{{else}}{{t "Enable Proxy Access?"}}{{end}}</h2></div><button class="button button--secondary button--icon-only" type="button" data-dialog-close aria-label="{{t "Close"}}">×</button></header>
+        <div class="modal__body"><p>{{if .AdministratorProxyAccessEnabled}}{{t "This revokes the administrator credential and configuration subscription on every Proxy Node."}}{{else}}{{t "This grants the administrator unlimited, non-expiring access to every Proxy Node."}}{{end}}</p></div>
+        <footer class="modal__footer"><button class="button button--secondary" type="button" data-dialog-close autofocus>{{t "Cancel"}}</button><form action="/settings/administrator-proxy-access" method="post" novalidate><input type="hidden" name="csrf_token" value="{{.CSRFToken}}"><input type="hidden" name="enabled" value="{{if .AdministratorProxyAccessEnabled}}false{{else}}true{{end}}"><button class="button {{if .AdministratorProxyAccessEnabled}}button--danger{{else}}button--primary{{end}}" type="submit" data-submit-button data-submit-label="Updating…">{{if .AdministratorProxyAccessEnabled}}{{t "Disable Access"}}{{else}}{{t "Enable Access"}}{{end}}</button></form></footer>
       </div>
     </dialog>
     <dialog class="modal migration-menu-dialog" id="master-migration-menu" aria-labelledby="master-migration-menu-title">
       <div class="modal__surface">
-        <header class="modal__header"><div><p class="eyebrow">Master</p><h2 id="master-migration-menu-title">Migration</h2></div><button class="button button--secondary button--icon-only" type="button" data-dialog-close aria-label="Close Migration">×</button></header>
+        <header class="modal__header"><div><p class="eyebrow">{{t "Master"}}</p><h2 id="master-migration-menu-title">{{t "Migration"}}</h2></div><button class="button button--secondary button--icon-only" type="button" data-dialog-close aria-label="{{t "Close Migration"}}">×</button></header>
         <div class="modal__body migration-choices">
-          <button class="migration-choice" type="button" data-dialog-open="master-migration-source" aria-haspopup="dialog"><span class="migration-choice__direction" aria-hidden="true">&#8599;</span><span>Move From This Master</span><span class="migration-choice__arrow" aria-hidden="true">&#8594;</span></button>
-          <button class="migration-choice" type="button" data-dialog-open="master-migration-destination" aria-haspopup="dialog"><span class="migration-choice__direction" aria-hidden="true">&#8601;</span><span>Receive On This Master</span><span class="migration-choice__arrow" aria-hidden="true">&#8594;</span></button>
+          <button class="migration-choice" type="button" data-dialog-open="master-migration-source" aria-haspopup="dialog"><span class="migration-choice__direction" aria-hidden="true">&#8599;</span><span>{{t "Move From This Master"}}</span><span class="migration-choice__arrow" aria-hidden="true">&#8594;</span></button>
+          <button class="migration-choice" type="button" data-dialog-open="master-migration-destination" aria-haspopup="dialog"><span class="migration-choice__direction" aria-hidden="true">&#8601;</span><span>{{t "Receive On This Master"}}</span><span class="migration-choice__arrow" aria-hidden="true">&#8594;</span></button>
         </div>
       </div>
     </dialog>
     <dialog class="modal migration-source-dialog" id="master-migration-source" aria-labelledby="master-migration-source-title">
       <div class="modal__surface">
-        <header class="modal__header"><div><p class="eyebrow">Source Master</p><h2 id="master-migration-source-title">Move From This Master</h2></div><button class="button button--secondary button--icon-only" type="button" data-dialog-close aria-label="Close Source Migration">×</button></header>
+        <header class="modal__header"><div><p class="eyebrow">{{t "Source Master"}}</p><h2 id="master-migration-source-title">{{t "Move From This Master"}}</h2></div><button class="button button--secondary button--icon-only" type="button" data-dialog-close aria-label="{{t "Close Source Migration"}}">×</button></header>
         <div class="modal__body migration-source-actions">
           <section class="migration-step">
-            <div class="migration-step__heading"><span>1</span><h3>Download Archive</h3></div>
-            <form class="stack" action="/settings/migration/export" method="post" novalidate>
+            <div class="migration-step__heading"><span>1</span><h3>{{t "Download Archive"}}</h3></div>
+            <form class="stack" data-download-form action="/settings/migration/export" method="post" novalidate>
               <input type="hidden" name="csrf_token" value="{{.CSRFToken}}">
-              <label class="field"><span>Passphrase</span><span class="secret-input"><input id="migration-export-passphrase" type="password" name="passphrase" minlength="15" maxlength="512" autocomplete="new-password" required><button type="button" data-reveal-secret data-secret-label="passphrase" aria-label="Show passphrase" aria-controls="migration-export-passphrase" aria-pressed="false">Show</button></span></label>
-              <label class="field"><span>Confirm Passphrase</span><span class="secret-input"><input id="migration-export-confirm" type="password" name="passphrase_confirm" minlength="15" maxlength="512" autocomplete="new-password" required><button type="button" data-reveal-secret data-secret-label="passphrase" aria-label="Show passphrase" aria-controls="migration-export-confirm" aria-pressed="false">Show</button></span></label>
-              <button class="button button--secondary" type="submit" data-submit-button data-submit-label="Exporting…">Download Archive</button>
+              <label class="field"><span>{{t "Passphrase"}}</span><span class="secret-input"><input id="migration-export-passphrase" type="password" name="passphrase" minlength="15" maxlength="512" autocomplete="new-password" required><button type="button" data-reveal-secret data-secret-label="passphrase" aria-label="{{t "Show passphrase"}}" aria-controls="migration-export-passphrase" aria-pressed="false">{{t "Show"}}</button></span></label>
+              <label class="field"><span>{{t "Confirm Passphrase"}}</span><span class="secret-input"><input id="migration-export-confirm" type="password" name="passphrase_confirm" minlength="15" maxlength="512" autocomplete="new-password" required><button type="button" data-reveal-secret data-secret-label="passphrase" aria-label="{{t "Show passphrase"}}" aria-controls="migration-export-confirm" aria-pressed="false">{{t "Show"}}</button></span></label>
+              <button class="button button--secondary" type="submit" data-submit-button data-submit-label="{{t "Exporting…"}}">{{t "Download Archive"}}</button>
             </form>
           </section>
           <section class="migration-step migration-step--danger">
-            <div class="migration-step__heading"><span>2</span><h3>Switch Online Servers</h3></div>
+            <div class="migration-step__heading"><span>2</span><h3>{{t "Switch Online Servers"}}</h3></div>
             <form class="stack" action="/settings/migration/cutover" method="post" novalidate>
               <input type="hidden" name="csrf_token" value="{{.CSRFToken}}">
-              <label class="field"><span>New Master</span><input type="text" name="master_address" placeholder="master.example.com:443" autocomplete="off" required></label>
-              <label class="field"><span>Confirmation</span><input type="text" name="confirmation" autocomplete="off" placeholder="MIGRATE" required></label>
-              <button class="button button--danger" type="submit" data-submit-button data-submit-label="Switching…">Switch Online Servers</button>
+              <label class="field"><span>{{t "New Master"}}</span><input type="text" name="master_address" placeholder="master.example.com:443" autocomplete="off" required></label>
+              <label class="field"><span>{{t "Confirmation"}}</span><input type="text" name="confirmation" autocomplete="off" placeholder="MIGRATE" required></label>
+              <button class="button button--danger" type="submit" data-submit-button data-submit-label="{{t "Switching…"}}">{{t "Switch Online Servers"}}</button>
             </form>
           </section>
         </div>
-        <footer class="modal__footer"><button class="button button--secondary" type="button" data-dialog-close>Close</button></footer>
+        <footer class="modal__footer"><button class="button button--secondary" type="button" data-dialog-close>{{t "Close"}}</button></footer>
       </div>
     </dialog>
     <dialog class="modal migration-destination-dialog" id="master-migration-destination" aria-labelledby="master-migration-destination-title">
       <div class="modal__surface">
-        <header class="modal__header"><div><p class="eyebrow">Destination Master</p><h2 id="master-migration-destination-title">Receive Migration</h2></div><button class="button button--secondary button--icon-only" type="button" data-dialog-close aria-label="Close Destination Migration">×</button></header>
+        <header class="modal__header"><div><p class="eyebrow">{{t "Destination Master"}}</p><h2 id="master-migration-destination-title">{{t "Receive Migration"}}</h2></div><button class="button button--secondary button--icon-only" type="button" data-dialog-close aria-label="{{t "Close Destination Migration"}}">×</button></header>
         <form action="/settings/migration/restore" method="post" enctype="multipart/form-data" novalidate>
           <div class="modal__body stack">
             <input type="hidden" name="csrf_token" value="{{.CSRFToken}}">
-            <label class="field"><span>Archive</span><input type="file" name="archive" accept=".zip,application/zip" required></label>
-            <label class="field"><span>Passphrase</span><span class="secret-input"><input id="migration-restore-passphrase" type="password" name="passphrase" minlength="15" maxlength="512" autocomplete="current-password" required><button type="button" data-reveal-secret data-secret-label="passphrase" aria-label="Show passphrase" aria-controls="migration-restore-passphrase" aria-pressed="false">Show</button></span></label>
-            <label class="field"><span>Confirmation</span><input type="text" name="confirmation" autocomplete="off" placeholder="RESTORE" required></label>
+            <label class="field"><span>{{t "Archive"}}</span><input type="file" name="archive" accept=".zip,application/zip" required></label>
+            <label class="field"><span>{{t "Passphrase"}}</span><span class="secret-input"><input id="migration-restore-passphrase" type="password" name="passphrase" minlength="15" maxlength="512" autocomplete="current-password" required><button type="button" data-reveal-secret data-secret-label="passphrase" aria-label="{{t "Show passphrase"}}" aria-controls="migration-restore-passphrase" aria-pressed="false">{{t "Show"}}</button></span></label>
+            <label class="field"><span>{{t "Confirmation"}}</span><input type="text" name="confirmation" autocomplete="off" placeholder="RESTORE" required></label>
           </div>
-          <footer class="modal__footer"><button class="button button--secondary" type="button" data-dialog-close>Cancel</button><button class="button button--danger" type="submit" data-submit-button data-submit-label="Restoring…">Restore And Restart</button></footer>
+          <footer class="modal__footer"><button class="button button--secondary" type="button" data-dialog-close>{{t "Cancel"}}</button><button class="button button--danger" type="submit" data-submit-button data-submit-label="{{t "Restoring…"}}">{{t "Restore And Restart"}}</button></footer>
         </form>
       </div>
     </dialog>
     <section class="panel settings-panel" aria-labelledby="accounting-errors-heading">
       <div class="panel__header">
-        <h2 id="accounting-errors-heading">Accounting errors</h2>
-        <div class="panel__header-actions"><span class="panel__count">{{.AccountingFailureTotal}} recorded</span>{{if .AccountingFailureTotal}}<button class="button button--danger button--small" type="button" data-dialog-open="clear-accounting-errors">Clear Log</button>{{end}}</div>
+        <h2 id="accounting-errors-heading">{{t "Accounting errors"}}</h2>
+        <div class="panel__header-actions"><span class="panel__count">{{.AccountingFailureTotal}} {{t "recorded"}}</span>{{if .AccountingFailureTotal}}<button class="button button--danger button--small" type="button" data-dialog-open="clear-accounting-errors">{{t "Clear Log"}}</button>{{end}}</div>
       </div>
       {{if .AccountingFailures}}
       <div class="table-wrap">
         <table>
-          <thead><tr><th>Time</th><th>Server</th><th>Failure</th></tr></thead>
+          <thead><tr><th>{{t "Time"}}</th><th>{{t "Server"}}</th><th>{{t "Failure"}}</th></tr></thead>
           <tbody>
             {{range .AccountingFailures}}
             <tr>
-              <td data-label="Time"><time>{{.OccurredAt}}</time></td>
-              <td data-label="Server"><a href="/servers/{{.AgentID}}/manage">{{.AgentName}}</a></td>
-              <td data-label="Failure">{{.Reason}}</td>
+              <td data-label="{{t "Time"}}"><time>{{.OccurredAt}}</time></td>
+              <td data-label="{{t "Server"}}"><a href="/servers/{{.AgentID}}/manage">{{.AgentName}}</a></td>
+              <td data-label="{{t "Failure"}}">{{.Reason}}</td>
             </tr>
             {{end}}
           </tbody>
         </table>
       </div>
-      {{if gt .AccountingFailureTotal 50}}<p class="form-help">Showing the newest 50 entries.</p>{{end}}
+      {{if gt .AccountingFailureTotal 50}}<p class="form-help">{{t "Showing the newest 50 entries."}}</p>{{end}}
       {{else}}
-      <div class="panel__empty"><p>No accounting errors have been recorded.</p></div>
+      <div class="panel__empty"><p>{{t "No accounting errors have been recorded."}}</p></div>
       {{end}}
     </section>
-    {{if .AccountingFailureTotal}}<dialog class="modal" id="clear-accounting-errors"><div class="modal__surface modal__surface--compact"><header class="modal__header"><div><p class="eyebrow">Accounting Errors</p><h2>Clear Error Log?</h2></div><button class="button button--secondary button--icon-only" type="button" data-dialog-close aria-label="Close">×</button></header><div class="modal__body"><p>This permanently deletes the complete accounting error log.</p></div><footer class="modal__footer"><button class="button button--secondary" type="button" data-dialog-close autofocus>Cancel</button><form action="/settings/accounting-errors/clear" method="post" novalidate><input type="hidden" name="csrf_token" value="{{.CSRFToken}}"><input type="hidden" name="confirmation" value="clear"><button class="button button--danger" type="submit">Clear Log</button></form></footer></div></dialog>{{end}}
+    {{if .AccountingFailureTotal}}<dialog class="modal" id="clear-accounting-errors"><div class="modal__surface modal__surface--compact"><header class="modal__header"><div><p class="eyebrow">{{t "Accounting Errors"}}</p><h2>{{t "Clear Error Log?"}}</h2></div><button class="button button--secondary button--icon-only" type="button" data-dialog-close aria-label="{{t "Close"}}">×</button></header><div class="modal__body"><p>{{t "This permanently deletes the complete accounting error log."}}</p></div><footer class="modal__footer"><button class="button button--secondary" type="button" data-dialog-close autofocus>{{t "Cancel"}}</button><form action="/settings/accounting-errors/clear" method="post" novalidate><input type="hidden" name="csrf_token" value="{{.CSRFToken}}"><input type="hidden" name="confirmation" value="clear"><button class="button button--danger" type="submit">{{t "Clear Log"}}</button></form></footer></div></dialog>{{end}}
   </main>
   <script src="/assets/app.js?v={{.AssetVersion}}" defer></script>
 </body>

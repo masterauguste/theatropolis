@@ -88,6 +88,11 @@ compact sticky top bar with horizontal navigation and document scrolling.
 
 ## Component rules
 
+- Search fields use the same token-driven controls as ordinary text fields.
+  Recoverable submit errors appear within their owning form; refresh notices
+  stay in the page without replacing an editor or its unsaved input. See
+  `UX-CONTRACT.md` for shared submission, pagination, and localization ownership.
+
 - Panels use a white surface, one-pixel divider, and 12px radius. They do not
   float unless they are interactive or modal.
 - Buttons have 40px minimum height and title-case labels; primary is solid

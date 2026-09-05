@@ -29,30 +29,30 @@
 {{define "proxy-endpoint-fields"}}
 <div class="proxy-listener-editor" data-proxy-listener-editor data-agent="{{.AgentID}}" data-current-listener="{{.ListenerID}}">
   <div class="proxy-listener-picker">
-    <label class="field"><span>Physical listener</span><select data-proxy-listener-select><option value="manual">Configure manually</option></select></label>
+    <label class="field"><span>{{t "Physical listener"}}</span><select data-proxy-listener-select><option value="manual">{{t "Configure manually"}}</option></select></label>
     <div class="proxy-listener-status" data-proxy-listener-status role="status" aria-live="polite"></div>
   </div>
   <div class="proxy-listener-summary" data-proxy-listener-summary hidden></div>
   <div class="stack" data-proxy-listener-fields>
     <div class="builder-fields">
-      <label class="field"><span>Protocol</span><select name="protocol" data-proxy-protocol required><option value="shadowsocks"{{if eq .Protocol "shadowsocks"}} selected{{end}}>Shadowsocks 2022</option><option value="anytls"{{if eq .Protocol "anytls"}} selected{{end}}>AnyTLS</option><option value="hysteria2"{{if eq .Protocol "hysteria2"}} selected{{end}}>Hysteria2</option></select></label>
-      <label class="field"><span>Listen address</span><input name="listen" value="{{.Listen}}" placeholder="::" required data-literal-ip data-validate-live></label>
-      <label class="field"><span>Listen port</span><input name="listen_port" type="number" min="1" max="65535" value="{{.ListenPort}}" required data-proxy-listen-port data-validate-live><small>Port 80 remains reserved for ACME.</small></label>
+      <label class="field"><span>{{t "Protocol"}}</span><select name="protocol" data-proxy-protocol required><option value="shadowsocks"{{if eq .Protocol "shadowsocks"}} selected{{end}}>Shadowsocks 2022</option><option value="anytls"{{if eq .Protocol "anytls"}} selected{{end}}>AnyTLS</option><option value="hysteria2"{{if eq .Protocol "hysteria2"}} selected{{end}}>Hysteria2</option></select></label>
+      <label class="field"><span>{{t "Listen address"}}</span><input name="listen" value="{{.Listen}}" placeholder="::" required data-literal-ip data-validate-live></label>
+      <label class="field"><span>{{t "Listen port"}}</span><input name="listen_port" type="number" min="1" max="65535" value="{{.ListenPort}}" required data-proxy-listen-port data-validate-live><small>{{t "Port 80 remains reserved for ACME."}}</small></label>
     </div>
     <fieldset class="builder-subsection" data-proxy-section="shadowsocks">
       <legend>Shadowsocks 2022 listener</legend>
-      <label class="field"><span>Method</span><select name="method"><option value="2022-blake3-aes-128-gcm"{{if eq .Method "2022-blake3-aes-128-gcm"}} selected{{end}}>AES-128-GCM</option><option value="2022-blake3-aes-256-gcm"{{if eq .Method "2022-blake3-aes-256-gcm"}} selected{{end}}>AES-256-GCM</option><option value="2022-blake3-chacha20-poly1305"{{if eq .Method "2022-blake3-chacha20-poly1305"}} selected{{end}}>ChaCha20-Poly1305</option></select></label>
+      <label class="field"><span>{{t "Method"}}</span><select name="method"><option value="2022-blake3-aes-128-gcm"{{if eq .Method "2022-blake3-aes-128-gcm"}} selected{{end}}>AES-128-GCM</option><option value="2022-blake3-aes-256-gcm"{{if eq .Method "2022-blake3-aes-256-gcm"}} selected{{end}}>AES-256-GCM</option><option value="2022-blake3-chacha20-poly1305"{{if eq .Method "2022-blake3-chacha20-poly1305"}} selected{{end}}>ChaCha20-Poly1305</option></select></label>
       <input type="hidden" name="mux_padding" value="{{if .MuxPadding}}1{{else}}0{{end}}">
       <input type="hidden" name="mux_brutal" value="{{if .MuxBrutal}}1{{else}}0{{end}}">
       <input type="hidden" name="mux_brutal_up_mbps" value="{{if .MuxBrutalUpMbps}}{{.MuxBrutalUpMbps}}{{end}}">
       <input type="hidden" name="mux_brutal_down_mbps" value="{{if .MuxBrutalDownMbps}}{{.MuxBrutalDownMbps}}{{end}}">
     </fieldset>
     <fieldset class="builder-subsection" data-proxy-section="tls">
-      <legend>TLS listener</legend>
+      <legend>{{t "TLS listener"}}</legend>
       <div class="builder-fields">
-        <label class="field"><span>Certificate mode</span><select name="tls_mode" data-proxy-tls-mode required><option value="acme"{{if eq .TLSMode "acme"}} selected{{end}}>ACME (Let's Encrypt)</option><option value="self_signed"{{if eq .TLSMode "self_signed"}} selected{{end}}>Self-signed by Agent</option>{{if eq .TLSMode "files"}}<option value="files" selected hidden>Legacy file certificate</option>{{end}}</select></label>
-        <label class="field" data-proxy-tls-name><span>TLS Certificate Domain/IP</span><input name="server_name" value="{{.ServerName}}" placeholder="proxy.example.com" data-tls-server-name data-validate-live></label>
-        <label class="field" data-proxy-acme><span>ACME email</span><input name="email" type="email" value="{{.Email}}" placeholder="admin@example.com" data-validate-live></label>
+        <label class="field"><span>{{t "Certificate mode"}}</span><select name="tls_mode" data-proxy-tls-mode required><option value="acme"{{if eq .TLSMode "acme"}} selected{{end}}>ACME (Let's Encrypt)</option><option value="self_signed"{{if eq .TLSMode "self_signed"}} selected{{end}}>{{t "Self-signed by Agent"}}</option>{{if eq .TLSMode "files"}}<option value="files" selected hidden>{{t "Legacy file certificate"}}</option>{{end}}</select></label>
+        <label class="field" data-proxy-tls-name><span>{{t "TLS Certificate Domain/IP"}}</span><input name="server_name" value="{{.ServerName}}" placeholder="proxy.example.com" data-tls-server-name data-validate-live></label>
+        <label class="field" data-proxy-acme><span>{{t "ACME email"}}</span><input name="email" type="email" value="{{.Email}}" placeholder="admin@example.com" data-validate-live></label>
         <input type="hidden" name="certificate_path" value="{{.CertificatePath}}">
         <input type="hidden" name="key_path" value="{{.KeyPath}}">
       </div>
@@ -60,30 +60,30 @@
     <fieldset class="builder-subsection" data-proxy-section="hysteria2">
       <legend>Hysteria2 listener</legend>
       <div class="builder-fields">
-        <label class="field"><span>Upload Mbps <span class="field__optional">Optional</span></span><input name="up_mbps" type="number" min="0" max="1000000" value="{{if .UpMbps}}{{.UpMbps}}{{end}}" data-validate-live></label>
-        <label class="field"><span>Download Mbps <span class="field__optional">Optional</span></span><input name="down_mbps" type="number" min="0" max="1000000" value="{{if .DownMbps}}{{.DownMbps}}{{end}}" data-validate-live></label>
-        <label class="field"><span>Obfuscation</span><select name="obfs_type"><option value=""{{if eq .ObfsType ""}} selected{{end}}>Disabled</option><option value="salamander"{{if eq .ObfsType "salamander"}} selected{{end}}>Salamander</option><option value="gecko"{{if eq .ObfsType "gecko"}} selected{{end}}>Gecko</option></select></label>
+        <label class="field"><span>{{t "Upload Mbps"}} <span class="field__optional">{{t "Optional"}}</span></span><input name="up_mbps" type="number" min="0" max="1000000" value="{{if .UpMbps}}{{.UpMbps}}{{end}}" data-validate-live></label>
+        <label class="field"><span>{{t "Download Mbps"}} <span class="field__optional">{{t "Optional"}}</span></span><input name="down_mbps" type="number" min="0" max="1000000" value="{{if .DownMbps}}{{.DownMbps}}{{end}}" data-validate-live></label>
+        <label class="field"><span>{{t "Obfuscation"}}</span><select name="obfs_type"><option value=""{{if eq .ObfsType ""}} selected{{end}}>{{t "Disabled"}}</option><option value="salamander"{{if eq .ObfsType "salamander"}} selected{{end}}>Salamander</option><option value="gecko"{{if eq .ObfsType "gecko"}} selected{{end}}>Gecko</option></select></label>
       </div>
     </fieldset>
   </div>
 </div>
 <div class="builder-fields proxy-link-options">
-  <label class="field"><span>Relay address family</span><select name="family"><option value="auto"{{if or (eq .Family "") (eq .Family "auto")}} selected{{end}}>Automatic</option><option value="ipv4"{{if eq .Family "ipv4"}} selected{{end}}>IPv4</option><option value="ipv6"{{if eq .Family "ipv6"}} selected{{end}}>IPv6</option></select></label>
+  <label class="field"><span>{{t "Relay address family"}}</span><select name="family"><option value="auto"{{if or (eq .Family "") (eq .Family "auto")}} selected{{end}}>{{t "Automatic"}}</option><option value="ipv4"{{if eq .Family "ipv4"}} selected{{end}}>IPv4</option><option value="ipv6"{{if eq .Family "ipv6"}} selected{{end}}>IPv6</option></select></label>
   <fieldset class="builder-subsection proxy-link-options__mux" data-proxy-section="shadowsocks">
-    <legend>Link multiplex</legend>
-    <label class="field"><span>Multiplex</span><select name="mux_enabled"><option value="0"{{if not .MuxEnabled}} selected{{end}}>Disabled</option><option value="1"{{if .MuxEnabled}} selected{{end}}>Enabled (smux)</option></select></label>
+    <legend>{{t "Link multiplex"}}</legend>
+    <label class="field"><span>{{t "Multiplex"}}</span><select name="mux_enabled"><option value="0"{{if not .MuxEnabled}} selected{{end}}>{{t "Disabled"}}</option><option value="1"{{if .MuxEnabled}} selected{{end}}>{{t "Enabled (smux)"}}</option></select></label>
   </fieldset>
 </div>
 {{end}}
 
 {{define "proxy-rule-fields"}}
-<label class="field"><span>Match type</span><select name="match" data-proxy-match required><option value="none"{{if eq .Match "none"}} selected{{end}}>ALL — fallback</option><option value="protocol"{{if eq .Match "protocol"}} selected{{end}}>Protocol</option><option value="domain"{{if eq .Match "domain"}} selected{{end}}>Domain</option><option value="domain_suffix"{{if eq .Match "domain_suffix"}} selected{{end}}>Domain suffix</option><option value="domain_keyword"{{if eq .Match "domain_keyword"}} selected{{end}}>Domain keyword</option><option value="domain_regex"{{if eq .Match "domain_regex"}} selected{{end}}>Domain regex</option><option value="ip_cidr"{{if eq .Match "ip_cidr"}} selected{{end}}>IP / CIDR</option><option value="geosite"{{if eq .Match "geosite"}} selected{{end}}>Geosite</option><option value="geoip"{{if eq .Match "geoip"}} selected{{end}}>GeoIP</option><option value="rule_set"{{if eq .Match "rule_set"}} selected{{end}}>Custom Rule Set</option><option value="network"{{if eq .Match "network"}} selected{{end}}>Network</option></select></label>
-<label class="field" data-proxy-match-values><span>Values</span><textarea class="resize-none" name="values" rows="4" placeholder="One value per line or comma-separated" required>{{.FormValues}}</textarea></label>
-<label class="field" data-proxy-rule-set-field hidden><span>Rule Set</span><select name="values" data-proxy-rule-set data-rule-set-kind="{{.Match}}" disabled required>{{if or (eq .Match "geosite") (eq .Match "geoip")}}<option value="{{.FormValues}}" selected>{{.Values}}</option>{{else}}<option value="" disabled selected>Loading…</option>{{end}}</select><small class="subscription-geosite-status" data-proxy-rule-set-status hidden></small></label>
+<label class="field"><span>{{t "Match type"}}</span><select name="match" data-proxy-match required>{{if eq .Match "rule_set"}}<option value="rule_set" selected>{{t "Legacy custom rule — choose a supported match"}}</option>{{end}}<option value="none"{{if eq .Match "none"}} selected{{end}}>{{t "ALL — fallback"}}</option><option value="protocol"{{if eq .Match "protocol"}} selected{{end}}>{{t "Protocol"}}</option><option value="domain"{{if eq .Match "domain"}} selected{{end}}>{{t "Domain"}}</option><option value="domain_suffix"{{if eq .Match "domain_suffix"}} selected{{end}}>{{t "Domain suffix"}}</option><option value="domain_keyword"{{if eq .Match "domain_keyword"}} selected{{end}}>{{t "Domain keyword"}}</option><option value="domain_regex"{{if eq .Match "domain_regex"}} selected{{end}}>{{t "Domain regex"}}</option><option value="ip_cidr"{{if eq .Match "ip_cidr"}} selected{{end}}>{{t "IP / CIDR"}}</option><option value="geosite"{{if eq .Match "geosite"}} selected{{end}}>Geosite</option><option value="geoip"{{if eq .Match "geoip"}} selected{{end}}>GeoIP</option><option value="network"{{if eq .Match "network"}} selected{{end}}>{{t "Network"}}</option></select></label>
+<label class="field" data-proxy-match-values><span>{{t "Values"}}</span><textarea class="resize-none" name="values" rows="4" placeholder="One value per line or comma-separated" required>{{.FormValues}}</textarea></label>
+<label class="field" data-proxy-rule-set-field hidden><span>{{t "Rule Set"}}</span><select name="values" data-proxy-rule-set data-rule-set-kind="{{.Match}}" disabled required>{{if or (eq .Match "geosite") (eq .Match "geoip")}}<option value="{{.FormValues}}" selected>{{.Values}}</option>{{else}}<option value="" disabled selected>{{t "Loading…"}}</option>{{end}}</select><small class="subscription-geosite-status" data-proxy-rule-set-status hidden></small></label>
 {{end}}
 
 {{define "proxy-breadcrumbs"}}
-<nav class="breadcrumbs" aria-label="Breadcrumb">
-  <a href="/proxy-nodes">Proxy Nodes</a><span aria-hidden="true">/</span><a href="{{.URL}}">{{.Name}}</a>
+<nav class="breadcrumbs" aria-label="{{t "Breadcrumb"}}">
+  <a href="/proxy-nodes">{{t "Proxy Nodes"}}</a><span aria-hidden="true">/</span><a href="{{.URL}}">{{.Name}}</a>
 </nav>
 {{end}}

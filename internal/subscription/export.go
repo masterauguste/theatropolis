@@ -71,22 +71,24 @@ func Render(format Format, profile Profile) ([]byte, string, error) {
 }
 
 func normalizeProfile(profile Profile) Profile {
+	profile.Nodes = slices.Clone(profile.Nodes)
+	profile.Rules = slices.Clone(profile.Rules)
 	if profile.Default == "" {
 		profile.Default = proxynode.SubscriptionProxy
 	}
 	sort.SliceStable(profile.Rules, func(left, right int) bool { return profile.Rules[left].Order < profile.Rules[right].Order })
-	seen := make(map[string]int)
+	seen := map[string]bool{"direct": true, "reject": true, "proxy": true}
 	for index := range profile.Nodes {
 		base := strings.TrimSpace(profile.Nodes[index].Name)
 		if base == "" {
 			base = "Node"
 		}
-		key := strings.ToLower(base)
-		seen[key]++
-		if seen[key] > 1 {
-			base += " " + strconv.Itoa(seen[key])
+		name := base
+		for suffix := 2; seen[strings.ToLower(name)]; suffix++ {
+			name = base + " " + strconv.Itoa(suffix)
 		}
-		profile.Nodes[index].Name = base
+		seen[strings.ToLower(name)] = true
+		profile.Nodes[index].Name = name
 	}
 	return profile
 }
@@ -134,7 +136,7 @@ func renderClash(profile Profile) ([]byte, error) {
 			}
 		}
 	}
-	out.WriteString("\nproxy-groups:\n  - name: Proxy\n    type: select\n    proxies:\n")
+	out.WriteString("\nproxy-groups:\n  - name: PROXY\n    type: select\n    proxies:\n")
 	if len(profile.Nodes) == 0 {
 		out.WriteString("      - DIRECT\n      - REJECT\n")
 	} else {
@@ -211,7 +213,7 @@ func renderSurge(profile Profile) ([]byte, error) {
 		}
 		out.WriteString(surgeName(node.Name) + " = " + line + "\n")
 	}
-	out.WriteString("\n[Proxy Group]\nProxy = select")
+	out.WriteString("\n[Proxy Group]\nPROXY = select")
 	if len(profile.Nodes) == 0 {
 		out.WriteString(", DIRECT, REJECT")
 	} else {
@@ -336,16 +338,16 @@ func renderSingBox(profile Profile) ([]byte, error) {
 		nodeTags = append(nodeTags, node.Name)
 	}
 	outbounds = append(outbounds,
-		map[string]any{"type": "direct", "tag": "Direct"},
-		map[string]any{"type": "block", "tag": "Reject"},
+		map[string]any{"type": "direct", "tag": "DIRECT"},
+		map[string]any{"type": "block", "tag": "REJECT"},
 	)
 	selectorMembers := slices.Clone(nodeTags)
 	if len(selectorMembers) == 0 {
-		selectorMembers = []string{"Direct", "Reject"}
+		selectorMembers = []string{"DIRECT", "REJECT"}
 	} else {
-		selectorMembers = append(selectorMembers, "Direct", "Reject")
+		selectorMembers = append(selectorMembers, "DIRECT", "REJECT")
 	}
-	outbounds = append(outbounds, map[string]any{"type": "selector", "tag": "Proxy", "outbounds": selectorMembers})
+	outbounds = append(outbounds, map[string]any{"type": "selector", "tag": "PROXY", "outbounds": selectorMembers})
 	compiledRules := make([]singBoxRouteRule, 0, len(profile.Rules)+2)
 	geoRuleSets := make(map[string]string)
 	for _, rule := range profile.Rules {
@@ -400,7 +402,7 @@ func renderSingBox(profile Profile) ([]byte, error) {
 			"type": "https", "tag": "proxy-dns",
 			"server": "1.1.1.1", "server_port": 443, "path": "/dns-query",
 			"tls":    map[string]any{"enabled": true, "server_name": "cloudflare-dns.com"},
-			"detour": "Proxy",
+			"detour": "PROXY",
 		})
 	}
 	dns := map[string]any{
@@ -411,7 +413,7 @@ func renderSingBox(profile Profile) ([]byte, error) {
 	root := map[string]any{
 		"log": map[string]any{"level": "info"},
 		"http_clients": []any{
-			map[string]any{"tag": "rule-set-http", "detour": "Proxy"},
+			map[string]any{"tag": "rule-set-http", "detour": "PROXY"},
 		},
 		"dns": dns,
 		"inbounds": []any{
@@ -596,11 +598,11 @@ func singBoxRule(rule proxynode.SubscriptionRule) (map[string]any, error) {
 func actionName(action proxynode.SubscriptionAction) string {
 	switch action {
 	case proxynode.SubscriptionDirect:
-		return "Direct"
+		return "DIRECT"
 	case proxynode.SubscriptionReject:
-		return "Reject"
+		return "REJECT"
 	default:
-		return "Proxy"
+		return "PROXY"
 	}
 }
 

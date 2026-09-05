@@ -15,6 +15,8 @@ CONFIG_DIRECTORY="/etc/theatropolis"
 SYSTEMD_DIRECTORY="/etc/systemd/system"
 CADDYFILE="/etc/caddy/Caddyfile"
 CADDY_SNIPPET="/etc/caddy/conf.d/theatropolis.caddy"
+CADDY_RELAY_SNIPPET="/etc/caddy/conf.d/theatropolis-agent-acme.caddy"
+ACME_HTTP01_RELAY_MARKER="${CONFIG_DIRECTORY}/acme-http01-master-relay"
 INSTALL_LOCK_FILE="/run/theatropolis-installer.lock"
 MASTER_USER="theatropolis-master"
 AGENT_USER="theatropolis-agent"
@@ -33,6 +35,8 @@ ASSUME_YES="no"
 KEEP_DATA="no"
 CADDY_BACKUP=""
 CADDY_REMOVAL_COMMITTED="no"
+CADDY_RELAY_BACKUP=""
+CADDY_RELAY_REMOVAL_COMMITTED="no"
 
 usage() {
 	printf '%s\n' \
@@ -61,6 +65,14 @@ cleanup() {
 		[ "$CADDY_REMOVAL_COMMITTED" != "yes" ] &&
 		{ [ -e "$CADDY_BACKUP" ] || [ -L "$CADDY_BACKUP" ]; }; then
 		mv -f -- "$CADDY_BACKUP" "$CADDY_SNIPPET"
+		if systemctl is-active --quiet caddy; then
+			systemctl reload caddy >/dev/null 2>&1 || true
+		fi
+	fi
+	if [ -n "$CADDY_RELAY_BACKUP" ] &&
+		[ "$CADDY_RELAY_REMOVAL_COMMITTED" != "yes" ] &&
+		{ [ -e "$CADDY_RELAY_BACKUP" ] || [ -L "$CADDY_RELAY_BACKUP" ]; }; then
+		mv -f -- "$CADDY_RELAY_BACKUP" "$CADDY_RELAY_SNIPPET"
 		if systemctl is-active --quiet caddy; then
 			systemctl reload caddy >/dev/null 2>&1 || true
 		fi
@@ -155,6 +167,7 @@ remove_path() {
 		"$UPDATE_HELPER_PATH"|\
 		"$CONFIG_DIRECTORY/agent.env"|\
 		"$CONFIG_DIRECTORY/agent-ca.pem"|\
+		"$ACME_HTTP01_RELAY_MARKER"|\
 		"$CONFIG_DIRECTORY/web-auth.json"|\
 		"$SYSTEMD_DIRECTORY/$MASTER_UNIT"|\
 		"$SYSTEMD_DIRECTORY/$MASTER_UPDATE_SERVICE"|\
@@ -219,31 +232,79 @@ remove_service_user() {
 }
 
 remove_master_caddy_entry() {
-	if [ ! -e "$CADDY_SNIPPET" ] && [ ! -L "$CADDY_SNIPPET" ]; then
+	if [ ! -e "$CADDY_SNIPPET" ] && [ ! -L "$CADDY_SNIPPET" ] &&
+		[ ! -e "$CADDY_RELAY_SNIPPET" ] && [ ! -L "$CADDY_RELAY_SNIPPET" ]; then
+		remove_path "$ACME_HTTP01_RELAY_MARKER"
 		return
 	fi
-	if [ ! -f "$CADDY_SNIPPET" ] && [ ! -L "$CADDY_SNIPPET" ]; then
-		fail "the Theatropolis Caddy entry is not a regular file or symbolic link"
+	if [ -e "$CADDY_SNIPPET" ] || [ -L "$CADDY_SNIPPET" ]; then
+		if [ ! -f "$CADDY_SNIPPET" ] && [ ! -L "$CADDY_SNIPPET" ]; then
+			fail "the Theatropolis Caddy entry is not a regular file or symbolic link"
+		fi
+		CADDY_BACKUP="${CADDY_SNIPPET}.uninstall.$$"
+		if [ -e "$CADDY_BACKUP" ] || [ -L "$CADDY_BACKUP" ]; then
+			fail "temporary Caddy backup path already exists: $CADDY_BACKUP"
+		fi
+		mv -- "$CADDY_SNIPPET" "$CADDY_BACKUP"
 	fi
-	CADDY_BACKUP="${CADDY_SNIPPET}.uninstall.$$"
-	if [ -e "$CADDY_BACKUP" ] || [ -L "$CADDY_BACKUP" ]; then
-		fail "temporary Caddy backup path already exists: $CADDY_BACKUP"
+	if [ -e "$CADDY_RELAY_SNIPPET" ] || [ -L "$CADDY_RELAY_SNIPPET" ]; then
+		if [ ! -f "$CADDY_RELAY_SNIPPET" ] || [ -L "$CADDY_RELAY_SNIPPET" ]; then
+			fail "the Theatropolis Agent ACME relay entry is not a regular file"
+		fi
+		CADDY_RELAY_BACKUP="${CADDY_RELAY_SNIPPET}.uninstall.$$"
+		if [ -e "$CADDY_RELAY_BACKUP" ] || [ -L "$CADDY_RELAY_BACKUP" ]; then
+			fail "temporary Caddy relay backup path already exists: $CADDY_RELAY_BACKUP"
+		fi
+		mv -- "$CADDY_RELAY_SNIPPET" "$CADDY_RELAY_BACKUP"
 	fi
-	mv -- "$CADDY_SNIPPET" "$CADDY_BACKUP"
 
 	if [ -f "$CADDYFILE" ] && command -v caddy >/dev/null 2>&1; then
 		if ! caddy validate --config "$CADDYFILE" --adapter caddyfile; then
-			fail "Caddy rejected the configuration without Theatropolis; the entry was restored"
+			fail "Caddy rejected the configuration without Theatropolis; the entries were restored"
 		fi
 	fi
 	if systemctl is-active --quiet caddy; then
 		if ! systemctl reload caddy; then
-			fail "Caddy could not reload without Theatropolis; the entry was restored"
+			fail "Caddy could not reload without Theatropolis; the entries were restored"
 		fi
 	fi
-	rm -f -- "$CADDY_BACKUP"
+	[ -z "$CADDY_BACKUP" ] || rm -f -- "$CADDY_BACKUP"
 	CADDY_BACKUP=""
 	CADDY_REMOVAL_COMMITTED="yes"
+	[ -z "$CADDY_RELAY_BACKUP" ] || rm -f -- "$CADDY_RELAY_BACKUP"
+	CADDY_RELAY_BACKUP=""
+	CADDY_RELAY_REMOVAL_COMMITTED="yes"
+	remove_path "$ACME_HTTP01_RELAY_MARKER"
+}
+
+remove_agent_acme_relay_entry() {
+	if [ ! -e "$CADDY_RELAY_SNIPPET" ] && [ ! -L "$CADDY_RELAY_SNIPPET" ]; then
+		remove_path "$ACME_HTTP01_RELAY_MARKER"
+		return
+	fi
+	if [ ! -f "$CADDY_RELAY_SNIPPET" ] || [ -L "$CADDY_RELAY_SNIPPET" ]; then
+		fail "the Theatropolis Agent ACME relay entry is not a regular file"
+	fi
+	CADDY_RELAY_BACKUP="${CADDY_RELAY_SNIPPET}.uninstall.$$"
+	if [ -e "$CADDY_RELAY_BACKUP" ] || [ -L "$CADDY_RELAY_BACKUP" ]; then
+		fail "temporary Caddy relay backup path already exists: $CADDY_RELAY_BACKUP"
+	fi
+	mv -- "$CADDY_RELAY_SNIPPET" "$CADDY_RELAY_BACKUP"
+
+	if [ -f "$CADDYFILE" ] && command -v caddy >/dev/null 2>&1; then
+		if ! caddy validate --config "$CADDYFILE" --adapter caddyfile; then
+			fail "Caddy rejected the configuration without the Agent ACME relay; the entry was restored"
+		fi
+	fi
+	if systemctl is-active --quiet caddy; then
+		if ! systemctl reload caddy; then
+			fail "Caddy could not reload without the Agent ACME relay; the entry was restored"
+		fi
+	fi
+	rm -f -- "$CADDY_RELAY_BACKUP"
+	CADDY_RELAY_BACKUP=""
+	CADDY_RELAY_REMOVAL_COMMITTED="yes"
+	remove_path "$ACME_HTTP01_RELAY_MARKER"
 }
 
 uninstall_master() {
@@ -316,8 +377,16 @@ case "$ROLE" in
 master)
 	remove_master_caddy_entry
 	uninstall_master
+	# Re-read the now-absent marker and normalize the persisted ACME config
+	# before reconnecting. Do not start an Agent the operator left stopped.
+	if [ -f "$SYSTEMD_DIRECTORY/$AGENT_UNIT" ] && [ ! -L "$SYSTEMD_DIRECTORY/$AGENT_UNIT" ] &&
+		systemctl is-active --quiet theatropolis-agent; then
+		systemctl restart theatropolis-agent ||
+			fail "Master removed, but the surviving Agent could not restart without the ACME relay"
+	fi
 	;;
 agent)
+	remove_agent_acme_relay_entry
 	uninstall_agent
 	;;
 all)

@@ -54,6 +54,31 @@ func main() {
 	}
 }
 
+func validACMEHTTP01RelayMarker(path string) (bool, error) {
+	info, err := os.Lstat(path)
+	if errors.Is(err, os.ErrNotExist) {
+		return false, nil
+	}
+	if err != nil {
+		return false, fmt.Errorf("inspect ACME HTTP-01 relay marker: %w", err)
+	}
+	if !info.Mode().IsRegular() || info.Mode().Perm()&0022 != 0 {
+		return false, errors.New("ACME HTTP-01 relay marker must be a non-writable regular file")
+	}
+	stat, ok := info.Sys().(*syscall.Stat_t)
+	if !ok || stat.Uid != 0 {
+		return false, errors.New("ACME HTTP-01 relay marker must be owned by root")
+	}
+	contents, err := os.ReadFile(path)
+	if err != nil {
+		return false, fmt.Errorf("read ACME HTTP-01 relay marker: %w", err)
+	}
+	if strings.TrimSpace(string(contents)) != strconv.Itoa(singbox.ACMEHTTP01RelayPort) {
+		return false, errors.New("ACME HTTP-01 relay marker has an unsupported version")
+	}
+	return true, nil
+}
+
 func run(arguments []string) error {
 	if len(arguments) > 0 && arguments[0] == "apply-update" {
 		return errors.New(
@@ -81,6 +106,11 @@ func run(arguments []string) error {
 	singBoxPath := flags.String("sing-box", "/usr/local/bin/sing-box", "sing-box executable")
 	tokenFile := flags.String("enrollment-token-file", "", "single-use token file")
 	caFile := flags.String("ca-file", "", "optional PEM CA bundle")
+	acmeRelayMarker := flags.String(
+		"acme-http01-relay-marker",
+		"/etc/theatropolis/acme-http01-master-relay",
+		"installer-managed marker for a co-located Master ACME relay",
+	)
 	showVersion := flags.Bool("version", false, "print version")
 	if err := flags.Parse(arguments); err != nil {
 		return err
@@ -166,6 +196,13 @@ func run(arguments []string) error {
 	if err := removeLegacyAgentID(filepath.Join(*stateDirectory, "agent-id")); err != nil {
 		return err
 	}
+	acmeRelay := false
+	if strings.TrimSpace(*acmeRelayMarker) != "" {
+		acmeRelay, err = validACMEHTTP01RelayMarker(*acmeRelayMarker)
+		if err != nil {
+			return err
+		}
+	}
 	validator := singbox.Validator{
 		BinaryPath:     *singBoxPath,
 		StateDirectory: *stateDirectory,
@@ -183,6 +220,7 @@ func run(arguments []string) error {
 		)
 	} else {
 		manager, err = singbox.NewManager(singbox.ManagerOptions{
+			ACMEHTTP01Relay:  &acmeRelay,
 			Validator:        validator,
 			ConfigGeneration: singbox.ProxyNodeConfigGeneration,
 			AgentVersion:     version,
@@ -193,11 +231,12 @@ func run(arguments []string) error {
 		}
 	}
 	runner := &agent.Runner{
-		AgentVersion:   version,
-		SingBoxVersion: singBoxVersion,
-		PrivateKey:     privateKey,
-		Validator:      validator,
-		MasterMigrator: controlTarget,
+		ACMEHTTP01Relay: acmeRelay,
+		AgentVersion:    version,
+		SingBoxVersion:  singBoxVersion,
+		PrivateKey:      privateKey,
+		Validator:       validator,
+		MasterMigrator:  controlTarget,
 	}
 	updater, err := agentupdate.NewScheduler(*stateDirectory)
 	if err != nil {

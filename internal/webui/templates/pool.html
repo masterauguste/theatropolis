@@ -12,12 +12,12 @@
       <code>{{.Tag}}</code>
     </span>
     <span class="pool-summary-card__facts">
-      <span><small>Protocol</small><strong>{{.Type}}</strong></span>
-      <span><small>Port</small><strong>{{.Port}}</strong></span>
+      <span><small>{{t "Protocol"}}</small><strong>{{.Type}}</strong></span>
+      <span><small>{{t "Port"}}</small><strong>{{.Port}}</strong></span>
       <span><small>IPv4</small>{{if .IPv4}}<code>{{.IPv4}}</code>{{else}}<span class="muted">—</span>{{end}}</span>
       <span><small>IPv6</small>{{if .IPv6}}<code>{{.IPv6}}</code>{{else}}<span class="muted">—</span>{{end}}</span>
     </span>
-    <span class="pool-summary-card__action">View users and address settings <span aria-hidden="true">→</span></span>
+    <span class="pool-summary-card__action">{{t "View users and address settings"}} <span aria-hidden="true">→</span></span>
   </button>
 
   <dialog class="modal resource-modal" id="{{.DialogID}}" aria-labelledby="{{.DialogID}}-title">
@@ -26,21 +26,21 @@
         <div>
           <p class="eyebrow">{{.AgentName}}</p>
           <h2 id="{{.DialogID}}-title">{{.Tag}}</h2>
-          <p>{{.Type}} on port {{.Port}}</p>
+          <p>{{.Type}} {{t "on port"}} {{.Port}}</p>
         </div>
-        <button class="button button--secondary button--icon-only" type="button" data-dialog-close aria-label="Close outbound details">×</button>
+        <button class="button button--secondary button--icon-only" type="button" data-dialog-close aria-label="{{t "Close outbound details"}}">×</button>
       </header>
       <div class="modal__body stack">
         <section aria-labelledby="{{.DialogID}}-addresses">
-          <h3 id="{{.DialogID}}-addresses">Server addresses</h3>
+          <h3 id="{{.DialogID}}-addresses">{{t "Server addresses"}}</h3>
           <div class="pool-address-grid">
-            <span><small>IPv4</small>{{if .IPv4}}<code>{{.IPv4}}</code>{{else}}<span class="muted">Unavailable</span>{{end}}</span>
-            <span><small>IPv6</small>{{if .IPv6}}<code>{{.IPv6}}</code>{{else}}<span class="muted">Unavailable</span>{{end}}</span>
+            <span><small>IPv4</small>{{if .IPv4}}<code>{{.IPv4}}</code>{{else}}<span class="muted">{{t "Unavailable"}}</span>{{end}}</span>
+            <span><small>IPv6</small>{{if .IPv6}}<code>{{.IPv6}}</code>{{else}}<span class="muted">{{t "Unavailable"}}</span>{{end}}</span>
           </div>
         </section>
 
         <section aria-labelledby="{{.DialogID}}-users">
-          <h3 id="{{.DialogID}}-users">Users</h3>
+          <h3 id="{{.DialogID}}-users">{{t "Users"}}</h3>
           <div class="pool-user-list">
             {{range .Users}}
             <div class="pool-user" data-pool-ref="{{.Ref}}">
@@ -51,35 +51,35 @@
         </section>
 
         <section aria-labelledby="{{.DialogID}}-overrides">
-          <h3 id="{{.DialogID}}-overrides">Address overrides</h3>
+          <h3 id="{{.DialogID}}-overrides">{{t "Address overrides"}}</h3>
           <form novalidate action="{{.AddressURL}}" method="post" class="stack">
             <input type="hidden" name="csrf_token" value="{{$.CSRFToken}}">
             <div class="field-grid field-grid--two">
               <label class="field">
-                <span>IPv4 override</span>
-                <input type="text" name="override_ipv4" value="{{.OverrideV4}}" placeholder="Automatic" maxlength="64" inputmode="decimal">
+                <span>{{t "IPv4 override"}}</span>
+                <input type="text" name="override_ipv4" value="{{.OverrideV4}}" placeholder="{{t "Automatic"}}" maxlength="64" inputmode="decimal">
               </label>
               <label class="field">
-                <span>IPv6 override</span>
-                <input type="text" name="override_ipv6" value="{{.OverrideV6}}" placeholder="Automatic" maxlength="64">
+                <span>{{t "IPv6 override"}}</span>
+                <input type="text" name="override_ipv6" value="{{.OverrideV6}}" placeholder="{{t "Automatic"}}" maxlength="64">
               </label>
             </div>
-            <button class="button button--primary" type="submit">Save address overrides</button>
+            <button class="button button--primary" type="submit">{{t "Save address overrides"}}</button>
           </form>
         </section>
       </div>
       <footer class="modal__footer">
-        <button class="button button--secondary" type="button" data-dialog-close>Close</button>
+        <button class="button button--secondary" type="button" data-dialog-close>{{t "Close"}}</button>
       </footer>
     </div>
   </dialog>
   {{end}}
 </div>
 {{else}}
-<p class="muted">No deployed inbounds are in the pool yet. Deploy a configuration with Shadowsocks, AnyTLS, or Hysteria2 inbounds to share them here.</p>
+<p class="muted">{{t "No deployed inbounds are in the pool yet. Deploy a configuration with Shadowsocks, AnyTLS, or Hysteria2 inbounds to share them here."}}</p>
 {{end}}
 {{else}}
-<div class="notice notice--error" role="alert">The outbound pool is not available on this master.</div>
+<div class="notice notice--error" role="alert">{{t "The outbound pool is not available on this master."}}</div>
 {{end}}
 {{end}}
 
@@ -88,59 +88,59 @@
 <html lang="{{.Locale}}">
 {{template "document-head" .}}
 <body>
-  <a class="skip-link" href="#main">Skip to content</a>
+  <a class="skip-link" href="#main">{{t "Skip to content"}}</a>
   {{template "global-header" .}}
   <main class="main main--narrow" id="main">
     <header class="page-header page-header--compact">
       <div>
-        <p class="eyebrow">Fleet</p>
-        <h1>Outbound pool</h1>
+        <p class="eyebrow">{{t "Fleet"}}</p>
+        <h1>{{t "Outbound pool"}}</h1>
       </div>
     </header>
     {{if .Pool}}
     <section class="panel settings-panel" aria-labelledby="pool-heading">
       <div class="panel__header">
-        <h2 id="pool-heading">Fleet outbound pool</h2>
+        <h2 id="pool-heading">{{t "Fleet outbound pool"}}</h2>
       </div>
       {{if .Error}}
       <div class="notice notice--error" role="alert" tabindex="-1" data-error-summary>{{.Error}}</div>
       {{end}}
-      <div id="pool-content" class="async-region" data-async-region data-async-url="/pool/content" data-async-loading-label="Loading fleet outbounds…" aria-live="polite" aria-busy="true">
+      <div id="pool-content" class="async-region" data-async-region data-async-url="/pool/content" data-async-loading-label="{{t "Loading fleet outbounds…"}}" aria-live="polite" aria-busy="true">
         <div class="loading-state" role="status">
           <span class="loading-spinner" aria-hidden="true"></span>
-          <span>Loading fleet outbounds…</span>
+          <span>{{t "Loading fleet outbounds…"}}</span>
         </div>
       </div>
 
-      <h3>Manual entries</h3>
+      <h3>{{t "Manual entries"}}</h3>
       {{if .Pool.Manual}}
       <div class="table-wrap">
         <table>
           <thead>
             <tr>
-              <th scope="col">Name</th>
-              <th scope="col">Remark</th>
-              <th scope="col">Protocol</th>
-              <th scope="col">Outbound JSON</th>
-              <th scope="col"><span class="visually-hidden">Actions</span></th>
+              <th scope="col">{{t "Name"}}</th>
+              <th scope="col">{{t "Remark"}}</th>
+              <th scope="col">{{t "Protocol"}}</th>
+              <th scope="col">{{t "Outbound JSON"}}</th>
+              <th scope="col"><span class="visually-hidden">{{t "Actions"}}</span></th>
             </tr>
           </thead>
           <tbody>
             {{range .Pool.Manual}}
             <tr>
-              <td data-label="Name"><code>manual/{{.Name}}</code></td>
-              <td data-label="Remark">{{if .Remark}}{{.Remark}}{{else}}<span class="muted">—</span>{{end}}</td>
-              <td data-label="Protocol">{{.Type}}{{if .Port}} · {{.Port}}{{end}}</td>
-              <td data-label="Outbound JSON"><code class="pool-outbound-json">{{.Outbound}}</code></td>
-              <td data-label="Actions">
+              <td data-label="{{t "Name"}}"><code>manual/{{.Name}}</code></td>
+              <td data-label="{{t "Remark"}}">{{if .Remark}}{{.Remark}}{{else}}<span class="muted">—</span>{{end}}</td>
+              <td data-label="{{t "Protocol"}}">{{.Type}}{{if .Port}} · {{.Port}}{{end}}</td>
+              <td data-label="{{t "Outbound JSON"}}"><code class="pool-outbound-json">{{.Outbound}}</code></td>
+              <td data-label="{{t "Actions"}}">
                 <form novalidate action="/pool/delete" method="post" class="pool-delete-form">
                   <input type="hidden" name="csrf_token" value="{{$.CSRFToken}}">
                   <input type="hidden" name="name" value="{{.Name}}">
                   <label class="danger-confirm">
                     <input type="checkbox" name="confirm_delete" value="yes" required>
-                    <span>Confirm</span>
+                    <span>{{t "Confirm"}}</span>
                   </label>
-                  <button class="button-link button-link--danger" type="submit">Delete</button>
+                  <button class="button-link button-link--danger" type="submit">{{t "Delete"}}</button>
                 </form>
               </td>
             </tr>
@@ -149,28 +149,28 @@
         </table>
       </div>
       {{else}}
-      <p class="muted">No manual entries yet.</p>
+      <p class="muted">{{t "No manual entries yet."}}</p>
       {{end}}
       <form novalidate action="/pool" method="post" class="stack">
         <input type="hidden" name="csrf_token" value="{{.CSRFToken}}">
         <label class="field">
-          <span>Entry name</span>
+          <span>{{t "Entry name"}}</span>
           <input type="text" name="name" value="{{.PoolFormName}}" placeholder="backup-relay" maxlength="128" required{{if eq .ErrorField "pool_name"}} aria-invalid="true"{{end}}>
         </label>
         <label class="field">
-          <span>Remark <small>(optional)</small></span>
+          <span>{{t "Remark"}} <small>(optional)</small></span>
           <input type="text" name="remark" value="{{.PoolFormRemark}}" placeholder="Singapore backup" maxlength="256"{{if eq .ErrorField "pool_remark"}} aria-invalid="true"{{end}}>
         </label>
         <label class="field">
-          <span>Proxy URI or outbound JSON</span>
+          <span>{{t "Proxy URI or outbound JSON"}}</span>
           <textarea class="resize-none" name="outbound_json" rows="4" spellcheck="false" placeholder='ss://method:password@example.com:8388#Singapore' required{{if eq .ErrorField "pool_json"}} aria-invalid="true"{{end}}>{{.PoolFormJSON}}</textarea>
         </label>
-        <button class="button button--secondary" type="submit" data-submit-button data-submit-label="Saving…">Save pool entry</button>
+        <button class="button button--secondary" type="submit" data-submit-button data-submit-label="Saving…">{{t "Save pool entry"}}</button>
       </form>
     </section>
     {{else}}
     <section class="panel">
-      <p class="muted">The outbound pool is not available on this master.</p>
+      <p class="muted">{{t "The outbound pool is not available on this master."}}</p>
     </section>
     {{end}}
   </main>

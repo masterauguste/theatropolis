@@ -107,6 +107,9 @@ type ApplyResult struct {
 
 // ManagerOptions configures a non-root sing-box child-process manager.
 type ManagerOptions struct {
+	// Nil preserves the persisted config. The Agent CLI always supplies its
+	// validated installer marker so role changes also work before reconnect.
+	ACMEHTTP01Relay    *bool
 	Validator          Validator
 	ConfigGeneration   string
 	AgentVersion       string
@@ -121,6 +124,7 @@ type ManagerOptions struct {
 // Manager validates, persists, activates, and supervises one sing-box
 // configuration. Start must be called before Apply.
 type Manager struct {
+	acmeHTTP01Relay    *bool
 	validator          Validator
 	binaryPath         string
 	stateDirectory     string
@@ -256,6 +260,7 @@ func NewManager(options ManagerOptions) (*Manager, error) {
 	validator.BinaryPath = binaryPath
 	validator.StateDirectory = cleanStateDirectory
 	manager := &Manager{
+		acmeHTTP01Relay:    options.ACMEHTTP01Relay,
 		validator:          validator,
 		binaryPath:         binaryPath,
 		stateDirectory:     cleanStateDirectory,
@@ -387,6 +392,27 @@ func (m *Manager) Start(ctx context.Context) (StartupResult, error) {
 	if err != nil {
 		return StartupResult{}, err
 	}
+	var hostSettingsErr error
+	if hasActive && m.acmeHTTP01Relay != nil {
+		configure := RemoveACMEHTTP01Relay
+		if *m.acmeHTTP01Relay {
+			configure = ConfigureACMEHTTP01Relay
+		}
+		configured, configureErr := configure(activeConfig)
+		if configureErr != nil {
+			// Keep the control plane available to replace an incompatible
+			// persisted profile (for example an inbound already using 19091).
+			hostSettingsErr = configureErr
+		} else if !bytes.Equal(configured, activeConfig) {
+			if err := m.restoreConfig(configured, true); err != nil {
+				clear(activeConfig)
+				clear(configured)
+				return StartupResult{}, fmt.Errorf("persist ACME host settings: %w", err)
+			}
+			clear(activeConfig)
+			activeConfig = configured
+		}
+	}
 	authority, hasAuthority, err := m.loadManagedUserAuthority()
 	if err != nil {
 		clear(activeConfig)
@@ -429,7 +455,12 @@ func (m *Manager) Start(ctx context.Context) (StartupResult, error) {
 	if hasActive {
 		digest := sha256.Sum256(activeConfig)
 		startup.ConfigSHA256 = digest
-		if authorityOverlayErr != nil {
+		if hostSettingsErr != nil {
+			startup.ValidationStatus = ValidationInvalid
+			startup.Diagnostic = "persisted configuration is incompatible with local ACME host settings"
+			startup.Status = StartupValidationFailed
+			m.emitRuntimeEvent(RuntimeStatusValidationFailed, activeConfig, startup.Diagnostic)
+		} else if authorityOverlayErr != nil {
 			startup.ValidationStatus = ValidationInvalid
 			startup.Diagnostic = "persisted configuration is incompatible with managed-user authority"
 			startup.Status = StartupValidationFailed
@@ -453,7 +484,7 @@ func (m *Manager) Start(ctx context.Context) (StartupResult, error) {
 			startup.Diagnostic = redactConfigValues(validation.Diagnostic, activeConfig)
 			switch validation.Status {
 			case ValidationValid:
-				child, launchErr := m.launchProcess(runContext)
+				child, launchErr := m.launchProcess(runContext, activeConfig)
 				if launchErr == nil {
 					state.child = child
 					state.restart = true
@@ -766,7 +797,7 @@ func (m *Manager) supervise(ctx context.Context, state supervisorState) {
 				)
 				continue
 			}
-			child, err := m.launchProcess(ctx)
+			child, err := m.launchProcess(ctx, state.activeConfig)
 			if err != nil {
 				if ctx.Err() != nil {
 					state.child = child
@@ -1065,11 +1096,17 @@ func (m *Manager) applyCandidate(
 	}
 	stagedInstalled = true
 
-	launchContext, cancelLaunch := context.WithTimeout(
-		context.Background(),
-		m.startupGracePeriod+m.processStopTimeout,
-	)
-	candidateChild, launchErr := m.launchProcess(launchContext)
+	// Activation is transactional: caller cancellation cannot abandon a
+	// stopped/replaced profile. Retain its deadline as the readiness budget,
+	// but give an already-mutated user-authority repair an independent window.
+	launchDeadline := time.Now().Add(tlsReadinessTimeout)
+	if deadline, ok := request.ctx.Deadline(); ok && !forceRestartRepair && deadline.Before(launchDeadline) {
+		launchDeadline = deadline
+	}
+	launchContext, cancelLaunch := context.WithDeadline(context.Background(), launchDeadline)
+	stopLaunchCancellation := context.AfterFunc(managerContext, cancelLaunch)
+	candidateChild, launchErr := m.launchProcess(launchContext, request.config)
+	stopLaunchCancellation()
 	cancelLaunch()
 	if launchErr == nil {
 		clear(state.activeConfig)
@@ -1190,7 +1227,7 @@ func (m *Manager) restartPreviousConfig(
 		m.startupGracePeriod+m.processStopTimeout,
 	)
 	defer cancel()
-	child, err := m.launchProcess(restartContext)
+	child, err := m.launchProcess(restartContext, state.activeConfig)
 	if err == nil {
 		return child, true
 	}
@@ -1394,13 +1431,26 @@ func syncDirectory(path string) error {
 	return nil
 }
 
-func (m *Manager) launchProcess(ctx context.Context) (*runningProcess, error) {
+func (m *Manager) launchProcess(ctx context.Context, config []byte) (*runningProcess, error) {
+	targets, err := readinessTargets(config, m.stateDirectory)
+	if err != nil {
+		return nil, err
+	}
+	ctx, cancel := context.WithTimeout(ctx, tlsReadinessTimeout)
+	defer cancel()
 	process := m.newProcess(m.binaryPath, m.activeConfigPath)
 	if process == nil {
 		return nil, errors.New("sing-box process factory returned nil")
 	}
 	if err := process.Start(); err != nil {
 		return nil, err
+	}
+	var ownsListener func(tlsReadinessTarget) bool
+	if command, ok := process.(*commandProcess); ok {
+		pid := command.command.Process.Pid
+		ownsListener = func(target tlsReadinessTarget) bool {
+			return processOwnsTLSListener("/proc", pid, target)
+		}
 	}
 	exit := make(chan error, 1)
 	running := &runningProcess{
@@ -1415,35 +1465,57 @@ func (m *Manager) launchProcess(ctx context.Context) (*runningProcess, error) {
 
 	timer := time.NewTimer(m.startupGracePeriod)
 	defer timer.Stop()
-	select {
-	case <-exit:
-		stderr := ""
-		if cp, ok := process.(*commandProcess); ok {
-			stderr = strings.TrimSpace(cp.stderrBuf.String())
+	var readiness <-chan error
+	for {
+		select {
+		case <-exit:
+			stderr := ""
+			if cp, ok := process.(*commandProcess); ok {
+				stderr = strings.TrimSpace(cp.stderrBuf.String())
+			}
+			if stderr != "" {
+				return nil, fmt.Errorf(
+					"sing-box exited during startup: %s",
+					sanitizeStartupOutput(stderr),
+				)
+			}
+			return nil, errProcessExitedEarly
+		case <-timer.C:
+			if len(targets) == 0 {
+				return running, nil
+			}
+			result := make(chan error, 1)
+			readiness = result
+			go func() { result <- waitTLSReadiness(ctx, targets, ownsListener) }()
+		case err := <-readiness:
+			if err == nil && ctx.Err() == nil {
+				select {
+				case <-exit:
+					return nil, errProcessExitedEarly
+				default:
+					return running, nil
+				}
+			}
+			if err == nil {
+				err = errors.New("TLS readiness timed out: certificate or listener did not become usable; check ACME issuance and TLS settings")
+			}
+			return m.stopUnreadyProcess(running, err)
+		case <-ctx.Done():
+			if len(targets) > 0 {
+				return m.stopUnreadyProcess(running, errors.New("TLS readiness timed out: certificate or listener did not become usable; check ACME issuance and TLS settings"))
+			}
+			return m.stopUnreadyProcess(running, ctx.Err())
 		}
-		if stderr != "" {
-			return nil, fmt.Errorf(
-				"sing-box exited during startup: %s",
-				sanitizeStartupOutput(stderr),
-			)
-		}
-		return nil, errProcessExitedEarly
-	case <-timer.C:
-		return running, nil
-	case <-ctx.Done():
-		shutdownContext, cancel := context.WithTimeout(
-			context.Background(),
-			m.processStopTimeout+m.reapTimeout(),
-		)
-		defer cancel()
-		if err := m.stopProcess(shutdownContext, running); err != nil {
-			return running, fmt.Errorf(
-				"stop sing-box after canceled startup: %w",
-				err,
-			)
-		}
-		return nil, ctx.Err()
 	}
+}
+
+func (m *Manager) stopUnreadyProcess(running *runningProcess, cause error) (*runningProcess, error) {
+	shutdownContext, cancel := context.WithTimeout(context.Background(), m.processStopTimeout+m.reapTimeout())
+	defer cancel()
+	if err := m.stopProcess(shutdownContext, running); err != nil {
+		return running, fmt.Errorf("stop sing-box after canceled startup: %w", err)
+	}
+	return nil, cause
 }
 
 func (m *Manager) stopProcess(ctx context.Context, child *runningProcess) error {

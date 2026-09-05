@@ -324,6 +324,11 @@ is-active) exit 3 ;;
 esac
 EOF
 
+cat >"$MOCK_BIN/caddy" <<'EOF'
+#!/bin/sh
+exit 0
+EOF
+
 chmod +x "$MOCK_BIN"/*
 
 run_installer() {
@@ -404,9 +409,13 @@ grep -Fqx "Environment=XDG_DATA_HOME=$AGENT_STATE_DIRECTORY/data" "$AGENT_UNIT" 
 	fail "agent unit does not give ACME a writable data directory"
 grep -Fq -- "--master-dial-address=\${THEATROPOLIS_MASTER_DIAL}" "$AGENT_UNIT" ||
 	fail "agent unit does not pass the installer-managed local dial address"
+grep -Fq -- "--acme-http01-relay-marker=$TEST_ROOT/etc/theatropolis/acme-http01-master-relay" "$AGENT_UNIT" ||
+	fail "agent unit does not pass the installer-managed ACME relay marker"
 AGENT_ENV="$TEST_ROOT/etc/theatropolis/agent.env"
 grep -Fqx 'THEATROPOLIS_MASTER_DIAL=' "$AGENT_ENV" ||
 	fail "ordinary remote Agent unexpectedly received a local Master dial override"
+[ ! -e "$TEST_ROOT/etc/theatropolis/acme-http01-master-relay" ] ||
+	fail "ordinary remote Agent unexpectedly enabled the local ACME relay"
 [ -x "$TEST_ROOT/usr/local/bin/sing-box" ] ||
 	fail "resolved sing-box binary was not installed"
 [ -f "$TEST_ROOT/usr/local/lib/theatropolis/sing-box/libcronet.so" ] ||
@@ -476,6 +485,16 @@ cmp -s "$SING_BOX_BEFORE_REINSTALL" "$TEST_ROOT/usr/local/bin/sing-box" ||
 	fail "existing Agent reinstall replaced independently managed sing-box"
 grep -Fqx 'THEATROPOLIS_MASTER_DIAL=127.0.0.1:8443' "$AGENT_ENV" ||
 	fail "Agent did not detect its matching co-located Master"
+RELAY_SNIPPET="$TEST_ROOT/etc/caddy/conf.d/theatropolis-agent-acme.caddy"
+RELAY_MARKER="$TEST_ROOT/etc/theatropolis/acme-http01-master-relay"
+grep -Fq 'reverse_proxy 127.0.0.1:19091' "$RELAY_SNIPPET" ||
+	fail "co-located Agent install did not configure the Caddy ACME relay"
+grep -Fqx 'http://master.example.com {' "$RELAY_SNIPPET" ||
+	fail "co-located relay does not override the Master's HTTP redirect"
+grep -Fq 'redir https://master.example.com:8443{uri} 308' "$RELAY_SNIPPET" ||
+	fail "co-located relay lost the Master's nonstandard HTTPS port"
+grep -Fqx '19091' "$RELAY_MARKER" ||
+	fail "co-located Agent install did not enable the ACME relay marker"
 
 # Existing Master units from before the explicit address metadata also carry
 # the canonical address in the installer's fixed ExecStart line.

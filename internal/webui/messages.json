@@ -1,0 +1,3782 @@
+{
+  " credential will stop working immediately. Other Node credentials and subscription links will not change.": {
+    "en": " credential will stop working immediately. Other Node credentials and subscription links will not change.",
+    "zh-CN": " 的凭据会立即失效；其他节点的凭据和订阅链接不受影响。"
+  },
+  " credential?": {
+    "en": " credential?",
+    "zh-CN": " 的凭据？"
+  },
+  " will be signed out everywhere. The current password will stop working and a new invitation will be created.": {
+    "en": " will be signed out everywhere. The current password will stop working and a new invitation will be created.",
+    "zh-CN": " 将从所有设备退出登录，当前密码立即失效，并生成新的邀请链接。"
+  },
+  "%s entrance on %s": {
+    "en": "%s entrance on %s",
+    "zh-CN": "%s 入口 · 服务器：%s"
+  },
+  "1 hour": {
+    "en": "1 hour",
+    "zh-CN": "1 小时"
+  },
+  "15 minutes · Recommended": {
+    "en": "15 minutes · Recommended",
+    "zh-CN": "15 分钟 · 推荐"
+  },
+  "24 hours": {
+    "en": "24 hours",
+    "zh-CN": "24 小时"
+  },
+  "404 page not found": {
+    "en": "This item no longer exists. Return to the list and choose an existing item.",
+    "zh-CN": "此项目已不存在，请返回列表选择现有项目。"
+  },
+  "A configuration deployment is already in progress for this server.": {
+    "en": "A configuration deployment is already in progress for this server.",
+    "zh-CN": "此服务器已有配置部署正在进行。"
+  },
+  "ACME HTTP-01": {
+    "en": "ACME HTTP-01",
+    "zh-CN": "ACME HTTP-01"
+  },
+  "ACME email": {
+    "en": "ACME email",
+    "zh-CN": "ACME 邮箱"
+  },
+  "ACME requires a valid server name": {
+    "en": "Enter a valid certificate domain for ACME and point its DNS record to the selected Server.",
+    "zh-CN": "请输入有效的 ACME 证书域名，并将其 DNS 记录指向所选服务器。"
+  },
+  "ALL — fallback": {
+    "en": "ALL — fallback",
+    "zh-CN": "ALL — 兜底分支"
+  },
+  "ALL": {
+    "en": "ALL",
+    "zh-CN": "全部"
+  },
+  "Access Maintenance": {
+    "en": "Access Maintenance",
+    "zh-CN": "权限维护"
+  },
+  "Access and allowances": {
+    "en": "Access and allowances",
+    "zh-CN": "用户与配额"
+  },
+  "Access is active, but no routable entrance address is available yet.": {
+    "en": "Access is active, but no routable entrance address is available yet.",
+    "zh-CN": "访问已启用，但目前没有可路由的入口地址。"
+  },
+  "Access key": {
+    "en": "Access key",
+    "zh-CN": "访问密钥"
+  },
+  "Access maintenance": {
+    "en": "Access maintenance",
+    "zh-CN": "权限管理"
+  },
+  "Access roster": {
+    "en": "Access roster",
+    "zh-CN": "已授权用户"
+  },
+  "Account access": {
+    "en": "Account access",
+    "zh-CN": "账户登录"
+  },
+  "Account setup is busy. Try again in a moment.": {
+    "en": "Account setup is busy. Try again in a moment.",
+    "zh-CN": "账户设置繁忙，请稍后重试。"
+  },
+  "Accounting Errors": {
+    "en": "Accounting Errors",
+    "zh-CN": "流量统计错误"
+  },
+  "Accounting error log cleared.": {
+    "en": "Accounting error log cleared.",
+    "zh-CN": "流量统计错误日志已清空。"
+  },
+  "Accounting errors": {
+    "en": "Accounting errors",
+    "zh-CN": "流量统计错误"
+  },
+  "Accounting failure": {
+    "en": "Accounting failure",
+    "zh-CN": "流量统计失败"
+  },
+  "Accounting is unavailable.": {
+    "en": "Accounting is unavailable.",
+    "zh-CN": "流量统计服务不可用。"
+  },
+  "Action": {
+    "en": "Action",
+    "zh-CN": "操作"
+  },
+  "Actions": {
+    "en": "Actions",
+    "zh-CN": "操作"
+  },
+  "Activation failed": {
+    "en": "Activation failed",
+    "zh-CN": "激活失败"
+  },
+  "Active": {
+    "en": "Active",
+    "zh-CN": "正常"
+  },
+  "Add Node": {
+    "en": "Add Node",
+    "zh-CN": "添加节点"
+  },
+  "Add Rule": {
+    "en": "Add Rule",
+    "zh-CN": "添加规则"
+  },
+  "Add a role to %s": {
+    "en": "Add a role to %s",
+    "zh-CN": "为 %s 分配节点权限"
+  },
+  "Add a server": {
+    "en": "Add a server",
+    "zh-CN": "添加服务器"
+  },
+  "Add another server": {
+    "en": "Add another server",
+    "zh-CN": "继续添加服务器"
+  },
+  "Add compensation": {
+    "en": "Add compensation",
+    "zh-CN": "添加补偿"
+  },
+  "Add or replace": {
+    "en": "Add or replace",
+    "zh-CN": "添加或替换"
+  },
+  "Add rule": {
+    "en": "Add rule",
+    "zh-CN": "添加规则"
+  },
+  "Add server": {
+    "en": "Add server",
+    "zh-CN": "添加服务器"
+  },
+  "Add user": {
+    "en": "Add user",
+    "zh-CN": "添加用户"
+  },
+  "Add your first server": {
+    "en": "Add your first server",
+    "zh-CN": "添加第一台服务器"
+  },
+  "Address Families": {
+    "en": "Address Families",
+    "zh-CN": "地址类型"
+  },
+  "Address family": {
+    "en": "Address family",
+    "zh-CN": "地址族"
+  },
+  "Address overrides": {
+    "en": "Address overrides",
+    "zh-CN": "地址覆盖"
+  },
+  "Administrator Access": {
+    "en": "Administrator Access",
+    "zh-CN": "管理员权限"
+  },
+  "Administrator Proxy Access": {
+    "en": "Administrator Proxy Access",
+    "zh-CN": "管理员代理权限"
+  },
+  "Administrator Subscription": {
+    "en": "Administrator Subscription",
+    "zh-CN": "管理员配置订阅"
+  },
+  "Administrator proxy access could not be updated.": {
+    "en": "Administrator proxy access could not be updated.",
+    "zh-CN": "无法更新管理员代理权限。"
+  },
+  "Administrator proxy access disabled.": {
+    "en": "Administrator proxy access disabled.",
+    "zh-CN": "管理员代理权限已关闭。"
+  },
+  "Administrator proxy access enabled.": {
+    "en": "Administrator proxy access enabled.",
+    "zh-CN": "管理员代理权限已启用。"
+  },
+  "Administrator": {
+    "en": "Administrator",
+    "zh-CN": "管理员"
+  },
+  "Affected subscriptions": {
+    "en": "Affected subscriptions",
+    "zh-CN": "受影响的订阅"
+  },
+  "After installation, return to Servers and refresh to see its authenticated connection state.": {
+    "en": "After installation, return to Servers and refresh to see its authenticated connection state.",
+    "zh-CN": "安装后返回“服务器”并刷新，即可查看其认证连接状态。"
+  },
+  "Agent diagnostic": {
+    "en": "Agent diagnostic",
+    "zh-CN": "Agent 诊断"
+  },
+  "Agent error": {
+    "en": "Agent error",
+    "zh-CN": "代理端错误"
+  },
+  "Agent software": {
+    "en": "Agent software",
+    "zh-CN": "Agent 程序"
+  },
+  "Agent version": {
+    "en": "Agent version",
+    "zh-CN": "Agent 版本"
+  },
+  "Agent": {
+    "en": "Agent",
+    "zh-CN": "服务器"
+  },
+  "All Proxy Nodes · Unlimited": {
+    "en": "All Proxy Nodes · Unlimited",
+    "zh-CN": "所有代理节点 · 不限流量"
+  },
+  "All three format links will stop working immediately.": {
+    "en": "All three format links will stop working immediately.",
+    "zh-CN": "三种格式的链接都会立即失效。"
+  },
+  "Allowance": {
+    "en": "Allowance",
+    "zh-CN": "流量额度"
+  },
+  "Applied": {
+    "en": "Applied",
+    "zh-CN": "已应用"
+  },
+  "Applying topology change…": {
+    "en": "Applying topology change…",
+    "zh-CN": "正在应用拓扑…"
+  },
+  "Applying": {
+    "en": "Applying",
+    "zh-CN": "正在应用"
+  },
+  "Archive ready. Check your browser downloads.": {
+    "en": "Archive ready. Check your browser downloads.",
+    "zh-CN": "归档文件已准备好，请查看浏览器的下载列表。"
+  },
+  "Archive": {
+    "en": "Archive",
+    "zh-CN": "迁移包"
+  },
+  "Assign a Node": {
+    "en": "Assign a Node",
+    "zh-CN": "添加节点"
+  },
+  "Assign role": {
+    "en": "Assign role",
+    "zh-CN": "确认添加"
+  },
+  "Assigned Proxy Node roles": {
+    "en": "Assigned Proxy Node roles",
+    "zh-CN": "已分配的代理节点权限"
+  },
+  "At least one user is required.": {
+    "en": "At least one user is required.",
+    "zh-CN": "至少需要一个用户。"
+  },
+  "Authenticated sessions": {
+    "en": "Authenticated sessions",
+    "zh-CN": "登录会话"
+  },
+  "Authenticated user": {
+    "en": "Authenticated user",
+    "zh-CN": "认证用户"
+  },
+  "Auto": {
+    "en": "Auto",
+    "zh-CN": "自动"
+  },
+  "Automatic IP addresses": {
+    "en": "Automatic IP addresses",
+    "zh-CN": "自动使用 IP 地址"
+  },
+  "Automatic": {
+    "en": "Automatic",
+    "zh-CN": "自动"
+  },
+  "Available Proxy Nodes": {
+    "en": "Available Proxy Nodes",
+    "zh-CN": "可用代理节点"
+  },
+  "Available": {
+    "en": "Available",
+    "zh-CN": "可用"
+  },
+  "Average": {
+    "en": "Average",
+    "zh-CN": "平均延迟"
+  },
+  "Awaiting installation": {
+    "en": "Awaiting installation",
+    "zh-CN": "等待安装"
+  },
+  "Bandwidth": {
+    "en": "Bandwidth",
+    "zh-CN": "带宽"
+  },
+  "Branch": {
+    "en": "Branch",
+    "zh-CN": "分支"
+  },
+  "Breadcrumb": {
+    "en": "Breadcrumb",
+    "zh-CN": "面包屑导航"
+  },
+  "Caddy owns public port 80 and relays Agent challenges internally.": {
+    "en": "Caddy owns public port 80 and relays Agent challenges internally.",
+    "zh-CN": "Caddy 占用公网 80 端口，并在内部转发代理端的验证请求。"
+  },
+  "Calendar Months": {
+    "en": "Calendar Months",
+    "zh-CN": "个自然月"
+  },
+  "Calendar months": {
+    "en": "Calendar months",
+    "zh-CN": "自然月"
+  },
+  "Cancel": {
+    "en": "Cancel",
+    "zh-CN": "取消"
+  },
+  "Certificate mode": {
+    "en": "Certificate mode",
+    "zh-CN": "证书模式"
+  },
+  "Change sing-box version": {
+    "en": "Change sing-box version",
+    "zh-CN": "更改 sing-box 版本"
+  },
+  "Changes saved. Another form has unsaved input; refresh when you are ready.": {
+    "en": "Changes saved. Another form has unsaved input; refresh when you are ready.",
+    "zh-CN": "更改已保存。另一个表单还有未保存的输入，请处理好后再刷新。"
+  },
+  "Changes saved. Refresh to see the latest state.": {
+    "en": "Changes saved. Refresh to see the latest state.",
+    "zh-CN": "更改已保存，请刷新页面查看最新状态。"
+  },
+  "Changes saved.": {
+    "en": "Changes saved.",
+    "zh-CN": "更改已保存。"
+  },
+  "Check again": {
+    "en": "Check again",
+    "zh-CN": "重新检查"
+  },
+  "Check that the Master is running and its state directory is writable, then try again. If the problem continues, check the Master logs.": {
+    "en": "Check that the Master is running and its state directory is writable, then try again. If the problem continues, check the Master logs.",
+    "zh-CN": "请确认主控端正在运行，且状态目录可写，然后重试。如果仍有问题，请查看主控端日志。"
+  },
+  "Check the highlighted fields and try again. If the problem continues, check the Master logs for this request.": {
+    "en": "Check the highlighted fields and try again. If the problem continues, check the Master logs for this request.",
+    "zh-CN": "请检查表单内容后重试。如果仍有问题，请查看主控端日志中的相关记录。"
+  },
+  "Checking for updates…": {
+    "en": "Checking for updates…",
+    "zh-CN": "正在检查更新…"
+  },
+  "Checking…": {
+    "en": "Checking…",
+    "zh-CN": "正在检查…"
+  },
+  "Child exit": {
+    "en": "Child exit",
+    "zh-CN": "子节点默认出口"
+  },
+  "Choose a Node": {
+    "en": "Choose a Node",
+    "zh-CN": "选择节点"
+  },
+  "Choose an exact signed Theatropolis managed-user sing-box build.": {
+    "en": "Choose an exact signed Theatropolis managed-user sing-box build.",
+    "zh-CN": "请选择准确且已签名的 Theatropolis 托管用户 sing-box 构建。"
+  },
+  "Choose another server or delete its branch to remove this stale reference. The old server cannot be cleaned remotely.": {
+    "en": "Choose another server or delete its branch to remove this stale reference. The old server cannot be cleaned remotely.",
+    "zh-CN": "请选择另一台服务器或删除对应分支，以清除这条残留引用。主控端无法再远程清理原服务器。"
+  },
+  "Choose another server to remove this stale reference. The old server cannot be cleaned remotely.": {
+    "en": "Choose another server to remove this stale reference. The old server cannot be cleaned remotely.",
+    "zh-CN": "请选择另一台服务器以清除这条残留引用。主控端无法再远程清理原服务器。"
+  },
+  "Choose one or more values. Multiple values in one rule use OR semantics.": {
+    "en": "Choose one or more values. Multiple values in one rule use OR semantics.",
+    "zh-CN": "请选择一个或多个值；同一规则中的多个值按 OR 匹配。"
+  },
+  "Choose one rule set.": {
+    "en": "Choose one rule set.",
+    "zh-CN": "请选择一个规则集。"
+  },
+  "Choose whether administrator proxy access is enabled.": {
+    "en": "Choose whether administrator proxy access is enabled.",
+    "zh-CN": "请选择是否启用管理员代理权限。"
+  },
+  "Clear Error Log?": {
+    "en": "Clear Error Log?",
+    "zh-CN": "清空错误日志？"
+  },
+  "Clear Log": {
+    "en": "Clear Log",
+    "zh-CN": "清空日志"
+  },
+  "Clear Node search": {
+    "en": "Clear Node search",
+    "zh-CN": "清除节点搜索"
+  },
+  "Clear affected-user search": {
+    "en": "Clear affected-user search",
+    "zh-CN": "清除受影响用户筛选"
+  },
+  "Clear filter": {
+    "en": "Clear filter",
+    "zh-CN": "清除筛选"
+  },
+  "Clear search": {
+    "en": "Clear search",
+    "zh-CN": "清除搜索"
+  },
+  "Clear user search": {
+    "en": "Clear user search",
+    "zh-CN": "清除用户搜索"
+  },
+  "Close Destination Migration": {
+    "en": "Close Destination Migration",
+    "zh-CN": "关闭接收操作"
+  },
+  "Close Migration": {
+    "en": "Close Migration",
+    "zh-CN": "关闭迁移"
+  },
+  "Close Source Migration": {
+    "en": "Close Source Migration",
+    "zh-CN": "关闭迁出操作"
+  },
+  "Close details": {
+    "en": "Close details",
+    "zh-CN": "关闭详情"
+  },
+  "Close entrance settings": {
+    "en": "Close entrance settings",
+    "zh-CN": "关闭入口设置"
+  },
+  "Close outbound details": {
+    "en": "Close outbound details",
+    "zh-CN": "关闭出口详情"
+  },
+  "Close server settings": {
+    "en": "Close server settings",
+    "zh-CN": "关闭服务器设置"
+  },
+  "Close": {
+    "en": "Close",
+    "zh-CN": "关闭"
+  },
+  "Command lifetime": {
+    "en": "Command lifetime",
+    "zh-CN": "命令有效期"
+  },
+  "Compensate": {
+    "en": "Compensate",
+    "zh-CN": "补偿"
+  },
+  "Compensation": {
+    "en": "Compensation",
+    "zh-CN": "补偿"
+  },
+  "Complete the listener settings to check availability.": {
+    "en": "Complete the listener settings to check availability.",
+    "zh-CN": "请填写监听器设置。"
+  },
+  "Conditional": {
+    "en": "Conditional",
+    "zh-CN": "条件"
+  },
+  "Configuration Subscription": {
+    "en": "Configuration Subscription",
+    "zh-CN": "配置订阅"
+  },
+  "Configuration Subscriptions": {
+    "en": "Configuration Subscriptions",
+    "zh-CN": "配置订阅"
+  },
+  "Configuration subscriptions are unavailable.": {
+    "en": "Configuration subscriptions are unavailable.",
+    "zh-CN": "配置订阅暂不可用。"
+  },
+  "Configure manually": {
+    "en": "Configure manually",
+    "zh-CN": "手动配置"
+  },
+  "Configured sets": {
+    "en": "Configured sets",
+    "zh-CN": "已配置规则集"
+  },
+  "Configured": {
+    "en": "Configured",
+    "zh-CN": "已配置"
+  },
+  "Confirm Passphrase": {
+    "en": "Confirm Passphrase",
+    "zh-CN": "确认加密口令"
+  },
+  "Confirm password": {
+    "en": "Confirm password",
+    "zh-CN": "确认密码"
+  },
+  "Confirm that you want to clear the error log.": {
+    "en": "Confirm that you want to clear the error log.",
+    "zh-CN": "请确认要清空错误日志。"
+  },
+  "Confirm": {
+    "en": "Confirm",
+    "zh-CN": "确认"
+  },
+  "Confirmation": {
+    "en": "Confirmation",
+    "zh-CN": "确认文字"
+  },
+  "Connected": {
+    "en": "Connected",
+    "zh-CN": "已连接"
+  },
+  "Connection lost. Your input has been kept, but the request may have reached the Master. Check the current state before submitting again.": {
+    "en": "Connection lost. Your input has been kept, but the request may have reached the Master. Check the current state before submitting again.",
+    "zh-CN": "连接已断开，当前输入已保留，但主控端可能已经收到请求。请先核实操作结果，再决定是否重新提交。"
+  },
+  "Connection refused": {
+    "en": "Connection refused",
+    "zh-CN": "端口拒绝连接"
+  },
+  "Connection target": {
+    "en": "Connection target",
+    "zh-CN": "连接目标"
+  },
+  "Connection": {
+    "en": "Connection",
+    "zh-CN": "连接"
+  },
+  "Control connection": {
+    "en": "Control connection",
+    "zh-CN": "控制连接"
+  },
+  "Copied": {
+    "en": "Copied",
+    "zh-CN": "已复制"
+  },
+  "Copy command": {
+    "en": "Copy command",
+    "zh-CN": "复制命令"
+  },
+  "Copy failed": {
+    "en": "Copy failed",
+    "zh-CN": "复制失败"
+  },
+  "Copy": {
+    "en": "Copy",
+    "zh-CN": "复制"
+  },
+  "Create Account": {
+    "en": "Create Account",
+    "zh-CN": "创建账户"
+  },
+  "Create Branch": {
+    "en": "Create Branch",
+    "zh-CN": "创建分支"
+  },
+  "Create Proxy Node": {
+    "en": "Create Proxy Node",
+    "zh-CN": "创建代理节点"
+  },
+  "Create Registration Link": {
+    "en": "Create Registration Link",
+    "zh-CN": "创建注册链接"
+  },
+  "Create a Proxy Node before assigning access.": {
+    "en": "Create a Proxy Node before assigning access.",
+    "zh-CN": "请先创建代理节点，再分配访问权限。"
+  },
+  "Create an entrance, then add relay branches and grant user access.": {
+    "en": "Create an entrance, then add relay branches and grant user access.",
+    "zh-CN": "创建入口后，可添加中继分支并授予用户访问权限。"
+  },
+  "Create install command": {
+    "en": "Create install command",
+    "zh-CN": "创建安装命令"
+  },
+  "Create replacement command": {
+    "en": "Create replacement command",
+    "zh-CN": "创建替换命令"
+  },
+  "Create subscription": {
+    "en": "Create subscription",
+    "zh-CN": "创建订阅"
+  },
+  "Create user": {
+    "en": "Create user",
+    "zh-CN": "创建用户"
+  },
+  "Create your first Proxy Node": {
+    "en": "Create your first Proxy Node",
+    "zh-CN": "创建第一个代理节点"
+  },
+  "Credential": {
+    "en": "Credential",
+    "zh-CN": "凭据"
+  },
+  "Current topology": {
+    "en": "Current topology",
+    "zh-CN": "当前运行拓扑"
+  },
+  "Current version": {
+    "en": "Current version",
+    "zh-CN": "当前版本"
+  },
+  "Custom Rule Set": {
+    "en": "Custom Rule Set",
+    "zh-CN": "自定义规则集"
+  },
+  "Custom Rule Sets are no longer supported. Choose Geosite, GeoIP, or another match type. Existing rules remain active until you change or delete them.": {
+    "en": "Custom Rule Sets are no longer supported. Choose Geosite, GeoIP, or another match type. Existing rules remain active until you change or delete them.",
+    "zh-CN": "目前不再支持编辑自定义规则集。请选择 Geosite、GeoIP 或其他匹配类型。已有规则会继续生效，直到您修改或删除它们。"
+  },
+  "Custom Rule Sets": {
+    "en": "Custom Rule Sets",
+    "zh-CN": "自定义规则集"
+  },
+  "Custom domains": {
+    "en": "Custom domains",
+    "zh-CN": "自定义域名"
+  },
+  "Custom rule-set tags": {
+    "en": "Custom rule-set tags",
+    "zh-CN": "自定义规则集标签"
+  },
+  "Daily Traffic": {
+    "en": "Daily Traffic",
+    "zh-CN": "每日流量"
+  },
+  "Date": {
+    "en": "Date",
+    "zh-CN": "日期"
+  },
+  "Days": {
+    "en": "Days",
+    "zh-CN": "天"
+  },
+  "Default route": {
+    "en": "Default route",
+    "zh-CN": "默认路由"
+  },
+  "Delete Branch": {
+    "en": "Delete Branch",
+    "zh-CN": "删除分支"
+  },
+  "Delete Proxy Node": {
+    "en": "Delete Proxy Node",
+    "zh-CN": "删除代理节点"
+  },
+  "Delete Proxy Node?": {
+    "en": "Delete Proxy Node?",
+    "zh-CN": "删除此代理节点？"
+  },
+  "Delete and apply": {
+    "en": "Delete and apply",
+    "zh-CN": "删除并应用"
+  },
+  "Delete branch": {
+    "en": "Delete branch",
+    "zh-CN": "删除分支"
+  },
+  "Delete rule": {
+    "en": "Delete rule",
+    "zh-CN": "删除规则"
+  },
+  "Delete this Proxy Node and all of its Links.": {
+    "en": "Delete this Proxy Node and all of its Links.",
+    "zh-CN": "删除此代理节点及其全部链路。"
+  },
+  "Delete this user and all Proxy Node access.": {
+    "en": "Delete this user and all Proxy Node access.",
+    "zh-CN": "删除此用户及其全部代理节点访问权限。"
+  },
+  "Delete user": {
+    "en": "Delete user",
+    "zh-CN": "删除用户"
+  },
+  "Delete": {
+    "en": "Delete",
+    "zh-CN": "删除"
+  },
+  "Delivery failed": {
+    "en": "Delivery failed",
+    "zh-CN": "交付失败"
+  },
+  "Deploying": {
+    "en": "Deploying",
+    "zh-CN": "正在部署"
+  },
+  "Destination Master": {
+    "en": "Destination Master",
+    "zh-CN": "新主控端"
+  },
+  "Destination port": {
+    "en": "Destination port",
+    "zh-CN": "目标端口"
+  },
+  "Destination": {
+    "en": "Destination",
+    "zh-CN": "目标"
+  },
+  "Details": {
+    "en": "Details",
+    "zh-CN": "详情"
+  },
+  "Direct": {
+    "en": "Direct",
+    "zh-CN": "直连"
+  },
+  "Disable Access": {
+    "en": "Disable Access",
+    "zh-CN": "关闭权限"
+  },
+  "Disable Proxy Access?": {
+    "en": "Disable Proxy Access?",
+    "zh-CN": "关闭管理员代理权限？"
+  },
+  "Disabled": {
+    "en": "Disabled",
+    "zh-CN": "已禁用"
+  },
+  "Disconnect and invalidate this identity": {
+    "en": "Disconnect and invalidate this identity",
+    "zh-CN": "断开连接并使此身份失效"
+  },
+  "Dismiss notification": {
+    "en": "Dismiss notification",
+    "zh-CN": "关闭通知"
+  },
+  "Domain expressions": {
+    "en": "Domain expressions",
+    "zh-CN": "域名表达式"
+  },
+  "Domain keyword": {
+    "en": "Domain keyword",
+    "zh-CN": "域名关键词"
+  },
+  "Domain keywords": {
+    "en": "Domain keywords",
+    "zh-CN": "域名关键词"
+  },
+  "Domain regex": {
+    "en": "Domain regex",
+    "zh-CN": "域名正则"
+  },
+  "Domain suffix": {
+    "en": "Domain suffix",
+    "zh-CN": "域名后缀"
+  },
+  "Domain suffixes": {
+    "en": "Domain suffixes",
+    "zh-CN": "域名后缀"
+  },
+  "Domain": {
+    "en": "Domain",
+    "zh-CN": "域名"
+  },
+  "Domain-regex rules are not exported to Surge. Use Domain or Domain suffix when the rule must work in all clients.": {
+    "en": "Domain-regex rules are not exported to Surge. Use Domain or Domain suffix when the rule must work in all clients.",
+    "zh-CN": "域名正则规则不会导出到 Surge。如需在所有客户端生效，请使用“域名”或“域名后缀”规则。"
+  },
+  "Done": {
+    "en": "Done",
+    "zh-CN": "完成"
+  },
+  "Download Archive": {
+    "en": "Download Archive",
+    "zh-CN": "下载迁移包"
+  },
+  "Download Mbps": {
+    "en": "Download Mbps",
+    "zh-CN": "下载 Mbps"
+  },
+  "Downstream": {
+    "en": "Downstream",
+    "zh-CN": "下游"
+  },
+  "Drag to change priority": {
+    "en": "Drag to change priority",
+    "zh-CN": "拖动以更改优先级"
+  },
+  "Duplicate Branch": {
+    "en": "Duplicate Branch",
+    "zh-CN": "复制分支"
+  },
+  "Duration": {
+    "en": "Duration",
+    "zh-CN": "时长"
+  },
+  "Edit Relay": {
+    "en": "Edit Relay",
+    "zh-CN": "编辑中继"
+  },
+  "Edit rule": {
+    "en": "Edit rule",
+    "zh-CN": "编辑规则"
+  },
+  "Edit": {
+    "en": "Edit",
+    "zh-CN": "编辑"
+  },
+  "Enable Access": {
+    "en": "Enable Access",
+    "zh-CN": "启用权限"
+  },
+  "Enable Proxy Access?": {
+    "en": "Enable Proxy Access?",
+    "zh-CN": "启用管理员代理权限？"
+  },
+  "Enabled (smux)": {
+    "en": "Enabled (smux)",
+    "zh-CN": "已启用（smux）"
+  },
+  "Enabled": {
+    "en": "Enabled",
+    "zh-CN": "已启用"
+  },
+  "End user": {
+    "en": "End user",
+    "zh-CN": "用户"
+  },
+  "End users": {
+    "en": "End users",
+    "zh-CN": "用户列表"
+  },
+  "Enrolled": {
+    "en": "Enrolled",
+    "zh-CN": "已注册"
+  },
+  "Enrollment lifetime": {
+    "en": "Enrollment lifetime",
+    "zh-CN": "注册有效期"
+  },
+  "Enrollment ready": {
+    "en": "Enrollment ready",
+    "zh-CN": "注册已就绪"
+  },
+  "Enrollment": {
+    "en": "Enrollment",
+    "zh-CN": "注册"
+  },
+  "Enter DNS hostnames without a scheme, port, path, wildcard, or IP address.": {
+    "en": "Enter DNS hostnames without a scheme, port, path, wildcard, or IP address.",
+    "zh-CN": "请输入纯 DNS 域名，不要包含协议、端口、路径、通配符或 IP 地址。"
+  },
+  "Enter a supported proxy URI or one complete outbound JSON object with a non-empty \"type\".": {
+    "en": "Enter a supported proxy URI or one complete outbound JSON object with a non-empty \"type\".",
+    "zh-CN": "请输入支持的代理 URI，或包含非空 \"type\" 的完整出口 JSON 对象。"
+  },
+  "Enter the access key shown when the master was installed.": {
+    "en": "Enter the access key shown when the master was installed.",
+    "zh-CN": "请输入安装主控端时显示的访问密钥。"
+  },
+  "Enter your operator username and password.": {
+    "en": "Enter your operator username and password.",
+    "zh-CN": "请输入管理员用户名和密码。"
+  },
+  "Entrance Agent": {
+    "en": "Entrance Agent",
+    "zh-CN": "入口代理端"
+  },
+  "Entrance Offline": {
+    "en": "Entrance Offline",
+    "zh-CN": "入口失联"
+  },
+  "Entrance Server Deleted": {
+    "en": "Entrance Server Deleted",
+    "zh-CN": "入口服务器已删除"
+  },
+  "Entrance Traffic": {
+    "en": "Entrance Traffic",
+    "zh-CN": "入口流量"
+  },
+  "Entrance configuration": {
+    "en": "Entrance configuration",
+    "zh-CN": "入口设置"
+  },
+  "Entrance exit": {
+    "en": "Entrance exit",
+    "zh-CN": "入口默认出口"
+  },
+  "Entrance is not available until topology is applied.": {
+    "en": "Entrance is not available until topology is applied.",
+    "zh-CN": "拓扑应用前，入口暂不可用。"
+  },
+  "Entrance protocol": {
+    "en": "Entrance protocol",
+    "zh-CN": "入口协议"
+  },
+  "Entrance sample collection failed": {
+    "en": "Entrance sample collection failed",
+    "zh-CN": "入口采样失败"
+  },
+  "Entrance server": {
+    "en": "Entrance server",
+    "zh-CN": "入口服务器"
+  },
+  "Entrance settings for": {
+    "en": "Entrance settings for",
+    "zh-CN": "入口设置："
+  },
+  "Entrance": {
+    "en": "Entrance",
+    "zh-CN": "入口"
+  },
+  "Entry name": {
+    "en": "Entry name",
+    "zh-CN": "条目名称"
+  },
+  "Established": {
+    "en": "Established",
+    "zh-CN": "已建立"
+  },
+  "Every Proxy Node credential for %s will stop working immediately. The subscription link will not change.": {
+    "en": "Every Proxy Node credential for %s will stop working immediately. The subscription link will not change.",
+    "zh-CN": "%s 在所有代理节点上的凭据将立即失效，订阅链接保持不变。"
+  },
+  "Every routing rule needs at least one match value.": {
+    "en": "Every routing rule needs at least one match value.",
+    "zh-CN": "每条路由规则至少需要一个匹配值。"
+  },
+  "Exact domains": {
+    "en": "Exact domains",
+    "zh-CN": "完整域名"
+  },
+  "Exit": {
+    "en": "Exit",
+    "zh-CN": "出口"
+  },
+  "Expiration": {
+    "en": "Expiration",
+    "zh-CN": "到期时间"
+  },
+  "Expire after a duration": {
+    "en": "Expire after a duration",
+    "zh-CN": "按时长过期"
+  },
+  "Expired": {
+    "en": "Expired",
+    "zh-CN": "已过期"
+  },
+  "Expires": {
+    "en": "Expires",
+    "zh-CN": "到期时间："
+  },
+  "Exporting…": {
+    "en": "Exporting…",
+    "zh-CN": "正在导出…"
+  },
+  "Extend By": {
+    "en": "Extend By",
+    "zh-CN": "延长时长"
+  },
+  "Extend Subscription": {
+    "en": "Extend Subscription",
+    "zh-CN": "延长订阅"
+  },
+  "Extend by": {
+    "en": "Extend by",
+    "zh-CN": "延长"
+  },
+  "Extend subscription": {
+    "en": "Extend subscription",
+    "zh-CN": "延长订阅"
+  },
+  "Extend": {
+    "en": "Extend",
+    "zh-CN": "延长"
+  },
+  "FINAL (Unmatched Rules)": {
+    "en": "FINAL (Unmatched Rules)",
+    "zh-CN": "FINAL（未匹配规则）"
+  },
+  "Failure": {
+    "en": "Failure",
+    "zh-CN": "失败"
+  },
+  "Fallback": {
+    "en": "Fallback",
+    "zh-CN": "回退"
+  },
+  "Filter GeoIP rule sets…": {
+    "en": "Filter GeoIP rule sets…",
+    "zh-CN": "筛选 GeoIP 规则集…"
+  },
+  "Filter by user name": {
+    "en": "Filter by user name",
+    "zh-CN": "按用户名筛选"
+  },
+  "Filter geosite rule sets…": {
+    "en": "Filter geosite rule sets…",
+    "zh-CN": "筛选 Geosite 规则集…"
+  },
+  "Filter networks…": {
+    "en": "Filter networks…",
+    "zh-CN": "筛选网络…"
+  },
+  "Filter options": {
+    "en": "Filter options",
+    "zh-CN": "筛选选项"
+  },
+  "Filter protocols or type a value…": {
+    "en": "Filter protocols or type a value…",
+    "zh-CN": "筛选协议或输入值…"
+  },
+  "Finite Quota Allocated": {
+    "en": "Finite Quota Allocated",
+    "zh-CN": "已分配有限配额"
+  },
+  "Finite Quota Used": {
+    "en": "Finite Quota Used",
+    "zh-CN": "已使用有限配额"
+  },
+  "Fleet maintenance": {
+    "en": "Fleet maintenance",
+    "zh-CN": "批量维护"
+  },
+  "Fleet outbound pool": {
+    "en": "Fleet outbound pool",
+    "zh-CN": "全局出口池"
+  },
+  "Fleet summary": {
+    "en": "Fleet summary",
+    "zh-CN": "服务器概览"
+  },
+  "Fleet": {
+    "en": "Fleet",
+    "zh-CN": "服务器组"
+  },
+  "Force removal is only available while the Server is enrolled and offline. Wait for the Agent to disconnect, then try again.": {
+    "en": "Force removal is only available while the Server is enrolled and offline. Wait for the Agent to disconnect, then try again.",
+    "zh-CN": "仅当服务器已注册且离线时才能强制移除。请等待代理端断开连接后重试。"
+  },
+  "Force remove offline Server": {
+    "en": "Force remove offline Server",
+    "zh-CN": "强制移除离线服务器"
+  },
+  "GeoIP rule sets": {
+    "en": "GeoIP rule sets",
+    "zh-CN": "GeoIP 规则集"
+  },
+  "Geosite catalog unavailable.": {
+    "en": "Geosite catalog unavailable.",
+    "zh-CN": "无法加载 Geosite 规则集目录。"
+  },
+  "Geosite rule sets": {
+    "en": "Geosite rule sets",
+    "zh-CN": "Geosite 规则集"
+  },
+  "Global identities": {
+    "en": "Global identities",
+    "zh-CN": "用户管理"
+  },
+  "Global settings": {
+    "en": "Global settings",
+    "zh-CN": "系统设置"
+  },
+  "Global user": {
+    "en": "Global user",
+    "zh-CN": "用户"
+  },
+  "Go to Sign In": {
+    "en": "Go to Sign In",
+    "zh-CN": "前往登录"
+  },
+  "Grant access": {
+    "en": "Grant access",
+    "zh-CN": "添加权限"
+  },
+  "HTTPS SRS URL": {
+    "en": "HTTPS SRS URL",
+    "zh-CN": "HTTPS SRS URL"
+  },
+  "Hide password": {
+    "en": "Hide password",
+    "zh-CN": "隐藏密码"
+  },
+  "Hide": {
+    "en": "Hide",
+    "zh-CN": "隐藏"
+  },
+  "History range": {
+    "en": "History range",
+    "zh-CN": "历史范围"
+  },
+  "History unavailable": {
+    "en": "History unavailable",
+    "zh-CN": "无法读取历史数据"
+  },
+  "Hop": {
+    "en": "Hop",
+    "zh-CN": "节点"
+  },
+  "Hops": {
+    "en": "Hops",
+    "zh-CN": "节点"
+  },
+  "Hours": {
+    "en": "Hours",
+    "zh-CN": "小时"
+  },
+  "Hysteria2 download rate": {
+    "en": "Hysteria2 download rate",
+    "zh-CN": "Hysteria2 下行速率"
+  },
+  "Hysteria2 listener is not active yet": {
+    "en": "The Hysteria2 listener is not active yet. Wait for its deployment and certificate issuance to finish, then probe again.",
+    "zh-CN": "Hysteria2 监听器尚未启动。请等待部署和证书签发完成后再探测。"
+  },
+  "Hysteria2 obfuscation": {
+    "en": "Hysteria2 obfuscation",
+    "zh-CN": "Hysteria2 混淆方式"
+  },
+  "Hysteria2 upload rate": {
+    "en": "Hysteria2 upload rate",
+    "zh-CN": "Hysteria2 上行速率"
+  },
+  "I understand that this agent will need a new enrollment credential to reconnect.": {
+    "en": "I understand that this agent will need a new enrollment credential to reconnect.",
+    "zh-CN": "我了解此代理端需要新的注册凭据才能重新连接。"
+  },
+  "I understand the machine is permanently gone and its last configuration cannot be withdrawn remotely.": {
+    "en": "I understand the machine is permanently gone and its last configuration cannot be withdrawn remotely.",
+    "zh-CN": "我了解此机器已永久丢失，其最后一份配置无法远程撤回。"
+  },
+  "IP / CIDR": {
+    "en": "IP / CIDR",
+    "zh-CN": "IP / CIDR"
+  },
+  "IP addresses or CIDRs": {
+    "en": "IP addresses or CIDRs",
+    "zh-CN": "IP 地址或 CIDR"
+  },
+  "IP addresses": {
+    "en": "IP addresses",
+    "zh-CN": "IP 地址"
+  },
+  "IPv4 Only": {
+    "en": "IPv4 Only",
+    "zh-CN": "仅 IPv4"
+  },
+  "IPv4 and IPv6": {
+    "en": "IPv4 and IPv6",
+    "zh-CN": "IPv4 和 IPv6"
+  },
+  "IPv4 domain": {
+    "en": "IPv4 domain",
+    "zh-CN": "IPv4 域名"
+  },
+  "IPv4 override": {
+    "en": "IPv4 override",
+    "zh-CN": "IPv4 覆盖"
+  },
+  "IPv6 Only": {
+    "en": "IPv6 Only",
+    "zh-CN": "仅 IPv6"
+  },
+  "IPv6 domain": {
+    "en": "IPv6 domain",
+    "zh-CN": "IPv6 域名"
+  },
+  "IPv6 override": {
+    "en": "IPv6 override",
+    "zh-CN": "IPv6 覆盖"
+  },
+  "Immediately revokes this user's access to every active Proxy Node.": {
+    "en": "Immediately revokes this user's access to every active Proxy Node.",
+    "zh-CN": "立即撤销此用户对所有活动代理节点的访问权限。"
+  },
+  "Import credentials": {
+    "en": "Import credentials",
+    "zh-CN": "导入凭据"
+  },
+  "Inactive": {
+    "en": "Inactive",
+    "zh-CN": "未启用"
+  },
+  "Inbound": {
+    "en": "Inbound",
+    "zh-CN": "入站"
+  },
+  "Included": {
+    "en": "Included",
+    "zh-CN": "已包含"
+  },
+  "Infrastructure": {
+    "en": "Infrastructure",
+    "zh-CN": "服务器管理"
+  },
+  "Install selected sing-box version": {
+    "en": "Install selected sing-box version",
+    "zh-CN": "安装所选 sing-box 版本"
+  },
+  "Install": {
+    "en": "Install",
+    "zh-CN": "安装"
+  },
+  "Installing the update. Waiting for the master to restart…": {
+    "en": "Installing the update. Waiting for the master to restart…",
+    "zh-CN": "正在安装更新，等待主控端重启…"
+  },
+  "Invitation ready": {
+    "en": "Invitation ready",
+    "zh-CN": "邀请待使用"
+  },
+  "Invite": {
+    "en": "Invite",
+    "zh-CN": "邀请"
+  },
+  "Keep the remark to 256 characters or fewer.": {
+    "en": "Keep the remark to 256 characters or fewer.",
+    "zh-CN": "备注不得超过 256 个字符。"
+  },
+  "Known to this master": {
+    "en": "Known to this master",
+    "zh-CN": "已被主控端识别"
+  },
+  "Last 30 Days": {
+    "en": "Last 30 Days",
+    "zh-CN": "最近 30 天"
+  },
+  "Last update": {
+    "en": "Last update",
+    "zh-CN": "最近更新"
+  },
+  "Latency": {
+    "en": "Latency",
+    "zh-CN": "延迟"
+  },
+  "Latest available": {
+    "en": "Latest available",
+    "zh-CN": "最新可用版本"
+  },
+  "Latest deployment": {
+    "en": "Latest deployment",
+    "zh-CN": "最近部署"
+  },
+  "Latest version unavailable": {
+    "en": "Latest version unavailable",
+    "zh-CN": "无法获取最新版本"
+  },
+  "Left-to-right relay tree": {
+    "en": "Left-to-right relay tree",
+    "zh-CN": "从左到右的路由拓扑"
+  },
+  "Legacy custom rule — choose a supported match": {
+    "en": "Legacy custom rule — choose a supported match",
+    "zh-CN": "旧版自定义规则，请改选受支持的匹配类型"
+  },
+  "Legacy file certificate": {
+    "en": "Legacy file certificate",
+    "zh-CN": "旧版文件证书"
+  },
+  "Legacy sign-in": {
+    "en": "Legacy sign-in",
+    "zh-CN": "旧版登录"
+  },
+  "Letters, numbers, dots, underscores, and hyphens. Start with a letter or number.": {
+    "en": "Letters, numbers, dots, underscores, and hyphens. Start with a letter or number.",
+    "zh-CN": "可使用字母、数字、点、下划线和连字符，并以字母或数字开头。"
+  },
+  "Link Monitor": {
+    "en": "Link Monitor",
+    "zh-CN": "链路监控"
+  },
+  "Link latency and loss history": {
+    "en": "Link latency and loss history",
+    "zh-CN": "链路延迟与丢包历史"
+  },
+  "Link monitor history is unavailable": {
+    "en": "Link history could not be loaded. Check the Master logs and monitoring database, then retry.",
+    "zh-CN": "未能加载链路历史。请检查主控端日志和监控数据库，然后重试。"
+  },
+  "Link monitor is unavailable": {
+    "en": "Link monitoring is unavailable. Check that the Master started its monitoring service successfully.",
+    "zh-CN": "链路监控暂不可用，请检查主控端是否成功启动了监控服务。"
+  },
+  "Link multiplex": {
+    "en": "Link multiplex",
+    "zh-CN": "链路多路复用"
+  },
+  "Link": {
+    "en": "Link",
+    "zh-CN": "链路"
+  },
+  "Links": {
+    "en": "Links",
+    "zh-CN": "链路"
+  },
+  "Listen address": {
+    "en": "Listen address",
+    "zh-CN": "监听地址"
+  },
+  "Listen port": {
+    "en": "Listen port",
+    "zh-CN": "监听端口"
+  },
+  "Listener and protocol": {
+    "en": "Listener and protocol",
+    "zh-CN": "监听器与协议"
+  },
+  "Listener available": {
+    "en": "Listener available",
+    "zh-CN": "可复用监听器"
+  },
+  "Listener conflict": {
+    "en": "Listener conflict",
+    "zh-CN": "监听器冲突"
+  },
+  "Listener ready": {
+    "en": "Listener ready",
+    "zh-CN": "监听器可用"
+  },
+  "Listener": {
+    "en": "Listener",
+    "zh-CN": "监听器"
+  },
+  "Live QUIC Probe": {
+    "en": "Live QUIC Probe",
+    "zh-CN": "实时 QUIC 检测"
+  },
+  "Live TCP Probe": {
+    "en": "Live TCP Probe",
+    "zh-CN": "实时 TCP 检测"
+  },
+  "Loading Geosite options…": {
+    "en": "Loading Geosite options…",
+    "zh-CN": "正在加载 Geosite 规则集…"
+  },
+  "Loading fleet outbounds…": {
+    "en": "Loading fleet outbounds…",
+    "zh-CN": "正在加载舰队出口…"
+  },
+  "Loading releases…": {
+    "en": "Loading releases…",
+    "zh-CN": "正在加载版本…"
+  },
+  "Loading servers…": {
+    "en": "Loading servers…",
+    "zh-CN": "正在加载服务器…"
+  },
+  "Loading signed releases…": {
+    "en": "Loading signed releases…",
+    "zh-CN": "正在加载已签名版本…"
+  },
+  "Loading…": {
+    "en": "Loading…",
+    "zh-CN": "正在加载…"
+  },
+  "Local relay ready": {
+    "en": "Local relay ready",
+    "zh-CN": "本地中继已就绪"
+  },
+  "Logical services": {
+    "en": "Logical services",
+    "zh-CN": "代理服务"
+  },
+  "Login username": {
+    "en": "Login username",
+    "zh-CN": "登录名"
+  },
+  "Lowercase letters, numbers, dots, underscores, and hyphens.": {
+    "en": "Lowercase letters, numbers, dots, underscores, and hyphens.",
+    "zh-CN": "可使用小写字母、数字、点、下划线和连字符。"
+  },
+  "Management name": {
+    "en": "Management name",
+    "zh-CN": "管理名称"
+  },
+  "Manual entries": {
+    "en": "Manual entries",
+    "zh-CN": "手动条目"
+  },
+  "Master Migration": {
+    "en": "Master Migration",
+    "zh-CN": "主控端迁移"
+  },
+  "Master could not persist usage": {
+    "en": "Master could not persist usage",
+    "zh-CN": "主控端无法保存用量"
+  },
+  "Master is up to date": {
+    "en": "Master is up to date",
+    "zh-CN": "主控端已是最新版本"
+  },
+  "Master software": {
+    "en": "Master software",
+    "zh-CN": "主控端软件"
+  },
+  "Master update": {
+    "en": "Master update",
+    "zh-CN": "主控端更新"
+  },
+  "Master": {
+    "en": "Master",
+    "zh-CN": "主控端"
+  },
+  "Match type": {
+    "en": "Match type",
+    "zh-CN": "匹配类型"
+  },
+  "Match values": {
+    "en": "Match values",
+    "zh-CN": "匹配值"
+  },
+  "Match": {
+    "en": "Match",
+    "zh-CN": "匹配"
+  },
+  "Measuring…": {
+    "en": "Measuring…",
+    "zh-CN": "正在检测…"
+  },
+  "Method": {
+    "en": "Method",
+    "zh-CN": "方法"
+  },
+  "Migration": {
+    "en": "Migration",
+    "zh-CN": "迁移"
+  },
+  "Minutes": {
+    "en": "Minutes",
+    "zh-CN": "分钟"
+  },
+  "Monthly Quota": {
+    "en": "Monthly Quota",
+    "zh-CN": "每月配额"
+  },
+  "Monthly quota": {
+    "en": "Monthly quota",
+    "zh-CN": "每月配额"
+  },
+  "Monthly traffic quota": {
+    "en": "Monthly traffic quota",
+    "zh-CN": "每月流量配额"
+  },
+  "Monthly traffic": {
+    "en": "Monthly traffic",
+    "zh-CN": "每月流量"
+  },
+  "Move From This Master": {
+    "en": "Move From This Master",
+    "zh-CN": "从当前主控端迁出"
+  },
+  "Move Hop": {
+    "en": "Move Hop",
+    "zh-CN": "更换服务器"
+  },
+  "Move Proxy Node Hops First": {
+    "en": "Move Proxy Node Hops First",
+    "zh-CN": "请先迁移代理节点"
+  },
+  "Move Rule down": {
+    "en": "Move Rule down",
+    "zh-CN": "下移规则"
+  },
+  "Move Rule up": {
+    "en": "Move Rule up",
+    "zh-CN": "上移规则"
+  },
+  "Move this identity and its profile to another server": {
+    "en": "Move this identity and its profile to another server",
+    "zh-CN": "将此身份及其配置迁移到另一台服务器"
+  },
+  "Multiplex": {
+    "en": "Multiplex",
+    "zh-CN": "多路复用"
+  },
+  "My Access": {
+    "en": "My Access",
+    "zh-CN": "我的权限"
+  },
+  "My Subscription": {
+    "en": "My Subscription",
+    "zh-CN": "我的配置订阅"
+  },
+  "Name": {
+    "en": "Name",
+    "zh-CN": "名称"
+  },
+  "Needs attention": {
+    "en": "Needs attention",
+    "zh-CN": "需要处理"
+  },
+  "Network": {
+    "en": "Network",
+    "zh-CN": "网络"
+  },
+  "Networks": {
+    "en": "Networks",
+    "zh-CN": "网络"
+  },
+  "New Branch from": {
+    "en": "New Branch from",
+    "zh-CN": "新分支，来源"
+  },
+  "New Master": {
+    "en": "New Master",
+    "zh-CN": "新主控端"
+  },
+  "New Proxy Node": {
+    "en": "New Proxy Node",
+    "zh-CN": "新建代理节点"
+  },
+  "New inbound": {
+    "en": "New inbound",
+    "zh-CN": "新建入站"
+  },
+  "New logical service": {
+    "en": "New logical service",
+    "zh-CN": "新建逻辑服务"
+  },
+  "New": {
+    "en": "New",
+    "zh-CN": "新建"
+  },
+  "Next": {
+    "en": "Next",
+    "zh-CN": "下一页"
+  },
+  "No Node Access": {
+    "en": "No Node Access",
+    "zh-CN": "暂无节点权限"
+  },
+  "No Nodes available.": {
+    "en": "No Nodes available.",
+    "zh-CN": "没有可用节点。"
+  },
+  "No Proxy Nodes exist yet": {
+    "en": "No Proxy Nodes exist yet",
+    "zh-CN": "尚未创建代理节点"
+  },
+  "No Proxy Nodes yet": {
+    "en": "No Proxy Nodes yet",
+    "zh-CN": "尚无代理节点"
+  },
+  "No Resolve": {
+    "en": "No Resolve",
+    "zh-CN": "不解析域名"
+  },
+  "No accounting errors have been recorded.": {
+    "en": "No accounting errors have been recorded.",
+    "zh-CN": "尚未记录流量统计错误。"
+  },
+  "No assigned users match this search.": {
+    "en": "No assigned users match this search.",
+    "zh-CN": "没有已分配用户符合搜索条件。"
+  },
+  "No configuration has been sent to this agent yet.": {
+    "en": "No configuration has been sent to this agent yet.",
+    "zh-CN": "尚未向此代理端发送配置。"
+  },
+  "No deployed inbounds are in the pool yet. Deploy a configuration with Shadowsocks, AnyTLS, or Hysteria2 inbounds to share them here.": {
+    "en": "No deployed inbounds are in the pool yet. Deploy a configuration with Shadowsocks, AnyTLS, or Hysteria2 inbounds to share them here.",
+    "zh-CN": "出口池中尚无已部署的入站。请部署包含 Shadowsocks、AnyTLS 或 Hysteria2 入站的配置。"
+  },
+  "No deployment yet": {
+    "en": "No deployment yet",
+    "zh-CN": "尚无部署记录"
+  },
+  "No expiration": {
+    "en": "No expiration",
+    "zh-CN": "永不过期"
+  },
+  "No finite subscriptions match this search.": {
+    "en": "No finite subscriptions match this search.",
+    "zh-CN": "没有限时订阅符合搜索条件。"
+  },
+  "No history yet": {
+    "en": "No history yet",
+    "zh-CN": "暂无历史数据"
+  },
+  "No manual entries yet.": {
+    "en": "No manual entries yet.",
+    "zh-CN": "尚无手动条目。"
+  },
+  "No matching options": {
+    "en": "No matching options",
+    "zh-CN": "没有匹配的选项"
+  },
+  "No node access": {
+    "en": "No node access",
+    "zh-CN": "无节点访问权限"
+  },
+  "No response": {
+    "en": "No response",
+    "zh-CN": "无 TCP 响应"
+  },
+  "No rules": {
+    "en": "No rules",
+    "zh-CN": "尚无规则"
+  },
+  "No servers enrolled yet": {
+    "en": "No servers enrolled yet",
+    "zh-CN": "尚无已注册服务器"
+  },
+  "No subscription link": {
+    "en": "No subscription link",
+    "zh-CN": "无订阅链接"
+  },
+  "No traffic recorded in the last 30 days.": {
+    "en": "No traffic recorded in the last 30 days.",
+    "zh-CN": "最近 30 天暂无流量记录。"
+  },
+  "No users assigned": {
+    "en": "No users assigned",
+    "zh-CN": "尚未分配用户"
+  },
+  "No users available.": {
+    "en": "No users available.",
+    "zh-CN": "没有可用用户。"
+  },
+  "No users have been created.": {
+    "en": "No users have been created.",
+    "zh-CN": "尚未创建用户。"
+  },
+  "No users match your search.": {
+    "en": "No users match your search.",
+    "zh-CN": "没有找到匹配的用户，请尝试其他名称。"
+  },
+  "No versions available": {
+    "en": "No versions available",
+    "zh-CN": "没有可用版本"
+  },
+  "No": {
+    "en": "No",
+    "zh-CN": "否"
+  },
+  "Node Access": {
+    "en": "Node Access",
+    "zh-CN": "节点权限"
+  },
+  "Node role": {
+    "en": "Node role",
+    "zh-CN": "节点访问权限"
+  },
+  "Node roles": {
+    "en": "Node roles",
+    "zh-CN": "节点访问权限"
+  },
+  "Nodes": {
+    "en": "Nodes",
+    "zh-CN": "节点"
+  },
+  "Not connected": {
+    "en": "Not connected",
+    "zh-CN": "未连接"
+  },
+  "Not established": {
+    "en": "Not established",
+    "zh-CN": "未建立"
+  },
+  "Not measured": {
+    "en": "Not measured",
+    "zh-CN": "尚未测量"
+  },
+  "Not registered": {
+    "en": "Not registered",
+    "zh-CN": "未注册"
+  },
+  "Obfuscation": {
+    "en": "Obfuscation",
+    "zh-CN": "混淆"
+  },
+  "Off": {
+    "en": "Off",
+    "zh-CN": "已关闭"
+  },
+  "Offline or expired": {
+    "en": "Offline or expired",
+    "zh-CN": "离线或已过期"
+  },
+  "Offline, incompatible, busy, and already-matching Agents are skipped.": {
+    "en": "Offline, incompatible, busy, and already-matching Agents are skipped.",
+    "zh-CN": "离线、不兼容、忙碌或版本已匹配的代理端会被跳过。"
+  },
+  "Offline": {
+    "en": "Offline",
+    "zh-CN": "离线"
+  },
+  "Old configuration is still running.": {
+    "en": "Old configuration is still running.",
+    "zh-CN": "旧配置仍在运行。"
+  },
+  "Online": {
+    "en": "Online",
+    "zh-CN": "在线"
+  },
+  "Only when this machine is permanently gone: forget this Server without delivering a retirement profile. Remaining Proxy Node references turn into deleted-Server entries that you redirect or delete afterwards, and pending changes that wait for this Server finish locally. If the machine ever comes back, its Agent stays locked out and must be reinstalled.": {
+    "en": "Only when this machine is permanently gone: forget this Server without delivering a retirement profile. Remaining Proxy Node references turn into deleted-Server entries that you redirect or delete afterwards, and pending changes that wait for this Server finish locally. If the machine ever comes back, its Agent stays locked out and must be reinstalled.",
+    "zh-CN": "仅当此机器已永久丢失时：不交付退役配置即移除此服务器。剩余的代理节点引用会变成“已删除服务器”条目，之后可将其重定向或删除，等待此服务器的待处理变更将在本地完成。如果该机器重新上线，其代理端将保持锁定状态，必须重新安装。"
+  },
+  "Open My Subscription": {
+    "en": "Open My Subscription",
+    "zh-CN": "打开我的配置订阅"
+  },
+  "Open Proxy Node": {
+    "en": "Open Proxy Node",
+    "zh-CN": "打开代理节点"
+  },
+  "Open Proxy Nodes": {
+    "en": "Open Proxy Nodes",
+    "zh-CN": "打开代理节点"
+  },
+  "Open User": {
+    "en": "Open User",
+    "zh-CN": "查看用户"
+  },
+  "Open user": {
+    "en": "Open user",
+    "zh-CN": "打开用户"
+  },
+  "Operations": {
+    "en": "Operations",
+    "zh-CN": "操作"
+  },
+  "Operator access": {
+    "en": "Operator access",
+    "zh-CN": "管理员访问"
+  },
+  "Option": {
+    "en": "Option",
+    "zh-CN": "选项"
+  },
+  "Optional — the server key alone accepts one user. Keys are base64 PSKs sized to the method.": {
+    "en": "Optional — the server key alone accepts one user. Keys are base64 PSKs sized to the method.",
+    "zh-CN": "可选。仅使用服务器密钥可接受一个用户；密钥是长度与方法匹配的 Base64 PSK。"
+  },
+  "Optional": {
+    "en": "Optional",
+    "zh-CN": "可选"
+  },
+  "Outage ended (UTC+8)": {
+    "en": "Outage ended (UTC+8)",
+    "zh-CN": "故障结束时间（UTC+8）"
+  },
+  "Outage started (UTC+8)": {
+    "en": "Outage started (UTC+8)",
+    "zh-CN": "故障开始时间（UTC+8）"
+  },
+  "Outbound JSON": {
+    "en": "Outbound JSON",
+    "zh-CN": "出口 JSON"
+  },
+  "Outbound pool": {
+    "en": "Outbound pool",
+    "zh-CN": "出口池"
+  },
+  "Passphrase": {
+    "en": "Passphrase",
+    "zh-CN": "加密口令"
+  },
+  "Password or access key": {
+    "en": "Password or access key",
+    "zh-CN": "密码或访问密钥"
+  },
+  "Password": {
+    "en": "Password",
+    "zh-CN": "密码"
+  },
+  "Patched stable and release-candidate builds with live managed-user APIs are loaded from the dedicated public build repository. Any published managed build can be installed, including downgrades.": {
+    "en": "Patched stable and release-candidate builds with live managed-user APIs are loaded from the dedicated public build repository. Any published managed build can be installed, including downgrades.",
+    "zh-CN": "带实时用户管理 API 的稳定版和候选版从专用公共构建仓库加载。可以安装任何已发布的托管版本，包括降级。"
+  },
+  "Path probe unavailable": {
+    "en": "Path probe unavailable",
+    "zh-CN": "无法进行链路检测"
+  },
+  "Pending Apply": {
+    "en": "Pending Apply",
+    "zh-CN": "等待应用"
+  },
+  "Pending Removal": {
+    "en": "Pending Removal",
+    "zh-CN": "等待删除"
+  },
+  "Pending Retirement": {
+    "en": "Pending Retirement",
+    "zh-CN": "等待移除"
+  },
+  "Pending": {
+    "en": "Pending",
+    "zh-CN": "待处理"
+  },
+  "Physical listener": {
+    "en": "Physical listener",
+    "zh-CN": "物理监听器"
+  },
+  "Pool": {
+    "en": "Pool",
+    "zh-CN": "出口池"
+  },
+  "Port 80 is reserved for ACME HTTP-01 and cannot be used by a proxy inbound.": {
+    "en": "Port 80 is reserved for ACME HTTP-01 and cannot be used by a proxy inbound.",
+    "zh-CN": "端口 80 保留给 ACME HTTP-01，不能用于代理入站。"
+  },
+  "Port 80 remains reserved for ACME.": {
+    "en": "Port 80 remains reserved for ACME.",
+    "zh-CN": "端口 80 保留给 ACME。"
+  },
+  "Port": {
+    "en": "Port",
+    "zh-CN": "端口"
+  },
+  "Preferred hostname when this server's AnyTLS or Hysteria2 inbounds are used as outbounds. IPv4 and IPv6 remain available.": {
+    "en": "Preferred hostname when this server's AnyTLS or Hysteria2 inbounds are used as outbounds. IPv4 and IPv6 remain available.",
+    "zh-CN": "此服务器的 AnyTLS 或 Hysteria2 入站作为出口时优先使用的主机名。IPv4 和 IPv6 仍可选择。"
+  },
+  "Press Enter after each value. Multiple values in one rule use OR semantics.": {
+    "en": "Press Enter after each value. Multiple values in one rule use OR semantics.",
+    "zh-CN": "每个值输入后按 Enter；同一规则中的多个值按 OR 匹配。"
+  },
+  "Press Enter to add this value": {
+    "en": "Press Enter to add this value",
+    "zh-CN": "按 Enter 添加此值"
+  },
+  "Previous": {
+    "en": "Previous",
+    "zh-CN": "上一页"
+  },
+  "Primary navigation": {
+    "en": "Primary navigation",
+    "zh-CN": "主导航"
+  },
+  "Private-key path": {
+    "en": "Private-key path",
+    "zh-CN": "私钥路径"
+  },
+  "Probe Again": {
+    "en": "Probe Again",
+    "zh-CN": "重新检测"
+  },
+  "Process name": {
+    "en": "Process name",
+    "zh-CN": "进程名称"
+  },
+  "Protected": {
+    "en": "Protected",
+    "zh-CN": "受保护"
+  },
+  "Protocol": {
+    "en": "Protocol",
+    "zh-CN": "协议"
+  },
+  "Protocols": {
+    "en": "Protocols",
+    "zh-CN": "协议"
+  },
+  "Proxy Node Assignments": {
+    "en": "Proxy Node Assignments",
+    "zh-CN": "代理节点分配"
+  },
+  "Proxy Node deployment is unavailable": {
+    "en": "Topology deployment is unavailable. Check the Master startup logs before submitting another change.",
+    "zh-CN": "拓扑部署暂不可用。请先检查主控端启动日志，再提交更改。"
+  },
+  "Proxy Node fleet deployment is already active": {
+    "en": "A topology change is being applied. Wait for it to finish, then submit your changes again.",
+    "zh-CN": "正在应用另一项拓扑更改。请等待完成后再提交当前更改。"
+  },
+  "Proxy Node manager is unavailable": {
+    "en": "Proxy Node management is unavailable. Check the Master startup logs and state directory, then reload this page.",
+    "zh-CN": "代理节点管理暂不可用。请检查主控端启动日志和状态目录，然后刷新此页。"
+  },
+  "Proxy Node name": {
+    "en": "Proxy Node name",
+    "zh-CN": "代理节点名称"
+  },
+  "Proxy Node readiness": {
+    "en": "Proxy Node readiness",
+    "zh-CN": "代理节点状态"
+  },
+  "Proxy Node roles": {
+    "en": "Proxy Node roles",
+    "zh-CN": "代理节点访问权限"
+  },
+  "Proxy Node settings": {
+    "en": "Proxy Node settings",
+    "zh-CN": "代理节点设置"
+  },
+  "Proxy Node status": {
+    "en": "Proxy Node status",
+    "zh-CN": "代理节点状态"
+  },
+  "Proxy Node": {
+    "en": "Proxy Node",
+    "zh-CN": "代理节点"
+  },
+  "Proxy Nodes": {
+    "en": "Proxy Nodes",
+    "zh-CN": "代理节点"
+  },
+  "Proxy URI or outbound JSON": {
+    "en": "Proxy URI or outbound JSON",
+    "zh-CN": "代理 URI 或出口 JSON"
+  },
+  "Proxy runtime": {
+    "en": "Proxy runtime",
+    "zh-CN": "代理运行时"
+  },
+  "Proxy": {
+    "en": "Proxy",
+    "zh-CN": "代理"
+  },
+  "QUIC Latency": {
+    "en": "QUIC Latency",
+    "zh-CN": "QUIC 延迟"
+  },
+  "QUIC Loss": {
+    "en": "QUIC Loss",
+    "zh-CN": "QUIC 丢包"
+  },
+  "QUIC latency": {
+    "en": "QUIC latency",
+    "zh-CN": "QUIC 延迟"
+  },
+  "Queued": {
+    "en": "Queued",
+    "zh-CN": "已排队"
+  },
+  "Queuing…": {
+    "en": "Queuing…",
+    "zh-CN": "正在排队…"
+  },
+  "Quota (GiB)": {
+    "en": "Quota (GiB)",
+    "zh-CN": "配额（GiB）"
+  },
+  "Quota reached": {
+    "en": "Quota reached",
+    "zh-CN": "已达到配额"
+  },
+  "Reachability depends on runtime DNS or Rule Set data": {
+    "en": "Reachability depends on runtime DNS or Rule Set data",
+    "zh-CN": "可达性取决于运行时 DNS 或规则集数据"
+  },
+  "Ready": {
+    "en": "Ready",
+    "zh-CN": "就绪"
+  },
+  "Receive Migration": {
+    "en": "Receive Migration",
+    "zh-CN": "接收迁移"
+  },
+  "Receive On This Master": {
+    "en": "Receive On This Master",
+    "zh-CN": "在当前主控端接收"
+  },
+  "Refresh page": {
+    "en": "Refresh page",
+    "zh-CN": "刷新页面"
+  },
+  "Refresh server status": {
+    "en": "Refresh server status",
+    "zh-CN": "刷新服务器状态"
+  },
+  "Refresh": {
+    "en": "Refresh",
+    "zh-CN": "刷新"
+  },
+  "Registered": {
+    "en": "Registered",
+    "zh-CN": "已注册"
+  },
+  "Registration link expires": {
+    "en": "Registration link expires",
+    "zh-CN": "注册链接到期时间："
+  },
+  "Reject branch": {
+    "en": "Reject branch",
+    "zh-CN": "拒绝分支"
+  },
+  "Reject": {
+    "en": "Reject",
+    "zh-CN": "拒绝"
+  },
+  "Relay Branch": {
+    "en": "Relay Branch",
+    "zh-CN": "中继分支"
+  },
+  "Relay Hop": {
+    "en": "Relay Hop",
+    "zh-CN": "中继节点"
+  },
+  "Relay Offline": {
+    "en": "Relay Offline",
+    "zh-CN": "中继失联"
+  },
+  "Relay Server Deleted": {
+    "en": "Relay Server Deleted",
+    "zh-CN": "中继服务器已删除"
+  },
+  "Relay address family": {
+    "en": "Relay address family",
+    "zh-CN": "中继地址族"
+  },
+  "Relay map": {
+    "en": "Relay map",
+    "zh-CN": "路由拓扑"
+  },
+  "Relay": {
+    "en": "Relay",
+    "zh-CN": "中继"
+  },
+  "Release Candidate": {
+    "en": "Release Candidate",
+    "zh-CN": "候选版本"
+  },
+  "Remark": {
+    "en": "Remark",
+    "zh-CN": "备注"
+  },
+  "Rename Proxy Node": {
+    "en": "Rename Proxy Node",
+    "zh-CN": "编辑节点名称"
+  },
+  "Rename Server": {
+    "en": "Rename Server",
+    "zh-CN": "重命名服务器"
+  },
+  "Rename or delete this Proxy Node": {
+    "en": "Rename or delete this Proxy Node",
+    "zh-CN": "重命名或删除此代理节点"
+  },
+  "Rename": {
+    "en": "Rename",
+    "zh-CN": "保存名称"
+  },
+  "Reorder Rule": {
+    "en": "Reorder Rule",
+    "zh-CN": "调整规则顺序"
+  },
+  "Replace Agent": {
+    "en": "Replace Agent",
+    "zh-CN": "替换代理端"
+  },
+  "Replace Destination": {
+    "en": "Replace Destination",
+    "zh-CN": "替换目标"
+  },
+  "Replacing the destination deletes": {
+    "en": "Replacing the destination deletes",
+    "zh-CN": "替换目标会删除"
+  },
+  "Reported running": {
+    "en": "Reported running",
+    "zh-CN": "报告为运行中"
+  },
+  "Reset %s credential?": {
+    "en": "Reset %s credential?",
+    "zh-CN": "重置 %s 的凭据？"
+  },
+  "Reset ": {
+    "en": "Reset ",
+    "zh-CN": "重置 "
+  },
+  "Reset Credential": {
+    "en": "Reset Credential",
+    "zh-CN": "重置凭据"
+  },
+  "Reset Login": {
+    "en": "Reset Login",
+    "zh-CN": "重置登录"
+  },
+  "Reset Login?": {
+    "en": "Reset Login?",
+    "zh-CN": "重置用户登录？"
+  },
+  "Reset Registration Token": {
+    "en": "Reset Registration Token",
+    "zh-CN": "重置注册令牌"
+  },
+  "Reset Registration Token?": {
+    "en": "Reset Registration Token?",
+    "zh-CN": "重置注册令牌？"
+  },
+  "Reset Time": {
+    "en": "Reset Time",
+    "zh-CN": "重置时间"
+  },
+  "Reset Traffic": {
+    "en": "Reset Traffic",
+    "zh-CN": "重置流量"
+  },
+  "Reset all credentials for %s?": {
+    "en": "Reset all credentials for %s?",
+    "zh-CN": "重置 %s 的所有凭据？"
+  },
+  "Reset all credentials": {
+    "en": "Reset all credentials",
+    "zh-CN": "重置全部凭据"
+  },
+  "Reset all credentials?": {
+    "en": "Reset all credentials?",
+    "zh-CN": "重置全部凭据？"
+  },
+  "Reset credential": {
+    "en": "Reset credential",
+    "zh-CN": "重置凭据"
+  },
+  "Reset link and credentials": {
+    "en": "Reset link and credentials",
+    "zh-CN": "重置链接和凭据"
+  },
+  "Reset subscription link": {
+    "en": "Reset subscription link",
+    "zh-CN": "重置订阅链接"
+  },
+  "Reset subscription link?": {
+    "en": "Reset subscription link?",
+    "zh-CN": "重置订阅链接？"
+  },
+  "Reset time": {
+    "en": "Reset time",
+    "zh-CN": "重置时间"
+  },
+  "Reset traffic": {
+    "en": "Reset traffic",
+    "zh-CN": "重置流量"
+  },
+  "Resets after": {
+    "en": "Resets after",
+    "zh-CN": "下次重置"
+  },
+  "Resetting the credential immediately invalidates the previous import credential.": {
+    "en": "Resetting the credential immediately invalidates the previous import credential.",
+    "zh-CN": "重置凭据会立即使旧的导入凭据失效。"
+  },
+  "Restarting Master": {
+    "en": "Restarting Master",
+    "zh-CN": "正在重启主控端"
+  },
+  "Restore And Restart": {
+    "en": "Restore And Restart",
+    "zh-CN": "恢复并重启"
+  },
+  "Restoring Master": {
+    "en": "Restoring Master",
+    "zh-CN": "正在恢复主控端"
+  },
+  "Restoring…": {
+    "en": "Restoring…",
+    "zh-CN": "正在恢复…"
+  },
+  "Retry": {
+    "en": "Retry",
+    "zh-CN": "重试"
+  },
+  "Return To Settings": {
+    "en": "Return To Settings",
+    "zh-CN": "返回设置"
+  },
+  "Return to servers": {
+    "en": "Return to servers",
+    "zh-CN": "返回服务器"
+  },
+  "Return to settings": {
+    "en": "Return to settings",
+    "zh-CN": "返回设置"
+  },
+  "Review Proxy Nodes": {
+    "en": "Review Proxy Nodes",
+    "zh-CN": "查看代理节点"
+  },
+  "Revision": {
+    "en": "Revision",
+    "zh-CN": "版本"
+  },
+  "Revoke Access": {
+    "en": "Revoke Access",
+    "zh-CN": "撤销权限"
+  },
+  "Revoke access": {
+    "en": "Revoke access",
+    "zh-CN": "撤销权限"
+  },
+  "Revoke link": {
+    "en": "Revoke link",
+    "zh-CN": "撤销链接"
+  },
+  "Revokes memberships and immediately removes this Node's listeners and Links from the fleet.": {
+    "en": "Revokes memberships and immediately removes this Node's listeners and Links from the fleet.",
+    "zh-CN": "所有用户权限会被撤销，此节点的监听器和链路也会立即从全部服务器中移除。"
+  },
+  "Role allowance": {
+    "en": "Role allowance",
+    "zh-CN": "配额与有效期"
+  },
+  "Route ALL": {
+    "en": "Route ALL",
+    "zh-CN": "路由全部流量"
+  },
+  "Route": {
+    "en": "Route",
+    "zh-CN": "路由"
+  },
+  "Routes to": {
+    "en": "Routes to",
+    "zh-CN": "路由至"
+  },
+  "Routing Rule": {
+    "en": "Routing Rule",
+    "zh-CN": "路由规则"
+  },
+  "Routing mode": {
+    "en": "Routing mode",
+    "zh-CN": "路由模式"
+  },
+  "Routing resources": {
+    "en": "Routing resources",
+    "zh-CN": "路由资源"
+  },
+  "Routing trees": {
+    "en": "Routing trees",
+    "zh-CN": "路由拓扑"
+  },
+  "Rule Set": {
+    "en": "Rule Set",
+    "zh-CN": "规则集"
+  },
+  "Rule Sets": {
+    "en": "Rule Sets",
+    "zh-CN": "规则集"
+  },
+  "Rule branch": {
+    "en": "Rule branch",
+    "zh-CN": "规则分支"
+  },
+  "Rule moved to position {position}.": {
+    "en": "Rule moved to position {position}.",
+    "zh-CN": "规则已移至第 {position} 位。"
+  },
+  "Rule order could not be saved. Previous order restored.": {
+    "en": "Rule order could not be saved. Previous order restored.",
+    "zh-CN": "规则顺序保存失败，已恢复原顺序。"
+  },
+  "Rule set catalog unavailable.": {
+    "en": "Rule set catalog unavailable.",
+    "zh-CN": "无法加载规则集目录。"
+  },
+  "Rule set is unavailable": {
+    "en": "The rule set could not be downloaded. Check the Master's upstream connection and try again later.",
+    "zh-CN": "未能下载规则集。请检查主控端的上游网络连接，稍后重试。"
+  },
+  "Rule": {
+    "en": "Rule",
+    "zh-CN": "规则"
+  },
+  "Rules": {
+    "en": "Rules",
+    "zh-CN": "规则"
+  },
+  "Run this command as a sudo-capable user on the destination server.": {
+    "en": "Run this command as a sudo-capable user on the destination server.",
+    "zh-CN": "请在目标服务器上以可使用 sudo 的用户运行此命令。"
+  },
+  "Running not detected": {
+    "en": "Running not detected",
+    "zh-CN": "尚未检测到运行状态"
+  },
+  "Running unknown version": {
+    "en": "Running unknown version",
+    "zh-CN": "正在运行，但版本未知"
+  },
+  "Running version": {
+    "en": "Running version",
+    "zh-CN": "运行版本"
+  },
+  "Runtime failure": {
+    "en": "Runtime failure",
+    "zh-CN": "运行失败"
+  },
+  "Runtime-dependent path": {
+    "en": "Runtime-dependent path",
+    "zh-CN": "依赖运行时数据的路径"
+  },
+  "Save Allowance": {
+    "en": "Save Allowance",
+    "zh-CN": "保存流量额度"
+  },
+  "Save Entrance": {
+    "en": "Save Entrance",
+    "zh-CN": "保存入口设置"
+  },
+  "Save Exit": {
+    "en": "Save Exit",
+    "zh-CN": "保存默认出口"
+  },
+  "Save Name": {
+    "en": "Save Name",
+    "zh-CN": "保存名称"
+  },
+  "Save Relay": {
+    "en": "Save Relay",
+    "zh-CN": "保存中继"
+  },
+  "Save Rule": {
+    "en": "Save Rule",
+    "zh-CN": "保存规则"
+  },
+  "Save address overrides": {
+    "en": "Save address overrides",
+    "zh-CN": "保存地址覆盖"
+  },
+  "Save allowance": {
+    "en": "Save allowance",
+    "zh-CN": "保存额度"
+  },
+  "Save and apply Rule Set": {
+    "en": "Save and apply Rule Set",
+    "zh-CN": "保存并应用规则集"
+  },
+  "Save entrance": {
+    "en": "Save entrance",
+    "zh-CN": "保存入口设置"
+  },
+  "Save pool entry": {
+    "en": "Save pool entry",
+    "zh-CN": "保存池条目"
+  },
+  "Save server settings": {
+    "en": "Save server settings",
+    "zh-CN": "保存服务器设置"
+  },
+  "Save": {
+    "en": "Save",
+    "zh-CN": "保存"
+  },
+  "Saved changes are not yet active. The relay map shows the saved topology.": {
+    "en": "Saved changes are not yet active. The relay map shows the saved topology.",
+    "zh-CN": "变更已保存，但尚未生效。路由拓扑显示的是已保存的版本。"
+  },
+  "Saved changes are not yet active.": {
+    "en": "Saved changes are not yet active.",
+    "zh-CN": "变更已保存，但尚未生效。"
+  },
+  "Saved pool destination": {
+    "en": "Saved pool destination",
+    "zh-CN": "已保存的出口池目标"
+  },
+  "Saved topology differs from the running configuration. It remains pending across Master restarts; check the affected Servers and deployment details.": {
+    "en": "Saved topology differs from the running configuration. It remains pending across Master restarts; check the affected Servers and deployment details.",
+    "zh-CN": "已保存的拓扑与当前运行配置不同。主控端重启后仍会保留待应用状态，请检查受影响的服务器及部署详情。"
+  },
+  "Saving will update this physical listener atomically.": {
+    "en": "Saving will update this physical listener atomically.",
+    "zh-CN": "保存后会完整更新此监听器。"
+  },
+  "Saving…": {
+    "en": "Saving…",
+    "zh-CN": "正在保存…"
+  },
+  "Scheduling the verified update…": {
+    "en": "Scheduling the verified update…",
+    "zh-CN": "正在安排已验证的更新…"
+  },
+  "Scheduling…": {
+    "en": "Scheduling…",
+    "zh-CN": "正在安排…"
+  },
+  "Search affected users": {
+    "en": "Search affected users",
+    "zh-CN": "搜索受影响的用户"
+  },
+  "Search assigned users": {
+    "en": "Search assigned users",
+    "zh-CN": "搜索用户"
+  },
+  "Search available Proxy Nodes": {
+    "en": "Search available Proxy Nodes",
+    "zh-CN": "搜索可用代理节点"
+  },
+  "Search by management name or username": {
+    "en": "Search by management name or username",
+    "zh-CN": "按管理名称或登录用户名搜索"
+  },
+  "Search users": {
+    "en": "Search users",
+    "zh-CN": "搜索用户"
+  },
+  "Search": {
+    "en": "Search",
+    "zh-CN": "搜索"
+  },
+  "Secure enrollment": {
+    "en": "Secure enrollment",
+    "zh-CN": "安全注册"
+  },
+  "Select Agent": {
+    "en": "Select Agent",
+    "zh-CN": "选择服务器"
+  },
+  "Select a GeoIP rule set": {
+    "en": "Select a GeoIP rule set",
+    "zh-CN": "请选择 GeoIP 规则集"
+  },
+  "Select a Geosite rule set": {
+    "en": "Select a Geosite rule set",
+    "zh-CN": "请选择 Geosite 规则集"
+  },
+  "Select a destination": {
+    "en": "Select a destination",
+    "zh-CN": "请选择目标服务器"
+  },
+  "Select an Agent and complete the socket to check availability.": {
+    "en": "Select an Agent and complete the socket to check availability.",
+    "zh-CN": "请选择服务器并填写监听地址与端口。"
+  },
+  "Select an enrolled Agent": {
+    "en": "Select an enrolled Agent",
+    "zh-CN": "选择已注册的服务器"
+  },
+  "Select an option": {
+    "en": "Select an option",
+    "zh-CN": "请选择"
+  },
+  "Self-signed by Agent": {
+    "en": "Self-signed by Agent",
+    "zh-CN": "由代理端自签名"
+  },
+  "Server ID": {
+    "en": "Server ID",
+    "zh-CN": "服务器 ID"
+  },
+  "Server Name": {
+    "en": "Server Name",
+    "zh-CN": "服务器名称"
+  },
+  "Server Record ID": {
+    "en": "Server Record ID",
+    "zh-CN": "服务器记录 ID"
+  },
+  "Server addresses": {
+    "en": "Server addresses",
+    "zh-CN": "服务器地址"
+  },
+  "Server and software actions": {
+    "en": "Server and software actions",
+    "zh-CN": "服务器与软件操作"
+  },
+  "Server identity": {
+    "en": "Server identity",
+    "zh-CN": "服务器身份"
+  },
+  "Server key": {
+    "en": "Server key",
+    "zh-CN": "服务器密钥"
+  },
+  "Server management": {
+    "en": "Server management",
+    "zh-CN": "服务器管理"
+  },
+  "Server settings": {
+    "en": "Server settings",
+    "zh-CN": "服务器设置"
+  },
+  "Server": {
+    "en": "Server",
+    "zh-CN": "服务器"
+  },
+  "Servers": {
+    "en": "Servers",
+    "zh-CN": "服务器"
+  },
+  "Set Up Account": {
+    "en": "Set Up Account",
+    "zh-CN": "设置账户"
+  },
+  "Set a monthly quota": {
+    "en": "Set a monthly quota",
+    "zh-CN": "设置每月配额"
+  },
+  "Settings": {
+    "en": "Settings",
+    "zh-CN": "设置"
+  },
+  "Shadowsocks method": {
+    "en": "Shadowsocks method",
+    "zh-CN": "Shadowsocks 加密方式"
+  },
+  "Shared listener": {
+    "en": "Shared listener",
+    "zh-CN": "共享监听器"
+  },
+  "Show passphrase": {
+    "en": "Show passphrase",
+    "zh-CN": "显示加密口令"
+  },
+  "Show password": {
+    "en": "Show password",
+    "zh-CN": "显示密码"
+  },
+  "Show": {
+    "en": "Show",
+    "zh-CN": "显示"
+  },
+  "Showing the newest 50 entries.": {
+    "en": "Showing the newest 50 entries.",
+    "zh-CN": "显示最近的 50 条记录。"
+  },
+  "Shown once.": {
+    "en": "Shown once.",
+    "zh-CN": "仅显示一次。"
+  },
+  "Sign in in another tab": {
+    "en": "Sign in in another tab",
+    "zh-CN": "在新标签页登录"
+  },
+  "Sign in to continue": {
+    "en": "Sign in to continue",
+    "zh-CN": "登录以继续"
+  },
+  "Sign in": {
+    "en": "Sign in",
+    "zh-CN": "登录"
+  },
+  "Sign out": {
+    "en": "Sign out",
+    "zh-CN": "退出登录"
+  },
+  "Single use": {
+    "en": "Single use",
+    "zh-CN": "仅限一次"
+  },
+  "Skip to content": {
+    "en": "Skip to content",
+    "zh-CN": "跳至内容"
+  },
+  "Source IP/CIDR": {
+    "en": "Source IP/CIDR",
+    "zh-CN": "源 IP/CIDR"
+  },
+  "Source Master": {
+    "en": "Source Master",
+    "zh-CN": "原主控端"
+  },
+  "Source port": {
+    "en": "Source port",
+    "zh-CN": "源端口"
+  },
+  "Stable": {
+    "en": "Stable",
+    "zh-CN": "稳定版"
+  },
+  "Stale": {
+    "en": "Stale",
+    "zh-CN": "数据已过期"
+  },
+  "Status": {
+    "en": "Status",
+    "zh-CN": "状态"
+  },
+  "Subscription Addresses": {
+    "en": "Subscription Addresses",
+    "zh-CN": "订阅连接地址"
+  },
+  "Subscription addresses": {
+    "en": "Subscription addresses",
+    "zh-CN": "订阅地址"
+  },
+  "Subscription compensation": {
+    "en": "Subscription compensation",
+    "zh-CN": "订阅补偿"
+  },
+  "Subscription expiration": {
+    "en": "Subscription expiration",
+    "zh-CN": "订阅到期方式"
+  },
+  "Subscription link": {
+    "en": "Subscription link",
+    "zh-CN": "订阅链接"
+  },
+  "Subscription links": {
+    "en": "Subscription links",
+    "zh-CN": "订阅链接"
+  },
+  "Subscription rule": {
+    "en": "Subscription rule",
+    "zh-CN": "订阅规则"
+  },
+  "Subscription": {
+    "en": "Subscription",
+    "zh-CN": "订阅"
+  },
+  "Subscriptions": {
+    "en": "Subscriptions",
+    "zh-CN": "配置订阅"
+  },
+  "Supported OS": {
+    "en": "Supported OS",
+    "zh-CN": "支持的操作系统"
+  },
+  "Swipe to explore": {
+    "en": "Swipe to explore",
+    "zh-CN": "横向滑动查看"
+  },
+  "Switch Online Servers": {
+    "en": "Switch Online Servers",
+    "zh-CN": "切换在线服务器"
+  },
+  "Switching…": {
+    "en": "Switching…",
+    "zh-CN": "正在切换…"
+  },
+  "System Access · Unlimited": {
+    "en": "System Access · Unlimited",
+    "zh-CN": "系统权限 · 不限流量"
+  },
+  "System Access": {
+    "en": "System Access",
+    "zh-CN": "系统权限"
+  },
+  "TCP Brutal download rate": {
+    "en": "TCP Brutal download rate",
+    "zh-CN": "TCP Brutal 下行速率"
+  },
+  "TCP Brutal upload rate": {
+    "en": "TCP Brutal upload rate",
+    "zh-CN": "TCP Brutal 上行速率"
+  },
+  "TCP Latency": {
+    "en": "TCP Latency",
+    "zh-CN": "TCP 延迟"
+  },
+  "TCP Loss": {
+    "en": "TCP Loss",
+    "zh-CN": "TCP 丢包"
+  },
+  "TCP latency": {
+    "en": "TCP latency",
+    "zh-CN": "TCP 延迟"
+  },
+  "TCP loss": {
+    "en": "TCP loss",
+    "zh-CN": "TCP 丢包"
+  },
+  "TLS Certificate Domain/IP": {
+    "en": "TLS Certificate Domain/IP",
+    "zh-CN": "TLS 证书域名/IP"
+  },
+  "TLS certificate domain/IP pending": {
+    "en": "TLS certificate domain/IP pending",
+    "zh-CN": "尚未填写 TLS 证书域名/IP"
+  },
+  "TLS certificate domain/IP": {
+    "en": "TLS certificate domain/IP",
+    "zh-CN": "TLS 证书域名/IP"
+  },
+  "TLS listener": {
+    "en": "TLS listener",
+    "zh-CN": "TLS 监听器"
+  },
+  "TLS mode is required": {
+    "en": "Choose automatic ACME or a self-signed certificate.",
+    "zh-CN": "请选择自动 ACME 证书或自签名证书。"
+  },
+  "TLS mode": {
+    "en": "TLS mode",
+    "zh-CN": "TLS 模式"
+  },
+  "TLS-protected sign-in. The master stores only a hash of your access key.": {
+    "en": "TLS-protected sign-in. The master stores only a hash of your access key.",
+    "zh-CN": "登录受 TLS 保护。主控端只保存访问密钥的哈希值。"
+  },
+  "TLS-protected sign-in. Your password is stored as a salted, memory-hard verifier.": {
+    "en": "TLS-protected sign-in. Your password is stored as a salted, memory-hard verifier.",
+    "zh-CN": "登录受 TLS 保护。密码以加盐的内存困难校验值存储。"
+  },
+  "TLS-secured gRPC": {
+    "en": "TLS-secured gRPC",
+    "zh-CN": "TLS 加密的 gRPC"
+  },
+  "Tag": {
+    "en": "Tag",
+    "zh-CN": "标签"
+  },
+  "Target version": {
+    "en": "Target version",
+    "zh-CN": "目标版本"
+  },
+  "Target": {
+    "en": "Target",
+    "zh-CN": "目标"
+  },
+  "Terminal Exit": {
+    "en": "Terminal Exit",
+    "zh-CN": "默认出口"
+  },
+  "Terminal": {
+    "en": "Terminal",
+    "zh-CN": "终端"
+  },
+  "That server ID is already enrolled.": {
+    "en": "That server ID is already enrolled.",
+    "zh-CN": "该服务器 ID 已注册。"
+  },
+  "That server already has a valid enrollment command. Use it or wait for it to expire.": {
+    "en": "That server already has a valid enrollment command. Use it or wait for it to expire.",
+    "zh-CN": "该服务器已有有效的注册命令，请使用现有命令或等待其过期。"
+  },
+  "That server name is already in use.": {
+    "en": "That server name is already in use.",
+    "zh-CN": "该服务器名称已被使用。"
+  },
+  "The access key was not accepted.": {
+    "en": "The access key was not accepted.",
+    "zh-CN": "访问密钥不正确。"
+  },
+  "The account could not be created.": {
+    "en": "The account could not be created.",
+    "zh-CN": "无法创建账户。"
+  },
+  "The agent could not accept the sing-box update request.": {
+    "en": "The agent could not accept the sing-box update request.",
+    "zh-CN": "代理端无法接受 sing-box 更新请求。"
+  },
+  "The agent could not accept the update request.": {
+    "en": "The agent could not accept the update request.",
+    "zh-CN": "代理端无法接受更新请求。"
+  },
+  "The agent disconnected before the configuration could be delivered.": {
+    "en": "The agent disconnected before the configuration could be delivered.",
+    "zh-CN": "配置交付前代理端已断开连接。"
+  },
+  "The agent is validating and activating this configuration.": {
+    "en": "The agent is validating and activating this configuration.",
+    "zh-CN": "代理端正在验证并激活此配置。"
+  },
+  "The agent went offline before the update request could be delivered.": {
+    "en": "The agent went offline before the update request could be delivered.",
+    "zh-CN": "更新请求交付前代理端已离线。"
+  },
+  "The cached catalog is unavailable; type a valid rule-set name manually.": {
+    "en": "The cached catalog is unavailable; type a valid rule-set name manually.",
+    "zh-CN": "缓存的目录不可用，请手动输入有效的规则集名称。"
+  },
+  "The command is generated from the master’s trusted public URL, not from browser request headers.": {
+    "en": "The command is generated from the master’s trusted public URL, not from browser request headers.",
+    "zh-CN": "此命令根据主控端受信任的公开 URL 生成，而不是浏览器请求头。"
+  },
+  "The configuration could not be deployed.": {
+    "en": "The configuration could not be deployed.",
+    "zh-CN": "无法部署配置。"
+  },
+  "The configuration could not be queued.": {
+    "en": "The configuration could not be queued.",
+    "zh-CN": "无法将配置加入队列。"
+  },
+  "The configuration does not satisfy the managed-agent safety policy.": {
+    "en": "The configuration does not satisfy the managed-agent safety policy.",
+    "zh-CN": "配置不符合托管代理端的安全策略。"
+  },
+  "The configuration root must be a JSON object.": {
+    "en": "The configuration root must be a JSON object.",
+    "zh-CN": "配置根节点必须是 JSON 对象。"
+  },
+  "The credential becomes unusable after this period or immediately after enrollment.": {
+    "en": "The credential becomes unusable after this period or immediately after enrollment.",
+    "zh-CN": "凭据会在此期限后或完成注册后立即失效。"
+  },
+  "The current %s credential will stop working immediately. Other Node credentials and subscription links will not change.": {
+    "en": "The current %s credential will stop working immediately. Other Node credentials and subscription links will not change.",
+    "zh-CN": "当前 %s 节点的凭据将立即失效，其他节点的凭据和订阅链接保持不变。"
+  },
+  "The current Agent remains authorized until the replacement uses its one-time token. At that moment the old connection is closed and this master immediately deploys the retained profile to the replacement.": {
+    "en": "The current Agent remains authorized until the replacement uses its one-time token. At that moment the old connection is closed and this master immediately deploys the retained profile to the replacement.",
+    "zh-CN": "在替换服务器使用一次性令牌前，当前代理端仍保持授权。令牌被使用后，旧连接会关闭，主控端会立即向替换服务器部署保留的配置。"
+  },
+  "The current registration link will stop working immediately. A new single-use link valid for 24 hours will be created.": {
+    "en": "The current registration link will stop working immediately. A new single-use link valid for 24 hours will be created.",
+    "zh-CN": "当前注册链接将立即失效，并生成一个有效期为 24 小时的新一次性链接。"
+  },
+  "The current subscription URLs and every Proxy Node credential for this user will stop working immediately.": {
+    "en": "The current subscription URLs and every Proxy Node credential for this user will stop working immediately.",
+    "zh-CN": "此用户当前的订阅 URL 和所有代理节点凭据都会立即失效。"
+  },
+  "The error log could not be cleared.": {
+    "en": "The error log could not be cleared.",
+    "zh-CN": "无法清空错误日志。"
+  },
+  "The fleet outbound pool is unavailable. Direct and Reject remain usable.": {
+    "en": "The fleet outbound pool is unavailable. Direct and Reject remain usable.",
+    "zh-CN": "全局出口池暂不可用，仍可选择直连或拒绝。"
+  },
+  "The master is restarting. Waiting for it to come back online…": {
+    "en": "The master is restarting. Waiting for it to come back online…",
+    "zh-CN": "主控端正在重启，正在等待其恢复在线…"
+  },
+  "The master stores no plaintext copy. Keep the value printed by the installer in your password manager.": {
+    "en": "The master stores no plaintext copy. Keep the value printed by the installer in your password manager.",
+    "zh-CN": "主控端不会保存明文副本。请将安装程序显示的值保存在密码管理器中。"
+  },
+  "The master update could not be scheduled.": {
+    "en": "The master update could not be scheduled.",
+    "zh-CN": "无法安排主控端更新。"
+  },
+  "The master update failed.": {
+    "en": "The master update failed.",
+    "zh-CN": "主控端更新失败。"
+  },
+  "The new branch order could not be saved. The previous order was restored.": {
+    "en": "The new branch order could not be saved. The previous order was restored.",
+    "zh-CN": "无法保存新的分支顺序，已恢复先前的顺序。"
+  },
+  "The outbound pool is not available on this master.": {
+    "en": "The outbound pool is not available on this master.",
+    "zh-CN": "此主控端未启用出口池。"
+  },
+  "The page has changed. Your unsaved input has been kept. Refresh when you are ready.": {
+    "en": "The page has changed. Your unsaved input has been kept. Refresh when you are ready.",
+    "zh-CN": "页面内容已更新，尚未保存的输入仍保留在此页。处理好当前编辑后再刷新。"
+  },
+  "The passwords do not match.": {
+    "en": "The passwords do not match.",
+    "zh-CN": "两次输入的密码不一致。"
+  },
+  "The pool entry could not be saved.": {
+    "en": "The pool entry could not be saved.",
+    "zh-CN": "无法保存出口池条目。"
+  },
+  "The request could not be completed. Your input has been kept. Check the server status before trying again.": {
+    "en": "The request could not be completed. Your input has been kept. Check the server status before trying again.",
+    "zh-CN": "请求未能完成，当前输入已保留。请检查服务器状态后重试。"
+  },
+  "The server did not return a migration archive. Your input has been kept; check the Master and try again.": {
+    "en": "The server did not return a migration archive. Your input has been kept; check the Master and try again.",
+    "zh-CN": "服务器未返回迁移归档，当前输入已保留。请检查主控端状态后重试。"
+  },
+  "The server entry could not be created.": {
+    "en": "The server entry could not be created.",
+    "zh-CN": "无法创建服务器条目。"
+  },
+  "The server entry no longer exists.": {
+    "en": "The server entry no longer exists.",
+    "zh-CN": "服务器条目已不存在。"
+  },
+  "The server name could not be changed.": {
+    "en": "The server name could not be changed.",
+    "zh-CN": "无法修改服务器名称。"
+  },
+  "The topology change failed and the previous branch order was restored.": {
+    "en": "The topology change failed and the previous branch order was restored.",
+    "zh-CN": "拓扑更改失败，已恢复先前的分支顺序。"
+  },
+  "The username or password was not accepted.": {
+    "en": "The username or password was not accepted.",
+    "zh-CN": "用户名或密码不正确。"
+  },
+  "The verified release is being installed. This page will reconnect after the master restarts.": {
+    "en": "The verified release is being installed. This page will reconnect after the master restarts.",
+    "zh-CN": "正在安装已验证的版本。主控端重启后，此页面会自动重新连接。"
+  },
+  "Theatropolis servers": {
+    "en": "Theatropolis servers",
+    "zh-CN": "Theatropolis 服务器"
+  },
+  "Theatropolis user portal": {
+    "en": "Theatropolis user portal",
+    "zh-CN": "Theatropolis 用户中心"
+  },
+  "These values contain secrets. Copy them only to the intended user.": {
+    "en": "These values contain secrets. Copy them only to the intended user.",
+    "zh-CN": "这些值包含敏感信息，请只复制给目标用户。"
+  },
+  "This Server cannot be removed while Proxy Nodes use it. Move the affected Hops to another Server, or delete the branches or Proxy Nodes that use them first.": {
+    "en": "This Server cannot be removed while Proxy Nodes use it. Move the affected Hops to another Server, or delete the branches or Proxy Nodes that use them first.",
+    "zh-CN": "此服务器仍被代理节点使用，无法移除。请先把受影响的节点迁移到其他服务器，或删除使用这些节点的分支或代理节点。"
+  },
+  "This Server is not used by any Proxy Node.": {
+    "en": "This Server is not used by any Proxy Node.",
+    "zh-CN": "此服务器尚未用于任何代理节点。"
+  },
+  "This Server is still used by Proxy Node topology. Review its assignments and finish the topology change before removing it.": {
+    "en": "This Server is still used by Proxy Node topology. Review its assignments and finish the topology change before removing it.",
+    "zh-CN": "此服务器仍被代理节点拓扑使用。请检查分配情况并完成拓扑变更后再移除。"
+  },
+  "This Server is still used by one or more Proxy Nodes. Move the affected Hops, or delete the branches or Proxy Nodes that use them before removing it.": {
+    "en": "This Server is still used by one or more Proxy Nodes. Move the affected Hops, or delete the branches or Proxy Nodes that use them before removing it.",
+    "zh-CN": "此服务器仍被一个或多个代理节点使用。请先迁移受影响的节点，或删除使用这些节点的分支或代理节点。"
+  },
+  "This Server reconnected before it could be removed. Wait until the Agent is offline, then try again.": {
+    "en": "This Server reconnected before it could be removed. Wait until the Agent is offline, then try again.",
+    "zh-CN": "此服务器在移除前已重新连接。请等待代理端离线后重试。"
+  },
+  "This Server still owns an applied Proxy Node configuration. Finish or retry the topology change before removing it.": {
+    "en": "This Server still owns an applied Proxy Node configuration. Finish or retry the topology change before removing it.",
+    "zh-CN": "此服务器仍保留着已应用的代理节点配置。请先完成或重试拓扑变更，再移除此服务器。"
+  },
+  "This Server still owns an applied managed configuration. Finish or retry the Proxy Node change before removing it.": {
+    "en": "This Server still owns an applied managed configuration. Finish or retry the Proxy Node change before removing it.",
+    "zh-CN": "此服务器仍保留着已应用的托管配置。请先完成或重试代理节点变更，再移除此服务器。"
+  },
+  "This command contains a credential that expires at": {
+    "en": "This command contains a credential that expires at",
+    "zh-CN": "此命令包含一项凭据，到期时间为"
+  },
+  "This credential will stop working immediately.": {
+    "en": "This credential will stop working immediately.",
+    "zh-CN": "此凭据会立即失效。"
+  },
+  "This grants the administrator unlimited, non-expiring access to every Proxy Node.": {
+    "en": "This grants the administrator unlimited, non-expiring access to every Proxy Node.",
+    "zh-CN": "这会授予管理员所有代理节点的不限流量、永不过期权限。"
+  },
+  "This immediately closes an active control session and invalidates enrollment credentials. It does not uninstall the remote agent or stop its current sing-box process.": {
+    "en": "This immediately closes an active control session and invalidates enrollment credentials. It does not uninstall the remote agent or stop its current sing-box process.",
+    "zh-CN": "此操作会立即关闭活动控制会话并使注册凭据失效，但不会卸载远程代理端，也不会停止当前 sing-box 进程。"
+  },
+  "This invitation is invalid or has expired.": {
+    "en": "This invitation is invalid or has expired.",
+    "zh-CN": "邀请链接无效或已过期。"
+  },
+  "This login username is already in use.": {
+    "en": "This login username is already in use.",
+    "zh-CN": "该登录名已被使用。"
+  },
+  "This master still uses its existing access key. Rerun the master installer with": {
+    "en": "This master still uses its existing access key. Rerun the master installer with",
+    "zh-CN": "此主控端仍在使用现有访问密钥。准备迁移时，请使用以下参数重新运行主控端安装程序："
+  },
+  "This permanently deletes the complete accounting error log.": {
+    "en": "This permanently deletes the complete accounting error log.",
+    "zh-CN": "此操作会永久删除全部流量统计错误日志。"
+  },
+  "This request did not come from the configured Master page. Open the configured public URL and try again.": {
+    "en": "This request did not come from the configured Master page. Open the configured public URL and try again.",
+    "zh-CN": "请求并非来自配置的主控端页面。请使用主控端的公开网址打开页面后重试。"
+  },
+  "This revokes the administrator credential and configuration subscription on every Proxy Node.": {
+    "en": "This revokes the administrator credential and configuration subscription on every Proxy Node.",
+    "zh-CN": "这会撤销管理员在所有代理节点上的凭据和配置订阅。"
+  },
+  "This section could not be loaded.": {
+    "en": "This section could not be loaded.",
+    "zh-CN": "无法加载此区域。"
+  },
+  "This socket is available for a new physical listener.": {
+    "en": "This socket is available for a new physical listener.",
+    "zh-CN": "该地址与端口可用于新监听器。"
+  },
+  "Time": {
+    "en": "Time",
+    "zh-CN": "时间"
+  },
+  "Too many account setup attempts. Wait one minute and try again.": {
+    "en": "Too many account setup attempts. Wait one minute and try again.",
+    "zh-CN": "账户设置尝试过多，请等待一分钟后重试。"
+  },
+  "Too many attempts. Wait one minute and try again.": {
+    "en": "Too many attempts. Wait one minute and try again.",
+    "zh-CN": "尝试次数过多。请等待一分钟后重试。"
+  },
+  "Too many rule-set requests": {
+    "en": "Too many rule-set downloads. Wait one minute before trying again.",
+    "zh-CN": "规则集下载请求过多，请等待一分钟后重试。"
+  },
+  "Topology Pending": {
+    "en": "Topology Pending",
+    "zh-CN": "拓扑等待应用"
+  },
+  "Topology Retirement Pending": {
+    "en": "Topology Retirement Pending",
+    "zh-CN": "等待清理旧拓扑"
+  },
+  "Topology change": {
+    "en": "Topology change",
+    "zh-CN": "拓扑更新"
+  },
+  "Total servers": {
+    "en": "Total servers",
+    "zh-CN": "服务器总数"
+  },
+  "Total": {
+    "en": "Total",
+    "zh-CN": "合计"
+  },
+  "Traffic Used": {
+    "en": "Traffic Used",
+    "zh-CN": "已用流量"
+  },
+  "Traffic reset could not be safely recorded. No reset was applied. Check the Agent connection and Master accounting logs before retrying.": {
+    "en": "Traffic reset could not be safely recorded. No reset was applied. Check the Agent connection and Master accounting logs before retrying.",
+    "zh-CN": "未能安全记录流量重置，重置尚未执行。请检查代理端连接和主控端的流量统计日志后重试。"
+  },
+  "Traffic used": {
+    "en": "Traffic used",
+    "zh-CN": "已用流量"
+  },
+  "Traffic": {
+    "en": "Traffic",
+    "zh-CN": "流量"
+  },
+  "Transport": {
+    "en": "Transport",
+    "zh-CN": "传输"
+  },
+  "Try again": {
+    "en": "Try again",
+    "zh-CN": "重试"
+  },
+  "Type a domain and press Enter…": {
+    "en": "Type a domain and press Enter…",
+    "zh-CN": "输入域名并按 Enter…"
+  },
+  "Type a keyword and press Enter…": {
+    "en": "Type a keyword and press Enter…",
+    "zh-CN": "输入关键词并按 Enter…"
+  },
+  "Type a rule-set tag and press Enter…": {
+    "en": "Type a rule-set tag and press Enter…",
+    "zh-CN": "输入规则集标签并按 Enter…"
+  },
+  "Type a suffix and press Enter…": {
+    "en": "Type a suffix and press Enter…",
+    "zh-CN": "输入后缀并按 Enter…"
+  },
+  "Type a value and press Enter…": {
+    "en": "Type a value and press Enter…",
+    "zh-CN": "输入值并按 Enter…"
+  },
+  "Type an IP or CIDR and press Enter…": {
+    "en": "Type an IP or CIDR and press Enter…",
+    "zh-CN": "输入 IP 或 CIDR 并按 Enter…"
+  },
+  "Type an expression and press Enter…": {
+    "en": "Type an expression and press Enter…",
+    "zh-CN": "输入表达式并按 Enter…"
+  },
+  "Unavailable": {
+    "en": "Unavailable",
+    "zh-CN": "不可用"
+  },
+  "Unit": {
+    "en": "Unit",
+    "zh-CN": "单位"
+  },
+  "Universal Export Policy": {
+    "en": "Universal Export Policy",
+    "zh-CN": "通用导出策略"
+  },
+  "Universal export policy": {
+    "en": "Universal export policy",
+    "zh-CN": "通用导出策略"
+  },
+  "Unknown": {
+    "en": "Unknown",
+    "zh-CN": "未知"
+  },
+  "Unlimited Users": {
+    "en": "Unlimited Users",
+    "zh-CN": "不限流量用户"
+  },
+  "Unlimited": {
+    "en": "Unlimited",
+    "zh-CN": "不限"
+  },
+  "Unmatched Traffic": {
+    "en": "Unmatched Traffic",
+    "zh-CN": "未匹配流量"
+  },
+  "Unmatched traffic": {
+    "en": "Unmatched traffic",
+    "zh-CN": "未匹配流量"
+  },
+  "Update Agent software": {
+    "en": "Update Agent software",
+    "zh-CN": "更新代理端软件"
+  },
+  "Update agent to latest": {
+    "en": "Update agent to latest",
+    "zh-CN": "将代理端更新到最新版"
+  },
+  "Update all Agents": {
+    "en": "Update all Agents",
+    "zh-CN": "更新所有代理端"
+  },
+  "Update complete. Reconnecting to the updated master…": {
+    "en": "Update complete. Reconnecting to the updated master…",
+    "zh-CN": "更新完成。正在重新连接更新后的主控端…"
+  },
+  "Update diagnostic": {
+    "en": "Update diagnostic",
+    "zh-CN": "更新诊断"
+  },
+  "Update interval": {
+    "en": "Update interval",
+    "zh-CN": "更新间隔"
+  },
+  "Update status": {
+    "en": "Update status",
+    "zh-CN": "更新状态"
+  },
+  "Updated": {
+    "en": "Updated",
+    "zh-CN": "已更新"
+  },
+  "Updating Theatropolis": {
+    "en": "Updating Theatropolis",
+    "zh-CN": "正在更新 Theatropolis"
+  },
+  "Upgrade required": {
+    "en": "Upgrade required",
+    "zh-CN": "需要升级"
+  },
+  "Upload Mbps": {
+    "en": "Upload Mbps",
+    "zh-CN": "上传 Mbps"
+  },
+  "Use 1–60 letters or numbers; ordinary spaces and . _ - are allowed.": {
+    "en": "Use 1–60 letters or numbers; ordinary spaces and . _ - are allowed.",
+    "zh-CN": "名称应为 1 至 60 个字母或数字，可包含普通空格及 .、_、-。"
+  },
+  "Use a valid entry name: letters, numbers, dots, underscores, and hyphens only.": {
+    "en": "Use a valid entry name: letters, numbers, dots, underscores, and hyphens only.",
+    "zh-CN": "请输入有效的条目名称，只能使用字母、数字、点、下划线和连字符。"
+  },
+  "Use a valid server ID: letters, numbers, dots, underscores, and hyphens only.": {
+    "en": "Use a valid server ID: letters, numbers, dots, underscores, and hyphens only.",
+    "zh-CN": "请输入有效的服务器 ID，只能使用字母、数字、点、下划线和连字符。"
+  },
+  "Use the 43-character value printed once by the installer.": {
+    "en": "Use the 43-character value printed once by the installer.",
+    "zh-CN": "请输入安装程序仅显示一次的 43 位值。"
+  },
+  "Used": {
+    "en": "Used",
+    "zh-CN": "已用"
+  },
+  "User Portal": {
+    "en": "User Portal",
+    "zh-CN": "用户中心"
+  },
+  "User Sign In": {
+    "en": "User Sign In",
+    "zh-CN": "用户登录"
+  },
+  "User Subscription": {
+    "en": "User Subscription",
+    "zh-CN": "用户配置订阅"
+  },
+  "User access": {
+    "en": "User access",
+    "zh-CN": "用户权限"
+  },
+  "User key": {
+    "en": "User key",
+    "zh-CN": "用户密钥"
+  },
+  "User login": {
+    "en": "User login",
+    "zh-CN": "用户登录"
+  },
+  "User name": {
+    "en": "User name",
+    "zh-CN": "用户名"
+  },
+  "User pages": {
+    "en": "User pages",
+    "zh-CN": "用户列表分页"
+  },
+  "User portal": {
+    "en": "User portal",
+    "zh-CN": "用户中心"
+  },
+  "User subscription": {
+    "en": "User subscription",
+    "zh-CN": "用户订阅"
+  },
+  "User": {
+    "en": "User",
+    "zh-CN": "用户"
+  },
+  "Username": {
+    "en": "Username",
+    "zh-CN": "用户名"
+  },
+  "Users": {
+    "en": "Users",
+    "zh-CN": "用户"
+  },
+  "Using the existing physical listener keeps all shared settings consistent.": {
+    "en": "Using the existing physical listener keeps all shared settings consistent.",
+    "zh-CN": "正在复用现有监听器，其共享设置会保持一致。"
+  },
+  "Validated": {
+    "en": "Validated",
+    "zh-CN": "验证通过"
+  },
+  "Validating": {
+    "en": "Validating",
+    "zh-CN": "正在验证"
+  },
+  "Validation failed": {
+    "en": "Validation failed",
+    "zh-CN": "验证失败"
+  },
+  "Values": {
+    "en": "Values",
+    "zh-CN": "值"
+  },
+  "View users and address settings": {
+    "en": "View users and address settings",
+    "zh-CN": "查看用户和地址设置"
+  },
+  "View": {
+    "en": "View",
+    "zh-CN": "查看"
+  },
+  "Wait for the agent to connect": {
+    "en": "Wait for the agent to connect",
+    "zh-CN": "等待代理端连接"
+  },
+  "Wait for the current Proxy Node change to finish, then try removing this Server again.": {
+    "en": "Wait for the current Proxy Node change to finish, then try removing this Server again.",
+    "zh-CN": "请等待当前代理节点变更完成，再重新尝试移除此服务器。"
+  },
+  "Yes": {
+    "en": "Yes",
+    "zh-CN": "是"
+  },
+  "Your credentials are verified locally. The master never stores your plaintext password.": {
+    "en": "Your credentials are verified locally. The master never stores your plaintext password.",
+    "zh-CN": "凭据在本地验证，主控端不会存储明文密码。"
+  },
+  "Your session expired. Your input is still on this page. Sign in in another tab, then try again.": {
+    "en": "Your session expired. Your input is still on this page. Sign in in another tab, then try again.",
+    "zh-CN": "登录已过期，当前输入仍保留在此页。请在另一个标签页重新登录，然后回来重试。"
+  },
+  "Your session expired.": {
+    "en": "Your session expired.",
+    "zh-CN": "会话已过期。"
+  },
+  "address family is invalid": {
+    "en": "Choose Automatic, IPv4, or IPv6.",
+    "zh-CN": "请选择“自动”、IPv4 或 IPv6。"
+  },
+  "address overrides must be public IP addresses": {
+    "en": "Use a public IP address. Private, loopback, and reserved addresses cannot be used for fleet routing.",
+    "zh-CN": "请使用公网 IP 地址。内网、回环和保留地址不能用于服务器间路由。"
+  },
+  "administrator Membership is immutable": {
+    "en": "The Administrator access grant is managed automatically. Use the administrator proxy-access switch in Settings.",
+    "zh-CN": "管理员的节点权限由系统自动维护，请使用“设置”中的管理员代理权限开关。"
+  },
+  "administrator subscription is unavailable": {
+    "en": "Administrator proxy access is disabled or unavailable. Enable it in Settings to use this subscription.",
+    "zh-CN": "管理员代理权限尚未启用或暂不可用。请在“设置”中启用后使用此订阅。"
+  },
+  "administrator user is immutable": {
+    "en": "The built-in Administrator user is protected. Manage its proxy access in Settings.",
+    "zh-CN": "内置管理员用户受保护，请到“设置”中管理其代理权限。"
+  },
+  "agent update could not be prepared": {
+    "en": "The Agent update request could not be saved. Check Master disk space and logs, then retry.",
+    "zh-CN": "代理端更新请求未能保存。请检查主控端剩余磁盘空间和日志，然后重试。"
+  },
+  "an end user with this management name already exists": {
+    "en": "A user with this management name already exists. Choose a different name; names are not case-sensitive.",
+    "zh-CN": "已有用户使用此管理名称，请换一个名称。名称不区分大小写。"
+  },
+  "and becomes unusable after enrollment. The master persists only its hash.": {
+    "en": "and becomes unusable after enrollment. The master persists only its hash.",
+    "zh-CN": "，并会在完成注册后失效。主控端只保存其哈希值。"
+  },
+  "and its entire downstream subtree. To keep the subtree, move the child Hop instead.": {
+    "en": "and its entire downstream subtree. To keep the subtree, move the child Hop instead.",
+    "zh-CN": "及其全部下游分支。如需保留子树，请改为在子 Hop 上更换服务器。"
+  },
+  "assigned": {
+    "en": "assigned",
+    "zh-CN": "已分配"
+  },
+  "available": {
+    "en": "available",
+    "zh-CN": "可用"
+  },
+  "branch deletion was not confirmed": {
+    "en": "Confirm deletion of this branch and its downstream nodes before continuing.",
+    "zh-CN": "请先确认删除此分支及其下游节点。"
+  },
+  "certificate mode": {
+    "en": "certificate mode",
+    "zh-CN": "证书模式"
+  },
+  "certificate path": {
+    "en": "certificate path",
+    "zh-CN": "证书路径"
+  },
+  "checking…": {
+    "en": "checking…",
+    "zh-CN": "正在检查…"
+  },
+  "choose a supported enrollment lifetime": {
+    "en": "Choose an enrollment-link lifetime from the available options.",
+    "zh-CN": "请从可用选项中选择注册链接的有效期。"
+  },
+  "credential reset was not confirmed": {
+    "en": "Confirm the credential reset. Existing client configurations will need updating.",
+    "zh-CN": "请先确认重置凭据。重置后，客户端需要更新配置。"
+  },
+  "custom": {
+    "en": "custom",
+    "zh-CN": "自定义"
+  },
+  "daily traffic could not be loaded": {
+    "en": "Traffic history could not be loaded. Check the Master's accounting database and disk space, then retry.",
+    "zh-CN": "未能加载流量历史。请检查主控端的流量统计数据库和剩余磁盘空间，然后重试。"
+  },
+  "deleted": {
+    "en": "deleted",
+    "zh-CN": "已删除"
+  },
+  "deletion was not confirmed": {
+    "en": "Confirm deletion in the confirmation dialog before continuing.",
+    "zh-CN": "请先在确认对话框中确认删除操作。"
+  },
+  "deployment status could not be loaded": {
+    "en": "Deployment status could not be loaded. Do not submit the change again yet; check the Server page and Master logs first.",
+    "zh-CN": "未能读取部署状态。请先查看服务器页面和主控端日志，暂勿重复提交更改。"
+  },
+  "destination Agent already appears earlier in this branch": {
+    "en": "Choose a Server that is not already on the path to this branch. Reusing an ancestor would create a routing loop.",
+    "zh-CN": "请选择当前分支路径上尚未经过的服务器。再次使用上游服务器会形成路由循环。"
+  },
+  "destination replacement must be confirmed": {
+    "en": "Confirm destination replacement; it removes the old downstream branch and rotates this Link's credential.",
+    "zh-CN": "请先确认更换目标。此操作会移除原有下游分支，并重置本链路的凭据。"
+  },
+  "download Mbps must be a positive number": {
+    "en": "Enter a download bandwidth greater than 0, in Mbps.",
+    "zh-CN": "请输入大于 0 的下载带宽，单位为 Mbps。"
+  },
+  "end-user login is unavailable": {
+    "en": "User sign-in is unavailable. Check the Master startup logs and account store before creating another invitation.",
+    "zh-CN": "用户登录暂不可用。请先检查主控端启动日志和账户存储，再创建邀请。"
+  },
+  "enrollment result could not be prepared": {
+    "en": "The installation command could not be displayed. Check whether the Server entry was created before trying again.",
+    "zh-CN": "未能显示安装命令。请先确认服务器条目是否已创建，再决定是否重试。"
+  },
+  "exit": {
+    "en": "exit",
+    "zh-CN": "出口"
+  },
+  "expiration mode is invalid": {
+    "en": "Choose a finite subscription duration or No expiry.",
+    "zh-CN": "请选择有限订阅时长或“永不过期”。"
+  },
+  "family must be ipv4 or ipv6": {
+    "en": "Choose IPv4 or IPv6 for the address probe.",
+    "zh-CN": "请选择要探测的地址类型：IPv4 或 IPv6。"
+  },
+  "geosite and geoip Rules accept one value": {
+    "en": "Choose one Geosite or GeoIP entry per rule. Add another rule for another entry.",
+    "zh-CN": "每条 Geosite 或 GeoIP 规则只能选择一项。如需匹配其他项目，请另建规则。"
+  },
+  "interface could not authenticate": {
+    "en": "Sign-in could not be completed. Check the Master logs and available disk space, then try again.",
+    "zh-CN": "登录未能完成。请检查主控端日志和剩余磁盘空间，然后重试。"
+  },
+  "interface could not be rendered": {
+    "en": "This page could not be displayed. Check the Master logs and reload the page.",
+    "zh-CN": "未能显示此页面。请检查主控端日志，然后刷新页面。"
+  },
+  "invalid Link direction": {
+    "en": "Choose Move up or Move down to change branch priority.",
+    "zh-CN": "请使用“上移”或“下移”调整分支优先级。"
+  },
+  "invalid Link monitor range": {
+    "en": "Choose one of the time ranges offered by the Link monitor.",
+    "zh-CN": "请选择链路监控中提供的时间范围。"
+  },
+  "invalid Link routing mode": {
+    "en": "Choose a conditional rule or ALL for the fallback branch.",
+    "zh-CN": "请选择条件规则，或选择 ALL 作为兜底分支。"
+  },
+  "invalid Rule direction": {
+    "en": "Choose Move up or Move down to change rule priority.",
+    "zh-CN": "请使用“上移”或“下移”调整规则优先级。"
+  },
+  "invalid end user name": {
+    "en": "Enter a management name of 1–60 letters or numbers. Spaces and . _ - are allowed.",
+    "zh-CN": "请输入 1 至 60 个字符的管理名称，以字母或数字开头，可包含普通空格及 .、_、-。"
+  },
+  "invalid positive number": {
+    "en": "Enter a number greater than 0.",
+    "zh-CN": "请输入大于 0 的数值。"
+  },
+  "invalid request": {
+    "en": "The request format is not supported. Reopen the form and try again.",
+    "zh-CN": "请求格式不受支持，请重新打开表单后重试。"
+  },
+  "invalid server ID": {
+    "en": "This Server reference is invalid. Return to Servers and select it again.",
+    "zh-CN": "服务器引用无效，请返回服务器列表重新选择。"
+  },
+  "invalid update status request": {
+    "en": "This update reference is invalid. Reopen Settings to load the current update status.",
+    "zh-CN": "更新引用无效，请重新打开“设置”以读取当前更新状态。"
+  },
+  "invitation could not be created": {
+    "en": "The registration invitation could not be created. Check the Master logs and disk space, then try again.",
+    "zh-CN": "未能创建注册邀请。请检查主控端日志和剩余磁盘空间，然后重试。"
+  },
+  "legacy file certificate endpoints cannot move to another Agent": {
+    "en": "Switch this listener to ACME or self-signed TLS before moving it. Its certificate files exist only on the original Server.",
+    "zh-CN": "请先将监听器改为 ACME 或自签名证书，再迁移到其他服务器。原有证书文件只存在于原服务器上。"
+  },
+  "legacy file certificate mode cannot be selected for a new endpoint": {
+    "en": "New listeners cannot use legacy certificate files. Choose ACME or a self-signed certificate.",
+    "zh-CN": "新监听器不能使用旧版证书文件模式，请选择 ACME 或自签名证书。"
+  },
+  "legacy file certificate paths cannot be changed": {
+    "en": "Legacy certificate paths are read-only. Switch to ACME or self-signed TLS to change certificate settings.",
+    "zh-CN": "旧版证书路径仅供读取。如需更改证书设置，请改用 ACME 或自签名证书。"
+  },
+  "listen address must be a literal IP address": {
+    "en": "Enter a listening IP address, such as 0.0.0.0 or ::, not a domain name.",
+    "zh-CN": "请输入监听 IP 地址，例如 0.0.0.0 或 ::，不能填写域名。"
+  },
+  "listen port is invalid or reserved": {
+    "en": "Choose a port between 1 and 65535 that is not reserved by the managed-agent control services.",
+    "zh-CN": "请选择 1 至 65535 之间的端口，且不要使用代理端控制服务的保留端口。"
+  },
+  "listen port is invalid": {
+    "en": "Enter a whole-number listening port between 1 and 65535.",
+    "zh-CN": "请输入 1 至 65535 之间的整数作为监听端口。"
+  },
+  "listen port must be a number": {
+    "en": "Enter a whole-number listening port between 1 and 65535.",
+    "zh-CN": "请输入 1 至 65535 之间的整数作为监听端口。"
+  },
+  "loading available versions…": {
+    "en": "loading available versions…",
+    "zh-CN": "正在加载可用版本…"
+  },
+  "loading…": {
+    "en": "loading…",
+    "zh-CN": "正在加载…"
+  },
+  "logout could not be completed": {
+    "en": "Sign-out could not be saved. Your session may still be active; try again and check the Master logs if it continues.",
+    "zh-CN": "退出登录的状态未能保存，当前会话可能仍然有效。请重试；如果仍有问题，请检查主控端日志。"
+  },
+  "master update control is unavailable": {
+    "en": "Master updates are unavailable. Check that the privileged update helper and its systemd unit are installed.",
+    "zh-CN": "主控端更新暂不可用。请确认已安装特权更新助手及对应的 systemd 服务单元。"
+  },
+  "master update could not be prepared": {
+    "en": "The Master update request could not be saved. Check state-directory permissions and disk space before retrying.",
+    "zh-CN": "主控端更新请求未能保存。请检查状态目录权限和剩余磁盘空间后重试。"
+  },
+  "master update could not be scheduled": {
+    "en": "The Master update could not be scheduled. Check the update-helper systemd service and Master logs before retrying.",
+    "zh-CN": "未能安排主控端更新。请检查更新助手的 systemd 服务及主控端日志后重试。"
+  },
+  "migration archive is too large or malformed": {
+    "en": "The migration archive could not be read. Select an intact archive exported by Theatropolis and check its size before retrying.",
+    "zh-CN": "无法读取迁移归档。请选择由 Theatropolis 导出的完整归档文件，并检查文件大小后重试。"
+  },
+  "monthly quota must be between 1 and 1,000,000 GiB": {
+    "en": "Enter a monthly quota from 1 to 1,000,000 GiB, or choose Unlimited.",
+    "zh-CN": "请输入 1 至 1,000,000 GiB 的月流量额度，或选择“不限流量”。"
+  },
+  "multiplex padding": {
+    "en": "multiplex padding",
+    "zh-CN": "多路复用填充"
+  },
+  "offline": {
+    "en": "offline",
+    "zh-CN": "离线"
+  },
+  "on port": {
+    "en": "on port",
+    "zh-CN": "端口"
+  },
+  "on": {
+    "en": "on",
+    "zh-CN": "位于"
+  },
+  "outage end time must be after its start time": {
+    "en": "Set the outage end time later than its start time.",
+    "zh-CN": "故障结束时间必须晚于开始时间。"
+  },
+  "outage start time is invalid": {
+    "en": "Enter a valid outage start date and time in UTC+8.",
+    "zh-CN": "请输入有效的故障开始日期和时间，时区为 UTC+8。"
+  },
+  "password is too common or too closely related to the username": {
+    "en": "password is too common or too closely related to the username",
+    "zh-CN": "密码过于常见，或与登录名过于相似。"
+  },
+  "password must be valid UTF-8": {
+    "en": "password must be valid UTF-8",
+    "zh-CN": "密码必须是有效的 UTF-8 文本。"
+  },
+  "password must contain between 12 and 128 Unicode characters": {
+    "en": "password must contain between 12 and 128 Unicode characters",
+    "zh-CN": "密码须包含 12 至 128 个字符。"
+  },
+  "password must not contain control characters": {
+    "en": "password must not contain control characters",
+    "zh-CN": "密码不能包含控制字符。"
+  },
+  "password must not exceed 512 bytes": {
+    "en": "password must not exceed 512 bytes",
+    "zh-CN": "密码不得超过 512 字节。"
+  },
+  "password": {
+    "en": "password",
+    "zh-CN": "密码"
+  },
+  "path probe is unavailable": {
+    "en": "The path probe could not run. Check that both Servers are connected and the destination listener is active.",
+    "zh-CN": "路径探测未能执行。请确认两端服务器均已连接，且目标监听器已启动。"
+  },
+  "private-key path": {
+    "en": "private-key path",
+    "zh-CN": "私钥路径"
+  },
+  "protocol": {
+    "en": "protocol",
+    "zh-CN": "协议"
+  },
+  "proxy node resource conflicts with existing state": {
+    "en": "This change conflicts with an existing resource. Check for duplicate names, existing access grants, or a listener already using this port.",
+    "zh-CN": "此更改与现有配置冲突。请检查名称是否重复、用户是否已获授权，以及端口是否已被监听器占用。"
+  },
+  "proxy node resource not found": {
+    "en": "This item no longer exists. Return to its list and select an existing item.",
+    "zh-CN": "此项目已不存在，请返回列表选择现有项目。"
+  },
+  "quota mode is invalid": {
+    "en": "Choose a monthly traffic quota or Unlimited.",
+    "zh-CN": "请选择月流量额度或“不限流量”。"
+  },
+  "ready": {
+    "en": "ready",
+    "zh-CN": "已就绪"
+  },
+  "recorded": {
+    "en": "recorded",
+    "zh-CN": "条记录"
+  },
+  "registration reset was not confirmed": {
+    "en": "Confirm Reset Login before continuing. This signs the user out and replaces their registration link.",
+    "zh-CN": "请先确认重置登录。此操作会让用户退出登录，并更换注册链接。"
+  },
+  "replacement enrollment was not created": {
+    "en": "The replacement enrollment link could not be created. Check the Server status and Master logs, then retry.",
+    "zh-CN": "未能创建替换设备的注册链接。请检查服务器状态和主控端日志，然后重试。"
+  },
+  "replacement result could not be prepared": {
+    "en": "The replacement link was not displayed. Check the Server's enrollment state before creating a new replacement link.",
+    "zh-CN": "替换设备的注册链接未能显示。请先检查服务器的注册状态，再决定是否创建新链接。"
+  },
+  "request form is invalid": {
+    "en": "The form contains missing, duplicate, or unsupported fields. Check your input; if this page was open during an update, reopen the form.",
+    "zh-CN": "表单存在缺失、重复或不受支持的字段。请检查输入；如果页面在系统更新前就已打开，请重新打开表单。"
+  },
+  "request host is not configured": {
+    "en": "This address is not configured for the Master. Open the public URL configured during installation.",
+    "zh-CN": "此地址不是主控端配置的访问地址，请使用安装时设置的公开网址。"
+  },
+  "request was not authorized": {
+    "en": "The request could not be authorized. Keep your input, sign in again in another tab, then reload this page if necessary.",
+    "zh-CN": "请求未通过安全验证。请保留当前输入，在另一个标签页重新登录；如仍无法提交，再刷新此页。"
+  },
+  "routing Rule contains an invalid value": {
+    "en": "One or more match values are invalid for the selected type. Check domain names, CIDRs, protocol names, and regular expressions.",
+    "zh-CN": "部分匹配值不适用于所选类型，请检查域名、CIDR、协议名称或正则表达式。"
+  },
+  "routing Rule requires match values": {
+    "en": "Enter at least one value for this match type, or choose ALL for a fallback branch.",
+    "zh-CN": "请为此匹配类型填写至少一个值，或选择 ALL 创建兜底分支。"
+  },
+  "routing target is invalid": {
+    "en": "Choose an available target or DIRECT / REJECT.",
+    "zh-CN": "请选择可用的目标，或选择 DIRECT（直连）/ REJECT（拒绝）。"
+  },
+  "selected": {
+    "en": "selected",
+    "zh-CN": "已选择"
+  },
+  "self-signed TLS requires a valid server name or IP": {
+    "en": "Enter a valid domain name or IP address for the self-signed certificate.",
+    "zh-CN": "请输入有效的域名或 IP 地址，用于自签名证书。"
+  },
+  "server access could not be revoked": {
+    "en": "Server removal could not be completed. Check whether it still appears in Servers before retrying, and inspect the Master logs.",
+    "zh-CN": "服务器移除操作未能完成。请先确认它是否仍在列表中，并检查主控端日志，再决定是否重试。"
+  },
+  "server details could not be loaded": {
+    "en": "Server details could not be loaded. Return to Servers and retry; check the Master logs if the problem continues.",
+    "zh-CN": "未能加载服务器详情。请返回服务器列表后重试；如果仍有问题，请检查主控端日志。"
+  },
+  "sing-box release": {
+    "en": "sing-box release",
+    "zh-CN": "sing-box 版本"
+  },
+  "sing-box runtime": {
+    "en": "sing-box runtime",
+    "zh-CN": "sing-box 运行时"
+  },
+  "sing-box update control is unavailable until this server is online with a compatible agent.": {
+    "en": "sing-box update control is unavailable until this server is online with a compatible agent.",
+    "zh-CN": "服务器上线并运行兼容代理端后，才能使用 sing-box 更新控制。"
+  },
+  "sing-box update could not be prepared": {
+    "en": "The sing-box update request could not be saved. Check the Master logs and available disk space before retrying.",
+    "zh-CN": "sing-box 更新请求未能保存。请检查主控端日志和剩余磁盘空间后重试。"
+  },
+  "sing-box update diagnostic": {
+    "en": "sing-box update diagnostic",
+    "zh-CN": "sing-box 更新诊断"
+  },
+  "sing-box version": {
+    "en": "sing-box version",
+    "zh-CN": "sing-box 版本"
+  },
+  "subscription could not be rendered": {
+    "en": "This client profile could not be generated. Ask the administrator to check this user's applied Nodes and subscription rules.",
+    "zh-CN": "未能生成客户端配置。请联系管理员检查此用户已应用的节点配置及订阅规则。"
+  },
+  "subscription duration is invalid or exceeds 100 years": {
+    "en": "Enter a positive subscription duration of no more than 100 years.",
+    "zh-CN": "请输入大于 0 且不超过 100 年的订阅时长。"
+  },
+  "subscription reset was not confirmed": {
+    "en": "Confirm subscription reset. This replaces the subscription URL and all Node credentials for this user.",
+    "zh-CN": "请先确认重置订阅。此操作会更换该用户的订阅链接及所有节点凭据。"
+  },
+  "target Agent has no routable address": {
+    "en": "The target Server has no public IP address. Check its connection or set a public IPv4/IPv6 override in Server settings.",
+    "zh-CN": "目标服务器没有可用的公网 IP。请检查连接状态，或在服务器设置中填写公网 IPv4 / IPv6 地址。"
+  },
+  "target Agent is unavailable": {
+    "en": "This target Server is unavailable. Select an existing enrolled Server.",
+    "zh-CN": "目标服务器不可用，请选择已注册且仍存在的服务器。"
+  },
+  "terminal exit must be Direct or Reject": {
+    "en": "Choose DIRECT to connect directly or REJECT to block unmatched traffic.",
+    "zh-CN": "请选择 DIRECT（直连）或 REJECT（拒绝），决定如何处理未匹配的流量。"
+  },
+  "terminal target must be Direct or Reject": {
+    "en": "Choose DIRECT or REJECT as the terminal action.",
+    "zh-CN": "请选择 DIRECT（直连）或 REJECT（拒绝）作为终端动作。"
+  },
+  "the IPv4 override must be an IPv4 address or empty": {
+    "en": "Enter a public IPv4 address, or leave this field empty for automatic detection.",
+    "zh-CN": "请输入公网 IPv4 地址，或留空以自动检测。"
+  },
+  "the IPv6 override must be an IPv6 address or empty": {
+    "en": "Enter a public IPv6 address, or leave this field empty for automatic detection.",
+    "zh-CN": "请输入公网 IPv6 地址，或留空以自动检测。"
+  },
+  "the address override could not be saved": {
+    "en": "The public address could not be saved. Check the Master logs and state-directory permissions, then try again.",
+    "zh-CN": "公网地址未能保存。请检查主控端日志和状态目录权限，然后重试。"
+  },
+  "the latest release could not be determined": {
+    "en": "The signed release catalog could not be loaded. Check the Master's access to GitHub, then choose Check again.",
+    "zh-CN": "未能加载签名版本目录。请检查主控端能否访问 GitHub，然后点击“重新检查”。"
+  },
+  "the outbound pool is unavailable": {
+    "en": "The outbound pool is unavailable. Check the Master startup logs and reload the Pool page.",
+    "zh-CN": "出口池暂不可用。请检查主控端启动日志，然后刷新出口池页面。"
+  },
+  "the pool entry could not be deleted": {
+    "en": "The pool entry could not be deleted. Check its current state and the Master logs before trying again.",
+    "zh-CN": "出口池条目未能删除。请先核实条目当前状态并检查主控端日志，再重试。"
+  },
+  "the server must be enrolled first": {
+    "en": "Install and enroll this Server's Agent before changing its network settings.",
+    "zh-CN": "请先安装并注册此服务器的代理端，再修改网络设置。"
+  },
+  "the subscription domains could not be saved": {
+    "en": "Subscription domains could not be saved. Check the domain format and Master logs before trying again.",
+    "zh-CN": "订阅域名未能保存。请检查域名格式及主控端日志后重试。"
+  },
+  "too many enrollment credentials were created": {
+    "en": "Too many enrollment links were created recently. Wait one minute before creating another.",
+    "zh-CN": "最近创建的注册链接过多，请等待一分钟后再创建。"
+  },
+  "total": {
+    "en": "total",
+    "zh-CN": "总计"
+  },
+  "unauthorized": {
+    "en": "Your session expired. Sign in again to continue.",
+    "zh-CN": "登录已过期，请重新登录后继续。"
+  },
+  "unavailable": {
+    "en": "unavailable",
+    "zh-CN": "不可用"
+  },
+  "unknown rule-set catalog": {
+    "en": "Choose the Geosite or GeoIP catalog.",
+    "zh-CN": "请选择 Geosite 或 GeoIP 规则集目录。"
+  },
+  "unknown version catalog": {
+    "en": "This version catalog is not supported. Reopen Settings or Server settings and choose an available component.",
+    "zh-CN": "不支持此版本目录。请重新打开系统设置或服务器设置，选择可用组件。"
+  },
+  "unsupported routing match type": {
+    "en": "Choose a supported match type from the rule editor.",
+    "zh-CN": "请在规则编辑器中选择受支持的匹配类型。"
+  },
+  "update status could not be loaded": {
+    "en": "Update status could not be loaded. Check whether the update is still running before scheduling another one.",
+    "zh-CN": "未能读取更新状态。请先确认更新是否仍在进行，再决定是否重新安排更新。"
+  },
+  "upload Mbps must be a positive number": {
+    "en": "Enter an upload bandwidth greater than 0, in Mbps.",
+    "zh-CN": "请输入大于 0 的上传带宽，单位为 Mbps。"
+  },
+  "user manager is unavailable": {
+    "en": "User management is unavailable. Check the Master startup logs and reload this page.",
+    "zh-CN": "用户管理暂不可用。请检查主控端启动日志，然后刷新此页。"
+  },
+  "user": {
+    "en": "user",
+    "zh-CN": "用户"
+  },
+  "username must contain between 1 and 64 ASCII characters": {
+    "en": "username must contain between 1 and 64 ASCII characters",
+    "zh-CN": "登录名须包含 1 至 64 个 ASCII 字符。"
+  },
+  "username must match [a-z0-9][a-z0-9._-]{0,63}": {
+    "en": "username must match [a-z0-9][a-z0-9._-]{0,63}",
+    "zh-CN": "登录名只能使用小写字母、数字、点、下划线和连字符，且必须以字母或数字开头。"
+  },
+  "waiting for Agent": {
+    "en": "waiting for Agent",
+    "zh-CN": "等待服务器上线"
+  },
+  "waiting for address": {
+    "en": "waiting for address",
+    "zh-CN": "等待可用地址"
+  },
+  "when you are ready to migrate it.": {
+    "en": "when you are ready to migrate it.",
+    "zh-CN": "。"
+  }
+}

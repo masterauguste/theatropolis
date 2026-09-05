@@ -86,6 +86,7 @@ type testAgentController struct {
 	sessions            testSessions
 	store               deployment.Store
 	deployable          map[string]bool
+	acmeRelay           map[string]bool
 	updatable           map[string]bool
 	updates             map[string]control.AgentUpdateState
 	singBoxUpdates      map[string]control.SingBoxUpdateState
@@ -303,6 +304,10 @@ func (c *testAgentController) HasAgentIdentity(agentID string) bool {
 
 func (c *testAgentController) CanDeployProxyNodeConfiguration(agentID string) bool {
 	return c.CanDeployConfiguration(agentID)
+}
+
+func (c *testAgentController) CanRelayACMEHTTP01(agentID string) bool {
+	return c.acmeRelay[agentID]
 }
 
 func (c *testAgentController) CanSyncManagedUserAuthority(agentID string) bool {
@@ -532,29 +537,6 @@ func assertLanguagePreferenceCookie(t *testing.T, response *httptest.ResponseRec
 	}
 }
 
-func TestTemplateLocalizationPreservesStructuralIdentifiers(t *testing.T) {
-	t.Parallel()
-
-	source := `<a class="user-link" href="/users/user-1" aria-label="Open user">Users</a><input name="user" data-search-name="user" placeholder="Search users">`
-	translated := localizeTemplateSource(source)
-	for _, expected := range []string{
-		`class="user-link"`,
-		`href="/users/user-1"`,
-		`name="user"`,
-		`data-search-name="user"`,
-		`aria-label="打开用户"`,
-		`>用户</a>`,
-		`placeholder="搜索用户"`,
-	} {
-		if !strings.Contains(translated, expected) {
-			t.Errorf("localized template omitted %q: %s", expected, translated)
-		}
-	}
-	if strings.Contains(translated, "/用户") || strings.Contains(translated, `class="用户`) {
-		t.Fatalf("localized template changed a structural identifier: %s", translated)
-	}
-}
-
 func TestLanguageSwitchPersistsOnlySupportedLocaleAndRedirectsSafely(t *testing.T) {
 	t.Parallel()
 
@@ -650,18 +632,6 @@ func TestLocalizedCountUsesNaturalClassifiersAndPluralization(t *testing.T) {
 		if got := localizedCount(test.locale, test.count, test.kind); got != test.want {
 			t.Errorf("localizedCount(%q, %d, %q) = %q, want %q", test.locale, test.count, test.kind, got, test.want)
 		}
-	}
-}
-
-func TestTemplateLocalizationDoesNotReplaceInsideEnglishWords(t *testing.T) {
-	t.Parallel()
-
-	translated := localizeTemplateSource(`<span>{{if .Enabled}}Yes{{else}}No{{end}}</span><p>Other Node credentials</p>`)
-	if !strings.Contains(translated, `{{else}}否{{end}}`) {
-		t.Fatalf("standalone No was not translated: %q", translated)
-	}
-	if !strings.Contains(translated, "Other Node credentials") || strings.Contains(translated, "否de") {
-		t.Fatalf("translation replaced text inside Node: %q", translated)
 	}
 }
 
@@ -1105,8 +1075,8 @@ func TestLoginRejectsUntrustedOrAmbiguousOriginMetadata(t *testing.T) {
 					http.StatusForbidden,
 				)
 			}
-			expectedBody := "request origin is not allowed (" + test.reason + ")\n"
-			if response.Body.String() != expectedBody {
+			expectedBody := "(" + test.reason + ")"
+			if !strings.Contains(response.Body.String(), expectedBody) {
 				t.Fatalf(
 					"untrusted login body = %q, want %q",
 					response.Body.String(),
@@ -3056,7 +3026,7 @@ func TestHopTerminalRejectsLinkTargets(t *testing.T) {
 	}.Encode())
 	response := httptest.NewRecorder()
 	fixture.handler.ServeHTTP(response, request)
-	if response.Code != http.StatusBadRequest || !strings.Contains(response.Body.String(), "Direct or Reject") {
+	if response.Code != http.StatusBadRequest || !strings.Contains(response.Body.String(), "DIRECT to connect directly or REJECT") {
 		t.Fatalf("Link terminal target = %d %q, want 400", response.Code, response.Body.String())
 	}
 
@@ -3351,7 +3321,7 @@ func TestUserSubscriptionLinksExportActiveNodesAndOrderedRules(t *testing.T) {
 		t.Fatalf("subscription Rules page = %d %q", response.Code, response.Body.String())
 	}
 
-	for format, expected := range map[string]string{"clash": "DOMAIN-SUFFIX,example.com,Direct", "surge": "[Proxy Group]", "sing-box": `"tag": "Proxy"`} {
+	for format, expected := range map[string]string{"clash": "DOMAIN-SUFFIX,example.com,DIRECT", "surge": "[Proxy Group]", "sing-box": `"tag": "PROXY"`} {
 		request = fixture.request(http.MethodGet, "/subscriptions/"+updatedUser.Subscription.Token+"/"+format, "")
 		response = httptest.NewRecorder()
 		fixture.handler.ServeHTTP(response, request)
@@ -3715,7 +3685,7 @@ func TestMembershipMaintenanceActions(t *testing.T) {
 	fixture.handler.ServeHTTP(response, request)
 	if response.Code != http.StatusOK || !strings.Contains(response.Body.String(), `data-dialog-open="compensate-proxy-node-users"`) ||
 		!strings.Contains(response.Body.String(), `data-dialog-open="grant-proxy-node-user"`) ||
-		!strings.Contains(response.Body.String(), "Outage started (UTC+8)") ||
+		!strings.Contains(response.Body.String(), "Outage started (UTC&#43;8)") ||
 		!strings.Contains(response.Body.String(), "Affected subscriptions") ||
 		!strings.Contains(response.Body.String(), `data-started-at="`) ||
 		!strings.Contains(response.Body.String(), `name="membership_ids" value="`+membership.ID+`"`) {
@@ -4937,6 +4907,23 @@ func TestServerPageShowsCurrentAgentVersion(t *testing.T) {
 	}
 }
 
+func TestServerPageShowsACMERelayOnlyForCapableCoLocatedAgent(t *testing.T) {
+	t.Parallel()
+
+	fixture := newWebFixture(t)
+	enrollAgent(t, fixture.registry, "edge-online")
+	fixture.controller.acmeRelay = map[string]bool{"edge-online": true}
+
+	request := fixture.authenticatedRequest(http.MethodGet, "/servers/edge-online/manage", "")
+	response := httptest.NewRecorder()
+	fixture.handler.ServeHTTP(response, request)
+	if response.Code != http.StatusOK ||
+		!strings.Contains(response.Body.String(), "Local relay ready") ||
+		!strings.Contains(response.Body.String(), "Caddy owns public port 80") {
+		t.Fatalf("ACME relay status response = %d %q", response.Code, response.Body.String())
+	}
+}
+
 func TestMasterUpdateQueuesOnlyLatestRelease(t *testing.T) {
 	t.Parallel()
 
@@ -5851,7 +5838,6 @@ func TestAssetsAreSelfHostedAndSecurityHeadersApplyToErrors(t *testing.T) {
 	fixture := newWebFixture(t)
 	for _, path := range []string{
 		"/assets/app.js",
-		"/assets/config-editor.js",
 		"/assets/dropdown.js",
 		"/assets/i18n.js",
 		"/assets/subscription-rules.js",
@@ -5902,7 +5888,7 @@ func TestAssetsAreSelfHostedAndSecurityHeadersApplyToErrors(t *testing.T) {
 				}
 			}
 		} else if path == "/assets/i18n.js" {
-			for _, expected := range []string{`"Listener conflict": "监听器冲突"`, `"TLS certificate domain/IP": "TLS 证书域名/IP"`} {
+			for _, expected := range []string{`"Listener conflict":{"en":"Listener conflict","zh-CN":"监听器冲突"}`, `"TLS certificate domain/IP":{"en":"TLS certificate domain/IP","zh-CN":"TLS 证书域名/IP"}`} {
 				if !strings.Contains(response.Body.String(), expected) {
 					t.Errorf("localized listener status does not contain %q", expected)
 				}
@@ -5946,34 +5932,6 @@ func TestAssetsAreSelfHostedAndSecurityHeadersApplyToErrors(t *testing.T) {
 			}
 			if strings.Contains(asset, `window.addEventListener("resize", () => closeDropdown())`) {
 				t.Fatal("shared dropdown still closes when the mobile keyboard resizes the viewport")
-			}
-		}
-		if path == "/assets/config-editor.js" &&
-			!strings.Contains(response.Body.String(), `option.addEventListener("pointerdown"`) {
-			t.Fatal("config editor rule-set options do not commit before popover dismissal")
-		}
-		if path == "/assets/config-editor.js" {
-			asset := response.Body.String()
-			for _, expected := range []string{
-				`row.querySelector("[data-share-family]")`,
-				"address.includes(\":\") ? `[${address}]` : address",
-				`encodeURIComponent(tlsDomain)`,
-			} {
-				if !strings.Contains(asset, expected) {
-					t.Errorf("config editor URI export does not contain %q", expected)
-				}
-			}
-			if strings.Contains(asset, `tlsDomain || window.location.hostname`) {
-				t.Fatal("config editor URI export still falls back to the master address")
-			}
-			for _, expected := range []string{
-				`matchControl.hidden = type === "none"`,
-				`matchType !== "none" && values.length === 0`,
-				`} else if (matchType !== "none") {`,
-			} {
-				if !strings.Contains(asset, expected) {
-					t.Errorf("config editor scope-only routing does not contain %q", expected)
-				}
 			}
 		}
 		if path == "/assets/subscription-rules.js" {

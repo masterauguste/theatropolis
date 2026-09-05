@@ -22,6 +22,7 @@ MASTER_ADMIN_SOCKET="/run/theatropolis/master-admin.sock"
 LEGACY_WEB_AUTH_FILE="${CONFIG_DIRECTORY}/web-auth.json"
 WEB_AUTH_FILE="${MASTER_STATE_DIRECTORY}/web-auth.json"
 MASTER_UNIT_FILE="/etc/systemd/system/theatropolis-master.service"
+AGENT_UNIT_FILE="/etc/systemd/system/theatropolis-agent.service"
 MASTER_UPDATE_SERVICE_FILE="/etc/systemd/system/theatropolis-master-update.service"
 MASTER_UPDATE_PATH_FILE="/etc/systemd/system/theatropolis-master-update.path"
 AGENT_UPDATE_SERVICE_FILE="/etc/systemd/system/theatropolis-agent-update.service"
@@ -30,6 +31,9 @@ SING_BOX_UPDATE_SERVICE_FILE="/etc/systemd/system/theatropolis-sing-box-update.s
 SING_BOX_UPDATE_PATH_FILE="/etc/systemd/system/theatropolis-sing-box-update.path"
 INSTALL_LOCK_FILE="/run/theatropolis-installer.lock"
 DEFAULT_HTTPS_PORT="8443"
+ACME_HTTP01_RELAY_PORT="19091"
+ACME_HTTP01_RELAY_MARKER="${CONFIG_DIRECTORY}/acme-http01-master-relay"
+CADDY_RELAY_SNIPPET="/etc/caddy/conf.d/theatropolis-agent-acme.caddy"
 
 ROLE=""
 RELEASE_TAG="latest"
@@ -66,6 +70,10 @@ TTY_SETTINGS=""
 ENROLLMENT_TOKEN_TEMP=""
 AGENT_WAS_ACTIVE="no"
 AGENT_STOPPED="no"
+COLOCATED_AGENT_BINARY_BACKUP=""
+RELAY_TOUCHED="no"
+HAD_RELAY_SNIPPET="no"
+HAD_RELAY_MARKER="no"
 SING_BOX_BOOTSTRAP_REQUIRED="yes"
 
 usage() {
@@ -174,6 +182,24 @@ cleanup() {
 				'theatropolis installer: the previous master could not be restarted after rollback' >&2
 		fi
 		MASTER_STOPPED="no"
+	fi
+	if [ "$INSTALL_SUCCEEDED" != "yes" ]; then
+		if [ -n "$COLOCATED_AGENT_BINARY_BACKUP" ]; then
+			cp -a "$COLOCATED_AGENT_BINARY_BACKUP" "$INSTALL_DIRECTORY/theatropolis-agent"
+		fi
+		if [ "$RELAY_TOUCHED" = "yes" ]; then
+			if [ "$HAD_RELAY_SNIPPET" = "yes" ]; then
+				cp -a "$TEMP_DIRECTORY/theatropolis-agent-acme.caddy.backup" "$CADDY_RELAY_SNIPPET"
+			else
+				rm -f -- "$CADDY_RELAY_SNIPPET"
+			fi
+			if [ "$HAD_RELAY_MARKER" = "yes" ]; then
+				cp -a "$TEMP_DIRECTORY/acme-relay-marker.backup" "$ACME_HTTP01_RELAY_MARKER"
+			else
+				rm -f -- "$ACME_HTTP01_RELAY_MARKER"
+			fi
+			systemctl reload caddy || true
+		fi
 	fi
 	if [ -n "$TEMP_DIRECTORY" ] && [ -d "$TEMP_DIRECTORY" ]; then
 		rm -rf -- "$TEMP_DIRECTORY"
@@ -1004,6 +1030,80 @@ EOF
 	fi
 }
 
+configure_acme_http01_relay() {
+	# An explicit named HTTP site must precede Caddy's automatic HTTPS
+	# redirect for the Master hostname. The catch-all alone cannot do that.
+	detect_local_master_dial_address
+	case "$LOCAL_MASTER_ADDRESS" in
+		'' | *[!A-Za-z0-9.:-]*) fail "cannot determine the local Master's ACME relay hostname" ;;
+	esac
+	printf '%s\n' "$LOCAL_MASTER_ADDRESS" | grep -Eq '^[A-Za-z0-9.-]+:[0-9]{1,5}$' ||
+		fail "cannot determine the local Master's ACME relay hostname"
+	RELAY_MASTER_HOST="${LOCAL_MASTER_ADDRESS%:*}"
+	install_caddy
+	install -d -o root -g root -m 0755 /etc/caddy/conf.d "$CONFIG_DIRECTORY"
+	if [ "$RELAY_TOUCHED" = "no" ]; then
+		if [ -e "$CADDY_RELAY_SNIPPET" ] || [ -L "$CADDY_RELAY_SNIPPET" ]; then
+			[ -f "$CADDY_RELAY_SNIPPET" ] && [ ! -L "$CADDY_RELAY_SNIPPET" ] ||
+				fail "the ACME relay Caddy entry is not a regular file"
+			HAD_RELAY_SNIPPET="yes"
+			cp -a "$CADDY_RELAY_SNIPPET" "$TEMP_DIRECTORY/theatropolis-agent-acme.caddy.backup"
+		fi
+		if [ -e "$ACME_HTTP01_RELAY_MARKER" ] || [ -L "$ACME_HTTP01_RELAY_MARKER" ]; then
+			[ -f "$ACME_HTTP01_RELAY_MARKER" ] && [ ! -L "$ACME_HTTP01_RELAY_MARKER" ] ||
+				fail "the ACME relay marker is not a regular file"
+			cp -a "$ACME_HTTP01_RELAY_MARKER" "$TEMP_DIRECTORY/acme-relay-marker.backup"
+			HAD_RELAY_MARKER="yes"
+		fi
+		RELAY_TOUCHED="yes"
+	fi
+	cat >"$CADDY_RELAY_SNIPPET" <<EOF
+(theatropolis_agent_acme_relay) {
+	@theatropolis_agent_acme {
+		method GET HEAD
+		path /.well-known/acme-challenge/*
+	}
+
+	handle @theatropolis_agent_acme {
+		reverse_proxy 127.0.0.1:${ACME_HTTP01_RELAY_PORT}
+	}
+}
+
+http://${RELAY_MASTER_HOST} {
+	import theatropolis_agent_acme_relay
+	handle {
+		redir https://${LOCAL_MASTER_ADDRESS}{uri} 308
+	}
+}
+
+:80 {
+	import theatropolis_agent_acme_relay
+}
+EOF
+	chmod 0644 "$CADDY_RELAY_SNIPPET"
+	caddy fmt --overwrite "$CADDY_RELAY_SNIPPET"
+	if ! caddy validate --config /etc/caddy/Caddyfile --adapter caddyfile; then
+		if [ "$HAD_RELAY_SNIPPET" = "yes" ]; then
+			cp -a "$TEMP_DIRECTORY/theatropolis-agent-acme.caddy.backup" "$CADDY_RELAY_SNIPPET"
+		else
+			rm -f -- "$CADDY_RELAY_SNIPPET"
+		fi
+		fail "Caddy rejected the co-located Agent ACME relay; the previous entry was restored"
+	fi
+	if ! systemctl reload caddy; then
+		if [ "$HAD_RELAY_SNIPPET" = "yes" ]; then
+			cp -a "$TEMP_DIRECTORY/theatropolis-agent-acme.caddy.backup" "$CADDY_RELAY_SNIPPET"
+		else
+			rm -f -- "$CADDY_RELAY_SNIPPET"
+		fi
+		systemctl reload caddy || true
+		fail "Caddy could not load the co-located Agent ACME relay; the previous entry was restored"
+	fi
+	printf '%s\n' "$ACME_HTTP01_RELAY_PORT" >"$ACME_HTTP01_RELAY_MARKER"
+	chown root:root "$ACME_HTTP01_RELAY_MARKER"
+	chmod 0644 "$ACME_HTTP01_RELAY_MARKER"
+}
+
 run_set_web_admin() {
 	ADMIN_BINARY="$1"
 	REPLACE_ADMIN="$2"
@@ -1096,6 +1196,12 @@ install_master() {
 	done
 	if systemctl is-active --quiet theatropolis-master; then
 		MASTER_WAS_ACTIVE="yes"
+	fi
+	if [ -f "$AGENT_UNIT_FILE" ] && [ ! -L "$AGENT_UNIT_FILE" ] &&
+		systemctl is-active --quiet theatropolis-agent; then
+		AGENT_WAS_ACTIVE="yes"
+		AGENT_STOPPED="yes"
+		systemctl stop theatropolis-agent
 	fi
 
 	if [ "$WEB_AUTH_EXISTED" = "no" ] || [ -n "$ADMIN_USERNAME" ]; then
@@ -1235,6 +1341,24 @@ EOF
 	systemctl enable --now theatropolis-master
 	systemctl restart theatropolis-master
 	configure_caddy
+	if [ -f "$AGENT_UNIT_FILE" ] && [ ! -L "$AGENT_UNIT_FILE" ]; then
+		if [ "$ROLE" = "master" ]; then
+			# Old Agent units do not carry the relay flag and old binaries do
+			# not understand it. Upgrade only the verified binary, preserving
+			# enrollment, environment, sing-box, and the existing service unit.
+			[ -f "$INSTALL_DIRECTORY/theatropolis-agent" ] &&
+				[ ! -L "$INSTALL_DIRECTORY/theatropolis-agent" ] ||
+				fail "the existing Agent binary is not a regular file; reinstall the Agent first"
+			COLOCATED_AGENT_BINARY_BACKUP="$TEMP_DIRECTORY/colocated-agent.backup"
+			cp -a "$INSTALL_DIRECTORY/theatropolis-agent" "$COLOCATED_AGENT_BINARY_BACKUP"
+			install_binary agent
+		fi
+		configure_acme_http01_relay
+		if [ "$ROLE" = "master" ] && [ "$AGENT_WAS_ACTIVE" = "yes" ]; then
+			systemctl restart theatropolis-agent
+			AGENT_STOPPED="no"
+		fi
+	fi
 }
 
 write_enrollment_token() {
@@ -1343,7 +1467,7 @@ install_agent() {
 	fi
 	detect_local_master_dial_address
 	write_agent_configuration
-	cat >/etc/systemd/system/theatropolis-agent.service <<EOF
+	cat >"$AGENT_UNIT_FILE" <<EOF
 [Unit]
 Description=Theatropolis agent
 After=network-online.target
@@ -1359,7 +1483,7 @@ Environment=LD_LIBRARY_PATH=${SING_BOX_LIBRARY_DIRECTORY}
 Environment=HOME=${AGENT_STATE_DIRECTORY}
 Environment=XDG_DATA_HOME=${AGENT_STATE_DIRECTORY}/data
 WorkingDirectory=${AGENT_STATE_DIRECTORY}
-ExecStart=${INSTALL_DIRECTORY}/theatropolis-agent --master=\${THEATROPOLIS_MASTER} --master-dial-address=\${THEATROPOLIS_MASTER_DIAL} --state-dir=${AGENT_STATE_DIRECTORY} --enrollment-token-file=${AGENT_STATE_DIRECTORY}/enrollment.token --ca-file=\${THEATROPOLIS_CA_FILE}
+ExecStart=${INSTALL_DIRECTORY}/theatropolis-agent --master=\${THEATROPOLIS_MASTER} --master-dial-address=\${THEATROPOLIS_MASTER_DIAL} --state-dir=${AGENT_STATE_DIRECTORY} --enrollment-token-file=${AGENT_STATE_DIRECTORY}/enrollment.token --ca-file=\${THEATROPOLIS_CA_FILE} --acme-http01-relay-marker=${ACME_HTTP01_RELAY_MARKER}
 Restart=on-failure
 RestartSec=5s
 NoNewPrivileges=true
@@ -1461,9 +1585,12 @@ Unit=theatropolis-sing-box-update.service
 [Install]
 WantedBy=multi-user.target
 EOF
-	chmod 0644 /etc/systemd/system/theatropolis-agent.service
+	chmod 0644 "$AGENT_UNIT_FILE"
 	chmod 0644 "$AGENT_UPDATE_SERVICE_FILE" "$AGENT_UPDATE_PATH_FILE"
 	chmod 0644 "$SING_BOX_UPDATE_SERVICE_FILE" "$SING_BOX_UPDATE_PATH_FILE"
+	if [ -f "$MASTER_UNIT_FILE" ] && [ ! -L "$MASTER_UNIT_FILE" ]; then
+		configure_acme_http01_relay
+	fi
 	systemctl daemon-reload
 	systemctl enable --now theatropolis-agent-update.path
 	systemctl enable --now theatropolis-sing-box-update.path

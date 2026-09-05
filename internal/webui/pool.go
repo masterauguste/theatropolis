@@ -272,7 +272,7 @@ func (h *Handler) poolPageData(_ context.Context, session Session) pageData {
 func (h *Handler) poolContent(response http.ResponseWriter, request *http.Request) {
 	session, ok := h.authenticate(response, request)
 	if !ok {
-		http.Error(response, "unauthorized", http.StatusUnauthorized)
+		writeUserError(response, "unauthorized", http.StatusUnauthorized)
 		return
 	}
 	if request.URL.RawQuery != "" {
@@ -306,7 +306,7 @@ func (h *Handler) upsertPoolEntry(response http.ResponseWriter, request *http.Re
 		"outbound_json",
 	)
 	if err != nil || !h.authorizeCSRF(response, sessionToken, form.Get("csrf_token")) {
-		http.Error(response, "request was not authorized", http.StatusForbidden)
+		writeUserError(response, "request was not authorized", http.StatusForbidden)
 		return
 	}
 	session, err := h.access.Authenticate(sessionToken)
@@ -316,7 +316,7 @@ func (h *Handler) upsertPoolEntry(response http.ResponseWriter, request *http.Re
 	}
 	registry := h.controller.PoolRegistry()
 	if registry == nil {
-		http.Error(response, "the outbound pool is unavailable", http.StatusConflict)
+		writeUserError(response, "the outbound pool is unavailable", http.StatusConflict)
 		return
 	}
 
@@ -387,7 +387,7 @@ func (h *Handler) deletePoolEntry(response http.ResponseWriter, request *http.Re
 		"name",
 	)
 	if err != nil || !h.authorizeCSRF(response, sessionToken, form.Get("csrf_token")) {
-		http.Error(response, "request was not authorized", http.StatusForbidden)
+		writeUserError(response, "request was not authorized", http.StatusForbidden)
 		return
 	}
 	session, err := h.access.Authenticate(sessionToken)
@@ -397,13 +397,13 @@ func (h *Handler) deletePoolEntry(response http.ResponseWriter, request *http.Re
 	}
 	registry := h.controller.PoolRegistry()
 	if registry == nil {
-		http.Error(response, "the outbound pool is unavailable", http.StatusConflict)
+		writeUserError(response, "the outbound pool is unavailable", http.StatusConflict)
 		return
 	}
 
 	name := form.Get("name")
 	if form.Get("confirm_delete") != "yes" {
-		http.Error(response, "request was not authorized", http.StatusForbidden)
+		writeUserError(response, "request was not authorized", http.StatusForbidden)
 		return
 	}
 	if err := registry.RemoveManual(name); err != nil {
@@ -414,7 +414,7 @@ func (h *Handler) deletePoolEntry(response http.ResponseWriter, request *http.Re
 			return
 		}
 		h.logger.Error("delete pool manual entry", "name", name, "error", err)
-		http.Error(response, "the pool entry could not be deleted", http.StatusInternalServerError)
+		writeUserError(response, "the pool entry could not be deleted", http.StatusInternalServerError)
 		return
 	}
 	h.controller.PropagateManualPoolChange(request.Context())
@@ -424,7 +424,7 @@ func (h *Handler) deletePoolEntry(response http.ResponseWriter, request *http.Re
 
 func (h *Handler) serverPoolOptions(response http.ResponseWriter, request *http.Request) {
 	if _, ok := h.authenticate(response, request); !ok {
-		http.Error(response, "unauthorized", http.StatusUnauthorized)
+		writeUserError(response, "unauthorized", http.StatusUnauthorized)
 		return
 	}
 	agentID := request.PathValue("agent_id")
@@ -485,7 +485,7 @@ func (h *Handler) setServerAddress(response http.ResponseWriter, request *http.R
 		"override_ipv6",
 	)
 	if err != nil || !h.authorizeCSRF(response, sessionToken, form.Get("csrf_token")) {
-		http.Error(response, "request was not authorized", http.StatusForbidden)
+		writeUserError(response, "request was not authorized", http.StatusForbidden)
 		return
 	}
 	if _, err := h.access.Authenticate(sessionToken); err != nil {
@@ -499,11 +499,11 @@ func (h *Handler) setServerAddress(response http.ResponseWriter, request *http.R
 	}
 	registry := h.controller.PoolRegistry()
 	if registry == nil {
-		http.Error(response, "the outbound pool is unavailable", http.StatusConflict)
+		writeUserError(response, "the outbound pool is unavailable", http.StatusConflict)
 		return
 	}
 	if snapshot.State != identity.AgentStateEnrolled {
-		http.Error(response, "the server must be enrolled first", http.StatusConflict)
+		writeUserError(response, "the server must be enrolled first", http.StatusConflict)
 		return
 	}
 
@@ -512,14 +512,14 @@ func (h *Handler) setServerAddress(response http.ResponseWriter, request *http.R
 	if overrideV4 != "" {
 		address, err := netip.ParseAddr(overrideV4)
 		if err != nil || !address.Is4() {
-			http.Error(response, "the IPv4 override must be an IPv4 address or empty", http.StatusBadRequest)
+			writeUserError(response, "the IPv4 override must be an IPv4 address or empty", http.StatusBadRequest)
 			return
 		}
 	}
 	if overrideV6 != "" {
 		address, err := netip.ParseAddr(overrideV6)
 		if err != nil || !address.Is6() {
-			http.Error(response, "the IPv6 override must be an IPv6 address or empty", http.StatusBadRequest)
+			writeUserError(response, "the IPv6 override must be an IPv6 address or empty", http.StatusBadRequest)
 			return
 		}
 	}
@@ -527,15 +527,15 @@ func (h *Handler) setServerAddress(response http.ResponseWriter, request *http.R
 		if errors.Is(err, pool.ErrInvalidAddress) {
 			// The registry rejects anything that is not a globally routable
 			// address (private, ULA, CGNAT, reserved).
-			http.Error(response, "address overrides must be public IP addresses", http.StatusBadRequest)
+			writeUserError(response, "address overrides must be public IP addresses", http.StatusBadRequest)
 			return
 		}
 		if errors.Is(err, pool.ErrInvalidName) {
-			http.Error(response, "invalid server ID", http.StatusBadRequest)
+			writeUserError(response, "invalid server ID", http.StatusBadRequest)
 			return
 		}
 		h.logger.Error("set pool address override", "agent_id", snapshot.ID, "error", err)
-		http.Error(response, "the address override could not be saved", http.StatusInternalServerError)
+		writeUserError(response, "the address override could not be saved", http.StatusInternalServerError)
 		return
 	}
 	h.controller.PropagateManualPoolChange(request.Context())
@@ -561,7 +561,7 @@ func (h *Handler) setServerSubscriptionDomains(response http.ResponseWriter, req
 		"subscription_domain_ipv6",
 	)
 	if err != nil || !h.authorizeCSRF(response, sessionToken, form.Get("csrf_token")) {
-		http.Error(response, "request was not authorized", http.StatusForbidden)
+		writeUserError(response, "request was not authorized", http.StatusForbidden)
 		return
 	}
 	session, err := h.authenticateSession(response, sessionToken)
@@ -576,7 +576,7 @@ func (h *Handler) setServerSubscriptionDomains(response http.ResponseWriter, req
 	}
 	registry := h.controller.PoolRegistry()
 	if registry == nil {
-		http.Error(response, "the outbound pool is unavailable", http.StatusConflict)
+		writeUserError(response, "the outbound pool is unavailable", http.StatusConflict)
 		return
 	}
 	ipv4, ipv4Err := pool.NormalizeSubscriptionDomain(form.Get("subscription_domain_ipv4"))
@@ -584,7 +584,7 @@ func (h *Handler) setServerSubscriptionDomains(response http.ResponseWriter, req
 	if ipv4Err != nil || ipv6Err != nil {
 		data, pageErr := h.serverPageData(request.Context(), session, snapshot, "")
 		if pageErr != nil {
-			http.Error(response, "server details could not be loaded", http.StatusInternalServerError)
+			writeUserError(response, "server details could not be loaded", http.StatusInternalServerError)
 			return
 		}
 		data.Error = "Enter DNS hostnames without a scheme, port, path, wildcard, or IP address."
@@ -599,7 +599,7 @@ func (h *Handler) setServerSubscriptionDomains(response http.ResponseWriter, req
 	}
 	if err := registry.SetSubscriptionDomains(snapshot.ID, ipv4, ipv6); err != nil {
 		h.logger.Error("save agent subscription domains", "agent_id", snapshot.ID, "error", err)
-		http.Error(response, "the subscription domains could not be saved", http.StatusInternalServerError)
+		writeUserError(response, "the subscription domains could not be saved", http.StatusInternalServerError)
 		return
 	}
 	h.logger.Info(
@@ -626,7 +626,7 @@ func (h *Handler) setServerSubscriptionDomains(response http.ResponseWriter, req
 func (h *Handler) requestAddressProbe(response http.ResponseWriter, request *http.Request) {
 	sessionToken, ok := h.sessionToken(request)
 	if !ok {
-		http.Error(response, "unauthorized", http.StatusUnauthorized)
+		writeUserError(response, "unauthorized", http.StatusUnauthorized)
 		return
 	}
 	if h.rejectInvalidMutationOrigin(response, request) {
@@ -640,16 +640,16 @@ func (h *Handler) requestAddressProbe(response http.ResponseWriter, request *htt
 		"family",
 	)
 	if err != nil || !h.authorizeCSRF(response, sessionToken, form.Get("csrf_token")) {
-		http.Error(response, "request was not authorized", http.StatusForbidden)
+		writeUserError(response, "request was not authorized", http.StatusForbidden)
 		return
 	}
 	if _, err := h.access.Authenticate(sessionToken); err != nil {
-		http.Error(response, "unauthorized", http.StatusUnauthorized)
+		writeUserError(response, "unauthorized", http.StatusUnauthorized)
 		return
 	}
 	family, err := pool.ParseFamily(form.Get("family"))
 	if err != nil || family == pool.FamilyAuto {
-		http.Error(response, "family must be ipv4 or ipv6", http.StatusBadRequest)
+		writeUserError(response, "family must be ipv4 or ipv6", http.StatusBadRequest)
 		return
 	}
 	snapshot, ok := h.agentSnapshot(request.PathValue("agent_id"))
@@ -658,7 +658,7 @@ func (h *Handler) requestAddressProbe(response http.ResponseWriter, request *htt
 		return
 	}
 	if snapshot.State != identity.AgentStateEnrolled {
-		http.Error(response, "the server must be enrolled first", http.StatusConflict)
+		writeUserError(response, "the server must be enrolled first", http.StatusConflict)
 		return
 	}
 	if err := h.controller.RequestAddressProbe(snapshot.ID, family.String()); err != nil {
@@ -682,7 +682,7 @@ func (h *Handler) requestAddressProbe(response http.ResponseWriter, request *htt
 				"error", err,
 			)
 		}
-		http.Error(response, message, status)
+		writeUserError(response, message, status)
 		return
 	}
 	h.logger.Info("address probe requested", "agent_id", snapshot.ID, "family", family.String())

@@ -32,7 +32,6 @@ import (
 	"github.com/masterauguste/theatropolis/internal/identity"
 	"github.com/masterauguste/theatropolis/internal/pool"
 	"github.com/masterauguste/theatropolis/internal/proxynode"
-	"github.com/masterauguste/theatropolis/internal/singbox"
 	"github.com/masterauguste/theatropolis/internal/singboxupdate"
 )
 
@@ -40,9 +39,6 @@ const (
 	maxLoginBodyBytes             = 8 << 10
 	maxEnrollmentBodyBytes        = 4 << 10
 	maxMigrationArchiveBytes      = 128 << 20
-	maxConfigurationBytes         = 4 << 20
-	maxConfigurationFormBytes     = 3*maxConfigurationBytes + 8<<10
-	maxConfigurationJSONDepth     = 128
 	enrollmentLimit               = 30
 	enrollmentWindow              = time.Minute
 	enrollmentResultLimit         = 64
@@ -52,7 +48,7 @@ const (
 )
 
 var (
-	//go:embed assets/* templates/*
+	//go:embed assets/* templates/* messages.json
 	webFiles embed.FS
 
 	domainLabelPattern          = regexp.MustCompile(`\A[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?\z`)
@@ -76,6 +72,7 @@ type ProxyUserSynchronizer interface {
 type AgentController interface {
 	CanDeployConfiguration(agentID string) bool
 	CanDeployProxyNodeConfiguration(agentID string) bool
+	CanRelayACMEHTTP01(agentID string) bool
 	CanUpdateAgent(agentID string) bool
 	LatestAgentUpdate(agentID string) (control.AgentUpdateState, bool)
 	QueueAgentUpdate(context.Context, string, string, string) error
@@ -253,6 +250,12 @@ type pageData struct {
 	ProxyNodes                      []proxyNodeListView
 	ProxyNode                       *proxyNodeDetailView
 	EndUsers                        []endUserListView
+	UserSearch                      string
+	UserTotal                       int
+	UserStart                       int
+	UserEnd                         int
+	UsersPreviousURL                string
+	UsersNextURL                    string
 	EndUser                         *endUserDetailView
 	UserSubscription                *userSubscriptionView
 	SubscriptionPolicy              *subscriptionPolicyView
@@ -317,6 +320,7 @@ type agentDetailView struct {
 	OperatingSystem       string
 	Architecture          string
 	SingBoxVersion        string
+	ACMEHTTP01Relay       bool
 	SingBoxUpdateEnabled  bool
 	SingBoxUpdateHint     string
 	SingBoxUpdateTarget   string
@@ -486,21 +490,18 @@ func New(options Options) (http.Handler, error) {
 func (h *Handler) routes() {
 	h.mux.HandleFunc("GET /healthz", h.health)
 	h.mux.HandleFunc("GET /assets/app.css", h.asset("assets/app.css", "text/css; charset=utf-8"))
-	h.mux.HandleFunc("GET /assets/i18n.js", h.asset("assets/i18n.js", "text/javascript; charset=utf-8"))
+	h.mux.HandleFunc("GET /assets/i18n.js", h.messageScript())
 	h.mux.HandleFunc("GET /assets/app.js", h.asset("assets/app.js", "text/javascript; charset=utf-8"))
 	h.mux.HandleFunc(
 		"GET /assets/dropdown.js",
 		h.asset("assets/dropdown.js", "text/javascript; charset=utf-8"),
 	)
 	h.mux.HandleFunc(
-		"GET /assets/config-editor.js",
-		h.asset("assets/config-editor.js", "text/javascript; charset=utf-8"),
-	)
-	h.mux.HandleFunc(
 		"GET /assets/subscription-rules.js",
 		h.asset("assets/subscription-rules.js", "text/javascript; charset=utf-8"),
 	)
 	h.mux.HandleFunc("GET /login", h.loginPage)
+	h.mux.HandleFunc("GET /session/csrf", h.sessionCSRF)
 	h.mux.HandleFunc("GET /language/{locale}", h.changeLanguage)
 	h.mux.HandleFunc("POST /login", h.login)
 	h.mux.HandleFunc("POST /logout", h.logout)
@@ -642,7 +643,7 @@ func (h *Handler) routes() {
 func (h *Handler) ServeHTTP(response http.ResponseWriter, request *http.Request) {
 	setSecurityHeaders(response.Header())
 	if request.URL.Path != "/healthz" && !h.validRequestHost(request.Host) {
-		http.Error(response, "request host is not configured", http.StatusMisdirectedRequest)
+		writeUserError(response, "request host is not configured", http.StatusMisdirectedRequest)
 		return
 	}
 	locale, hasPreference := localeForRequest(request)
@@ -791,7 +792,7 @@ func (h *Handler) login(response http.ResponseWriter, request *http.Request) {
 		}
 	default:
 		h.logger.Error("unsupported web credential mode", "mode", mode)
-		http.Error(
+		writeUserError(
 			response,
 			"interface could not authenticate",
 			http.StatusInternalServerError,
@@ -799,7 +800,7 @@ func (h *Handler) login(response http.ResponseWriter, request *http.Request) {
 		return
 	}
 	if err != nil {
-		http.Error(response, "invalid request", http.StatusBadRequest)
+		writeUserError(response, "invalid request", http.StatusBadRequest)
 		return
 	}
 	session, err := h.access.LoginForClient(
@@ -834,7 +835,7 @@ func (h *Handler) unifiedLogin(
 ) {
 	form, err := readExactForm(response, request, maxLoginBodyBytes, "password", "username")
 	if err != nil {
-		http.Error(response, "invalid request", http.StatusBadRequest)
+		writeUserError(response, "invalid request", http.StatusBadRequest)
 		return
 	}
 	username := strings.TrimSpace(strings.ToLower(form.Get("username")))
@@ -846,7 +847,7 @@ func (h *Handler) unifiedLogin(
 			session, sessionErr := h.access.createAuthenticatedSession(h.currentTime(), sha256.Sum256([]byte(client)))
 			if sessionErr != nil {
 				h.logger.Error("create administrator session", "error", sessionErr)
-				http.Error(response, "interface could not authenticate", http.StatusInternalServerError)
+				writeUserError(response, "interface could not authenticate", http.StatusInternalServerError)
 				return
 			}
 			http.SetCookie(response, NewSessionCookie(session.Token, session.ExpiresAt))
@@ -892,12 +893,12 @@ func (h *Handler) logout(response http.ResponseWriter, request *http.Request) {
 	}
 	form, err := readExactForm(response, request, maxLoginBodyBytes, "csrf_token")
 	if err != nil || !h.authorizeCSRF(response, sessionToken, form.Get("csrf_token")) {
-		http.Error(response, "request was not authorized", http.StatusForbidden)
+		writeUserError(response, "request was not authorized", http.StatusForbidden)
 		return
 	}
 	if err := h.access.Logout(sessionToken); err != nil {
 		h.logger.Error("persist web logout", "error", err)
-		http.Error(response, "logout could not be completed", http.StatusInternalServerError)
+		writeUserError(response, "logout could not be completed", http.StatusInternalServerError)
 		return
 	}
 	h.updateViewMu.Lock()
@@ -923,7 +924,7 @@ func (h *Handler) serversPage(response http.ResponseWriter, request *http.Reques
 func (h *Handler) serversContent(response http.ResponseWriter, request *http.Request) {
 	session, ok := h.authenticate(response, request)
 	if !ok {
-		http.Error(response, "unauthorized", http.StatusUnauthorized)
+		writeUserError(response, "unauthorized", http.StatusUnauthorized)
 		return
 	}
 	if request.URL.RawQuery != "" {
@@ -1077,7 +1078,7 @@ func (h *Handler) exportMasterMigration(response http.ResponseWriter, request *h
 	}
 	form, err := readExactForm(response, request, 4<<10, "csrf_token", "passphrase", "passphrase_confirm")
 	if err != nil || !h.authorizeCSRF(response, sessionToken, form.Get("csrf_token")) {
-		http.Error(response, "request was not authorized", http.StatusForbidden)
+		writeUserError(response, "request was not authorized", http.StatusForbidden)
 		return
 	}
 	session, err := h.authenticateSession(response, sessionToken)
@@ -1119,14 +1120,14 @@ func (h *Handler) restoreMasterMigration(response http.ResponseWriter, request *
 	}
 	request.Body = http.MaxBytesReader(response, request.Body, maxMigrationArchiveBytes+(1<<20))
 	if err := request.ParseMultipartForm(maxMigrationArchiveBytes); err != nil {
-		http.Error(response, "migration archive is too large or malformed", http.StatusBadRequest)
+		writeUserError(response, "migration archive is too large or malformed", http.StatusBadRequest)
 		return
 	}
 	if request.MultipartForm != nil {
 		defer request.MultipartForm.RemoveAll()
 	}
 	if !h.authorizeCSRF(response, sessionToken, request.FormValue("csrf_token")) {
-		http.Error(response, "request was not authorized", http.StatusForbidden)
+		writeUserError(response, "request was not authorized", http.StatusForbidden)
 		return
 	}
 	session, err := h.authenticateSession(response, sessionToken)
@@ -1178,7 +1179,7 @@ func (h *Handler) cutoverMasterMigration(response http.ResponseWriter, request *
 	}
 	form, err := readExactForm(response, request, 8<<10, "csrf_token", "master_address", "confirmation")
 	if err != nil || !h.authorizeCSRF(response, sessionToken, form.Get("csrf_token")) {
-		http.Error(response, "request was not authorized", http.StatusForbidden)
+		writeUserError(response, "request was not authorized", http.StatusForbidden)
 		return
 	}
 	session, err := h.authenticateSession(response, sessionToken)
@@ -1233,7 +1234,7 @@ func (h *Handler) clearAccountingErrors(response http.ResponseWriter, request *h
 	}
 	form, err := readExactForm(response, request, 4<<10, "csrf_token", "confirmation")
 	if err != nil || !h.authorizeCSRF(response, sessionToken, form.Get("csrf_token")) {
-		http.Error(response, "request was not authorized", http.StatusForbidden)
+		writeUserError(response, "request was not authorized", http.StatusForbidden)
 		return
 	}
 	session, err := h.authenticateSession(response, sessionToken)
@@ -1262,7 +1263,7 @@ func (h *Handler) clearAccountingErrors(response http.ResponseWriter, request *h
 func (h *Handler) masterVersions(response http.ResponseWriter, request *http.Request) {
 	response.Header().Set("Cache-Control", "no-store")
 	if _, ok := h.authenticate(response, request); !ok {
-		http.Error(response, "unauthorized", http.StatusUnauthorized)
+		writeUserError(response, "unauthorized", http.StatusUnauthorized)
 		return
 	}
 	versions, latest, warning := h.releaseVersions(request.Context())
@@ -1285,12 +1286,12 @@ func (h *Handler) masterUpdateStatus(response http.ResponseWriter, request *http
 	}
 	requestID := request.URL.Query().Get("request_id")
 	if !agentupdate.ValidRequestID(requestID) || h.masterUpdater == nil {
-		http.Error(response, "invalid update status request", http.StatusBadRequest)
+		writeUserError(response, "invalid update status request", http.StatusBadRequest)
 		return
 	}
 	result, exists, err := h.masterUpdater.LoadResult()
 	if err != nil {
-		http.Error(response, "update status could not be loaded", http.StatusInternalServerError)
+		writeUserError(response, "update status could not be loaded", http.StatusInternalServerError)
 		return
 	}
 	status := "updating"
@@ -1331,7 +1332,7 @@ func (h *Handler) serverPage(response http.ResponseWriter, request *http.Request
 			"error",
 			err,
 		)
-		http.Error(response, "server details could not be loaded", http.StatusInternalServerError)
+		writeUserError(response, "server details could not be loaded", http.StatusInternalServerError)
 		return
 	}
 	h.render(response, http.StatusOK, "server.html", data)
@@ -1362,7 +1363,7 @@ func (h *Handler) deploymentStatus(
 			"error",
 			err,
 		)
-		http.Error(response, "deployment status could not be loaded", http.StatusInternalServerError)
+		writeUserError(response, "deployment status could not be loaded", http.StatusInternalServerError)
 		return
 	}
 	pending := false
@@ -1392,210 +1393,6 @@ func (h *Handler) deploymentStatus(
 			err,
 		)
 	}
-}
-
-func (h *Handler) deployServerConfiguration(
-	response http.ResponseWriter,
-	request *http.Request,
-) {
-	sessionToken, ok := h.sessionToken(request)
-	if !ok {
-		h.redirectToLogin(response, request)
-		return
-	}
-	if h.rejectInvalidMutationOrigin(response, request) {
-		return
-	}
-	form, err := readExactForm(
-		response,
-		request,
-		maxConfigurationFormBytes,
-		"config_json",
-		"csrf_token",
-	)
-	if err != nil {
-		http.Error(response, "request form is invalid", http.StatusBadRequest)
-		return
-	}
-	session, err := h.authenticateSession(response, sessionToken)
-	if err != nil {
-		if strings.Contains(request.Header.Get("Accept"), "application/json") {
-			http.Error(response, "unauthorized", http.StatusUnauthorized)
-		} else {
-			h.redirectToLogin(response, request)
-		}
-		return
-	}
-	if !h.authorizeCSRF(response, sessionToken, form.Get("csrf_token")) {
-		http.Error(response, "request was not authorized", http.StatusForbidden)
-		return
-	}
-	snapshot, ok := h.agentSnapshot(request.PathValue("agent_id"))
-	if !ok {
-		http.NotFound(response, request)
-		return
-	}
-
-	config := []byte(form.Get("config_json"))
-	if err := validateConfigurationJSON(config); err != nil {
-		h.renderServerError(
-			response,
-			http.StatusBadRequest,
-			session,
-			snapshot,
-			string(config),
-			err.Error(),
-			"config_json",
-		)
-		return
-	}
-	config, err = ensureRequiredRouteActions(config)
-	if err != nil {
-		h.renderServerError(
-			response,
-			http.StatusBadRequest,
-			session,
-			snapshot,
-			form.Get("config_json"),
-			err.Error(),
-			"config_json",
-		)
-		return
-	}
-	if err := singbox.ValidateManagedConfig(config); err != nil {
-		message := "The configuration does not satisfy the managed-agent safety policy."
-		if errors.Is(err, singbox.ErrReservedListenPort) {
-			message = singbox.ReservedListenPortMessage()
-		}
-		h.renderServerError(
-			response,
-			http.StatusBadRequest,
-			session,
-			snapshot,
-			string(config),
-			message,
-			"config_json",
-		)
-		return
-	}
-	if snapshot.State != identity.AgentStateEnrolled {
-		h.renderServerError(
-			response,
-			http.StatusConflict,
-			session,
-			snapshot,
-			string(config),
-			"Finish enrolling this server before deploying a configuration.",
-			"",
-		)
-		return
-	}
-	if !h.sessions.IsOnline(snapshot.ID) {
-		h.renderServerError(
-			response,
-			http.StatusConflict,
-			session,
-			snapshot,
-			string(config),
-			"The agent is offline. Reconnect it before deploying a configuration.",
-			"",
-		)
-		return
-	}
-	if !h.controller.CanDeployConfiguration(snapshot.ID) {
-		h.renderServerError(
-			response,
-			http.StatusConflict,
-			session,
-			snapshot,
-			string(config),
-			"Update the agent or repair its sing-box installation before deploying configuration from this master.",
-			"",
-		)
-		return
-	}
-
-	deploymentID, err := randomOpaqueID("dep")
-	if err != nil {
-		h.logger.Error("generate deployment ID", "agent_id", snapshot.ID, "error", err)
-		http.Error(response, "deployment could not be prepared", http.StatusInternalServerError)
-		return
-	}
-	revisionID, err := randomOpaqueID("rev")
-	if err != nil {
-		h.logger.Error("generate revision ID", "agent_id", snapshot.ID, "error", err)
-		http.Error(response, "deployment could not be prepared", http.StatusInternalServerError)
-		return
-	}
-	record, err := h.controller.QueueDeployment(
-		request.Context(),
-		snapshot.ID,
-		deploymentID,
-		revisionID,
-		config,
-		configurationDeploymentPeriod,
-	)
-	clear(config)
-	if err != nil {
-		status := http.StatusInternalServerError
-		message := "The configuration could not be deployed."
-		switch {
-		case record.Status == deployment.StatusDeliveryFailed:
-			status = http.StatusConflict
-			message = "The agent disconnected before the configuration could be delivered."
-		case errors.Is(err, deployment.ErrDeploymentInProgress):
-			status = http.StatusConflict
-			message = "A configuration deployment is already in progress for this server."
-		case errors.Is(err, deployment.ErrNotFound),
-			errors.Is(err, identity.ErrAgentNotFound):
-			status = http.StatusNotFound
-			message = "The server entry no longer exists."
-		default:
-			h.logger.Error(
-				"queue configuration deployment",
-				"agent_id",
-				snapshot.ID,
-				"deployment_id",
-				deploymentID,
-				"error",
-				err,
-			)
-		}
-		h.renderServerError(
-			response,
-			status,
-			session,
-			snapshot,
-			form.Get("config_json"),
-			message,
-			"",
-		)
-		return
-	}
-	h.logger.Info(
-		"configuration deployment queued",
-		"agent_id",
-		snapshot.ID,
-		"deployment_id",
-		record.ID,
-		"revision_id",
-		record.RevisionID,
-	)
-	if strings.Contains(request.Header.Get("Accept"), "application/json") {
-		response.Header().Set("Content-Type", "application/json")
-		response.Header().Set("Cache-Control", "no-store")
-		response.WriteHeader(http.StatusAccepted)
-		_ = json.NewEncoder(response).Encode(map[string]string{
-			"status_url": "/servers/" + url.PathEscape(snapshot.ID) + "/deployment-status",
-		})
-		return
-	}
-	http.Redirect(
-		response,
-		request,
-		"/servers/"+url.PathEscape(snapshot.ID)+"/manage",
-		http.StatusSeeOther,
-	)
 }
 
 func deploymentStatusLabel(view *deploymentView) string {
@@ -1636,7 +1433,7 @@ func (h *Handler) revokeServer(response http.ResponseWriter, request *http.Reque
 		"force",
 	)
 	if err != nil || !h.authorizeCSRF(response, sessionToken, form.Get("csrf_token")) {
-		http.Error(response, "request was not authorized", http.StatusForbidden)
+		writeUserError(response, "request was not authorized", http.StatusForbidden)
 		return
 	}
 	session, err := h.authenticateSession(response, sessionToken)
@@ -1648,7 +1445,7 @@ func (h *Handler) revokeServer(response http.ResponseWriter, request *http.Reque
 	defer h.agentMutationMu.Unlock()
 	agentID := request.PathValue("agent_id")
 	if form.Get("agent_id") != agentID || form.Get("confirm_revoke") != "yes" {
-		http.Error(response, "request was not authorized", http.StatusForbidden)
+		writeUserError(response, "request was not authorized", http.StatusForbidden)
 		return
 	}
 	snapshot, ok := h.agentSnapshot(agentID)
@@ -1700,7 +1497,7 @@ func (h *Handler) revokeServer(response http.ResponseWriter, request *http.Reque
 			return
 		}
 		h.logger.Error("revoke server", "agent_id", agentID, "error", err)
-		http.Error(response, "server access could not be revoked", http.StatusInternalServerError)
+		writeUserError(response, "server access could not be revoked", http.StatusInternalServerError)
 		return
 	}
 	h.removeEnrollmentResultsForAgent(agentID)
@@ -1718,7 +1515,7 @@ func (h *Handler) renderServerRevokeError(
 	data, err := h.serverPageData(request.Context(), session, snapshot, "")
 	if err != nil {
 		h.logger.Error("render server removal error", "agent_id", snapshot.ID, "error", err)
-		http.Error(response, "server details could not be loaded", http.StatusInternalServerError)
+		writeUserError(response, "server details could not be loaded", http.StatusInternalServerError)
 		return
 	}
 	data.Error = message
@@ -1743,7 +1540,7 @@ func (h *Handler) renameServer(response http.ResponseWriter, request *http.Reque
 		"display_name",
 	)
 	if err != nil || !h.authorizeCSRF(response, sessionToken, form.Get("csrf_token")) {
-		http.Error(response, "request was not authorized", http.StatusForbidden)
+		writeUserError(response, "request was not authorized", http.StatusForbidden)
 		return
 	}
 	session, err := h.authenticateSession(response, sessionToken)
@@ -1775,7 +1572,7 @@ func (h *Handler) renameServer(response http.ResponseWriter, request *http.Reque
 		}
 		data, dataErr := h.serverPageData(request.Context(), session, snapshot, "")
 		if dataErr != nil {
-			http.Error(response, "server details could not be loaded", http.StatusInternalServerError)
+			writeUserError(response, "server details could not be loaded", http.StatusInternalServerError)
 			return
 		}
 		data.Error = message
@@ -1806,7 +1603,7 @@ func (h *Handler) replaceServer(response http.ResponseWriter, request *http.Requ
 		"ttl_seconds",
 	)
 	if err != nil || !h.authorizeCSRF(response, sessionToken, form.Get("csrf_token")) {
-		http.Error(response, "request was not authorized", http.StatusForbidden)
+		writeUserError(response, "request was not authorized", http.StatusForbidden)
 		return
 	}
 	if _, err := h.authenticateSession(response, sessionToken); err != nil {
@@ -1815,7 +1612,7 @@ func (h *Handler) replaceServer(response http.ResponseWriter, request *http.Requ
 	}
 	agentID := request.PathValue("agent_id")
 	if form.Get("agent_id") != agentID {
-		http.Error(response, "request was not authorized", http.StatusForbidden)
+		writeUserError(response, "request was not authorized", http.StatusForbidden)
 		return
 	}
 	snapshot, exists := h.agentSnapshot(agentID)
@@ -1826,12 +1623,12 @@ func (h *Handler) replaceServer(response http.ResponseWriter, request *http.Requ
 	ttlSeconds, parseErr := strconv.ParseInt(form.Get("ttl_seconds"), 10, 64)
 	ttl, ttlAllowed := allowedTTLs[ttlSeconds]
 	if parseErr != nil || !ttlAllowed {
-		http.Error(response, "choose a supported enrollment lifetime", http.StatusBadRequest)
+		writeUserError(response, "choose a supported enrollment lifetime", http.StatusBadRequest)
 		return
 	}
 	if !h.allowEnrollment(h.currentTime()) {
 		response.Header().Set("Retry-After", "60")
-		http.Error(response, "too many enrollment credentials were created", http.StatusTooManyRequests)
+		writeUserError(response, "too many enrollment credentials were created", http.StatusTooManyRequests)
 		return
 	}
 
@@ -1852,7 +1649,7 @@ func (h *Handler) replaceServer(response http.ResponseWriter, request *http.Requ
 		} else {
 			h.logger.Error("create replacement enrollment", "agent_id", agentID, "error", err)
 		}
-		http.Error(response, "replacement enrollment was not created", statusCode)
+		writeUserError(response, "replacement enrollment was not created", statusCode)
 		return
 	}
 	encodedToken := base64.RawURLEncoding.EncodeToString(token)
@@ -1867,7 +1664,7 @@ func (h *Handler) replaceServer(response http.ResponseWriter, request *http.Requ
 	resultID, err := h.storeEnrollmentResult(sessionToken, created, h.currentTime())
 	if err != nil {
 		h.logger.Error("store replacement result", "agent_id", agentID, "error", err)
-		http.Error(response, "replacement result could not be prepared", http.StatusInternalServerError)
+		writeUserError(response, "replacement result could not be prepared", http.StatusInternalServerError)
 		return
 	}
 	http.Redirect(
@@ -1895,7 +1692,7 @@ func (h *Handler) updateAgent(response http.ResponseWriter, request *http.Reques
 		"target_version",
 	)
 	if err != nil || !h.authorizeCSRF(response, sessionToken, form.Get("csrf_token")) {
-		http.Error(response, "request was not authorized", http.StatusForbidden)
+		writeUserError(response, "request was not authorized", http.StatusForbidden)
 		return
 	}
 	session, err := h.authenticateSession(response, sessionToken)
@@ -1969,7 +1766,7 @@ func (h *Handler) updateAgent(response http.ResponseWriter, request *http.Reques
 	requestID, err := randomOpaqueID("update")
 	if err != nil {
 		h.logger.Error("generate agent update ID", "agent_id", snapshot.ID, "error", err)
-		http.Error(response, "agent update could not be prepared", http.StatusInternalServerError)
+		writeUserError(response, "agent update could not be prepared", http.StatusInternalServerError)
 		return
 	}
 	if err := h.controller.QueueAgentUpdate(
@@ -2018,7 +1815,7 @@ func (h *Handler) updateAllAgents(response http.ResponseWriter, request *http.Re
 		"csrf_token",
 	)
 	if err != nil || !h.authorizeCSRF(response, sessionToken, form.Get("csrf_token")) {
-		http.Error(response, "request was not authorized", http.StatusForbidden)
+		writeUserError(response, "request was not authorized", http.StatusForbidden)
 		return
 	}
 	session, err := h.authenticateSession(response, sessionToken)
@@ -2027,12 +1824,12 @@ func (h *Handler) updateAllAgents(response http.ResponseWriter, request *http.Re
 		return
 	}
 	if h.releases == nil {
-		http.Error(response, "the latest release could not be determined", http.StatusServiceUnavailable)
+		writeUserError(response, "the latest release could not be determined", http.StatusServiceUnavailable)
 		return
 	}
 	releases, err := h.releases.Versions(request.Context())
 	if err != nil || len(releases) == 0 {
-		http.Error(response, "the latest release could not be determined", http.StatusServiceUnavailable)
+		writeUserError(response, "the latest release could not be determined", http.StatusServiceUnavailable)
 		return
 	}
 	targetVersion := releases[0].Tag
@@ -2108,7 +1905,7 @@ func (h *Handler) updateAllSingBox(response http.ResponseWriter, request *http.R
 		"target_version",
 	)
 	if err != nil || !h.authorizeCSRF(response, sessionToken, form.Get("csrf_token")) {
-		http.Error(response, "request was not authorized", http.StatusForbidden)
+		writeUserError(response, "request was not authorized", http.StatusForbidden)
 		return
 	}
 	session, err := h.authenticateSession(response, sessionToken)
@@ -2239,7 +2036,7 @@ func (h *Handler) updateSingBox(
 	)
 	if err != nil ||
 		!h.authorizeCSRF(response, sessionToken, form.Get("csrf_token")) {
-		http.Error(response, "request was not authorized", http.StatusForbidden)
+		writeUserError(response, "request was not authorized", http.StatusForbidden)
 		return
 	}
 	session, err := h.authenticateSession(response, sessionToken)
@@ -2264,7 +2061,7 @@ func (h *Handler) updateSingBox(
 	} else {
 		requestID, randomErr := randomOpaqueID("singbox")
 		if randomErr != nil {
-			http.Error(
+			writeUserError(
 				response,
 				"sing-box update could not be prepared",
 				http.StatusInternalServerError,
@@ -2298,7 +2095,7 @@ func (h *Handler) updateSingBox(
 			"",
 		)
 		if dataErr != nil {
-			http.Error(
+			writeUserError(
 				response,
 				"server details could not be loaded",
 				http.StatusInternalServerError,
@@ -2335,7 +2132,7 @@ func (h *Handler) updateMaster(response http.ResponseWriter, request *http.Reque
 		"csrf_token",
 	)
 	if err != nil || !h.authorizeCSRF(response, sessionToken, form.Get("csrf_token")) {
-		http.Error(response, "request was not authorized", http.StatusForbidden)
+		writeUserError(response, "request was not authorized", http.StatusForbidden)
 		return
 	}
 	if _, err := h.authenticateSession(response, sessionToken); err != nil {
@@ -2343,12 +2140,12 @@ func (h *Handler) updateMaster(response http.ResponseWriter, request *http.Reque
 		return
 	}
 	if h.masterUpdater == nil || h.releases == nil {
-		http.Error(response, "master update control is unavailable", http.StatusConflict)
+		writeUserError(response, "master update control is unavailable", http.StatusConflict)
 		return
 	}
 	releases, err := h.releases.Versions(request.Context())
 	if err != nil || len(releases) == 0 {
-		http.Error(response, "the latest release could not be determined", http.StatusServiceUnavailable)
+		writeUserError(response, "the latest release could not be determined", http.StatusServiceUnavailable)
 		return
 	}
 	targetVersion := releases[0].Tag
@@ -2358,7 +2155,7 @@ func (h *Handler) updateMaster(response http.ResponseWriter, request *http.Reque
 	}
 	requestID, err := randomOpaqueID("master")
 	if err != nil {
-		http.Error(response, "master update could not be prepared", http.StatusInternalServerError)
+		writeUserError(response, "master update could not be prepared", http.StatusInternalServerError)
 		return
 	}
 	if err := h.masterUpdater.Schedule(requestID, targetVersion); err != nil {
@@ -2366,7 +2163,7 @@ func (h *Handler) updateMaster(response http.ResponseWriter, request *http.Reque
 		if errors.Is(err, agentupdate.ErrUpdatePending) {
 			status = http.StatusConflict
 		}
-		http.Error(response, "master update could not be scheduled", status)
+		writeUserError(response, "master update could not be scheduled", status)
 		return
 	}
 	h.logger.Info(
@@ -2408,7 +2205,7 @@ func (h *Handler) renderAgentUpdateError(
 		"",
 	)
 	if err != nil {
-		http.Error(response, "server details could not be loaded", http.StatusInternalServerError)
+		writeUserError(response, "server details could not be loaded", http.StatusInternalServerError)
 		return
 	}
 	data.Error = message
@@ -2463,6 +2260,7 @@ func (h *Handler) serverPageData(
 		detail.OperatingSystem = info.OperatingSystem
 		detail.Architecture = info.Architecture
 	}
+	detail.ACMEHTTP01Relay = online && h.controller.CanRelayACMEHTTP01(snapshot.ID)
 	switch snapshot.State {
 	case identity.AgentStatePending:
 		detail.ConfigurationHint = "The server must enroll before it can receive configuration."
@@ -2665,11 +2463,11 @@ type versionCatalogResponse struct {
 func (h *Handler) fleetVersions(response http.ResponseWriter, request *http.Request) {
 	response.Header().Set("Cache-Control", "no-store")
 	if _, ok := h.authenticate(response, request); !ok {
-		http.Error(response, "unauthorized", http.StatusUnauthorized)
+		writeUserError(response, "unauthorized", http.StatusUnauthorized)
 		return
 	}
 	if request.URL.Query().Get("catalog") != "sing-box" {
-		http.Error(response, "unknown version catalog", http.StatusBadRequest)
+		writeUserError(response, "unknown version catalog", http.StatusBadRequest)
 		return
 	}
 	result := versionCatalogResponse{}
@@ -2688,7 +2486,7 @@ func (h *Handler) fleetVersions(response http.ResponseWriter, request *http.Requ
 func (h *Handler) serverVersions(response http.ResponseWriter, request *http.Request) {
 	response.Header().Set("Cache-Control", "no-store")
 	if _, ok := h.authenticate(response, request); !ok {
-		http.Error(response, "unauthorized", http.StatusUnauthorized)
+		writeUserError(response, "unauthorized", http.StatusUnauthorized)
 		return
 	}
 	if _, exists := h.agentSnapshot(request.PathValue("agent_id")); !exists {
@@ -2708,7 +2506,7 @@ func (h *Handler) serverVersions(response http.ResponseWriter, request *http.Req
 			"sing-box",
 		)
 	default:
-		http.Error(response, "unknown version catalog", http.StatusBadRequest)
+		writeUserError(response, "unknown version catalog", http.StatusBadRequest)
 		return
 	}
 	response.Header().Set("Content-Type", "application/json")
@@ -2769,7 +2567,7 @@ type ruleSetOptionsResponse struct {
 
 func (h *Handler) serverRuleSetOptions(response http.ResponseWriter, request *http.Request) {
 	if _, ok := h.authenticate(response, request); !ok {
-		http.Error(response, "unauthorized", http.StatusUnauthorized)
+		writeUserError(response, "unauthorized", http.StatusUnauthorized)
 		return
 	}
 	if _, exists := h.agentSnapshot(request.PathValue("agent_id")); !exists {
@@ -2781,7 +2579,7 @@ func (h *Handler) serverRuleSetOptions(response http.ResponseWriter, request *ht
 
 func (h *Handler) subscriptionRuleSetOptions(response http.ResponseWriter, request *http.Request) {
 	if _, ok := h.authenticate(response, request); !ok {
-		http.Error(response, "unauthorized", http.StatusUnauthorized)
+		writeUserError(response, "unauthorized", http.StatusUnauthorized)
 		return
 	}
 	h.writeRuleSetOptions(response, request)
@@ -2795,7 +2593,7 @@ func (h *Handler) writeRuleSetOptions(response http.ResponseWriter, request *htt
 	case "geoip":
 		catalog = h.geoipRuleSets
 	default:
-		http.Error(response, "unknown rule-set catalog", http.StatusBadRequest)
+		writeUserError(response, "unknown rule-set catalog", http.StatusBadRequest)
 		return
 	}
 	result := ruleSetOptionsResponse{}
@@ -2859,37 +2657,6 @@ func updateResultViewFor(result agentupdate.Result) *agentUpdateView {
 	return agentUpdateViewFor(state)
 }
 
-func (h *Handler) renderServerError(
-	response http.ResponseWriter,
-	status int,
-	session Session,
-	snapshot identity.AgentSnapshot,
-	configuration string,
-	message string,
-	errorField string,
-) {
-	data, err := h.serverPageData(
-		context.Background(),
-		session,
-		snapshot,
-		configuration,
-	)
-	if err != nil {
-		h.logger.Error(
-			"render server error",
-			"agent_id",
-			snapshot.ID,
-			"error",
-			err,
-		)
-		http.Error(response, "server details could not be loaded", http.StatusInternalServerError)
-		return
-	}
-	data.Error = message
-	data.ErrorField = errorField
-	h.render(response, status, "server.html", data)
-}
-
 func (h *Handler) newServerPage(response http.ResponseWriter, request *http.Request) {
 	session, ok := h.requireAuthentication(response, request)
 	if !ok {
@@ -2951,7 +2718,7 @@ func (h *Handler) createServer(response http.ResponseWriter, request *http.Reque
 		"ttl_seconds",
 	)
 	if err != nil || !h.authorizeCSRF(response, sessionToken, form.Get("csrf_token")) {
-		http.Error(response, "request was not authorized", http.StatusForbidden)
+		writeUserError(response, "request was not authorized", http.StatusForbidden)
 		return
 	}
 	session, err := h.authenticateSession(response, sessionToken)
@@ -3049,7 +2816,7 @@ func (h *Handler) createServer(response http.ResponseWriter, request *http.Reque
 	resultID, err := h.storeEnrollmentResult(sessionToken, created, h.currentTime())
 	if err != nil {
 		h.logger.Error("store enrollment result", "agent_id", agentID, "error", err)
-		http.Error(response, "enrollment result could not be prepared", http.StatusInternalServerError)
+		writeUserError(response, "enrollment result could not be prepared", http.StatusInternalServerError)
 		return
 	}
 	http.Redirect(
@@ -3189,97 +2956,6 @@ func (h *Handler) agentDisplayName(agentID string) string {
 	return h.registry.DisplayName(agentID)
 }
 
-func validateConfigurationJSON(config []byte) error {
-	if len(config) == 0 {
-		return errors.New("Enter a sing-box configuration.")
-	}
-	if len(config) > maxConfigurationBytes {
-		return errors.New("The configuration exceeds the 4 MiB size limit.")
-	}
-	decoder := json.NewDecoder(bytes.NewReader(config))
-	decoder.UseNumber()
-	token, err := decoder.Token()
-	if err != nil {
-		return errors.New("Enter a valid JSON configuration.")
-	}
-	if delimiter, ok := token.(json.Delim); !ok || delimiter != '{' {
-		return errors.New("The sing-box configuration must be a JSON object.")
-	}
-	if err := consumeJSONObject(decoder, 1); err != nil {
-		return err
-	}
-	if _, err := decoder.Token(); !errors.Is(err, io.EOF) {
-		return errors.New("Enter one complete JSON configuration.")
-	}
-	return nil
-}
-
-func consumeJSONObject(decoder *json.Decoder, depth int) error {
-	if depth > maxConfigurationJSONDepth {
-		return errors.New("The configuration is nested too deeply.")
-	}
-	keys := make(map[string]struct{})
-	for decoder.More() {
-		token, err := decoder.Token()
-		if err != nil {
-			return errors.New("Enter a valid JSON configuration.")
-		}
-		key, ok := token.(string)
-		if !ok {
-			return errors.New("Enter a valid JSON configuration.")
-		}
-		if _, duplicate := keys[key]; duplicate {
-			return errors.New("The configuration contains a duplicate object key.")
-		}
-		keys[key] = struct{}{}
-		if err := consumeJSONValue(decoder, depth); err != nil {
-			return err
-		}
-	}
-	token, err := decoder.Token()
-	if err != nil {
-		return errors.New("Enter a valid JSON configuration.")
-	}
-	if delimiter, ok := token.(json.Delim); !ok || delimiter != '}' {
-		return errors.New("Enter a valid JSON configuration.")
-	}
-	return nil
-}
-
-func consumeJSONValue(decoder *json.Decoder, depth int) error {
-	token, err := decoder.Token()
-	if err != nil {
-		return errors.New("Enter a valid JSON configuration.")
-	}
-	delimiter, composite := token.(json.Delim)
-	if !composite {
-		return nil
-	}
-	switch delimiter {
-	case '{':
-		return consumeJSONObject(decoder, depth+1)
-	case '[':
-		if depth >= maxConfigurationJSONDepth {
-			return errors.New("The configuration is nested too deeply.")
-		}
-		for decoder.More() {
-			if err := consumeJSONValue(decoder, depth+1); err != nil {
-				return err
-			}
-		}
-		token, err := decoder.Token()
-		if err != nil {
-			return errors.New("Enter a valid JSON configuration.")
-		}
-		if closing, ok := token.(json.Delim); !ok || closing != ']' {
-			return errors.New("Enter a valid JSON configuration.")
-		}
-		return nil
-	default:
-		return errors.New("Enter a valid JSON configuration.")
-	}
-}
-
 func randomOpaqueID(prefix string) (string, error) {
 	var random [18]byte
 	if _, err := rand.Read(random[:]); err != nil {
@@ -3410,11 +3086,20 @@ func (h *Handler) render(
 	localizePageData(locale, &data)
 	if err := templates.ExecuteTemplate(&rendered, templateName, data); err != nil {
 		h.logger.Error("render web UI", "template", templateName, "error", err)
-		http.Error(response, "interface could not be rendered", http.StatusInternalServerError)
+		writeUserError(response, "interface could not be rendered", http.StatusInternalServerError)
 		return
 	}
 	response.Header().Set("Content-Type", "text/html; charset=utf-8")
 	response.Header().Set("Cache-Control", "no-store")
+	// Some mutations return a result page (rather than a redirect), including
+	// fleet updates and staged migration. Enhanced forms must never GET the
+	// POST-only action URL to show that result.
+	switch templateName {
+	case "settings.html", "master-restoring.html":
+		response.Header().Set("Content-Location", "/settings")
+	case "servers.html":
+		response.Header().Set("Content-Location", "/servers")
+	}
 	response.WriteHeader(status)
 	if _, err := response.Write(rendered.Bytes()); err != nil {
 		h.logger.Warn("write web UI response", "template", templateName, "error", err)
@@ -3512,7 +3197,7 @@ func (h *Handler) rejectInvalidMutationOrigin(
 	if reason == "" {
 		return false
 	}
-	http.Error(
+	writeUserError(
 		response,
 		"request origin is not allowed ("+reason+")",
 		http.StatusForbidden,

@@ -129,7 +129,11 @@ func (s *Server) propagateToAgent(ctx context.Context, reason, agentID string) {
 	if !exists {
 		return
 	}
-	_, renderedSHA, err := s.renderLogicalConfig(applied)
+	rendered, renderedSHA, err := s.renderLogicalConfig(applied)
+	if err == nil {
+		target, _ := s.Sessions.Current(agentID)
+		_, renderedSHA, err = s.configureSessionHostSettings(rendered, target)
+	}
 	if err != nil {
 		s.Logger.Error(
 			"outbound pool propagation could not render",

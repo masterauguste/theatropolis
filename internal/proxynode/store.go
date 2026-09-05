@@ -474,7 +474,7 @@ func (s *Store) CreateUser(name string) (User, error) {
 	err = s.mutateUser(func(state *State) error {
 		for _, user := range state.Users {
 			if displayNameKey(user.Name) == displayNameKey(name) {
-				return ErrConflict
+				return fmt.Errorf("%w: an end user with this management name already exists", ErrConflict)
 			}
 		}
 		state.Users = append(state.Users, created)
@@ -494,7 +494,7 @@ func (s *Store) RenameUser(id, name string) error {
 	return s.mutateUser(func(state *State) error {
 		for _, user := range state.Users {
 			if user.ID != id && displayNameKey(user.Name) == displayNameKey(name) {
-				return ErrConflict
+				return fmt.Errorf("%w: an end user with this management name already exists", ErrConflict)
 			}
 		}
 		for index := range state.Users {

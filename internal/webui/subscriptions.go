@@ -116,7 +116,7 @@ func (h *Handler) administratorSubscriptionPage(response http.ResponseWriter, re
 	}
 	view, _, exists := h.subscriptionViewAndProfile(proxynode.SystemAdministratorUserID)
 	if !exists {
-		http.Error(response, "administrator subscription is unavailable", http.StatusServiceUnavailable)
+		writeUserError(response, "administrator subscription is unavailable", http.StatusServiceUnavailable)
 		return
 	}
 	h.render(response, http.StatusOK, "user-subscription-nodes.html", pageData{
@@ -156,7 +156,7 @@ func (h *Handler) resetUserSubscription(response http.ResponseWriter, request *h
 		return
 	}
 	if form.Get("confirm_reset") != "yes" {
-		http.Error(response, "subscription reset was not confirmed", http.StatusBadRequest)
+		writeUserError(response, "subscription reset was not confirmed", http.StatusBadRequest)
 		return
 	}
 	userID := request.PathValue("user_id")
@@ -288,7 +288,7 @@ func (h *Handler) publicUserSubscription(response http.ResponseWriter, request *
 	content, contentType, err := h.subscriptionCache.render(format, profile, h.now())
 	if err != nil {
 		h.logger.Error("render user subscription", "user_id", user.ID, "format", format, "error", err)
-		http.Error(response, "subscription could not be rendered", http.StatusInternalServerError)
+		writeUserError(response, "subscription could not be rendered", http.StatusInternalServerError)
 		return
 	}
 	extension := map[subscription.Format]string{subscription.FormatClash: "yaml", subscription.FormatSurge: "conf", subscription.FormatSingBox: "json"}[format]
@@ -315,7 +315,7 @@ func (h *Handler) publicSurgeRuleSet(response http.ResponseWriter, request *http
 	if !h.ruleSetGlobalLimiter.allow("global", h.now()) ||
 		!h.ruleSetLimiter.allow(publicClientIdentity(request), h.now()) {
 		response.Header().Set("Retry-After", "60")
-		http.Error(response, "Too many rule-set requests", http.StatusTooManyRequests)
+		writeUserError(response, "Too many rule-set requests", http.StatusTooManyRequests)
 		return
 	}
 	kind := strings.ToLower(strings.TrimSpace(request.PathValue("kind")))
@@ -337,7 +337,7 @@ func (h *Handler) publicSurgeRuleSet(response http.ResponseWriter, request *http
 		return h.fetchSurgeRuleSet(ctx, kind, name, noResolve)
 	})
 	if err != nil {
-		http.Error(response, "Rule set is unavailable", http.StatusBadGateway)
+		writeUserError(response, "Rule set is unavailable", http.StatusBadGateway)
 		return
 	}
 	if status == http.StatusNotFound {
@@ -345,7 +345,7 @@ func (h *Handler) publicSurgeRuleSet(response http.ResponseWriter, request *http
 		return
 	}
 	if status != http.StatusOK || len(converted) == 0 {
-		http.Error(response, "Rule set is unavailable", http.StatusBadGateway)
+		writeUserError(response, "Rule set is unavailable", http.StatusBadGateway)
 		return
 	}
 	response.Header().Set("Content-Type", "text/plain; charset=utf-8")

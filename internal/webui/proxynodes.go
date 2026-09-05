@@ -15,6 +15,9 @@ import (
 	"strings"
 	"time"
 
+	"golang.org/x/text/cases"
+	"golang.org/x/text/unicode/norm"
+
 	"github.com/masterauguste/theatropolis/internal/control"
 	"github.com/masterauguste/theatropolis/internal/identity"
 	"github.com/masterauguste/theatropolis/internal/pool"
@@ -386,7 +389,7 @@ func (h *Handler) proxyNodesPage(response http.ResponseWriter, request *http.Req
 		return
 	}
 	if h.proxyNodes == nil {
-		http.Error(response, "Proxy Node manager is unavailable", http.StatusServiceUnavailable)
+		writeUserError(response, "Proxy Node manager is unavailable", http.StatusServiceUnavailable)
 		return
 	}
 	state := h.proxyNodes.Snapshot()
@@ -453,12 +456,12 @@ func (h *Handler) createProxyNode(response http.ResponseWriter, request *http.Re
 	}
 	endpoint, err := parseEndpointForm(form)
 	if err != nil {
-		http.Error(response, err.Error(), http.StatusBadRequest)
+		writeUserError(response, err.Error(), http.StatusBadRequest)
 		return
 	}
 	terminal, err := parseProxyTarget(form.Get("terminal"))
 	if err != nil || terminal.Type == proxynode.TargetLink {
-		http.Error(response, "terminal exit must be Direct or Reject", http.StatusBadRequest)
+		writeUserError(response, "terminal exit must be Direct or Reject", http.StatusBadRequest)
 		return
 	}
 	var node proxynode.ProxyNode
@@ -552,7 +555,7 @@ func (h *Handler) deleteProxyNode(response http.ResponseWriter, request *http.Re
 		return
 	}
 	if form.Get("confirm_delete") != "yes" {
-		http.Error(response, "deletion was not confirmed", http.StatusBadRequest)
+		writeUserError(response, "deletion was not confirmed", http.StatusBadRequest)
 		return
 	}
 	if !h.applyProxyTopologyMutation(response, func() error {
@@ -589,7 +592,7 @@ func (h *Handler) deployProxyNodes(response http.ResponseWriter, request *http.R
 
 func (h *Handler) queueProxyDeployment(response http.ResponseWriter) bool {
 	if h.proxyDeployer == nil {
-		http.Error(response, "Proxy Node deployment is unavailable", http.StatusServiceUnavailable)
+		writeUserError(response, "Proxy Node deployment is unavailable", http.StatusServiceUnavailable)
 		return false
 	}
 	if _, err := h.proxyDeployer.Start(); err != nil {
@@ -597,7 +600,7 @@ func (h *Handler) queueProxyDeployment(response http.ResponseWriter) bool {
 		if !errors.Is(err, proxynode.ErrDeploymentActive) {
 			status = http.StatusBadRequest
 		}
-		http.Error(response, err.Error(), status)
+		writeUserError(response, err.Error(), status)
 		return false
 	}
 	return true
@@ -619,7 +622,7 @@ func (h *Handler) applyProxyTopologyMutation(response http.ResponseWriter, mutat
 		if errors.Is(err, proxynode.ErrDeploymentActive) {
 			status = http.StatusConflict
 		}
-		http.Error(response, err.Error(), status)
+		writeUserError(response, err.Error(), status)
 		return false
 	}
 	return true
@@ -662,7 +665,7 @@ func (h *Handler) updateProxyEntrance(response http.ResponseWriter, request *htt
 	}
 	endpoint, err := parseEndpointForm(form, node.Entrance.Endpoint)
 	if err != nil {
-		http.Error(response, err.Error(), http.StatusBadRequest)
+		writeUserError(response, err.Error(), http.StatusBadRequest)
 		return
 	}
 	if !h.applyProxyTopologyMutation(response, func() error {
@@ -713,7 +716,7 @@ func (h *Handler) updateProxyHop(response http.ResponseWriter, request *http.Req
 	targetAgent := strings.TrimSpace(form.Get("agent_id"))
 	if targetAgent != hop.AgentID {
 		if endpoint, exists := proxyHopEndpoint(node, hopID); exists && endpoint.TLS.Mode == proxynode.TLSModeFiles {
-			http.Error(response, "legacy file certificate endpoints cannot move to another Agent", http.StatusBadRequest)
+			writeUserError(response, "legacy file certificate endpoints cannot move to another Agent", http.StatusBadRequest)
 			return
 		}
 	}
@@ -741,12 +744,12 @@ func (h *Handler) addProxyLink(response http.ResponseWriter, request *http.Reque
 	values := splitProxyValues(form.Get("values"))
 	endpoint, err := parseEndpointForm(form)
 	if err != nil {
-		http.Error(response, err.Error(), http.StatusBadRequest)
+		writeUserError(response, err.Error(), http.StatusBadRequest)
 		return
 	}
 	terminal, err := parseProxyTarget(form.Get("child_terminal"))
 	if err != nil || terminal.Type == proxynode.TargetLink {
-		http.Error(response, "terminal exit must be Direct or Reject", http.StatusBadRequest)
+		writeUserError(response, "terminal exit must be Direct or Reject", http.StatusBadRequest)
 		return
 	}
 	if !h.applyProxyTopologyMutation(response, func() error {
@@ -817,7 +820,7 @@ func (h *Handler) moveProxyBlockRule(response http.ResponseWriter, request *http
 	if form.Get("direction") == "up" {
 		delta = -1
 	} else if form.Get("direction") != "down" {
-		http.Error(response, "invalid Rule direction", http.StatusBadRequest)
+		writeUserError(response, "invalid Rule direction", http.StatusBadRequest)
 		return
 	}
 	nodeID, ruleID := request.PathValue("proxy_id"), request.PathValue("rule_id")
@@ -833,7 +836,7 @@ func (h *Handler) deleteProxyLink(response http.ResponseWriter, request *http.Re
 		return
 	}
 	if form.Get("confirm_delete") != "yes" {
-		http.Error(response, "branch deletion was not confirmed", http.StatusBadRequest)
+		writeUserError(response, "branch deletion was not confirmed", http.StatusBadRequest)
 		return
 	}
 	nodeID, hopID := request.PathValue("proxy_id"), request.PathValue("hop_id")
@@ -881,7 +884,7 @@ func (h *Handler) updateProxyLink(response http.ResponseWriter, request *http.Re
 	}
 	endpoint, err := parseEndpointForm(form, link.Endpoint)
 	if err != nil {
-		http.Error(response, err.Error(), http.StatusBadRequest)
+		writeUserError(response, err.Error(), http.StatusBadRequest)
 		return
 	}
 	if !h.applyProxyTopologyMutation(response, func() error {
@@ -899,17 +902,17 @@ func (h *Handler) updateProxyLinkDestination(response http.ResponseWriter, reque
 		return
 	}
 	if form.Get("confirm_replace") != "yes" {
-		http.Error(response, "destination replacement must be confirmed", http.StatusBadRequest)
+		writeUserError(response, "destination replacement must be confirmed", http.StatusBadRequest)
 		return
 	}
 	endpoint, err := parseEndpointForm(form)
 	if err != nil {
-		http.Error(response, err.Error(), http.StatusBadRequest)
+		writeUserError(response, err.Error(), http.StatusBadRequest)
 		return
 	}
 	terminal, err := parseProxyTarget(form.Get("terminal"))
 	if err != nil || terminal.Type == proxynode.TargetLink {
-		http.Error(response, "terminal exit must be Direct or Reject", http.StatusBadRequest)
+		writeUserError(response, "terminal exit must be Direct or Reject", http.StatusBadRequest)
 		return
 	}
 	nodeID, linkID := request.PathValue("proxy_id"), request.PathValue("link_id")
@@ -996,7 +999,7 @@ func (h *Handler) moveProxyRule(response http.ResponseWriter, request *http.Requ
 	if form.Get("direction") == "up" {
 		delta = -1
 	} else if form.Get("direction") != "down" {
-		http.Error(response, "invalid Rule direction", http.StatusBadRequest)
+		writeUserError(response, "invalid Rule direction", http.StatusBadRequest)
 		return
 	}
 	nodeID, linkID := request.PathValue("proxy_id"), request.PathValue("link_id")
@@ -1044,7 +1047,7 @@ func (h *Handler) updateProxyLinkFallback(response http.ResponseWriter, request 
 	}
 	fallback := form.Get("mode") == "fallback"
 	if !fallback && form.Get("mode") != "conditional" {
-		http.Error(response, "invalid Link routing mode", http.StatusBadRequest)
+		writeUserError(response, "invalid Link routing mode", http.StatusBadRequest)
 		return
 	}
 	nodeID, linkID := request.PathValue("proxy_id"), request.PathValue("link_id")
@@ -1065,7 +1068,7 @@ func (h *Handler) moveProxyLink(response http.ResponseWriter, request *http.Requ
 	if form.Get("direction") == "up" {
 		delta = -1
 	} else if form.Get("direction") != "down" {
-		http.Error(response, "invalid Link direction", http.StatusBadRequest)
+		writeUserError(response, "invalid Link direction", http.StatusBadRequest)
 		return
 	}
 	nodeID, linkID := request.PathValue("proxy_id"), request.PathValue("link_id")
@@ -1084,7 +1087,7 @@ func (h *Handler) updateProxyFinal(response http.ResponseWriter, request *http.R
 	}
 	target, err := parseProxyTarget(form.Get("target"))
 	if err != nil || target.Type == proxynode.TargetLink {
-		http.Error(response, "terminal exit must be Direct or Reject", http.StatusBadRequest)
+		writeUserError(response, "terminal exit must be Direct or Reject", http.StatusBadRequest)
 		return
 	}
 	nodeID, hopID := request.PathValue("proxy_id"), request.PathValue("hop_id")
@@ -1129,7 +1132,7 @@ func (h *Handler) endUsersPage(response http.ResponseWriter, request *http.Reque
 		return
 	}
 	if h.proxyNodes == nil {
-		http.Error(response, "user manager is unavailable", http.StatusServiceUnavailable)
+		writeUserError(response, "user manager is unavailable", http.StatusServiceUnavailable)
 		return
 	}
 	state := h.proxyNodes.Snapshot()
@@ -1140,6 +1143,9 @@ func (h *Handler) endUsersPage(response http.ResponseWriter, request *http.Reque
 		}
 	}
 	views := make([]endUserListView, 0, len(state.Users))
+	query := norm.NFC.String(strings.TrimSpace(request.URL.Query().Get("q")))
+	folder := cases.Fold()
+	search := folder.String(query)
 	for _, user := range state.Users {
 		if proxynode.IsSystemAdministrator(user) {
 			continue
@@ -1154,12 +1160,33 @@ func (h *Handler) endUsersPage(response http.ResponseWriter, request *http.Reque
 				view.LoginStatus, view.LoginClass = "Invitation ready", "warning"
 			}
 		}
-		views = append(views, view)
+		if search == "" || strings.Contains(folder.String(view.Name), search) || strings.Contains(folder.String(view.LoginUsername), search) {
+			views = append(views, view)
+		}
 	}
 	sort.Slice(views, func(left, right int) bool {
+		if strings.EqualFold(views[left].Name, views[right].Name) {
+			return views[left].ID < views[right].ID
+		}
 		return strings.ToLower(views[left].Name) < strings.ToLower(views[right].Name)
 	})
-	h.render(response, http.StatusOK, "users.html", pageData{Title: "Users", ActiveNav: "users", CSRFToken: session.CSRFToken, EndUsers: views})
+	const pageSize = 50
+	total := len(views)
+	pages := max(1, (total+pageSize-1)/pageSize)
+	page, _ := strconv.Atoi(request.URL.Query().Get("page"))
+	page = min(max(page, 1), pages)
+	start, end := (page-1)*pageSize, min(page*pageSize, total)
+	pageURL := func(page int) string {
+		return "/users?" + url.Values{"q": {query}, "page": {strconv.Itoa(page)}}.Encode()
+	}
+	data := pageData{Title: "Users", ActiveNav: "users", CSRFToken: session.CSRFToken, EndUsers: views[start:end], UserSearch: query, UserTotal: total, UserStart: min(start+1, total), UserEnd: end}
+	if page > 1 {
+		data.UsersPreviousURL = pageURL(page - 1)
+	}
+	if page < pages {
+		data.UsersNextURL = pageURL(page + 1)
+	}
+	h.render(response, http.StatusOK, "users.html", data)
 }
 
 func (h *Handler) createEndUser(response http.ResponseWriter, request *http.Request) {
@@ -1190,7 +1217,7 @@ func (h *Handler) endUserPage(response http.ResponseWriter, request *http.Reques
 	daily, err := h.proxyNodes.UserDailyUsage(user.ID, 30)
 	if err != nil {
 		h.logger.Error("read user daily traffic", "user_id", user.ID, "error", err)
-		http.Error(response, "daily traffic could not be loaded", http.StatusInternalServerError)
+		writeUserError(response, "daily traffic could not be loaded", http.StatusInternalServerError)
 		return
 	}
 	detail.DailyUsage = dailyUsageViews(daily)
@@ -1296,7 +1323,7 @@ func (h *Handler) addUserProxyAccess(response http.ResponseWriter, request *http
 	}
 	plan, err := parseMembershipPlan(form)
 	if err != nil {
-		http.Error(response, err.Error(), http.StatusBadRequest)
+		writeUserError(response, err.Error(), http.StatusBadRequest)
 		return
 	}
 	if _, err := h.proxyNodes.AddMembershipWithPlan(form.Get("proxy_id"), userID, plan); err != nil {
@@ -1314,7 +1341,7 @@ func (h *Handler) updateUserProxyAccess(response http.ResponseWriter, request *h
 	}
 	plan, err := parseMembershipPlan(form)
 	if err != nil {
-		http.Error(response, err.Error(), http.StatusBadRequest)
+		writeUserError(response, err.Error(), http.StatusBadRequest)
 		return
 	}
 	userID := request.PathValue("user_id")
@@ -1333,7 +1360,7 @@ func (h *Handler) addProxyNodeUser(response http.ResponseWriter, request *http.R
 	}
 	plan, err := parseMembershipPlan(form)
 	if err != nil {
-		http.Error(response, err.Error(), http.StatusBadRequest)
+		writeUserError(response, err.Error(), http.StatusBadRequest)
 		return
 	}
 	nodeID := request.PathValue("proxy_id")
@@ -1352,7 +1379,7 @@ func (h *Handler) updateProxyNodeUser(response http.ResponseWriter, request *htt
 	}
 	plan, err := parseMembershipPlan(form)
 	if err != nil {
-		http.Error(response, err.Error(), http.StatusBadRequest)
+		writeUserError(response, err.Error(), http.StatusBadRequest)
 		return
 	}
 	nodeID := request.PathValue("proxy_id")
@@ -1370,7 +1397,7 @@ func (h *Handler) resetProxyNodeUserCredential(response http.ResponseWriter, req
 		return
 	}
 	if form.Get("confirm_reset") != "yes" {
-		http.Error(response, "credential reset was not confirmed", http.StatusBadRequest)
+		writeUserError(response, "credential reset was not confirmed", http.StatusBadRequest)
 		return
 	}
 	nodeID, userID := request.PathValue("proxy_id"), request.PathValue("user_id")
@@ -1388,7 +1415,7 @@ func (h *Handler) resetEndUserCredentials(response http.ResponseWriter, request 
 		return
 	}
 	if form.Get("confirm_reset") != "yes" {
-		http.Error(response, "credential reset was not confirmed", http.StatusBadRequest)
+		writeUserError(response, "credential reset was not confirmed", http.StatusBadRequest)
 		return
 	}
 	userID := request.PathValue("user_id")
@@ -1411,7 +1438,7 @@ func (h *Handler) resetProxyNodeUserTraffic(response http.ResponseWriter, reques
 		err := h.controller.RequestManagedUserTraffic(ctx, agentID)
 		cancel()
 		if err != nil {
-			http.Error(response, "could not establish a durable traffic-reset boundary: "+err.Error(), http.StatusConflict)
+			writeUserError(response, "could not establish a durable traffic-reset boundary: "+err.Error(), http.StatusConflict)
 			return
 		}
 	}
@@ -1433,7 +1460,7 @@ func (h *Handler) extendProxyNodeUserSubscription(response http.ResponseWriter, 
 	}
 	value, unit, err := parseSubscriptionDuration(form.Get("extension_value"), form.Get("extension_unit"))
 	if err != nil {
-		http.Error(response, err.Error(), http.StatusBadRequest)
+		writeUserError(response, err.Error(), http.StatusBadRequest)
 		return
 	}
 	nodeID, userID := request.PathValue("proxy_id"), request.PathValue("user_id")
@@ -1455,17 +1482,17 @@ func (h *Handler) compensateProxyNodeSubscriptions(response http.ResponseWriter,
 	}
 	startedAt, err := parseBillingDateTimeLocal(form.Get("outage_started_at"))
 	if err != nil {
-		http.Error(response, "outage start time is invalid", http.StatusBadRequest)
+		writeUserError(response, "outage start time is invalid", http.StatusBadRequest)
 		return
 	}
 	endedAt, err := parseBillingDateTimeLocal(form.Get("outage_ended_at"))
 	if err != nil || !startedAt.Before(endedAt) {
-		http.Error(response, "outage end time must be after its start time", http.StatusBadRequest)
+		writeUserError(response, "outage end time must be after its start time", http.StatusBadRequest)
 		return
 	}
 	value, unit, err := parseSubscriptionDuration(form.Get("compensation_value"), form.Get("compensation_unit"))
 	if err != nil {
-		http.Error(response, err.Error(), http.StatusBadRequest)
+		writeUserError(response, err.Error(), http.StatusBadRequest)
 		return
 	}
 	nodeID := request.PathValue("proxy_id")
@@ -1553,7 +1580,7 @@ func (h *Handler) deleteEndUser(response http.ResponseWriter, request *http.Requ
 		return
 	}
 	if form.Get("confirm_delete") != "yes" {
-		http.Error(response, "deletion was not confirmed", http.StatusBadRequest)
+		writeUserError(response, "deletion was not confirmed", http.StatusBadRequest)
 		return
 	}
 	if err := h.proxyNodes.DeleteUser(request.PathValue("user_id")); err != nil {
@@ -1893,12 +1920,12 @@ func (h *Handler) proxyLinkLatencyHistory(response http.ResponseWriter, request 
 	}
 	parent, exists := proxyHop(node, link.ParentHopID)
 	if !exists || h.controller == nil {
-		http.Error(response, "Link monitor is unavailable", http.StatusServiceUnavailable)
+		writeUserError(response, "Link monitor is unavailable", http.StatusServiceUnavailable)
 		return
 	}
 	rangeName, duration, interval := linkLatencyRange(request.URL.Query().Get("range"))
 	if duration == 0 {
-		http.Error(response, "invalid Link monitor range", http.StatusBadRequest)
+		writeUserError(response, "invalid Link monitor range", http.StatusBadRequest)
 		return
 	}
 	appliedNodes := h.proxyNodes.Snapshot().AppliedProxyNodes
@@ -1916,7 +1943,7 @@ func (h *Handler) proxyLinkLatencyHistory(response http.ResponseWriter, request 
 		buckets, err := h.proxyNodes.LinkLatencyHistory(parent.AgentID, sample.TargetID, h.now().Add(-duration), interval)
 		if err != nil {
 			h.logger.Error("load Link latency history", "proxy_id", node.ID, "link_id", link.ID, "error", err)
-			http.Error(response, "Link monitor history is unavailable", http.StatusInternalServerError)
+			writeUserError(response, "Link monitor history is unavailable", http.StatusInternalServerError)
 			return
 		}
 		points = make([]linkLatencyPointView, 0, len(buckets))
@@ -1999,22 +2026,22 @@ func (h *Handler) proxyLinkLatencyProbe(response http.ResponseWriter, request *h
 
 func (h *Handler) proxyLatencyProbe(response http.ResponseWriter, request *http.Request, parentAgent string, form url.Values) {
 	if h.controller == nil || h.controller.PoolRegistry() == nil || !h.enrolledAgent(form.Get("agent_id")) {
-		http.Error(response, "target Agent is unavailable", http.StatusBadRequest)
+		writeUserError(response, "target Agent is unavailable", http.StatusBadRequest)
 		return
 	}
 	family, err := pool.ParseFamily(form.Get("family"))
 	if err != nil {
-		http.Error(response, "address family is invalid", http.StatusBadRequest)
+		writeUserError(response, "address family is invalid", http.StatusBadRequest)
 		return
 	}
 	port, err := strconv.ParseUint(form.Get("listen_port"), 10, 16)
 	if err != nil || port == 0 {
-		http.Error(response, "listen port is invalid", http.StatusBadRequest)
+		writeUserError(response, "listen port is invalid", http.StatusBadRequest)
 		return
 	}
 	address, exists := h.controller.PoolRegistry().AgentAddressForFamily(form.Get("agent_id"), family)
 	if !exists {
-		http.Error(response, "target Agent has no routable address", http.StatusConflict)
+		writeUserError(response, "target Agent has no routable address", http.StatusConflict)
 		return
 	}
 	ctx, cancel := context.WithTimeout(request.Context(), 5*time.Second)
@@ -2035,7 +2062,7 @@ func (h *Handler) proxyLatencyProbe(response http.ResponseWriter, request *http.
 		}
 	}
 	if probeType == "quic" && target.ObfsType != "" && target.ObfsSecret == "" {
-		http.Error(response, "Hysteria2 listener is not active yet", http.StatusConflict)
+		writeUserError(response, "Hysteria2 listener is not active yet", http.StatusConflict)
 		return
 	}
 	sample, err := h.controller.RequestLinkLatencyProbe(ctx, parentAgent, target)
@@ -2044,7 +2071,7 @@ func (h *Handler) proxyLatencyProbe(response http.ResponseWriter, request *http.
 		if errors.Is(err, control.ErrLinkLatencyProbeUnsupported) {
 			statusCode = http.StatusConflict
 		}
-		http.Error(response, "path probe is unavailable", statusCode)
+		writeUserError(response, "path probe is unavailable", statusCode)
 		return
 	}
 	view := linkLatencyViewFromSample(sample, h.now())
@@ -2628,7 +2655,7 @@ func membershipURI(node proxynode.ProxyNode, user proxynode.User, membership pro
 
 func (h *Handler) authorizeProxyMutation(response http.ResponseWriter, request *http.Request, fields ...string) (Session, url.Values, bool) {
 	if h.proxyNodes == nil {
-		http.Error(response, "Proxy Node manager is unavailable", http.StatusServiceUnavailable)
+		writeUserError(response, "Proxy Node manager is unavailable", http.StatusServiceUnavailable)
 		return Session{}, nil, false
 	}
 	token, ok := h.sessionToken(request)
@@ -2642,11 +2669,15 @@ func (h *Handler) authorizeProxyMutation(response http.ResponseWriter, request *
 	expected := append([]string{"csrf_token"}, fields...)
 	form, err := readExactForm(response, request, maxProxyFormBytes, expected...)
 	if err != nil {
-		http.Error(response, "request form is invalid", http.StatusBadRequest)
+		writeUserError(response, "request form is invalid", http.StatusBadRequest)
 		return Session{}, nil, false
 	}
 	if !h.authorizeCSRF(response, token, form.Get("csrf_token")) {
-		http.Error(response, "request was not authorized", http.StatusForbidden)
+		writeUserError(response, "request was not authorized", http.StatusForbidden)
+		return Session{}, nil, false
+	}
+	if form.Get("match") == string(proxynode.MatchRuleSet) {
+		writeUserError(response, "Custom Rule Sets are no longer supported. Choose Geosite, GeoIP, or another match type. Existing rules remain active until you change or delete them.", http.StatusBadRequest)
 		return Session{}, nil, false
 	}
 	session, err := h.access.Authenticate(token)
@@ -2659,7 +2690,7 @@ func (h *Handler) authorizeProxyMutation(response http.ResponseWriter, request *
 
 func (h *Handler) loadProxyNode(response http.ResponseWriter, request *http.Request) (proxynode.ProxyNode, bool) {
 	if h.proxyNodes == nil {
-		http.Error(response, "Proxy Node manager is unavailable", http.StatusServiceUnavailable)
+		writeUserError(response, "Proxy Node manager is unavailable", http.StatusServiceUnavailable)
 		return proxynode.ProxyNode{}, false
 	}
 	node, exists := h.proxyNodes.ProxyNode(request.PathValue("proxy_id"))
@@ -2711,6 +2742,7 @@ func (h *Handler) proxyDeploymentView() *proxyDeploymentView {
 		}
 		return &proxyDeploymentView{
 			Status: string(proxynode.FleetDeploymentPending), Label: "Pending", Class: "pending",
+			Error: "Saved topology differs from the running configuration. It remains pending across Master restarts; check the affected Servers and deployment details.",
 		}
 	}
 	metadata, metadataExists := h.proxyDeployer.DeploymentMetadata(job.ID)
@@ -2731,6 +2763,7 @@ func (h *Handler) proxyDeploymentView() *proxyDeploymentView {
 	if topologyPending && terminal && !showCurrentFailure {
 		return &proxyDeploymentView{
 			Status: string(proxynode.FleetDeploymentPending), Label: "Pending", Class: "pending",
+			Error: "Saved topology differs from the running configuration. It remains pending across Master restarts; check the affected Servers and deployment details.",
 		}
 	}
 	labels := map[proxynode.FleetDeploymentStatus]string{
@@ -3066,5 +3099,5 @@ func handleProxyMutationError(response http.ResponseWriter, err error) {
 	} else if errors.Is(err, proxynode.ErrConflict) {
 		status = http.StatusConflict
 	}
-	http.Error(response, err.Error(), status)
+	writeUserError(response, err.Error(), status)
 }

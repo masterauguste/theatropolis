@@ -533,7 +533,7 @@ func TestQueueDeploymentRequiresCapabilityAndAppliesMatchingReport(t *testing.T)
 		"deployment-live",
 		"revision-live",
 		[]byte(`{"inbounds":[]}`),
-		5*time.Second,
+		0,
 	)
 	if err != nil {
 		t.Fatal(err)
@@ -545,6 +545,9 @@ func TestQueueDeploymentRequiresCapabilityAndAppliesMatchingReport(t *testing.T)
 	if command.GetDeployConfig() == nil ||
 		command.GetDeployConfig().GetDeploymentId() != record.ID {
 		t.Fatalf("queued frame does not contain the deployment: %+v", command)
+	}
+	if command.GetDeployConfig().GetTimeoutSeconds() != 60 {
+		t.Fatal("default deployment budget must allow certificate issuance")
 	}
 	if _, err := server.QueueDeployment(
 		ctx,
@@ -576,6 +579,78 @@ func TestQueueDeploymentRequiresCapabilityAndAppliesMatchingReport(t *testing.T)
 	if len(notifier.events) != 1 ||
 		notifier.events[0].Deployment.Status != deployment.StatusApplied {
 		t.Fatalf("deployment notifications = %+v", notifier.events)
+	}
+}
+
+func TestQueueDeploymentAppliesACMERelayOnlyToCapableSession(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	store := deployment.NewMemoryStore()
+	server := newTestServer(store, nil)
+	const agentID = "edge-colocated"
+	enrollTestIdentity(t, server.Identities, agentID)
+	session := newSession(agentID)
+	session.capabilities[ProxyNodeDeployCapability] = struct{}{}
+	session.capabilities[ACMEHTTP01RelayCapability] = struct{}{}
+	if err := server.Sessions.Register(session); err != nil {
+		t.Fatal(err)
+	}
+	defer server.Sessions.Unregister(session)
+
+	logical := []byte(`{
+		"inbounds":[{"type":"anytls","listen_port":443}],
+		"certificate_providers":[{"type":"acme","tag":"managed"}]
+	}`)
+	record, err := server.QueueDeployment(
+		ctx, agentID, "deployment-acme-relay", "revision-acme-relay", logical, 5*time.Second,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(record.ConfigJSON, logical) {
+		t.Fatalf("logical record was rewritten: %s", record.ConfigJSON)
+	}
+	command := (<-session.commands).GetDeployConfig()
+	if command == nil || !bytes.Contains(
+		command.GetConfigJson(),
+		[]byte(`"alternative_http_port":19091`),
+	) {
+		t.Fatalf("rendered deployment lacks ACME relay port: %#v", command)
+	}
+	wantSHA := sha256.Sum256(command.GetConfigJson())
+	if !bytes.Equal(command.GetConfigSha256(), wantSHA[:]) || record.RenderedSHA256 != wantSHA {
+		t.Fatal("rendered deployment digest does not cover the relayed configuration")
+	}
+}
+
+func TestQueueDeploymentLeavesRemoteAgentACMEDirect(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	store := deployment.NewMemoryStore()
+	server := newTestServer(store, nil)
+	const agentID = "edge-remote"
+	enrollTestIdentity(t, server.Identities, agentID)
+	session := newSession(agentID)
+	session.capabilities[ProxyNodeDeployCapability] = struct{}{}
+	if err := server.Sessions.Register(session); err != nil {
+		t.Fatal(err)
+	}
+	defer server.Sessions.Unregister(session)
+
+	logical := []byte(`{
+		"inbounds":[{"type":"anytls","listen_port":19091}],
+		"certificate_providers":[{"type":"acme","tag":"managed"}]
+	}`)
+	if _, err := server.QueueDeployment(
+		ctx, agentID, "deployment-direct-acme", "revision-direct-acme", logical, 5*time.Second,
+	); err != nil {
+		t.Fatal(err)
+	}
+	command := (<-session.commands).GetDeployConfig()
+	if command == nil || bytes.Contains(command.GetConfigJson(), []byte("alternative_http_port")) {
+		t.Fatalf("remote Agent received co-location settings: %#v", command)
 	}
 }
 

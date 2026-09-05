@@ -2,6 +2,19 @@
 
 Status: implemented product model.
 
+Deployment readiness: an Agent reports AnyTLS/Hysteria2 activation only after
+every local TLS listener completes a certificate-verified handshake (TCP TLS
+for AnyTLS; QUIC with the configured obfuscation for Hysteria2). Linux socket
+ownership must also match the managed child, so another service on the port
+cannot produce a false success while sing-box is still starting. ACME provider
+identities require system-trusted, unexpired certificates; explicitly configured
+certificates are pinned and still checked for identity and validity. The default
+deployment budget is 60 seconds, with bounded process cleanup and rollback after
+a failure. Heartbeats continue during this wait, and unrelated protocols retain
+the existing startup check. These probes establish local TLS readiness, not
+external firewall reachability or end-to-end proxy authentication. This behavior
+requires the updated Agent; certificate renewal is not continuously monitored.
+
 This document defines the intended replacement for Theatropolis's current
 per-agent sing-box configuration manager. It also records the proposed
 cutover policy for installations that contain state from the old manager.
@@ -721,6 +734,34 @@ to destroy it after verification. Automatic expiry should be implemented only
 if its timing and failure behavior are clearly documented.
 
 ### Master and Agent sequencing
+
+When both roles are installed on one physical server, Caddy remains the sole
+public port-80 listener. The installer adds a path-scoped HTTP-01 reverse proxy
+to `127.0.0.1:19091` and a root-owned local marker. Only an Agent that can read
+that marker advertises `acme-http01-master-relay-v1`; the Master then adds
+sing-box's `alternative_http_port` to the rendered wire configuration for that
+authenticated session. The logical topology and deployment record remain
+host-independent. Agent-only and remote Agents do not advertise the capability
+and retain direct public port-80 HTTP-01 behavior. A TCP-capable proxy inbound
+cannot claim port 19091 while this co-located transformation is required; a
+UDP-only Hysteria2/TUIC listener may share the numeric port.
+
+The relay includes an explicit HTTP site for the local Master's hostname so
+Caddy's automatic HTTPS redirect cannot intercept an Agent challenge for that
+same name. Non-challenge requests retain the Master's configured HTTPS port.
+The reserved relay port is excluded from user-authority topology fingerprints,
+without removing it from materialized runtime configurations. Deployment no-op
+checks compare logical profiles or fully rendered session-specific profiles,
+never a logical digest against a host-rewritten digest.
+
+Installing a Master beside an existing Agent also installs the verified Agent
+binary from that release, preserving its identity, environment, service unit,
+and independently managed sing-box. The Agent reads the standard marker even
+under an older service unit. On failure, the installer restores the prior Agent
+binary and relay files. Removing only the Master restarts an active surviving
+Agent; startup reconciles its persisted ACME port with the marker before user
+authority is applied, including when the remote Master is unreachable. Inactive
+Agents remain inactive and reconcile on their next start.
 
 The master and Agents may be upgraded at different times. The new control
 protocol must advertise the proxy-state generation/capability explicitly and

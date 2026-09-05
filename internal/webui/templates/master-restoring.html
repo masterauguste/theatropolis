@@ -3,15 +3,15 @@
 <html lang="{{.Locale}}">
 {{template "document-head" .}}
 <body>
-  <a class="skip-link" href="#main">Skip to content</a>
+  <a class="skip-link" href="#main">{{t "Skip to content"}}</a>
   {{template "global-header" .}}
   <main class="main main--narrow" id="main">
     <section class="panel update-progress-panel" aria-labelledby="restore-heading">
       <span class="loading-spinner" aria-hidden="true"></span>
-      <p class="eyebrow">Master Migration</p>
-      <h1 id="restore-heading">Restarting Master</h1>
+      <p class="eyebrow">{{t "Master Migration"}}</p>
+      <h1 id="restore-heading">{{t "Restarting Master"}}</h1>
       <p>{{.MigrationNotice}}</p>
-      <a class="button button--secondary" href="/settings">Return To Settings</a>
+      <a class="button button--secondary" href="/settings">{{t "Return To Settings"}}</a>
     </section>
   </main>
 </body>

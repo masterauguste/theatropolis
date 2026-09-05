@@ -20,6 +20,10 @@ jobs:
           cache: true
       - run: go mod verify
       - run: go test -count=1 ./...
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: '22'
+      - run: node --test tests/webui-recovery.test.cjs
       - run: go vet ./...
       - run: sh -n install.sh
       - run: sh -n uninstall.sh

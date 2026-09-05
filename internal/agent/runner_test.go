@@ -281,6 +281,8 @@ type probeCommandServer struct {
 	commands              chan *controlv1.ProbeAddresses
 	trafficCommands       chan *controlv1.ManagedUserTrafficRequest
 	migrationCommands     chan *controlv1.MigrateMasterCommand
+	deploymentCommands    chan *controlv1.DeployConfigCommand
+	authorityCommands     chan *controlv1.ManagedUserAuthorityCommand
 	disconnectOnMigration bool
 }
 
@@ -349,6 +351,22 @@ func (s *probeCommandServer) Connect(
 	}()
 	for {
 		select {
+		case command := <-s.authorityCommands:
+			masterSequence++
+			if err := stream.Send(&controlv1.MasterFrame{
+				Sequence: masterSequence,
+				Payload:  &controlv1.MasterFrame_ManagedUserAuthority{ManagedUserAuthority: command},
+			}); err != nil {
+				return err
+			}
+		case command := <-s.deploymentCommands:
+			masterSequence++
+			if err := stream.Send(&controlv1.MasterFrame{
+				Sequence: masterSequence,
+				Payload:  &controlv1.MasterFrame_DeployConfig{DeployConfig: command},
+			}); err != nil {
+				return err
+			}
 		case command := <-s.commands:
 			masterSequence++
 			if err := stream.Send(&controlv1.MasterFrame{
@@ -387,6 +405,47 @@ type recordingMasterMigrator struct{ migrationID, address string }
 func (m *recordingMasterMigrator) StageMasterMigration(migrationID, address string) error {
 	m.migrationID, m.address = migrationID, address
 	return nil
+}
+
+func TestRunnerAdvertisesACMERelayOnlyWithConfigurationManager(t *testing.T) {
+	t.Parallel()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	listener := bufconn.Listen(1 << 20)
+	fake := &probeCommandServer{
+		hello: make(chan *controlv1.AgentHello, 1), agentFrames: make(chan *controlv1.AgentFrame, 8),
+	}
+	grpcServer := grpc.NewServer()
+	controlv1.RegisterAgentControlServiceServer(grpcServer, fake)
+	go func() { _ = grpcServer.Serve(listener) }()
+	defer grpcServer.Stop()
+	connection, err := grpc.NewClient(
+		"passthrough:///acme-relay-test",
+		grpc.WithContextDialer(func(context.Context, string) (net.Conn, error) { return listener.Dial() }),
+		grpc.WithTransportCredentials(insecure.NewCredentials()),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer connection.Close()
+	_, privateKey, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	runner := &Runner{
+		AgentVersion: "test", PrivateKey: privateKey,
+		Manager: &testConfigurationManager{}, ACMEHTTP01Relay: true,
+		HeartbeatPeriod: time.Hour, Prober: &ProbeScheduler{Interval: -1},
+	}
+	result := make(chan error, 1)
+	go func() { result <- runner.Run(ctx, controlv1.NewAgentControlServiceClient(connection)) }()
+	hello := <-fake.hello
+	if !slices.Contains(hello.GetCapabilities(), control.ACMEHTTP01RelayCapability) {
+		t.Fatalf("capabilities = %v", hello.GetCapabilities())
+	}
+	cancel()
+	<-result
 }
 
 func TestRunnerPersistsMasterMigrationBeforeReconnect(t *testing.T) {

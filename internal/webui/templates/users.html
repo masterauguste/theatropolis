@@ -1,3 +1,56 @@
 {{define "users.html"}}
-<!doctype html><html lang="{{.Locale}}">{{template "document-head" .}}<body><a class="skip-link" href="#main">Skip to content</a>{{template "global-header" .}}<main class="main" id="main"><header class="page-header"><div><p class="eyebrow">Global identities</p><h1>Users</h1></div></header><div class="split-panels"><section class="panel"><div class="panel__header"><div><h2>End users</h2></div><span class="panel__count">{{count (len .EndUsers) "total"}}</span></div>{{if .EndUsers}}<div class="membership-list">{{range .EndUsers}}<a href="{{.URL}}"><span><strong>{{.Name}}</strong><small>{{count .Memberships "proxy-access"}}{{if .LoginUsername}} · {{.LoginUsername}}{{end}}</small></span><span class="membership-status membership-status--{{.LoginClass}}">{{.LoginStatus}}</span><span aria-hidden="true">→</span></a>{{end}}</div>{{else}}<div class="panel__empty"><p>No users have been created.</p></div>{{end}}</section><section class="panel"><div class="panel__header"><h2>Create user</h2></div><form novalidate class="stack" action="/users" method="post"><input type="hidden" name="csrf_token" value="{{.CSRFToken}}"><label class="field"><span>Management name</span><input name="name" placeholder="alice" required data-display-name data-validate-live></label><button class="button button--primary" type="submit">Create user</button></form></section></div></main><script src="/assets/app.js?v={{.AssetVersion}}" defer></script></body></html>
+<!doctype html>
+<html lang="{{.Locale}}">{{template "document-head" .}}<body>
+<a class="skip-link" href="#main">{{t "Skip to content"}}</a>{{template "global-header" .}}<main class="main" id="main">
+<header class="page-header">
+<div>
+<p class="eyebrow">{{t "Global identities"}}</p>
+<h1>{{t "Users"}}</h1>
+</div>
+</header>
+<div class="split-panels">
+<section class="panel">
+<div class="panel__header">
+<div>
+<h2>{{t "End users"}}</h2>
+</div>
+<span class="panel__count">{{count .UserTotal "total"}}</span>
+</div>
+<form class="stack" action="/users" method="get" role="search" novalidate>
+<label class="field">
+<span>{{t "Search users"}}</span>
+<input type="search" name="q" value="{{.UserSearch}}" placeholder="{{t "Search by management name or username"}}">
+</label>
+<div class="configuration-form__actions">
+<button class="button button--secondary" type="submit">{{t "Search"}}</button>{{if .UserSearch}}<a class="button button--quiet" href="/users">{{t "Clear search"}}</a>{{end}}</div>
+</form>{{if .EndUsers}}<div class="membership-list">{{range .EndUsers}}<a href="{{.URL}}">
+<span>
+<strong>{{.Name}}</strong>
+<small>{{count .Memberships "proxy-access"}}{{if .LoginUsername}} · {{.LoginUsername}}{{end}}</small>
+</span>
+<span class="membership-status membership-status--{{.LoginClass}}">{{.LoginStatus}}</span>
+<span aria-hidden="true">→</span>
+</a>{{end}}</div>{{else}}<div class="panel__empty">
+<p>{{if .UserSearch}}{{t "No users match your search."}}{{else}}{{t "No users have been created."}}{{end}}</p>
+</div>{{end}}{{if .UserTotal}}<nav class="configuration-form__actions" aria-label="{{t "User pages"}}">
+<span>{{.UserStart}}–{{.UserEnd}} / {{.UserTotal}}</span>{{if .UsersPreviousURL}}<a class="button button--secondary" href="{{.UsersPreviousURL}}">{{t "Previous"}}</a>{{end}}{{if .UsersNextURL}}<a class="button button--secondary" href="{{.UsersNextURL}}">{{t "Next"}}</a>{{end}}</nav>{{end}}</section>
+<section class="panel">
+<div class="panel__header">
+<h2>{{t "Create user"}}</h2>
+</div>
+<form novalidate class="stack" action="/users" method="post">
+<input type="hidden" name="csrf_token" value="{{.CSRFToken}}">
+<label class="field">
+<span>{{t "Management name"}}</span>
+<input name="name" placeholder="alice" required data-display-name data-validate-live>
+</label>
+<button class="button button--primary" type="submit">{{t "Create user"}}</button>
+</form>
+</section>
+</div>
+</main>
+<script src="/assets/app.js?v={{.AssetVersion}}" defer>
+</script>
+</body>
+</html>
 {{end}}

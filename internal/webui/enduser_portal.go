@@ -57,7 +57,7 @@ type endUserPortalNodeView struct {
 
 func (h *Handler) issueEndUserInvitation(response http.ResponseWriter, request *http.Request) {
 	if h.endUserAccess == nil {
-		http.Error(response, "end-user login is unavailable", http.StatusServiceUnavailable)
+		writeUserError(response, "end-user login is unavailable", http.StatusServiceUnavailable)
 		return
 	}
 	session, form, ok := h.authorizeProxyMutation(response, request, "confirm_reset")
@@ -71,13 +71,13 @@ func (h *Handler) issueEndUserInvitation(response http.ResponseWriter, request *
 	}
 	status := h.endUserAccess.Status(userID)
 	if (status.Claimed || status.InvitationReady) && form.Get("confirm_reset") != "yes" {
-		http.Error(response, "registration reset was not confirmed", http.StatusBadRequest)
+		writeUserError(response, "registration reset was not confirmed", http.StatusBadRequest)
 		return
 	}
 	token, expiresAt, err := h.endUserAccess.IssueInvitation(userID, defaultUserInviteLifetime)
 	if err != nil {
 		h.logger.Error("issue end-user invitation", "user_id", userID, "error", err)
-		http.Error(response, "invitation could not be created", http.StatusInternalServerError)
+		writeUserError(response, "invitation could not be created", http.StatusInternalServerError)
 		return
 	}
 	result := endUserInvitationView{
@@ -158,7 +158,7 @@ func (h *Handler) endUserLogin(response http.ResponseWriter, request *http.Reque
 	}
 	form, err := readExactForm(response, request, maxLoginBodyBytes, "username", "password")
 	if err != nil {
-		http.Error(response, "invalid request", http.StatusBadRequest)
+		writeUserError(response, "invalid request", http.StatusBadRequest)
 		return
 	}
 	username := strings.TrimSpace(strings.ToLower(form.Get("username")))
@@ -248,7 +248,7 @@ func (h *Handler) endUserClaim(response http.ResponseWriter, request *http.Reque
 	}
 	form, err := readExactForm(response, request, maxLoginBodyBytes, "username", "password", "password_confirmation")
 	if err != nil {
-		http.Error(response, "invalid request", http.StatusBadRequest)
+		writeUserError(response, "invalid request", http.StatusBadRequest)
 		return
 	}
 	username := strings.TrimSpace(strings.ToLower(form.Get("username")))
@@ -326,7 +326,7 @@ func (h *Handler) endUserPortal(response http.ResponseWriter, request *http.Requ
 	daily, err := h.proxyNodes.UserDailyUsage(user.ID, 30)
 	if err != nil {
 		h.logger.Error("read portal daily traffic", "user_id", user.ID, "error", err)
-		http.Error(response, "daily traffic could not be loaded", http.StatusInternalServerError)
+		writeUserError(response, "daily traffic could not be loaded", http.StatusInternalServerError)
 		return
 	}
 	view.DailyUsage = dailyUsageViews(daily)
@@ -384,12 +384,12 @@ func (h *Handler) endUserLogout(response http.ResponseWriter, request *http.Requ
 	}
 	form, err := readExactForm(response, request, maxLoginBodyBytes, "csrf_token")
 	if err != nil || !h.endUserAccess.AuthorizeCSRF(token, form.Get("csrf_token")) {
-		http.Error(response, "request was not authorized", http.StatusForbidden)
+		writeUserError(response, "request was not authorized", http.StatusForbidden)
 		return
 	}
 	if err := h.endUserAccess.Logout(token); err != nil {
 		h.logger.Error("persist end-user logout", "error", err)
-		http.Error(response, "logout could not be completed", http.StatusInternalServerError)
+		writeUserError(response, "logout could not be completed", http.StatusInternalServerError)
 		return
 	}
 	http.SetCookie(response, DeleteEndUserSessionCookie())

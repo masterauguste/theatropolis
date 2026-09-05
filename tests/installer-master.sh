@@ -404,6 +404,11 @@ case "$*" in
 		exit 42
 	fi
 	;;
+"restart theatropolis-agent")
+	if [ "${TEST_FAIL_AGENT_RESTART:-no}" = "yes" ]; then
+		exit 44
+	fi
+	;;
 esac
 exit 0
 EOF
@@ -477,6 +482,7 @@ run_installer() {
 		TEST_COMPILER_LOG="$COMPILER_LOG" \
 		TEST_MASTER_STATE_FILE="$MASTER_STATE_FILE" \
 		TEST_FAIL_CADDY_RELOAD="$FAIL_CADDY_RELOAD" \
+		TEST_FAIL_AGENT_RESTART="${TEST_FAIL_AGENT_RESTART:-no}" \
 		TEST_FLOCK_BUSY="${TEST_FLOCK_BUSY:-no}" \
 		TEST_FAIL_MASTER_STOP="${TEST_FAIL_MASTER_STOP:-no}" \
 		TEST_FAIL_UNIT_RENAME="${TEST_FAIL_UNIT_RENAME:-no}" \
@@ -935,6 +941,60 @@ grep -Eq '^[[:space:]]*reverse_proxy 127\.0\.0\.1:8080$' "$SNIPPET" ||
 CADDYFILE="$TEST_ROOT/etc/caddy/Caddyfile"
 [ "$(grep -Fxc "import $TEST_ROOT/etc/caddy/conf.d/*.caddy" "$CADDYFILE")" -eq 1 ] ||
 	fail "reinstallation duplicated or omitted the Caddy import"
+
+# Installing or upgrading the Master beside an existing Agent enables the
+# loopback-only challenge relay and restarts that Agent after Caddy accepts it.
+AGENT_UNIT="$TEST_ROOT/etc/systemd/system/theatropolis-agent.service"
+printf '%s\n' '[Service]' 'ExecStart=/usr/local/bin/theatropolis-agent --master old.example.com:443' >"$AGENT_UNIT"
+cp "$AGENT_UNIT" "$TEST_DIRECTORY/legacy-agent-unit"
+printf '%s\n' 'old Agent binary without ACME relay support' >"$TEST_ROOT/usr/local/bin/theatropolis-agent"
+mkdir -p "$TEST_ROOT/var/lib/theatropolis/agent"
+printf '%s\n' 'preserved identity' >"$TEST_ROOT/var/lib/theatropolis/agent/identity.pem"
+printf '%s\n' 'THEATROPOLIS_MASTER=old.example.com:443' >"$TEST_ROOT/etc/theatropolis/agent.env"
+set +e
+COLOCATED_OUTPUT="$(run_installer no 2>&1)"
+COLOCATED_STATUS="$?"
+set -e
+[ "$COLOCATED_STATUS" -eq 0 ] ||
+	fail "co-located Master reinstall failed (status $COLOCATED_STATUS): $COLOCATED_OUTPUT"
+RELAY_SNIPPET="$TEST_ROOT/etc/caddy/conf.d/theatropolis-agent-acme.caddy"
+RELAY_MARKER="$TEST_ROOT/etc/theatropolis/acme-http01-master-relay"
+grep -Fq 'reverse_proxy 127.0.0.1:19091' "$RELAY_SNIPPET" ||
+	fail "Master reinstall beside an Agent did not configure the ACME relay"
+grep -Fqx "http://${DOMAIN} {" "$RELAY_SNIPPET" ||
+	fail "relay does not override the Master's automatic HTTP redirect"
+grep -Fq "redir https://${DOMAIN}:${HTTPS_PORT}{uri} 308" "$RELAY_SNIPPET" ||
+	fail "relay does not preserve the Master's ordinary HTTPS redirect"
+cmp -s "$RELEASE_STAGE/theatropolis-agent" "$TEST_ROOT/usr/local/bin/theatropolis-agent" ||
+	fail "Master reinstall left an old Agent binary without relay support"
+cmp -s "$AGENT_UNIT" "$TEST_DIRECTORY/legacy-agent-unit" ||
+	fail "Master reinstall replaced the existing Agent service configuration"
+grep -Fqx 'preserved identity' "$TEST_ROOT/var/lib/theatropolis/agent/identity.pem" ||
+	fail "Master reinstall replaced the Agent identity"
+grep -Fqx 'THEATROPOLIS_MASTER=old.example.com:443' "$TEST_ROOT/etc/theatropolis/agent.env" ||
+	fail "Master reinstall changed the Agent's enrolled Master"
+grep -Fqx '19091' "$RELAY_MARKER" ||
+	fail "Master reinstall beside an Agent did not enable the ACME relay marker"
+grep -Fqx 'restart theatropolis-agent' "$SYSTEMCTL_LOG" ||
+	fail "Master reinstall did not restart the co-located Agent after enabling the relay"
+
+# A failed paired upgrade restores both the old executable and the exact relay
+# configuration before restarting the surviving Agent.
+printf '%s\n' 'previous Agent binary' >"$TEST_ROOT/usr/local/bin/theatropolis-agent"
+cp "$RELAY_SNIPPET" "$TEST_DIRECTORY/relay-before-failure"
+cp "$RELAY_MARKER" "$TEST_DIRECTORY/marker-before-failure"
+set +e
+FAILED_COLOCATED_OUTPUT="$(TEST_FAIL_AGENT_RESTART=yes run_installer no 2>&1)"
+FAILED_COLOCATED_STATUS="$?"
+set -e
+[ "$FAILED_COLOCATED_STATUS" -ne 0 ] ||
+	fail "paired upgrade ignored the failed Agent restart"
+grep -Fqx 'previous Agent binary' "$TEST_ROOT/usr/local/bin/theatropolis-agent" ||
+	fail "failed paired upgrade did not restore the previous Agent binary"
+cmp -s "$RELAY_SNIPPET" "$TEST_DIRECTORY/relay-before-failure" ||
+	fail "failed paired upgrade did not restore the relay entry"
+cmp -s "$RELAY_MARKER" "$TEST_DIRECTORY/marker-before-failure" ||
+	fail "failed paired upgrade did not restore the relay marker"
 
 [ ! -s "$COMPILER_LOG" ] ||
 	fail "installer invoked a compiler: $(tr '\n' ' ' <"$COMPILER_LOG")"

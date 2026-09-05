@@ -48,6 +48,10 @@ if [ "${1:-}" = "is-active" ] && [ "${2:-}" = "--quiet" ] && [ "${3:-}" = "caddy
 	[ -f "$UNINSTALL_TEST_ROOT/caddy-active" ]
 	exit
 fi
+if [ "${1:-}" = "is-active" ] && [ "${3:-}" = "theatropolis-agent" ]; then
+	[ ! -f "$UNINSTALL_TEST_ROOT/agent-inactive" ]
+	exit
+fi
 if [ "${1:-}" = "reload" ] && [ "${2:-}" = "caddy" ] &&
 	[ -f "$UNINSTALL_TEST_ROOT/caddy-reload-fails" ]; then
 	exit 1
@@ -102,6 +106,9 @@ prepare_case() {
 	printf '%s\n' 'legacy-auth' >"$CASE_ROOT/etc/theatropolis/web-auth.json"
 	printf '%s\n' 'import conf.d/*.caddy' >"$CASE_ROOT/etc/caddy/Caddyfile"
 	printf '%s\n' 'https://example.test {}' >"$CASE_ROOT/etc/caddy/conf.d/theatropolis.caddy"
+	printf '%s\n' ':80 { reverse_proxy /.well-known/acme-challenge/* 127.0.0.1:19091 }' \
+		>"$CASE_ROOT/etc/caddy/conf.d/theatropolis-agent-acme.caddy"
+	printf '%s\n' '19091' >"$CASE_ROOT/etc/theatropolis/acme-http01-master-relay"
 	touch \
 		"$CASE_ROOT/users/theatropolis-master" \
 		"$CASE_ROOT/users/theatropolis-agent" \
@@ -136,6 +143,7 @@ prepare_case() {
 		-e "s#SYSTEMD_DIRECTORY=\"/etc/systemd/system\"#SYSTEMD_DIRECTORY=\"$CASE_ROOT/etc/systemd/system\"#" \
 		-e "s#CADDYFILE=\"/etc/caddy/Caddyfile\"#CADDYFILE=\"$CASE_ROOT/etc/caddy/Caddyfile\"#" \
 		-e "s#CADDY_SNIPPET=\"/etc/caddy/conf.d/theatropolis.caddy\"#CADDY_SNIPPET=\"$CASE_ROOT/etc/caddy/conf.d/theatropolis.caddy\"#" \
+		-e "s#CADDY_RELAY_SNIPPET=\"/etc/caddy/conf.d/theatropolis-agent-acme.caddy\"#CADDY_RELAY_SNIPPET=\"$CASE_ROOT/etc/caddy/conf.d/theatropolis-agent-acme.caddy\"#" \
 		-e "s#INSTALL_LOCK_FILE=\"/run/theatropolis-installer.lock\"#INSTALL_LOCK_FILE=\"$CASE_ROOT/run/installer.lock\"#" \
 		"$PROJECT_ROOT/uninstall.sh" >"$PATCHED_SCRIPT"
 	chmod 0755 "$PATCHED_SCRIPT"
@@ -157,6 +165,8 @@ run_uninstaller master --yes
 [ ! -e "$CASE_ROOT/var/lib/theatropolis/master" ] || fail "master state was retained"
 [ ! -e "$CASE_ROOT/etc/systemd/system/theatropolis-master.service" ] || fail "master address metadata unit was retained"
 [ ! -e "$CASE_ROOT/etc/caddy/conf.d/theatropolis.caddy" ] || fail "Caddy entry was retained"
+[ ! -e "$CASE_ROOT/etc/caddy/conf.d/theatropolis-agent-acme.caddy" ] || fail "Agent ACME relay entry was retained"
+[ ! -e "$CASE_ROOT/etc/theatropolis/acme-http01-master-relay" ] || fail "Agent ACME relay marker was retained"
 [ ! -e "$CASE_ROOT/users/theatropolis-master" ] || fail "master user was retained"
 [ -e "$CASE_ROOT/usr/local/bin/theatropolis-agent" ] || fail "agent binary was removed with master"
 [ -e "$CASE_ROOT/var/lib/theatropolis/agent/identity.pem" ] || fail "agent state was removed with master"
@@ -165,6 +175,15 @@ run_uninstaller master --yes
 grep -Fqx 'validate --config '"$CASE_ROOT"'/etc/caddy/Caddyfile --adapter caddyfile' "$CASE_ROOT/caddy.log" ||
 	fail "Caddy validation was not performed"
 grep -Fqx 'reload caddy' "$CASE_ROOT/systemctl.log" || fail "Caddy was not reloaded"
+grep -Fqx 'restart theatropolis-agent' "$CASE_ROOT/systemctl.log" ||
+	fail "surviving Agent did not re-read its removed relay marker"
+
+prepare_case master_with_inactive_agent
+touch "$CASE_ROOT/agent-inactive"
+run_uninstaller master --yes
+if grep -Fqx 'restart theatropolis-agent' "$CASE_ROOT/systemctl.log"; then
+	fail "removing Master started an inactive Agent"
+fi
 
 prepare_case child_keep_data
 run_uninstaller child --yes --keep-data
@@ -177,6 +196,8 @@ run_uninstaller child --yes --keep-data
 [ -e "$CASE_ROOT/users/theatropolis-agent" ] || fail "--keep-data removed the state-owning Agent account"
 [ -e "$CASE_ROOT/usr/local/bin/theatropolis-master" ] || fail "master binary was removed with child"
 [ -e "$CASE_ROOT/etc/caddy/conf.d/theatropolis.caddy" ] || fail "child uninstall changed Caddy"
+[ ! -e "$CASE_ROOT/etc/caddy/conf.d/theatropolis-agent-acme.caddy" ] || fail "child uninstall retained Agent ACME relay"
+[ ! -e "$CASE_ROOT/etc/theatropolis/acme-http01-master-relay" ] || fail "child uninstall retained Agent ACME relay marker"
 [ -e "$CASE_ROOT/usr/local/libexec/theatropolis/theatropolis-update-helper" ] || fail "shared helper was removed while master remains"
 
 prepare_case remove_all
@@ -192,7 +213,9 @@ for TARGET in \
 	"$CASE_ROOT/etc/systemd/system/theatropolis-master.service" \
 	"$CASE_ROOT/etc/systemd/system/theatropolis-agent.service" \
 	"$CASE_ROOT/etc/theatropolis/agent.env" \
-	"$CASE_ROOT/etc/caddy/conf.d/theatropolis.caddy"; do
+	"$CASE_ROOT/etc/theatropolis/acme-http01-master-relay" \
+	"$CASE_ROOT/etc/caddy/conf.d/theatropolis.caddy" \
+	"$CASE_ROOT/etc/caddy/conf.d/theatropolis-agent-acme.caddy"; do
 	[ ! -e "$TARGET" ] || fail "all uninstall retained $TARGET"
 done
 [ ! -e "$CASE_ROOT/users/theatropolis-master" ] || fail "all uninstall retained master user"
@@ -205,10 +228,12 @@ if run_uninstaller master --yes >"$CASE_ROOT/stdout.log" 2>"$CASE_ROOT/stderr.lo
 	fail "master uninstall succeeded after Caddy validation failed"
 fi
 [ -e "$CASE_ROOT/etc/caddy/conf.d/theatropolis.caddy" ] || fail "failed Caddy removal was not rolled back"
+[ -e "$CASE_ROOT/etc/caddy/conf.d/theatropolis-agent-acme.caddy" ] || fail "failed Agent ACME relay removal was not rolled back"
+[ -e "$CASE_ROOT/etc/theatropolis/acme-http01-master-relay" ] || fail "failed Agent ACME relay removal deleted its marker"
 [ -e "$CASE_ROOT/usr/local/bin/theatropolis-master" ] || fail "master was removed despite Caddy rollback"
 [ -e "$CASE_ROOT/var/lib/theatropolis/master/state.json" ] || fail "master state was removed despite Caddy rollback"
 [ -e "$CASE_ROOT/users/theatropolis-master" ] || fail "master user was removed despite Caddy rollback"
-grep -Fq 'the entry was restored' "$CASE_ROOT/stderr.log" || fail "Caddy rollback diagnostic was omitted"
+grep -Eq 'the entr(y|ies) (was|were) restored' "$CASE_ROOT/stderr.log" || fail "Caddy rollback diagnostic was omitted"
 
 prepare_case idempotent_agent
 rm -f -- \

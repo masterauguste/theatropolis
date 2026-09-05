@@ -3,19 +3,19 @@
 <html lang="{{.Locale}}">
 {{template "document-head" .}}
 <body>
-  <a class="skip-link" href="#main">Skip to content</a>
+  <a class="skip-link" href="#main">{{t "Skip to content"}}</a>
   {{template "global-header" .}}
   <main class="main main--narrow" id="main">
-      <nav class="breadcrumbs" aria-label="Breadcrumb">
-        <a href="/servers">Servers</a>
+      <nav class="breadcrumbs" aria-label="{{t "Breadcrumb"}}">
+        <a href="/servers">{{t "Servers"}}</a>
         <span aria-hidden="true">/</span>
-        <span aria-current="page">Add server</span>
+        <span aria-current="page">{{t "Add server"}}</span>
       </nav>
 
       <header class="page-header page-header--compact">
         <div>
-          <p class="eyebrow">Secure enrollment</p>
-          <h1>Add a server</h1>
+          <p class="eyebrow">{{t "Secure enrollment"}}</p>
+          <h1>{{t "Add a server"}}</h1>
         </div>
       </header>
 
@@ -24,7 +24,7 @@
           <input type="hidden" name="csrf_token" value="{{.CSRFToken}}">
           <div class="form-card__header">
             <span class="step-number">1</span>
-            <h2>Server identity</h2>
+            <h2>{{t "Server identity"}}</h2>
           </div>
 
           {{if .Error}}
@@ -39,7 +39,7 @@
 
           <div class="stack">
             <label class="field">
-              <span>Server Name</span>
+              <span>{{t "Server Name"}}</span>
               <input
                 id="server-name"
                 name="display_name"
@@ -58,7 +58,7 @@
             </label>
 
             <label class="field">
-              <span>Enrollment lifetime</span>
+              <span>{{t "Enrollment lifetime"}}</span>
               <select
                 id="ttl-seconds"
                 name="ttl_seconds"
@@ -66,37 +66,37 @@
                 aria-invalid="{{if eq .ErrorField "ttl_seconds"}}true{{else}}false{{end}}"
                 aria-describedby="ttl-help{{if eq .ErrorField "ttl_seconds"}} server-form-error{{end}}"
               >
-                <option value="900" {{if eq .TTLSeconds 900}}selected{{end}}>15 minutes · Recommended</option>
-                <option value="3600" {{if eq .TTLSeconds 3600}}selected{{end}}>1 hour</option>
-                <option value="86400" {{if eq .TTLSeconds 86400}}selected{{end}}>24 hours</option>
+                <option value="900" {{if eq .TTLSeconds 900}}selected{{end}}>{{t "15 minutes · Recommended"}}</option>
+                <option value="3600" {{if eq .TTLSeconds 3600}}selected{{end}}>{{t "1 hour"}}</option>
+                <option value="86400" {{if eq .TTLSeconds 86400}}selected{{end}}>{{t "24 hours"}}</option>
               </select>
-              <small id="ttl-help">The credential becomes unusable after this period or immediately after enrollment.</small>
+              <small id="ttl-help">{{t "The credential becomes unusable after this period or immediately after enrollment."}}</small>
             </label>
           </div>
 
           <div class="form-card__actions">
-            <a class="button button--secondary" href="/servers">Cancel</a>
+            <a class="button button--secondary" href="/servers">{{t "Cancel"}}</a>
             <button class="button button--primary" type="submit" data-submit-button>
-              Create install command
+              {{t "Create install command"}}
             </button>
           </div>
         </form>
 
         <aside class="context-card">
-          <p class="eyebrow">Connection target</p>
+          <p class="eyebrow">{{t "Connection target"}}</p>
           <h2>{{.MasterAddress}}</h2>
-          <p>The command is generated from the master’s trusted public URL, not from browser request headers.</p>
+          <p>{{t "The command is generated from the master’s trusted public URL, not from browser request headers."}}</p>
           <dl>
             <div>
-              <dt>Transport</dt>
-              <dd>TLS-secured gRPC</dd>
+              <dt>{{t "Transport"}}</dt>
+              <dd>{{t "TLS-secured gRPC"}}</dd>
             </div>
             <div>
-              <dt>Credential</dt>
-              <dd>Single use</dd>
+              <dt>{{t "Credential"}}</dt>
+              <dd>{{t "Single use"}}</dd>
             </div>
             <div>
-              <dt>Supported OS</dt>
+              <dt>{{t "Supported OS"}}</dt>
               <dd>Debian / Ubuntu</dd>
             </div>
           </dl>

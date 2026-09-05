@@ -69,6 +69,7 @@ type Runner struct {
 	Updater         *agentupdate.Scheduler
 	SingBoxUpdater  *singboxupdate.Scheduler
 	MasterMigrator  MasterMigrationManager
+	ACMEHTTP01Relay bool
 	HeartbeatPeriod time.Duration
 	// MasterMigrationExitDelay is a test seam. Production waits long enough
 	// for the old Master to process the acceptance report and acknowledge it
@@ -207,6 +208,9 @@ func (r *Runner) runControlSession(
 			control.ProxyNodeDeployCapability,
 		)
 	}
+	if r.Manager != nil && r.ACMEHTTP01Relay {
+		hello.Capabilities = append(hello.Capabilities, control.ACMEHTTP01RelayCapability)
+	}
 	trafficCollector, reportsTraffic := r.Manager.(managedUserTrafficCollector)
 	if reportsTraffic {
 		hello.Capabilities = append(
@@ -309,6 +313,9 @@ func (r *Runner) runControlSession(
 	}
 	incoming := make(chan receivedMasterFrame, 1)
 	go receiveMasterFrames(stream, incoming)
+	commandFrames := (<-chan receivedMasterFrame)(incoming)
+	runtimeReports := runtimeEvents
+	activationReports := make(chan *controlv1.AgentFrame, 1)
 	var updateTicker *time.Ticker
 	var updateTicks <-chan time.Time
 	if r.Updater != nil || r.SingBoxUpdater != nil {
@@ -361,7 +368,7 @@ func (r *Runner) runControlSession(
 		select {
 		case <-ctx.Done():
 			return ctx.Err()
-		case received := <-incoming:
+		case received := <-commandFrames:
 			if errors.Is(received.err, io.EOF) {
 				if migrationStaged {
 					return ErrMasterMigrationRequested
@@ -396,12 +403,16 @@ func (r *Runner) runControlSession(
 						"master sent a configuration deployment to an incompatible agent",
 					)
 				}
-				response.Payload = &controlv1.AgentFrame_ConfigDeploymentReport{
-					ConfigDeploymentReport: r.deployConfiguration(
-						ctx,
-						command.DeployConfig,
-					),
-				}
+				// Certificate issuance can take most of the deployment budget.
+				// Keep heartbeats flowing, but serialize subsequent commands and
+				// runtime events behind the final activation/rollback report.
+				commandFrames = nil
+				runtimeReports = nil
+				go func() {
+					activationReports <- &controlv1.AgentFrame{Payload: &controlv1.AgentFrame_ConfigDeploymentReport{
+						ConfigDeploymentReport: r.deployConfiguration(sessionContext, command.DeployConfig),
+					}}
+				}()
 			case *controlv1.MasterFrame_UpdateAgent:
 				response.Payload = &controlv1.AgentFrame_AgentUpdateReport{
 					AgentUpdateReport: r.scheduleAgentUpdate(
@@ -439,11 +450,14 @@ func (r *Runner) runControlSession(
 				if !ok {
 					return errors.New("master sent managed-user authority to an incompatible agent")
 				}
-				response.Payload = &controlv1.AgentFrame_ManagedUserAuthorityReport{
-					ManagedUserAuthorityReport: r.applyManagedUserAuthority(
-						ctx, manager, command.ManagedUserAuthority,
-					),
-				}
+				// User synchronization can also enter the restart/repair path.
+				commandFrames = nil
+				runtimeReports = nil
+				go func() {
+					activationReports <- &controlv1.AgentFrame{Payload: &controlv1.AgentFrame_ManagedUserAuthorityReport{
+						ManagedUserAuthorityReport: r.applyManagedUserAuthority(sessionContext, manager, command.ManagedUserAuthority),
+					}}
+				}()
 			case *controlv1.MasterFrame_ManagedUserTrafficAck:
 				// Older masters acknowledge cumulative reports. Reset-delta Agents
 				// have no local accounting state to prune, so this is intentionally
@@ -503,6 +517,14 @@ func (r *Runner) runControlSession(
 			if err := stream.Send(response); err != nil {
 				return fmt.Errorf("send configuration report: %w", err)
 			}
+		case report := <-activationReports:
+			agentSequence++
+			report.Sequence = agentSequence
+			if err := stream.Send(report); err != nil {
+				return fmt.Errorf("send configuration activation report: %w", err)
+			}
+			commandFrames = incoming
+			runtimeReports = runtimeEvents
 		case <-migrationExit:
 			return ErrMasterMigrationRequested
 		case report := <-probeReports:
@@ -669,7 +691,7 @@ func (r *Runner) runControlSession(
 				len(v6) > 0,
 				periodicProbeReporter(sessionContext, "ipv6", probeReports),
 			)
-		case event := <-runtimeEvents:
+		case event := <-runtimeReports:
 			agentSequence++
 			if err := stream.Send(&controlv1.AgentFrame{
 				Sequence: agentSequence,
@@ -1075,7 +1097,7 @@ func (r *Runner) deployConfiguration(
 
 	timeout := time.Duration(command.GetTimeoutSeconds()) * time.Second
 	if timeout <= 0 {
-		timeout = 15 * time.Second
+		timeout = MaxValidationPeriod
 	}
 	if timeout > MaxValidationPeriod {
 		timeout = MaxValidationPeriod

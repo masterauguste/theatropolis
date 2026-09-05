@@ -2,6 +2,67 @@
 
 const t = (text) => window.theatropolisText?.(text) || text;
 
+// Drafts stay in this document only: never put credentials in browser storage.
+const dirtyForms = new Set();
+let mutationInFlight = 0;
+let leavingAfterSave = false;
+let refreshCSRFBeforeSubmit = false;
+const refreshFormCSRF = async (payload) => {
+  if (!refreshCSRFBeforeSubmit) return;
+  const session = await fetch("/session/csrf", { credentials: "same-origin", cache: "no-store", headers: { Accept: "application/json" } });
+  const expired = "Your session expired. Your input is still on this page. Sign in in another tab, then try again.";
+  if (redirectForExpiredSession(session) || !session.ok) throw new Error(t(expired));
+  const data = await session.json();
+  if (typeof data.csrf_token !== "string" || !data.csrf_token) throw new Error(t(expired));
+  for (const input of document.querySelectorAll('input[name="csrf_token"]')) input.value = data.csrf_token;
+  payload.set("csrf_token", data.csrf_token);
+  refreshCSRFBeforeSubmit = false;
+};
+const hasUnsavedChanges = () => [...dirtyForms].some((form) => form.isConnected);
+for (const type of ["input", "change"]) {
+  document.addEventListener(type, (event) => {
+    const form = event.target.form;
+    if (form?.method.toLowerCase() === "post" && !/^\/(login|logout|claim|register)(\/|$)/.test(new URL(form.action).pathname)) dirtyForms.add(form);
+  });
+}
+document.addEventListener("reset", (event) => dirtyForms.delete(event.target));
+window.addEventListener("beforeunload", (event) => {
+  if (!leavingAfterSave && (hasUnsavedChanges() || mutationInFlight)) {
+    event.preventDefault();
+    event.returnValue = "";
+  }
+});
+
+const offerPageRefresh = (url = window.location.href, message = "The page has changed. Your unsaved input has been kept. Refresh when you are ready.") => {
+  let notice = document.querySelector("[data-refresh-notice]");
+  if (!notice) {
+    notice = document.createElement("div");
+    notice.className = "notice notice--warning";
+    notice.dataset.refreshNotice = "";
+    notice.setAttribute("role", "status");
+    const text = document.createElement("p");
+    const link = document.createElement("a");
+    link.className = "button button--secondary";
+    notice.append(text, link);
+    (document.querySelector("main") || document.body).prepend(notice);
+  }
+  notice.querySelector("p").textContent = t(message);
+  const link = notice.querySelector("a");
+  link.href = url;
+  const signingIn = new URL(url, window.location.href).pathname === "/login";
+  link.textContent = t(signingIn ? "Sign in in another tab" : "Refresh page");
+  link.target = signingIn ? "_blank" : "_self";
+  link.rel = "noopener";
+};
+
+const refreshWithoutLosingDrafts = (url = window.location.href) => {
+  if (hasUnsavedChanges() || mutationInFlight || document.querySelector("dialog[open]")) {
+    offerPageRefresh(url);
+    return;
+  }
+  window.location.replace(url);
+};
+
 const localDateTimeFormatter = new Intl.DateTimeFormat(
   document.documentElement.lang || navigator.language,
   {
@@ -931,7 +992,7 @@ const pollTopologyDeployment = async () => {
       stopTopologyPolling();
       topologyReloadOnComplete = false;
       setTopologyLocked(false);
-      if (reload) window.location.reload();
+      if (reload) refreshWithoutLosingDrafts();
       return;
     }
     renderTopologyStatus(status);
@@ -951,7 +1012,7 @@ const pollTopologyDeployment = async () => {
     stopTopologyPolling();
     topologyReloadOnComplete = false;
     document.dispatchEvent(new CustomEvent("topologyapplycomplete", { detail: status }));
-    if (reload) window.location.reload();
+    if (reload) refreshWithoutLosingDrafts();
     return;
   } catch (_) {
     // Keep the current status visible and retry transient failures.
@@ -1170,6 +1231,11 @@ const redirectForExpiredSession = (response) => {
     loginRedirect = false;
   }
   if (response.status !== 401 && !loginRedirect) return false;
+  refreshCSRFBeforeSubmit = true;
+  if (hasUnsavedChanges() || mutationInFlight) {
+    offerPageRefresh("/login", "Your session expired. Your input is still on this page. Sign in in another tab, then try again.");
+    return true;
+  }
   window.location.assign("/login");
   return true;
 };
@@ -1593,133 +1659,6 @@ document.addEventListener("focusout", (event) => {
   refreshFieldValidation(control);
 });
 
-const configurationDeploymentForm = document.querySelector("form.configuration-form");
-if (configurationDeploymentForm) {
-  const submitButton = configurationDeploymentForm.querySelector("[data-submit-button]");
-  const resultNotice = configurationDeploymentForm.querySelector(
-    "[data-configuration-deployment-result]",
-  );
-  const statusBadge = document.querySelector("[data-configuration-deployment-status]");
-  const statusLabel = statusBadge?.querySelector("[data-configuration-deployment-label]");
-  const originalSubmitLabel = submitButton?.textContent.trim();
-
-  const showDeploymentStatus = (status) => {
-    if (statusBadge && statusLabel && status.status_label) {
-      statusBadge.hidden = false;
-      statusBadge.className = `status status--${status.status_class || "offline"}`;
-      statusLabel.textContent = status.status_label;
-    }
-  };
-
-  const finishDeployment = (status) => {
-    showDeploymentStatus(status);
-    if (submitButton) {
-      submitButton.disabled = false;
-      submitButton.textContent = originalSubmitLabel;
-    }
-    if (resultNotice) {
-      const succeeded = status.status_class === "online";
-      resultNotice.hidden = false;
-      resultNotice.className = `notice ${succeeded ? "notice--success" : "notice--error"}`;
-      resultNotice.textContent = succeeded
-        ? "Configuration deployed."
-        : status.diagnostic || `${status.status_label || "Deployment"} did not complete successfully.`;
-      resultNotice.focus();
-    }
-  };
-
-  const pollSubmittedDeployment = async (statusURL) => {
-    try {
-      const response = await fetch(statusURL, {
-        cache: "no-store",
-        credentials: "same-origin",
-        headers: { Accept: "application/json" },
-      });
-      if (redirectForExpiredSession(response)) return;
-      if (!response.ok) {
-        window.setTimeout(() => pollSubmittedDeployment(statusURL), 5000);
-        return;
-      }
-      const status = await response.json();
-      showDeploymentStatus(status);
-      if (status.pending === true) {
-        window.setTimeout(() => pollSubmittedDeployment(statusURL), 2000);
-        return;
-      }
-      finishDeployment(status);
-    } catch {
-      window.setTimeout(() => pollSubmittedDeployment(statusURL), 5000);
-    }
-  };
-
-  configurationDeploymentForm.addEventListener("submit", async (event) => {
-    if (event.defaultPrevented) {
-      return;
-    }
-    event.preventDefault();
-    if (submitButton) {
-      submitButton.disabled = true;
-      submitButton.textContent = submitButton.dataset.submitLabel || "Deploying…";
-    }
-    if (resultNotice) {
-      resultNotice.hidden = false;
-      resultNotice.className = "notice";
-      resultNotice.textContent = t("The agent is validating and activating this configuration.");
-    }
-    try {
-      const response = await fetch(configurationDeploymentForm.action, {
-        method: "POST",
-        body: new URLSearchParams(new FormData(configurationDeploymentForm)),
-        cache: "no-store",
-        credentials: "same-origin",
-        headers: { Accept: "application/json" },
-      });
-      if (redirectForExpiredSession(response)) return;
-      const responseText = await response.text();
-      let data = {};
-      try {
-        data = JSON.parse(responseText);
-      } catch {
-        const errorDocument = new DOMParser().parseFromString(responseText, "text/html");
-        data.error = errorDocument.querySelector(".notice--error")?.textContent.trim();
-        if (!data.error && response.headers.get("Content-Type")?.startsWith("text/plain")) {
-          data.error = responseText.trim();
-        }
-      }
-      if (!response.ok || !data.status_url) {
-        throw new Error(data.error || "The configuration could not be queued.");
-      }
-      await pollSubmittedDeployment(data.status_url);
-    } catch (error) {
-      if (submitButton) {
-        submitButton.disabled = false;
-        submitButton.textContent = originalSubmitLabel;
-      }
-      if (resultNotice) {
-        resultNotice.hidden = false;
-        resultNotice.className = "notice notice--error";
-        resultNotice.textContent = error.message;
-        resultNotice.focus();
-      }
-    }
-  });
-}
-
-for (const form of document.querySelectorAll("form")) {
-  form.addEventListener("submit", (event) => {
-    window.setTimeout(() => {
-      if (event.defaultPrevented) {
-        return;
-      }
-      const button = form.querySelector("[data-submit-button]");
-      if (button) {
-        button.disabled = true;
-        button.textContent = button.dataset.submitLabel || "Creating…";
-      }
-    }, 0);
-  });
-}
-
 const pendingDeployment = document.querySelector("[data-deployment-refresh-url]");
 if (pendingDeployment) {
   let lastInteraction = Date.now();
@@ -1734,7 +1673,7 @@ if (pendingDeployment) {
       window.setTimeout(refreshWhenIdle, 1000);
       return;
     }
-    window.location.replace(pendingDeployment.dataset.deploymentRefreshUrl);
+    refreshWithoutLosingDrafts(pendingDeployment.dataset.deploymentRefreshUrl);
   };
 
   const pollDeployment = async () => {
@@ -1935,7 +1874,7 @@ const monitorMasterUpdate = (statusURL, message, returnLink = null) => {
       const status = await response.json();
       if (status.status === "applied") {
         if (message) message.textContent = t("Update complete. Reconnecting to the updated master…");
-        window.setTimeout(() => window.location.replace("/settings"), 700);
+        window.setTimeout(() => refreshWithoutLosingDrafts("/settings"), 700);
         return;
       }
       if (status.status === "failed") {
@@ -1967,29 +1906,40 @@ if (masterUpdateForm) {
     event.preventDefault();
     const progress = document.querySelector("[data-master-update-progress]");
     const button = masterUpdateForm.querySelector("[data-master-update-button]");
+    if (button?.disabled) return;
     if (progress) {
       progress.hidden = false;
       progress.textContent = t("Scheduling the verified update…");
     }
     if (button) button.disabled = true;
     try {
+      const payload = new FormData(masterUpdateForm);
+      await refreshFormCSRF(payload);
       const response = await fetch(masterUpdateForm.action, {
         method: "POST",
-        body: new URLSearchParams(new FormData(masterUpdateForm)),
+        body: new URLSearchParams(payload),
         credentials: "same-origin",
         headers: {
           Accept: "application/json",
           "Content-Type": "application/x-www-form-urlencoded",
         },
       });
-      const data = await response.json().catch(() => ({}));
+      if (redirectForExpiredSession(response)) throw new Error(t("Your session expired. Your input is still on this page. Sign in in another tab, then try again."));
+      if (response.status === 403) refreshCSRFBeforeSubmit = true;
+      const responseText = await response.text();
+      let data = {};
+      try { data = JSON.parse(responseText); } catch {
+        if (response.headers.get("Content-Type")?.startsWith("text/plain")) data.error = responseText.trim();
+      }
       if (!response.ok || !data.status_url) {
-        throw new Error(data.error || `update request returned ${response.status}`);
+        throw new Error(data.error || `${t("master update could not be scheduled")} (HTTP ${response.status})`);
       }
       if (progress) progress.textContent = t("Installing the update. Waiting for the master to restart…");
       monitorMasterUpdate(data.status_url, progress);
     } catch (error) {
-      if (progress) progress.textContent = error.message || "The master update could not be scheduled.";
+      if (progress) progress.textContent = error instanceof TypeError
+        ? t("Connection lost. Your input has been kept, but the request may have reached the Master. Check the current state before submitting again.")
+        : t(error.message || "master update could not be scheduled");
       if (button) button.disabled = false;
     }
   });
@@ -2123,3 +2073,116 @@ for (const dialog of document.querySelectorAll("[data-compensation-dialog]")) {
     }
   });
 }
+
+// Existing specialized submit handlers run first. Ordinary management mutations
+// share error recovery and duplicate-submit protection without replaying writes.
+document.addEventListener("submit", async (event) => {
+  const form = event.target;
+  if (event.defaultPrevented || !(form instanceof HTMLFormElement) || form.method.toLowerCase() !== "post") return;
+  const action = new URL(form.action, window.location.href);
+  if (action.origin !== window.location.origin || /^\/(login|logout|claim|register)(\/|$)/.test(action.pathname)) return;
+  event.preventDefault();
+  if (form.dataset.submitting === "true" || form.dataset.completed === "true") return;
+  form.dataset.submitting = "true";
+  mutationInFlight++;
+  const payload = new FormData(form, event.submitter);
+  const controls = [...form.elements].filter((control) => control.matches("input, select, textarea") && !control.disabled);
+  for (const control of controls) control.disabled = true;
+  const buttons = [...form.querySelectorAll('button[type="submit"], input[type="submit"]')];
+  const previous = buttons.map((button) => ({ button, disabled: button.disabled, text: button.textContent, width: button.style.minWidth }));
+  for (const { button } of previous) {
+    button.style.minWidth = `${button.getBoundingClientRect().width}px`;
+    button.disabled = true;
+    button.setAttribute("aria-busy", "true");
+    if (button instanceof HTMLButtonElement) button.textContent = t(button.dataset.submitLabel || "Saving…");
+  }
+  let notice = form.querySelector("[data-form-result]");
+  if (!notice) {
+    notice = document.createElement("p");
+    notice.dataset.formResult = "";
+    notice.tabIndex = -1;
+    notice.setAttribute("role", "alert");
+    form.prepend(notice);
+  }
+  notice.hidden = true;
+  try {
+    await refreshFormCSRF(payload);
+    const response = await fetch(action, {
+      method: "POST",
+      body: form.enctype === "multipart/form-data" ? payload : new URLSearchParams(payload),
+      credentials: "same-origin", cache: "no-store",
+      headers: { Accept: "text/html" },
+    });
+    if (redirectForExpiredSession(response)) {
+      throw new Error(t("Your session expired. Your input is still on this page. Sign in in another tab, then try again."));
+    }
+    if (!response.ok) {
+      if (response.status === 403) refreshCSRFBeforeSubmit = true;
+      const text = await response.text();
+      const contentType = response.headers.get("Content-Type") || "";
+      let message;
+      if (contentType.startsWith("text/plain")) message = text.trim();
+      else if (contentType.includes("json")) { try { message = JSON.parse(text).error; } catch {} }
+      else message = new DOMParser().parseFromString(text, "text/html").querySelector(".notice--error")?.textContent.trim();
+      throw new Error((message && t(message)) || `${t("The request could not be completed. Your input has been kept. Check the server status before trying again.")} (HTTP ${response.status})`);
+    }
+    if (form.hasAttribute("data-download-form")) {
+      if (!response.headers.get("Content-Type")?.startsWith("application/zip")) throw new Error(t("The server did not return a migration archive. Your input has been kept; check the Master and try again."));
+      const blob = await response.blob();
+      const objectURL = URL.createObjectURL(blob);
+      const link = document.createElement("a");
+      link.href = objectURL;
+      // The browser sanitizes download names; never interpret them as paths.
+      link.download = response.headers.get("Content-Disposition")?.match(/filename="?([^";]+)"?/)?.[1] || "theatropolis-migration.zip";
+      document.body.append(link);
+      link.click();
+      link.remove();
+      window.setTimeout(() => URL.revokeObjectURL(objectURL), 60000);
+      notice.className = "notice notice--success";
+      notice.textContent = t("Archive ready. Check your browser downloads.");
+      notice.hidden = false;
+      notice.focus();
+      dirtyForms.delete(form);
+      return;
+    }
+    dirtyForms.delete(form);
+    if (!response.redirected && response.headers.get("Content-Type")?.startsWith("text/html")) {
+      const result = new DOMParser().parseFromString(await response.text(), "text/html");
+      const summary = result.querySelector(".notice--success, .update-progress-panel, .notice:not(.notice--error)");
+      notice.className = "notice notice--success";
+      notice.textContent = summary?.textContent.trim() || t("Changes saved.");
+      notice.hidden = false;
+      notice.focus();
+      offerPageRefresh(response.headers.get("Content-Location") || window.location.href, "Changes saved. Refresh to see the latest state.");
+      if (response.status === 202) form.dataset.completed = "true";
+      return;
+    }
+    // Do not discard a different form's draft after this form succeeds.
+    if (hasUnsavedChanges()) {
+      offerPageRefresh(response.url, "Changes saved. Another form has unsaved input; refresh when you are ready.");
+      notice.className = "notice notice--success";
+      notice.textContent = t("Changes saved.");
+      notice.hidden = false;
+    } else {
+      leavingAfterSave = true;
+      window.location.assign(response.url);
+    }
+  } catch (error) {
+    notice.className = "notice notice--error";
+    notice.textContent = error instanceof TypeError
+      ? t("Connection lost. Your input has been kept, but the request may have reached the Master. Check the current state before submitting again.")
+      : error.message;
+    notice.hidden = false;
+    notice.focus();
+  } finally {
+    delete form.dataset.submitting;
+    mutationInFlight--;
+    for (const control of controls) control.disabled = false;
+    for (const { button, disabled, text, width } of previous) {
+      button.disabled = disabled || form.dataset.completed === "true";
+      button.textContent = text;
+      button.style.minWidth = width;
+      button.removeAttribute("aria-busy");
+    }
+  }
+});

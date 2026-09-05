@@ -954,7 +954,7 @@ func TestServerProbeAddressEndpoint(t *testing.T) {
 			http.StatusConflict,
 			"does not support address probes",
 		},
-		{"family rejected", control.ErrProbeFamilyInvalid, http.StatusBadRequest, "ipv4 or ipv6"},
+		{"family rejected", control.ErrProbeFamilyInvalid, http.StatusBadRequest, "IPv4 or IPv6"},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			fixture.controller.probeErr = test.err

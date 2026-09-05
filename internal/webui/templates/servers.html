@@ -1,30 +1,30 @@
 {{define "servers-content"}}
-<section class="metric-grid" aria-label="Fleet summary">
+<section class="metric-grid" aria-label="{{t "Fleet summary"}}">
   <article class="metric-card">
-    <span class="metric-card__label">Total servers</span>
+    <span class="metric-card__label">{{t "Total servers"}}</span>
     <strong>{{.Stats.Total}}</strong>
-    <span class="metric-card__hint">Known to this master</span>
+    <span class="metric-card__hint">{{t "Known to this master"}}</span>
   </article>
   <article class="metric-card metric-card--positive">
-    <span class="metric-card__label">Online</span>
+    <span class="metric-card__label">{{t "Online"}}</span>
     <strong>{{.Stats.Online}}</strong>
-    <span class="metric-card__hint">Authenticated sessions</span>
+    <span class="metric-card__hint">{{t "Authenticated sessions"}}</span>
   </article>
   <article class="metric-card metric-card--pending">
-    <span class="metric-card__label">Pending</span>
+    <span class="metric-card__label">{{t "Pending"}}</span>
     <strong>{{.Stats.Pending}}</strong>
-    <span class="metric-card__hint">Awaiting installation</span>
+    <span class="metric-card__hint">{{t "Awaiting installation"}}</span>
   </article>
   <article class="metric-card metric-card--attention">
-    <span class="metric-card__label">Needs attention</span>
+    <span class="metric-card__label">{{t "Needs attention"}}</span>
     <strong>{{.Stats.Attention}}</strong>
-    <span class="metric-card__hint">Offline or expired</span>
+    <span class="metric-card__hint">{{t "Offline or expired"}}</span>
   </article>
 </section>
 
 <section class="panel" aria-labelledby="fleet-heading">
   <div class="panel__header">
-    <h2 id="fleet-heading">Servers</h2>
+    <h2 id="fleet-heading">{{t "Servers"}}</h2>
     <span class="panel__count">{{count .Stats.Total "total"}}</span>
   </div>
 
@@ -33,27 +33,27 @@
     <table>
       <thead>
         <tr>
-          <th scope="col">Server</th>
-          <th scope="col">Connection</th>
-          <th scope="col">Agent version</th>
-          <th scope="col">IP addresses</th>
+          <th scope="col">{{t "Server"}}</th>
+          <th scope="col">{{t "Connection"}}</th>
+          <th scope="col">{{t "Agent version"}}</th>
+          <th scope="col">{{t "IP addresses"}}</th>
         </tr>
       </thead>
       <tbody>
         {{range .Agents}}
         <tr>
-          <td data-label="Server">
+          <td data-label="{{t "Server"}}">
             <strong><a class="server-link" href="{{.URL}}">{{.Name}}</a></strong>
           </td>
-          <td data-label="Connection">
+          <td data-label="{{t "Connection"}}">
             <span class="status status--{{.ConnectionClass}}">
-              <span aria-hidden="true"></span>{{if eq .ConnectionClass "online"}}Established{{else}}Not established{{end}}
+              <span aria-hidden="true"></span>{{if eq .ConnectionClass "online"}}{{t "Established"}}{{else}}{{t "Not established"}}{{end}}
             </span>
           </td>
-          <td data-label="Agent version">
+          <td data-label="{{t "Agent version"}}">
             {{if .AgentVersion}}<code class="server-version">{{.AgentVersion}}</code>{{else}}<span class="muted">—</span>{{end}}
           </td>
-          <td data-label="IP addresses">
+          <td data-label="{{t "IP addresses"}}">
             {{if or .IPv4 .IPv6}}
             {{if .IPv4}}<code class="pool-address-line">{{.IPv4}}</code>{{end}}
             {{if .IPv6}}<code class="pool-address-line">{{.IPv6}}</code>{{end}}
@@ -66,8 +66,8 @@
   </div>
   {{else}}
   <div class="empty-state">
-    <h3>No servers enrolled yet</h3>
-    <a class="button button--primary" href="/servers/new">Add your first server</a>
+    <h3>{{t "No servers enrolled yet"}}</h3>
+    <a class="button button--primary" href="/servers/new">{{t "Add your first server"}}</a>
   </div>
   {{end}}
 </section>
@@ -78,23 +78,23 @@
 <html lang="{{.Locale}}">
 {{template "document-head" .}}
 <body data-version-catalog-url="/servers/versions">
-  <a class="skip-link" href="#main">Skip to content</a>
+  <a class="skip-link" href="#main">{{t "Skip to content"}}</a>
   {{template "global-header" .}}
   <main class="main" id="main">
       <header class="page-header">
         <div>
-          <p class="eyebrow">Infrastructure</p>
-          <h1>Servers</h1>
+          <p class="eyebrow">{{t "Infrastructure"}}</p>
+          <h1>{{t "Servers"}}</h1>
         </div>
         <div class="page-header__actions">
-          <button class="button button--secondary button--icon" type="button" data-async-reload="servers-content" aria-label="Refresh server status">
+          <button class="button button--secondary button--icon" type="button" data-async-reload="servers-content" aria-label="{{t "Refresh server status"}}">
             <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M20 11a8 8 0 1 0-2.3 5.7M20 5v6h-6"/></svg>
-            Refresh
+            {{t "Refresh"}}
           </button>
-          <button class="button button--secondary" type="button" data-dialog-open="fleet-settings-dialog" aria-haspopup="dialog">Server settings</button>
+          <button class="button button--secondary" type="button" data-dialog-open="fleet-settings-dialog" aria-haspopup="dialog">{{t "Server settings"}}</button>
           <a class="button button--primary" href="/servers/new">
             <span aria-hidden="true">+</span>
-            Add server
+            {{t "Add server"}}
           </a>
         </div>
       </header>
@@ -106,10 +106,10 @@
       <div class="notice notice--error" role="alert">{{.Error}}</div>
       {{end}}
 
-      <div id="servers-content" class="async-region" data-async-region data-async-url="/servers/content" data-async-loading-label="Loading servers…" aria-live="polite" aria-busy="true">
+      <div id="servers-content" class="async-region" data-async-region data-async-url="/servers/content" data-async-loading-label="{{t "Loading servers…"}}" aria-live="polite" aria-busy="true">
         <div class="loading-state" role="status">
           <span class="loading-spinner" aria-hidden="true"></span>
-          <span>Loading servers…</span>
+          <span>{{t "Loading servers…"}}</span>
         </div>
       </div>
 
@@ -117,45 +117,45 @@
         <div class="modal__surface">
           <header class="modal__header">
             <div>
-              <p class="eyebrow">Fleet maintenance</p>
-              <h2 id="fleet-settings-title">Server settings</h2>
+              <p class="eyebrow">{{t "Fleet maintenance"}}</p>
+              <h2 id="fleet-settings-title">{{t "Server settings"}}</h2>
             </div>
-            <button class="button button--secondary button--icon-only" type="button" data-dialog-close aria-label="Close server settings">×</button>
+            <button class="button button--secondary button--icon-only" type="button" data-dialog-close aria-label="{{t "Close server settings"}}">×</button>
           </header>
           <div class="modal__body fleet-settings-actions">
             <section class="fleet-settings-action" aria-labelledby="fleet-agent-update-heading">
               <div class="fleet-settings-action__copy">
                 <p class="eyebrow">Theatropolis</p>
-                <h3 id="fleet-agent-update-heading">Update Agent software</h3>
+                <h3 id="fleet-agent-update-heading">{{t "Update Agent software"}}</h3>
               </div>
               <form novalidate action="/servers/agent-update-all" method="post">
                 <input type="hidden" name="csrf_token" value="{{.CSRFToken}}">
-                <button class="button button--secondary button--full" type="submit" data-submit-button data-submit-label="Queuing…">Update all Agents</button>
+                <button class="button button--secondary button--full" type="submit" data-submit-button data-submit-label="{{t "Queuing…"}}">{{t "Update all Agents"}}</button>
               </form>
             </section>
 
             <section class="fleet-settings-action" aria-labelledby="fleet-sing-box-heading">
               <div class="fleet-settings-action__copy">
-                <p class="eyebrow">Proxy runtime</p>
-                <h3 id="fleet-sing-box-heading">Change sing-box version</h3>
+                <p class="eyebrow">{{t "Proxy runtime"}}</p>
+                <h3 id="fleet-sing-box-heading">{{t "Change sing-box version"}}</h3>
               </div>
               <form novalidate action="/servers/sing-box-update-all" method="post" class="stack stack--compact">
                 <input type="hidden" name="csrf_token" value="{{.CSRFToken}}">
                 <label class="field">
-                  <span>Target version</span>
+                  <span>{{t "Target version"}}</span>
                   <select name="target_version" data-sing-box-version-select data-fleet-sing-box-select required disabled>
-                    <option value="" disabled selected>loading available versions…</option>
+                    <option value="" disabled selected>{{t "loading available versions…"}}</option>
                   </select>
-                  <small class="inline-loading" data-sing-box-catalog-loading><span class="loading-spinner loading-spinner--small" aria-hidden="true"></span><span>Loading signed releases…</span></small>
+                  <small class="inline-loading" data-sing-box-catalog-loading><span class="loading-spinner loading-spinner--small" aria-hidden="true"></span><span>{{t "Loading signed releases…"}}</span></small>
                   <small data-sing-box-catalog-warning hidden class="field-warning"></small>
-                  <small data-sing-box-catalog-info>Offline, incompatible, busy, and already-matching Agents are skipped.</small>
+                  <small data-sing-box-catalog-info>{{t "Offline, incompatible, busy, and already-matching Agents are skipped."}}</small>
                 </label>
-                <button class="button button--primary button--full" type="submit" data-submit-button data-submit-label="Queuing…" data-fleet-sing-box-submit disabled>Change sing-box version</button>
+                <button class="button button--primary button--full" type="submit" data-submit-button data-submit-label="{{t "Queuing…"}}" data-fleet-sing-box-submit disabled>{{t "Change sing-box version"}}</button>
               </form>
             </section>
           </div>
           <footer class="modal__footer">
-            <button class="button button--secondary" type="button" data-dialog-close>Close</button>
+            <button class="button button--secondary" type="button" data-dialog-close>{{t "Close"}}</button>
           </footer>
         </div>
       </dialog>

@@ -110,12 +110,37 @@ func BuildManagedUserAuthorityVariant(config []byte) (ManagedUserAuthorityVarian
 }
 
 func managedTopologyDigest(document map[string]any) ([sha256.Size]byte, error) {
+	// Host-local ACME routing is not topology. Normalize a copy: the original
+	// document is also used to materialize the authorized runtime configuration.
+	canonical := make(map[string]any, len(document))
+	for key, value := range document {
+		canonical[key] = value
+	}
+	if providers, ok := document["certificate_providers"].([]any); ok {
+		normalized := append([]any(nil), providers...)
+		for index, raw := range providers {
+			provider, ok := raw.(map[string]any)
+			port, _ := provider["alternative_http_port"].(json.Number)
+			portNumber, portErr := port.Float64()
+			if !ok || provider["type"] != "acme" || portErr != nil || portNumber != ACMEHTTP01RelayPort {
+				continue
+			}
+			copy := make(map[string]any, len(provider))
+			for key, value := range provider {
+				if key != "alternative_http_port" {
+					copy[key] = value
+				}
+			}
+			normalized[index] = copy
+		}
+		canonical["certificate_providers"] = normalized
+	}
 	inbounds, _ := document["inbounds"].([]any)
 	for _, raw := range inbounds {
 		inbound, _ := raw.(map[string]any)
 		delete(inbound, "managed")
 	}
-	encoded, err := json.Marshal(document)
+	encoded, err := json.Marshal(canonical)
 	if err != nil {
 		return [sha256.Size]byte{}, err
 	}

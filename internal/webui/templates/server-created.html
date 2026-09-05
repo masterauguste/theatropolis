@@ -3,11 +3,11 @@
 <html lang="{{.Locale}}">
 {{template "document-head" .}}
 <body>
-  <a class="skip-link" href="#main">Skip to content</a>
+  <a class="skip-link" href="#main">{{t "Skip to content"}}</a>
   {{template "global-header" .}}
   <main class="main main--narrow" id="main">
-      <nav class="breadcrumbs" aria-label="Breadcrumb">
-        <a href="/servers">Servers</a>
+      <nav class="breadcrumbs" aria-label="{{t "Breadcrumb"}}">
+        <a href="/servers">{{t "Servers"}}</a>
         <span aria-hidden="true">/</span>
         <span aria-current="page">{{.Created.DisplayName}}</span>
       </nav>
@@ -16,14 +16,14 @@
         <div class="result-card__success" aria-hidden="true">
           <svg viewBox="0 0 24 24"><path d="m7 12 3 3 7-7"/></svg>
         </div>
-        <p class="eyebrow">Enrollment ready</p>
+        <p class="eyebrow">{{t "Enrollment ready"}}</p>
         <h1>Install {{.Created.DisplayName}}</h1>
-        <p class="result-card__lead">Run this command as a sudo-capable user on the destination server.</p>
+        <p class="result-card__lead">{{t "Run this command as a sudo-capable user on the destination server."}}</p>
 
         <div class="copy-section">
           <div class="command-card">
             <div class="command-card__header">
-              <strong>Terminal</strong>
+              <strong>{{t "Terminal"}}</strong>
               <button
                 class="copy-button"
                 type="button"
@@ -31,7 +31,7 @@
                 data-copy-label="command"
               >
                 <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M9 8h10v11H9zM5 15V5h10"/></svg>
-                <span>Copy command</span>
+                <span>{{t "Copy command"}}</span>
               </button>
             </div>
             <pre><code id="install-command">{{.Created.InstallCommand}}</code></pre>
@@ -40,23 +40,23 @@
         </div>
 
         <div class="notice notice--warning">
-          <strong>Shown once.</strong>
-          This command contains a credential that expires at
+          <strong>{{t "Shown once."}}</strong>
+          {{t "This command contains a credential that expires at"}}
           <time datetime="{{.Created.ExpiresAtISO}}">{{.Created.ExpiresAt}}</time>
-          and becomes unusable after enrollment. The master persists only its hash.
+          {{t "and becomes unusable after enrollment. The master persists only its hash."}}
         </div>
 
         <div class="next-step">
           <span class="step-number">2</span>
           <div>
-            <h2>Wait for the agent to connect</h2>
-            <p>After installation, return to Servers and refresh to see its authenticated connection state.</p>
+            <h2>{{t "Wait for the agent to connect"}}</h2>
+            <p>{{t "After installation, return to Servers and refresh to see its authenticated connection state."}}</p>
           </div>
         </div>
 
         <div class="result-card__actions">
-          <a class="button button--primary" href="/servers">Return to servers</a>
-          <a class="button button--secondary" href="/servers/new">Add another server</a>
+          <a class="button button--primary" href="/servers">{{t "Return to servers"}}</a>
+          <a class="button button--secondary" href="/servers/new">{{t "Add another server"}}</a>
         </div>
       </section>
   </main>

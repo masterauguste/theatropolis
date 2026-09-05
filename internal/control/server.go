@@ -42,6 +42,7 @@ const (
 	ManagedUserTrafficRequestCapability = "managed-user-traffic-request-v1"
 	ManagedUserAuthorityCapability      = "managed-user-authority-v1"
 	MasterMigrationCapability           = "master-migration-v1"
+	ACMEHTTP01RelayCapability           = "acme-http01-master-relay-v1"
 	DefaultChallengeTTL                 = 30 * time.Second
 	DefaultHelloTimeout                 = 10 * time.Second
 	DefaultCommandQueue                 = 16
@@ -446,6 +447,12 @@ func (s *Server) Connect(stream controlv1.AgentControlService_ConnectServer) err
 			LinkLatencyProbeCapability,
 		)
 	}
+	if _, supported := session.capabilities[ACMEHTTP01RelayCapability]; supported {
+		authResult.GetAuthenticationResult().Capabilities = append(
+			authResult.GetAuthenticationResult().Capabilities,
+			ACMEHTTP01RelayCapability,
+		)
+	}
 	s.authorizationMu.Lock()
 	currentAgentID, currentKeyErr := s.Identities.AgentIDForPublicKey(ctx, publicKey)
 	stillAuthorized := currentKeyErr == nil && currentAgentID == agentID
@@ -752,7 +759,7 @@ func (s *Server) queueDeployment(
 	// config is the logical document and may contain pool refs. Only the
 	// rendered document is size/policy checked, digested, and sent to the
 	// agent; the record keeps the logical bytes plus the rendered digest.
-	rendered, renderedSHA, err := s.renderLogicalConfig(config)
+	rendered, _, err := s.renderLogicalConfig(config)
 	if err != nil {
 		return deployment.Record{}, err
 	}
@@ -767,12 +774,18 @@ func (s *Server) queueDeployment(
 	if _, err := s.Identities.PublicKey(ctx, agentID); err != nil {
 		return deployment.Record{}, err
 	}
-	canDeploy := s.CanDeployProxyNodeConfiguration(agentID)
-	if allowInitialProfile {
-		canDeploy = s.Sessions.SupportsSession(expectedSession, ProxyNodeDeployCapability, false)
+	targetSession := expectedSession
+	requireReady := false
+	if !allowInitialProfile {
+		targetSession, _ = s.Sessions.Current(agentID)
+		requireReady = true
 	}
-	if !canDeploy {
+	if !s.Sessions.SupportsSession(targetSession, ProxyNodeDeployCapability, requireReady) {
 		return deployment.Record{}, ErrAgentOffline
+	}
+	rendered, renderedSHA, err := s.configureSessionHostSettings(rendered, targetSession)
+	if err != nil {
+		return deployment.Record{}, err
 	}
 	if current, err := s.Deployments.LatestForAgent(ctx, agentID); err == nil {
 		switch current.Status {
@@ -816,7 +829,7 @@ func (s *Server) queueDeployment(
 		return deployment.Record{}, err
 	}
 	if timeout <= 0 {
-		timeout = 15 * time.Second
+		timeout = DefaultValidationLimit
 	}
 	if timeout > DefaultValidationLimit {
 		timeout = DefaultValidationLimit
@@ -832,12 +845,7 @@ func (s *Server) queueDeployment(
 			},
 		},
 	}
-	var sendErr error
-	if allowInitialProfile {
-		sendErr = s.Sessions.SendToSession(ctx, expectedSession, command)
-	} else {
-		_, sendErr = s.Sessions.SendReady(ctx, agentID, ProxyNodeDeployCapability, command)
-	}
+	sendErr := s.Sessions.SendToSession(ctx, targetSession, command)
 	if sendErr != nil {
 		failed, transitionErr := s.Deployments.Transition(
 			ctx,
@@ -2021,6 +2029,26 @@ func (s *Server) HasAgentIdentity(agentID string) bool {
 
 func (s *Server) CanDeployProxyNodeConfiguration(agentID string) bool {
 	return s.Sessions.SupportsReady(agentID, ProxyNodeDeployCapability)
+}
+
+// configureSessionHostSettings is shared by delivery and no-op comparison so
+// both hash exactly the bytes the selected connection would receive.
+func (s *Server) configureSessionHostSettings(rendered []byte, target *session) ([]byte, [sha256.Size]byte, error) {
+	var err error
+	if s.Sessions.SupportsSession(target, ACMEHTTP01RelayCapability, false) {
+		rendered, err = singbox.ConfigureACMEHTTP01Relay(rendered)
+		if err != nil {
+			return nil, [sha256.Size]byte{}, err
+		}
+	}
+	if len(rendered) > DefaultMaxConfigBytes {
+		return nil, [sha256.Size]byte{}, errors.New("candidate configuration exceeds the size limit after applying host settings")
+	}
+	return rendered, sha256.Sum256(rendered), nil
+}
+
+func (s *Server) CanRelayACMEHTTP01(agentID string) bool {
+	return s.Sessions.Supports(agentID, ACMEHTTP01RelayCapability)
 }
 
 func (s *Server) CanSyncManagedUserAuthority(agentID string) bool {
