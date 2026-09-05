@@ -1044,14 +1044,16 @@ configure_acme_http01_relay() {
 	install -d -o root -g root -m 0755 /etc/caddy/conf.d "$CONFIG_DIRECTORY"
 	if [ "$RELAY_TOUCHED" = "no" ]; then
 		if [ -e "$CADDY_RELAY_SNIPPET" ] || [ -L "$CADDY_RELAY_SNIPPET" ]; then
-			[ -f "$CADDY_RELAY_SNIPPET" ] && [ ! -L "$CADDY_RELAY_SNIPPET" ] ||
+			if [ ! -f "$CADDY_RELAY_SNIPPET" ] || [ -L "$CADDY_RELAY_SNIPPET" ]; then
 				fail "the ACME relay Caddy entry is not a regular file"
+			fi
 			HAD_RELAY_SNIPPET="yes"
 			cp -a "$CADDY_RELAY_SNIPPET" "$TEMP_DIRECTORY/theatropolis-agent-acme.caddy.backup"
 		fi
 		if [ -e "$ACME_HTTP01_RELAY_MARKER" ] || [ -L "$ACME_HTTP01_RELAY_MARKER" ]; then
-			[ -f "$ACME_HTTP01_RELAY_MARKER" ] && [ ! -L "$ACME_HTTP01_RELAY_MARKER" ] ||
+			if [ ! -f "$ACME_HTTP01_RELAY_MARKER" ] || [ -L "$ACME_HTTP01_RELAY_MARKER" ]; then
 				fail "the ACME relay marker is not a regular file"
+			fi
 			cp -a "$ACME_HTTP01_RELAY_MARKER" "$TEMP_DIRECTORY/acme-relay-marker.backup"
 			HAD_RELAY_MARKER="yes"
 		fi
@@ -1346,9 +1348,10 @@ EOF
 			# Old Agent units do not carry the relay flag and old binaries do
 			# not understand it. Upgrade only the verified binary, preserving
 			# enrollment, environment, sing-box, and the existing service unit.
-			[ -f "$INSTALL_DIRECTORY/theatropolis-agent" ] &&
-				[ ! -L "$INSTALL_DIRECTORY/theatropolis-agent" ] ||
+			if [ ! -f "$INSTALL_DIRECTORY/theatropolis-agent" ] ||
+				[ -L "$INSTALL_DIRECTORY/theatropolis-agent" ]; then
 				fail "the existing Agent binary is not a regular file; reinstall the Agent first"
+			fi
 			COLOCATED_AGENT_BINARY_BACKUP="$TEMP_DIRECTORY/colocated-agent.backup"
 			cp -a "$INSTALL_DIRECTORY/theatropolis-agent" "$COLOCATED_AGENT_BINARY_BACKUP"
 			install_binary agent

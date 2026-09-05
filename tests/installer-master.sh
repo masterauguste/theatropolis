@@ -988,7 +988,7 @@ FAILED_COLOCATED_OUTPUT="$(TEST_FAIL_AGENT_RESTART=yes run_installer no 2>&1)"
 FAILED_COLOCATED_STATUS="$?"
 set -e
 [ "$FAILED_COLOCATED_STATUS" -ne 0 ] ||
-	fail "paired upgrade ignored the failed Agent restart"
+	fail "paired upgrade ignored the failed Agent restart: $FAILED_COLOCATED_OUTPUT"
 grep -Fqx 'previous Agent binary' "$TEST_ROOT/usr/local/bin/theatropolis-agent" ||
 	fail "failed paired upgrade did not restore the previous Agent binary"
 cmp -s "$RELAY_SNIPPET" "$TEST_DIRECTORY/relay-before-failure" ||
