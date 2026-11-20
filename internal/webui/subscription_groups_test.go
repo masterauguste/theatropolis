@@ -147,3 +147,76 @@ func TestSubscriptionTargetPickerPreservesDeletedNodes(t *testing.T) {
 		t.Fatal("deleted target would be silently replaced")
 	}
 }
+
+func TestAddAndEditSubscriptionRuleCanCreateCopyOfProxyGroup(t *testing.T) {
+	f := newWebFixture(t)
+	post := func(path string, values url.Values, status int) {
+		t.Helper()
+		values.Set("csrf_token", f.session.CSRFToken)
+		r := f.authenticatedMutationRequest(http.MethodPost, path, values.Encode())
+		w := httptest.NewRecorder()
+		f.handler.ServeHTTP(w, r)
+		if w.Code != status {
+			t.Fatalf("%s = %d: %s", path, w.Code, w.Body.String())
+		}
+	}
+	post("/subscriptions/rules", url.Values{
+		"match":          {"domain_suffix"},
+		"values":         {"netflix.com"},
+		"action":         {"new_group"},
+		"new_group_name": {"Netflix"},
+	}, http.StatusSeeOther)
+
+	policy := f.proxyNodes.SubscriptionPolicy()
+	if len(policy.Groups) != 1 || len(policy.Rules) != 1 {
+		t.Fatalf("expected 1 group and 1 rule, got %+v", policy)
+	}
+	group := policy.Groups[0]
+	rule := policy.Rules[0]
+	if group.Name != "Netflix" || group.Type != "select" || !group.AllNodes {
+		t.Fatalf("unexpected created group: %+v", group)
+	}
+	if rule.Action != proxynode.SubscriptionAction("group:"+group.ID) {
+		t.Fatalf("rule action = %q, want group:%s", rule.Action, group.ID)
+	}
+	// Duplicate or empty group names fail cleanly without adding a rule.
+	post("/subscriptions/rules", url.Values{
+		"match":          {"domain"},
+		"values":         {"example.com"},
+		"action":         {"new_group"},
+		"new_group_name": {"Netflix"},
+	}, http.StatusBadRequest)
+	post("/subscriptions/rules", url.Values{
+		"match":          {"domain"},
+		"values":         {"example.com"},
+		"action":         {"new_group"},
+		"new_group_name": {""},
+	}, http.StatusBadRequest)
+	if got := len(f.proxyNodes.SubscriptionPolicy().Rules); got != 1 {
+		t.Fatalf("failed creates added unexpected rules: %d", got)
+	}
+	// Editing an existing rule can also spin off a fresh copy-of-PROXY group.
+	post("/subscriptions/rules/"+rule.ID, url.Values{
+		"match":          {"domain_suffix"},
+		"values":         {"openai.com"},
+		"action":         {"new_group"},
+		"new_group_name": {"OpenAI"},
+	}, http.StatusSeeOther)
+	policy = f.proxyNodes.SubscriptionPolicy()
+	if len(policy.Groups) != 2 || policy.Rules[0].Action != proxynode.SubscriptionAction("group:"+policy.Groups[1].ID) {
+		t.Fatalf("rule edit did not create and assign new group: %+v", policy)
+	}
+	// Verify rendered UI includes localized new-group controls in both locales.
+	for _, locale := range []string{"en", "zh-CN"} {
+		w := httptest.NewRecorder()
+		f.handler.ServeHTTP(w, f.authenticatedRequestWithLocale(http.MethodGet, "/subscriptions", "", locale))
+		if w.Code != http.StatusOK {
+			t.Fatalf("GET /subscriptions (%s) = %d", locale, w.Code)
+		}
+		for _, want := range []string{`value="new_group"`, `data-subscription-new-group-field`, `name="new_group_name"`, "Netflix", "OpenAI"} {
+			if !strings.Contains(w.Body.String(), want) {
+				t.Errorf("GET /subscriptions (%s) missing %q", locale, want)
+			}
+		}
+	}
+}

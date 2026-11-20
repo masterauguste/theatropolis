@@ -164,3 +164,92 @@ func (s *Store) SetSubscriptionRuleAction(id string, action SubscriptionAction) 
 		return ErrNotFound
 	})
 }
+
+func newProxyCopyGroup(name string) (SubscriptionGroup, error) {
+	id, err := randomID("sgp")
+	if err != nil {
+		return SubscriptionGroup{}, err
+	}
+	return SubscriptionGroup{
+		ID:       id,
+		Name:     strings.TrimSpace(name),
+		Type:     "select",
+		AllNodes: true,
+		Members:  []SubscriptionAction{SubscriptionProxy, SubscriptionDirect, SubscriptionReject},
+	}, nil
+}
+
+// AddSubscriptionRuleWithNewGroup atomically creates a manual proxy group
+// copied from PROXY (all available proxies plus Direct and Reject) and appends
+// a rule targeting that group. If either the group or the rule fails validation
+// nothing is persisted.
+func (s *Store) AddSubscriptionRuleWithNewGroup(input SubscriptionRuleInput, groupName string) (SubscriptionRule, SubscriptionGroup, error) {
+	input = normalizeSubscriptionRuleInput(input)
+	group, err := newProxyCopyGroup(groupName)
+	if err != nil {
+		return SubscriptionRule{}, SubscriptionGroup{}, err
+	}
+	ruleID, err := randomID("sru")
+	if err != nil {
+		return SubscriptionRule{}, SubscriptionGroup{}, err
+	}
+	var createdRule SubscriptionRule
+	err = s.updateSubscriptionPolicy(func(policy *SubscriptionPolicy) error {
+		createdRule = SubscriptionRule{
+			ID:        ruleID,
+			Order:     len(policy.Rules),
+			Match:     input.Match,
+			Values:    input.Values,
+			NoResolve: input.NoResolve,
+			Action:    SubscriptionAction("group:" + group.ID),
+		}
+		candidate := *policy
+		candidate.Groups = append(slices.Clone(policy.Groups), group)
+		candidate.Rules = append(slices.Clone(policy.Rules), createdRule)
+		if err := validateSubscriptionPolicy(candidate); err != nil {
+			return err
+		}
+		policy.Groups = candidate.Groups
+		policy.Rules = candidate.Rules
+		return nil
+	})
+	if err != nil {
+		return SubscriptionRule{}, SubscriptionGroup{}, err
+	}
+	group.Members = slices.Clone(group.Members)
+	return createdRule, group, nil
+}
+
+// UpdateSubscriptionRuleWithNewGroup atomically creates a manual proxy group
+// copied from PROXY and retargets an existing rule to it.
+func (s *Store) UpdateSubscriptionRuleWithNewGroup(ruleID string, input SubscriptionRuleInput, groupName string) (SubscriptionGroup, error) {
+	input = normalizeSubscriptionRuleInput(input)
+	group, err := newProxyCopyGroup(groupName)
+	if err != nil {
+		return SubscriptionGroup{}, err
+	}
+	err = s.updateSubscriptionPolicy(func(policy *SubscriptionPolicy) error {
+		index := slices.IndexFunc(policy.Rules, func(rule SubscriptionRule) bool { return rule.ID == ruleID })
+		if index < 0 {
+			return ErrNotFound
+		}
+		candidate := *policy
+		candidate.Groups = append(slices.Clone(policy.Groups), group)
+		candidate.Rules = slices.Clone(policy.Rules)
+		candidate.Rules[index].Match = input.Match
+		candidate.Rules[index].Values = input.Values
+		candidate.Rules[index].NoResolve = input.NoResolve
+		candidate.Rules[index].Action = SubscriptionAction("group:" + group.ID)
+		if err := validateSubscriptionPolicy(candidate); err != nil {
+			return err
+		}
+		policy.Groups = candidate.Groups
+		policy.Rules = candidate.Rules
+		return nil
+	})
+	if err != nil {
+		return SubscriptionGroup{}, err
+	}
+	group.Members = slices.Clone(group.Members)
+	return group, nil
+}

@@ -2683,6 +2683,10 @@ func membershipURI(node proxynode.ProxyNode, user proxynode.User, membership pro
 }
 
 func (h *Handler) authorizeProxyMutation(response http.ResponseWriter, request *http.Request, fields ...string) (Session, url.Values, bool) {
+	return h.authorizeProxyMutationWithOptional(response, request, fields)
+}
+
+func (h *Handler) authorizeProxyMutationWithOptional(response http.ResponseWriter, request *http.Request, required []string, optional ...string) (Session, url.Values, bool) {
 	if h.proxyNodes == nil {
 		writeUserError(response, "Proxy Node manager is unavailable", http.StatusServiceUnavailable)
 		return Session{}, nil, false
@@ -2695,8 +2699,16 @@ func (h *Handler) authorizeProxyMutation(response http.ResponseWriter, request *
 	if h.rejectInvalidMutationOrigin(response, request) {
 		return Session{}, nil, false
 	}
-	expected := append([]string{"csrf_token"}, fields...)
-	form, err := readExactForm(response, request, maxProxyFormBytes, expected...)
+	expected := append([]string{"csrf_token"}, required...)
+	var (
+		form url.Values
+		err  error
+	)
+	if len(optional) == 0 {
+		form, err = readExactForm(response, request, maxProxyFormBytes, expected...)
+	} else {
+		form, err = readFormWithOptional(response, request, maxProxyFormBytes, expected, optional...)
+	}
 	if err != nil {
 		writeUserError(response, "request form is invalid", http.StatusBadRequest)
 		return Session{}, nil, false

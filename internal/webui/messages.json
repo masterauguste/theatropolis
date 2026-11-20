@@ -3998,5 +3998,21 @@
   "proxy groups cannot contain a reference loop": {
     "en": "proxy groups cannot contain a reference loop",
     "zh-CN": "代理组之间不能循环引用。"
+  },
+  "Create new proxy group": {
+    "en": "Create new proxy group",
+    "zh-CN": "新建代理组"
+  },
+  "Copy of PROXY": {
+    "en": "Copy of PROXY",
+    "zh-CN": "复制 PROXY 组"
+  },
+  "New proxy group name": {
+    "en": "New proxy group name",
+    "zh-CN": "新代理组名称"
+  },
+  "Copies the main PROXY group (all available proxies, Direct, and Reject). You can edit or delete it later.": {
+    "en": "Copies the main PROXY group (all available proxies, Direct, and Reject). You can edit or delete it later.",
+    "zh-CN": "默认复制主 PROXY 组（包含所有可用代理、直连和拒绝），创建后可随时编辑或删除。"
   }
 }

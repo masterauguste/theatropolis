@@ -74,7 +74,17 @@
     retry: form.querySelector("[data-subscription-rule-set-retry]"),
     noResolveField: form.querySelector("[data-subscription-no-resolve-field]"),
     noResolve: form.querySelector("[data-subscription-no-resolve]"),
+    action: form.querySelector("[data-subscription-rule-action]"),
+    newGroupField: form.querySelector("[data-subscription-new-group-field]"),
+    newGroupName: form.querySelector("[data-subscription-new-group-name]"),
   });
+
+  const suggestGroupName = (raw) => {
+    const first = String(raw || "").split(/[\r\n,]+/).map((part) => part.trim()).find(Boolean) || "";
+    const cleaned = first.replace(/^\*?\./, "").replace(/[,="\\[\]#;]+/g, "").trim().slice(0, 100);
+    if (!cleaned || /^(proxy|direct|reject)$/i.test(cleaned)) return "";
+    return cleaned;
+  };
 
   const setStatus = (elements, message = "", retry = false) => {
     const copy = elements.status?.querySelector("span");
@@ -164,17 +174,45 @@
     elements.noResolveField.hidden = !supportsNoResolve;
     elements.noResolve.disabled = !supportsNoResolve;
     elements.value.value = kind ? elements.ruleSet.value : elements.textarea.value;
+    if (elements.action && elements.newGroupField && elements.newGroupName) {
+      const creatingGroup = elements.action.value === "new_group";
+      elements.newGroupField.hidden = !creatingGroup;
+      elements.newGroupName.disabled = !creatingGroup;
+      elements.newGroupName.required = creatingGroup;
+      if (creatingGroup && elements.newGroupName.dataset.userEdited !== "true") {
+        const suggested = suggestGroupName(elements.value.value);
+        if (suggested) elements.newGroupName.value = suggested;
+      }
+    }
     if (kind && form.closest("dialog")?.open) enableCatalog(form, kind);
   };
 
   for (const form of forms) {
     const elements = elementsFor(form);
+    const updateSuggestedGroupName = () => {
+      if (!elements.action || !elements.newGroupName || elements.action.value !== "new_group") return;
+      if (elements.newGroupName.dataset.userEdited === "true") return;
+      elements.newGroupName.value = suggestGroupName(elements.value.value);
+    };
     elements.match.addEventListener("change", () => syncForm(form));
     elements.textarea.addEventListener("input", () => {
-      if (!catalogKind(elements.match.value)) elements.value.value = elements.textarea.value;
+      if (!catalogKind(elements.match.value)) {
+        elements.value.value = elements.textarea.value;
+        updateSuggestedGroupName();
+      }
     });
     elements.ruleSet.addEventListener("change", () => {
       elements.value.value = elements.ruleSet.value;
+      updateSuggestedGroupName();
+    });
+    elements.action?.addEventListener("change", () => {
+      syncForm(form);
+      if (elements.action.value === "new_group" && elements.newGroupName && form.closest("dialog")?.open) {
+        elements.newGroupName.focus();
+      }
+    });
+    elements.newGroupName?.addEventListener("input", () => {
+      elements.newGroupName.dataset.userEdited = elements.newGroupName.value.trim() ? "true" : "";
     });
     elements.retry.addEventListener("click", () => {
       const kind = catalogKind(elements.match.value);

@@ -200,11 +200,16 @@ func (h *Handler) updateSubscriptionDefault(response http.ResponseWriter, reques
 }
 
 func (h *Handler) addSubscriptionRule(response http.ResponseWriter, request *http.Request) {
-	_, form, ok := h.authorizeProxyMutation(response, request, "match", "values", "action", "no_resolve")
+	_, form, ok := h.authorizeProxyMutationWithOptional(response, request, []string{"match", "values", "action"}, "no_resolve", "new_group_name")
 	if !ok {
 		return
 	}
-	if _, err := h.proxyNodes.AddSubscriptionRule(subscriptionRuleInput(form)); err != nil {
+	if form.Get("action") == "new_group" {
+		if _, _, err := h.proxyNodes.AddSubscriptionRuleWithNewGroup(subscriptionRuleInput(form), form.Get("new_group_name")); err != nil {
+			handleProxyMutationError(response, err)
+			return
+		}
+	} else if _, err := h.proxyNodes.AddSubscriptionRule(subscriptionRuleInput(form)); err != nil {
 		handleProxyMutationError(response, err)
 		return
 	}
@@ -212,11 +217,16 @@ func (h *Handler) addSubscriptionRule(response http.ResponseWriter, request *htt
 }
 
 func (h *Handler) updateSubscriptionRule(response http.ResponseWriter, request *http.Request) {
-	_, form, ok := h.authorizeProxyMutation(response, request, "match", "values", "action", "no_resolve")
+	_, form, ok := h.authorizeProxyMutationWithOptional(response, request, []string{"match", "values", "action"}, "no_resolve", "new_group_name")
 	if !ok {
 		return
 	}
-	if err := h.proxyNodes.UpdateSubscriptionRule(request.PathValue("rule_id"), subscriptionRuleInput(form)); err != nil {
+	if form.Get("action") == "new_group" {
+		if _, err := h.proxyNodes.UpdateSubscriptionRuleWithNewGroup(request.PathValue("rule_id"), subscriptionRuleInput(form), form.Get("new_group_name")); err != nil {
+			handleProxyMutationError(response, err)
+			return
+		}
+	} else if err := h.proxyNodes.UpdateSubscriptionRule(request.PathValue("rule_id"), subscriptionRuleInput(form)); err != nil {
 		handleProxyMutationError(response, err)
 		return
 	}

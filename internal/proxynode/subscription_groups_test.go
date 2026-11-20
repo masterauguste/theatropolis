@@ -142,3 +142,73 @@ func TestSubscriptionGroupValidation(t *testing.T) {
 		}
 	}
 }
+
+func TestSubscriptionRuleWithNewProxyCopyGroupIsAtomic(t *testing.T) {
+	s, err := Open(filepath.Join(t.TempDir(), "state.json"), testBuild())
+	if err != nil {
+		t.Fatal(err)
+	}
+	rule, group, err := s.AddSubscriptionRuleWithNewGroup(SubscriptionRuleInput{
+		Match:  SubscriptionMatchDomainSuffix,
+		Values: []string{"netflix.com"},
+	}, "Streaming")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if group.Name != "Streaming" || group.Type != "select" || !group.AllNodes {
+		t.Fatalf("unexpected group defaults: %+v", group)
+	}
+	wantMembers := []SubscriptionAction{SubscriptionProxy, SubscriptionDirect, SubscriptionReject}
+	if !reflect.DeepEqual(group.Members, wantMembers) {
+		t.Fatalf("group members = %v, want %v", group.Members, wantMembers)
+	}
+	if rule.Action != SubscriptionAction("group:"+group.ID) {
+		t.Fatalf("rule action = %q, want group:%s", rule.Action, group.ID)
+	}
+	// Invalid rule must not leave an orphan group behind.
+	if _, _, err := s.AddSubscriptionRuleWithNewGroup(SubscriptionRuleInput{
+		Match:  SubscriptionMatchDomain,
+		Values: nil,
+	}, "Orphan"); err == nil {
+		t.Fatal("accepted invalid rule with new group")
+	}
+	// Reserved/duplicate group name must not add a rule.
+	if _, _, err := s.AddSubscriptionRuleWithNewGroup(SubscriptionRuleInput{
+		Match:  SubscriptionMatchDomain,
+		Values: []string{"example.com"},
+	}, "PROXY"); err == nil {
+		t.Fatal("accepted reserved group name")
+	}
+	if _, _, err := s.AddSubscriptionRuleWithNewGroup(SubscriptionRuleInput{
+		Match:  SubscriptionMatchDomain,
+		Values: []string{"example.com"},
+	}, "streaming"); err == nil {
+		t.Fatal("accepted duplicate group name")
+	}
+	policy := s.SubscriptionPolicy()
+	if len(policy.Groups) != 1 || len(policy.Rules) != 1 {
+		t.Fatalf("failed mutations leaked state: %+v", policy)
+	}
+	// Updating an existing rule with a new group works atomically and the
+	// created groups remain editable and deletable afterwards.
+	group2, err := s.UpdateSubscriptionRuleWithNewGroup(rule.ID, SubscriptionRuleInput{
+		Match:  SubscriptionMatchDomainSuffix,
+		Values: []string{"openai.com"},
+	}, "AI")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := s.SubscriptionPolicy().Rules[0].Action; got != SubscriptionAction("group:"+group2.ID) {
+		t.Fatalf("updated rule action = %q, want group:%s", got, group2.ID)
+	}
+	group2.Name = "AI Tools"
+	if _, err := s.SaveSubscriptionGroup(group2); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.DeleteSubscriptionGroup(group2.ID, SubscriptionProxy); err != nil {
+		t.Fatal(err)
+	}
+	if got := s.SubscriptionPolicy().Rules[0].Action; got != SubscriptionProxy {
+		t.Fatalf("deleted group replacement action = %q, want proxy", got)
+	}
+}
