@@ -10,6 +10,7 @@
     const search = picker.querySelector("[data-subscription-member-search]");
     const mode = form.querySelector("[data-subscription-group-type]");
     const rows = () => [...list.querySelectorAll("[data-subscription-member]")];
+    const initialRows = rows();
     const sync = (changed = false) => {
       const selected = rows().filter((row) => row.querySelector("input").checked);
       value.value = selected.map((row) => row.querySelector("input").value).join("\n");
@@ -51,6 +52,15 @@
     });
     const showTests = () => { form.querySelector("[data-subscription-group-tests]").hidden = mode.value !== "url-test"; };
     mode.addEventListener("change", showTests);
+    form.addEventListener("reset", () => {
+      window.setTimeout(() => {
+        for (const row of initialRows) list.append(row);
+        search.value = "";
+        filter();
+        sync(false);
+        showTests();
+      }, 0);
+    });
     source.hidden = true;
     picker.hidden = false;
     sync();
@@ -111,6 +121,7 @@
     const placeholder = document.createElement("option");
     placeholder.value = "";
     placeholder.disabled = true;
+    placeholder.defaultSelected = !current;
     placeholder.textContent = kind === "geosite"
       ? t("Select a Geosite rule set")
       : t("Select a GeoIP rule set");
@@ -119,6 +130,7 @@
       const option = document.createElement("option");
       option.value = value;
       option.textContent = label;
+      option.defaultSelected = value === current;
       elements.ruleSet.append(option);
     }
     elements.ruleSet.value = current;
@@ -189,6 +201,11 @@
 
   for (const form of forms) {
     const elements = elementsFor(form);
+    const initialRuleSetKind = catalogKind(elements.match.value);
+    const initialRuleSetValue = initialRuleSetKind ? elements.ruleSet.value : "";
+    const initialRuleSetLabel = initialRuleSetKind
+      ? (elements.ruleSet.selectedOptions[0]?.textContent || initialRuleSetValue.replaceAll("\n", ", "))
+      : "";
     const updateSuggestedGroupName = () => {
       if (!elements.action || !elements.newGroupName || elements.action.value !== "new_group") return;
       if (elements.newGroupName.dataset.userEdited === "true") return;
@@ -226,6 +243,25 @@
       elements.value.value = catalogKind(elements.match.value)
         ? elements.ruleSet.value
         : elements.textarea.value;
+    });
+    form.addEventListener("reset", () => {
+      window.setTimeout(() => {
+        if (elements.newGroupName) delete elements.newGroupName.dataset.userEdited;
+        elements.ruleSet.dataset.ruleSetKind = initialRuleSetKind;
+        elements.ruleSet.replaceChildren();
+        const option = document.createElement("option");
+        option.value = initialRuleSetValue;
+        option.textContent = initialRuleSetValue ? initialRuleSetLabel : t("Loading…");
+        option.disabled = !initialRuleSetValue;
+        option.defaultSelected = true;
+        option.selected = true;
+        elements.ruleSet.append(option);
+        setStatus(elements);
+        syncForm(form);
+        window.theatropolisSyncSelect?.(elements.match);
+        window.theatropolisSyncSelect?.(elements.ruleSet);
+        if (elements.action) window.theatropolisSyncSelect?.(elements.action);
+      }, 0);
     });
     syncForm(form);
   }

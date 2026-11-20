@@ -22,10 +22,32 @@ const refreshFormCSRF = async (payload) => {
   payload.set("csrf_token", data.csrf_token);
   refreshCSRFBeforeSubmit = false;
 };
-const hasUnsavedChanges = () => [...dirtyForms].some((form) => form.isConnected);
+const isNonFormSearchControl = (target) => target?.type === "search" && !target.getAttribute?.("name");
+const formDialogActive = (form) => {
+  const dialog = typeof form.closest === "function" ? form.closest("dialog.modal") : null;
+  return !dialog || dialog.open || dialog.dataset?.dialogReturnPending === "true";
+};
+const hasUnsavedChanges = () => [...dirtyForms].some((form) => form.isConnected && formDialogActive(form));
+const clearClosedDialogDrafts = (dialog) => {
+  for (const form of dialog.querySelectorAll("form")) {
+    dirtyForms.delete(form);
+    if (formMethod(form) === "post" && form.dataset.completed !== "true" && form.dataset.submitting !== "true") {
+      form.reset?.();
+      form.querySelector("[data-client-validation-summary]")?.remove?.();
+      for (const control of form.elements || []) {
+        if (control.dataset?.validationErrorId) window.theatropolisClearFieldValidation?.(control);
+      }
+      const result = form.querySelector("[data-form-result]");
+      if (result?.classList?.contains("notice--error")) result.hidden = true;
+    }
+  }
+};
 for (const type of ["input", "change"]) {
   document.addEventListener(type, (event) => {
-    const form = event.target.form;
+    if (event.theatropolisProgrammatic) return;
+    const target = event.target;
+    if (isNonFormSearchControl(target)) return;
+    const form = target?.form;
     if (form && formMethod(form) === "post" && !/^\/(login|logout|claim|register)(\/|$)/.test(formActionURL(form).pathname)) dirtyForms.add(form);
   });
 }
@@ -242,6 +264,9 @@ for (const select of document.querySelectorAll("[data-proxy-protocol]")) {
     "change",
     () => updateProxyEndpointForm(select),
   );
+  select.closest("form")?.addEventListener("reset", () => {
+    window.setTimeout(() => updateProxyEndpointForm(select), 0);
+  });
 }
 
 const proxyListenerCatalog = [...document.querySelectorAll(
@@ -358,7 +383,9 @@ const setProxyListenerField = (editor, name, value) => {
   const input = editor.querySelector(`[name="${name}"]`);
   if (!input) return;
   input.value = value ?? "";
-  if (input instanceof HTMLSelectElement) input.dispatchEvent(new Event("change", { bubbles: true }));
+  if (input instanceof HTMLSelectElement) {
+    input.dispatchEvent(Object.assign(new Event("change", { bubbles: true }), { theatropolisProgrammatic: true }));
+  }
 };
 
 const applyProxyListenerPreset = (editor, preset) => {
@@ -476,7 +503,7 @@ const validateProxyListener = (editor, live = false) => {
   setProxyListenerStatus(editor, t("This socket is available for a new physical listener."), "compatible", t("Listener ready"));
 };
 
-const updateProxyListenerChoices = (editor) => {
+const updateProxyListenerChoices = (editor, resetToInitial = false) => {
   const select = editor.querySelector("[data-proxy-listener-select]");
   if (!(select instanceof HTMLSelectElement)) return;
   const previous = select.value;
@@ -499,7 +526,7 @@ const updateProxyListenerChoices = (editor) => {
     const port = editor.querySelector('[name="listen_port"]');
     if (port) { port.min = reverse ? "1024" : "1"; port.previousElementSibling.textContent = t(reverse ? "Parent WireGuard UDP port" : "Listen port"); }
     updateProxyEndpointForm(protocol);
-    protocol.dispatchEvent(new Event("change", { bubbles: true }));
+    protocol.dispatchEvent(Object.assign(new Event("change", { bubbles: true }), { theatropolisProgrammatic: true }));
   }
   const agent = proxyListenerAgent(editor);
   select.replaceChildren(new Option(t("Configure manually"), "manual"));
@@ -509,9 +536,9 @@ const updateProxyListenerChoices = (editor) => {
     select.add(new Option(preset.label, preset.listenerId));
   }
   const currentID = editor.dataset.currentListener || "";
-  select.value = [...select.options].some((option) => option.value === previous) ? previous :
+  select.value = !resetToInitial && [...select.options].some((option) => option.value === previous) ? previous :
     [...select.options].some((option) => option.value === currentID) ? currentID : "manual";
-  select.dispatchEvent(new Event("change", { bubbles: true }));
+  select.dispatchEvent(Object.assign(new Event("change", { bubbles: true }), { theatropolisProgrammatic: true }));
 };
 
 for (const editor of document.querySelectorAll("[data-proxy-listener-editor]")) {
@@ -546,6 +573,9 @@ for (const editor of document.querySelectorAll("[data-proxy-listener-editor]")) 
   for (const agentSelect of form?.querySelectorAll('[name="child_agent"], [name="agent_id"]') || []) {
     agentSelect.addEventListener("change", () => updateProxyListenerChoices(editor));
   }
+  form?.addEventListener("reset", () => {
+    window.setTimeout(() => updateProxyListenerChoices(editor, true), 0);
+  });
   updateProxyListenerChoices(editor);
 }
 
@@ -556,10 +586,9 @@ const proxyRuleSetContextVisible = (form) => {
   return !view || !view.hidden;
 };
 
-const compactProxyRuleSet = (ruleSet) => {
-  const current = ruleSet.value;
-  ruleSet.replaceChildren(new Option(current || t("Loading…"), current, true, true));
-  ruleSet.options[0].disabled = !current;
+const compactProxyRuleSet = (ruleSet, value = ruleSet.value) => {
+  ruleSet.replaceChildren(new Option(value || t("Loading…"), value, true, true));
+  ruleSet.options[0].disabled = !value;
 };
 
 const populateProxyRuleSet = (ruleSet, kind, options) => {
@@ -640,8 +669,23 @@ const refreshProxyRuleSets = (root) => {
 };
 
 for (const select of document.querySelectorAll("[data-proxy-match]")) {
+  const form = select.closest("form");
+  const ruleSet = form?.querySelector("[data-proxy-rule-set]");
+  if (ruleSet instanceof HTMLSelectElement) {
+    ruleSet.dataset.initialValue = ruleSet.value;
+    ruleSet.dataset.initialRuleSetKind = select.value === "geosite" || select.value === "geoip" ? select.value : "";
+  }
   updateProxyMatch(select);
   select.addEventListener("change", () => updateProxyMatch(select));
+  form?.addEventListener("reset", () => {
+    window.setTimeout(() => {
+      if (ruleSet instanceof HTMLSelectElement) {
+        ruleSet.dataset.ruleSetKind = ruleSet.dataset.initialRuleSetKind || "";
+        compactProxyRuleSet(ruleSet, ruleSet.dataset.initialValue || "");
+      }
+      updateProxyMatch(select);
+    }, 0);
+  });
 }
 
 for (const form of document.querySelectorAll("[data-proxy-branch-form]")) {
@@ -660,14 +704,19 @@ for (const form of document.querySelectorAll("[data-proxy-branch-form]")) {
         const disabledChanged = control.disabled !== blocked;
         control.disabled = blocked;
         if (disabledChanged && control instanceof HTMLSelectElement) {
-          control.dispatchEvent(new Event("change", { bubbles: true }));
+          control.dispatchEvent(Object.assign(new Event("change", { bubbles: true }), { theatropolisProgrammatic: true }));
         }
       }
     }
-    if (resetOutcome) outcome.dispatchEvent(new Event("change", { bubbles: true }));
+    if (resetOutcome) {
+      outcome.dispatchEvent(Object.assign(new Event("change", { bubbles: true }), { theatropolisProgrammatic: true }));
+    }
   };
   match.addEventListener("change", update);
   outcome.addEventListener("change", update);
+  form.addEventListener("reset", () => {
+    window.setTimeout(update, 0);
+  });
   update();
 }
 
@@ -813,6 +862,8 @@ const runLinkProbe = async (form) => {
 };
 
 const scheduleLinkProbe = (form, immediate = false) => {
+  const dialog = form.closest("dialog");
+  if (dialog && !dialog.open) return;
   const previous = linkProbeTimers.get(form);
   if (previous) window.clearTimeout(previous);
   linkProbeTimers.set(form, window.setTimeout(() => runLinkProbe(form), immediate ? 0 : 400));
@@ -1359,12 +1410,13 @@ document.addEventListener("click", (event) => {
     const matchSelect = dialog.querySelector("[data-proxy-match]");
     if (matchDefault && matchSelect instanceof HTMLSelectElement) {
       matchSelect.value = matchDefault;
-      matchSelect.dispatchEvent(new Event("change", { bubbles: true }));
+      matchSelect.dispatchEvent(Object.assign(new Event("change", { bubbles: true }), { theatropolisProgrammatic: true }));
     }
     const sourceDialog = button.closest("dialog");
     if (sourceDialog instanceof HTMLDialogElement && sourceDialog !== dialog && sourceDialog.open) {
       dialogReturns.set(dialog, sourceDialog);
       sourceDialog.dataset.dialogSwapping = "true";
+      sourceDialog.dataset.dialogReturnPending = "true";
       sourceDialog.close();
     }
     dialogTriggers.set(dialog, button);
@@ -1420,16 +1472,20 @@ document.addEventListener("cancel", (event) => {
 
 document.addEventListener("close", (event) => {
   if (event.target.matches("dialog.modal")) {
-    for (const ruleSet of event.target.querySelectorAll("[data-proxy-rule-set]")) {
-      if (ruleSet.options.length > 1) compactProxyRuleSet(ruleSet);
-    }
     if (event.target.dataset.dialogSwapping === "true") {
       delete event.target.dataset.dialogSwapping;
       return;
     }
+    clearClosedDialogDrafts(event.target);
+    for (const ruleSet of event.target.querySelectorAll("[data-proxy-rule-set]")) {
+      if (ruleSet.options.length > 1 || ruleSet.dataset.initialValue !== undefined) {
+        compactProxyRuleSet(ruleSet, ruleSet.dataset.initialValue ?? ruleSet.value);
+      }
+    }
     const returnDialog = dialogReturns.get(event.target);
     if (returnDialog instanceof HTMLDialogElement && returnDialog.isConnected && !returnDialog.open) {
       dialogReturns.delete(event.target);
+      delete returnDialog.dataset.dialogReturnPending;
       returnDialog.showModal();
       refreshProxyRuleSets(returnDialog);
       refreshDialogLinkData(returnDialog);
@@ -1903,6 +1959,7 @@ if (versionCatalogURL) {
         }
         if (data.latest_sing_box_version) {
           select.value = data.latest_sing_box_version;
+          for (const option of select.options) option.defaultSelected = option.value === select.value;
         }
         if (select.options.length === 0) {
           const option = document.createElement("option");
@@ -2074,6 +2131,13 @@ for (const picker of document.querySelectorAll("[data-node-role-picker]")) {
     event.preventDefault();
     search?.focus();
   });
+  form?.addEventListener("reset", () => {
+    window.setTimeout(() => {
+      if (search) search.value = "";
+      applySearch();
+      updateSubmit();
+    }, 0);
+  });
   applySearch();
   updateSubmit();
 }
@@ -2158,6 +2222,14 @@ for (const dialog of document.querySelectorAll("[data-compensation-dialog]")) {
       event.preventDefault();
       submit?.focus();
     }
+  });
+  form?.addEventListener("reset", () => {
+    window.setTimeout(() => {
+      if (searchInput) searchInput.value = "";
+      applySearch();
+      endInput?.setCustomValidity("");
+      updateCount();
+    }, 0);
   });
 }
 

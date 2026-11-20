@@ -165,3 +165,44 @@ test('named action and method controls cannot shadow form submission metadata', 
   assert.deepEqual(calls, ['http://localhost/subscriptions/rules/stable-id/action']);
   assert.deepEqual(h.navigations, ['http://localhost/subscriptions']);
 });
+
+test('programmatic change events and nameless search filters do not trigger beforeunload', () => {
+  const h = harness();
+  const form = new h.Form();
+  h.listeners.change({target: {form}, theatropolisProgrammatic: true});
+  h.listeners.input({target: {form, type: 'search', getAttribute: () => null}});
+  assert.equal(h.run('hasUnsavedChanges()'), false);
+  let prevented = false;
+  h.windowListeners.beforeunload({preventDefault() { prevented = true; }});
+  assert.equal(prevented, false);
+
+  h.listeners.input({target: {form, type: 'search', getAttribute: (attr) => attr === 'name' ? 'query' : null}});
+  assert.equal(h.run('hasUnsavedChanges()'), true);
+});
+
+test('closing a modal dialog clears its draft and beforeunload while preserving swapped parent drafts', () => {
+  const h = harness();
+  const dialog = {open: true, dataset: {}, querySelectorAll: () => [form]};
+  const form = new h.Form();
+  let resetCalls = 0;
+  form.reset = () => { resetCalls++; };
+  form.closest = (selector) => selector === 'dialog.modal' ? dialog : null;
+
+  h.listeners.input({target: {form}});
+  assert.equal(h.run('hasUnsavedChanges()'), true);
+
+  // Temporarily swapping to a nested child modal keeps the parent draft active.
+  dialog.open = false;
+  dialog.dataset.dialogReturnPending = 'true';
+  assert.equal(h.run('hasUnsavedChanges()'), true);
+
+  // Explicitly closing the dialog clears and resets its draft so navigation is unblocked.
+  delete dialog.dataset.dialogReturnPending;
+  h.context.closedDialog = dialog;
+  h.run('clearClosedDialogDrafts(closedDialog)');
+  assert.equal(resetCalls, 1);
+  assert.equal(h.run('hasUnsavedChanges()'), false);
+  let prevented = false;
+  h.windowListeners.beforeunload({preventDefault() { prevented = true; }});
+  assert.equal(prevented, false);
+});

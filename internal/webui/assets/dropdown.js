@@ -240,9 +240,11 @@
 
   const selectValue = (control, value) => {
     if (control.select.disabled) return;
-    control.select.value = value;
-    control.select.dispatchEvent(new Event("input", { bubbles: true }));
-    control.select.dispatchEvent(new Event("change", { bubbles: true }));
+    if (control.select.value !== value) {
+      control.select.value = value;
+      control.select.dispatchEvent(new Event("input", { bubbles: true }));
+      control.select.dispatchEvent(new Event("change", { bubbles: true }));
+    }
     syncControl(control, false);
     closeDropdown(control, true);
   };
