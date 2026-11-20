@@ -1,0 +1,918 @@
+package main
+
+import (
+	"bytes"
+	"context"
+	"encoding/base64"
+	"encoding/json"
+	"errors"
+	"flag"
+	"fmt"
+	"io"
+	"log/slog"
+	"net"
+	"net/http"
+	"os"
+	"os/signal"
+	"path/filepath"
+	"runtime"
+	"strings"
+	"sync"
+	"syscall"
+	"time"
+
+	controlv1 "github.com/masterauguste/theatropolis/api/gen/theatropolis/control/v1"
+	"github.com/masterauguste/theatropolis/internal/agentupdate"
+	"github.com/masterauguste/theatropolis/internal/control"
+	"github.com/masterauguste/theatropolis/internal/deployment"
+	"github.com/masterauguste/theatropolis/internal/identity"
+	"github.com/masterauguste/theatropolis/internal/mastermigration"
+	"github.com/masterauguste/theatropolis/internal/pool"
+	"github.com/masterauguste/theatropolis/internal/proxynode"
+	"github.com/masterauguste/theatropolis/internal/singboxupdate"
+	"github.com/masterauguste/theatropolis/internal/webui"
+	"google.golang.org/grpc"
+	"google.golang.org/grpc/health"
+	healthv1 "google.golang.org/grpc/health/grpc_health_v1"
+	"google.golang.org/grpc/keepalive"
+)
+
+const (
+	maxWireMessageBytes     = control.DefaultMaxConfigBytes + 64<<10
+	maxAdminPasswordBytes   = 512
+	controlKeepaliveTime    = 30 * time.Second
+	controlKeepaliveTimeout = 10 * time.Second
+	controlKeepaliveMinTime = 20 * time.Second
+	controlMaxStreams       = 128
+	legacyInstalledWebAuth  = "/etc/theatropolis/web-auth.json"
+	webAuthMigrationMaxSize = 16 << 20
+)
+
+var (
+	version   = "development"
+	commit    = "unknown"
+	buildDate = "unknown"
+
+	effectiveUserID           = os.Geteuid
+	errMasterRestartRequested = errors.New("Master restart requested")
+)
+
+type migrationUIAdapter struct{ service *mastermigration.Service }
+
+func (a migrationUIAdapter) Export(ctx context.Context, passphrase string) (string, []byte, error) {
+	result, err := a.service.Export(ctx, passphrase)
+	return result.Filename, result.Data, err
+}
+
+func (a migrationUIAdapter) StageRestore(ctx context.Context, archive []byte, passphrase string) (string, int, int, int, error) {
+	result, err := a.service.StageRestore(ctx, archive, passphrase)
+	return result.MigrationID, result.Agents, result.Users, result.ProxyNodes, err
+}
+
+func main() {
+	if err := run(os.Args[1:]); err != nil {
+		slog.Error("master stopped", "error", err)
+		os.Exit(1)
+	}
+}
+
+func run(arguments []string) error {
+	if len(arguments) == 0 {
+		return errors.New("expected serve, apply-update, create-enrollment, set-web-admin, latest-sing-box-version, validate-sing-box-build-manifest, or version")
+	}
+	switch arguments[0] {
+	case "serve":
+		return serve(arguments[1:])
+	case "apply-update":
+		return errors.New(
+			"privileged updates moved to the dedicated theatropolis-update-helper; rerun the installer",
+		)
+	case "create-enrollment":
+		return createEnrollment(arguments[1:])
+	case "set-web-admin":
+		return setWebAdmin(arguments[1:])
+	case "latest-sing-box-version":
+		return latestSingBoxVersion(arguments[1:])
+	case "validate-sing-box-build-manifest":
+		return validateSingBoxBuildManifest(arguments[1:])
+	case "version":
+		fmt.Printf("%s (commit %s, built %s)\n", version, commit, buildDate)
+		return nil
+	default:
+		return fmt.Errorf("unknown command %q", arguments[0])
+	}
+}
+
+func latestSingBoxVersion(arguments []string) error {
+	if len(arguments) != 0 {
+		return errors.New("latest-sing-box-version does not accept arguments")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+	defer cancel()
+	return writeLatestSingBoxVersion(
+		ctx,
+		webui.NewSingBoxReleaseCatalog(nil),
+		os.Stdout,
+	)
+}
+
+func writeLatestSingBoxVersion(
+	ctx context.Context,
+	catalog webui.ReleaseCatalog,
+	output io.Writer,
+) error {
+	releases, err := catalog.Versions(ctx)
+	if err != nil {
+		return fmt.Errorf("resolve latest supported sing-box release: %w", err)
+	}
+	if len(releases) == 0 {
+		return errors.New("no supported sing-box release is available")
+	}
+	_, err = fmt.Fprintln(output, releases[0].Tag)
+	return err
+}
+
+func validateSingBoxBuildManifest(arguments []string) error {
+	flags := flag.NewFlagSet("validate-sing-box-build-manifest", flag.ContinueOnError)
+	flags.SetOutput(io.Discard)
+	targetVersion := flags.String("version", "", "exact sing-box release tag")
+	manifestPath := flags.String("file", "", "downloaded build manifest")
+	if err := flags.Parse(arguments); err != nil {
+		return err
+	}
+	if flags.NArg() != 0 || !singboxupdate.ValidVersion(*targetVersion) ||
+		strings.TrimSpace(*manifestPath) == "" {
+		return errors.New("a valid --version and --file are required")
+	}
+	info, err := os.Lstat(*manifestPath)
+	if err != nil {
+		return fmt.Errorf("inspect sing-box build manifest: %w", err)
+	}
+	const maximumManifestSize = 128 << 10
+	if !info.Mode().IsRegular() || info.Size() <= 0 || info.Size() > maximumManifestSize {
+		return errors.New("sing-box build manifest is not a bounded regular file")
+	}
+	encoded, err := os.ReadFile(*manifestPath)
+	if err != nil {
+		return fmt.Errorf("read sing-box build manifest: %w", err)
+	}
+	if err := singboxupdate.ValidateBuildManifest(encoded, *targetVersion); err != nil {
+		return err
+	}
+	return nil
+}
+
+func serve(arguments []string) error {
+	flags := flag.NewFlagSet("serve", flag.ContinueOnError)
+	flags.SetOutput(io.Discard)
+	stateDirectory := flags.String(
+		"state-dir",
+		"/var/lib/theatropolis/master",
+		"master state directory",
+	)
+	grpcAddress := flags.String("grpc-listen", "127.0.0.1:8081", "local gRPC address")
+	webAddress := flags.String("web-listen", "127.0.0.1:8080", "local HTTP address")
+	publicURL := flags.String(
+		"public-url",
+		"",
+		"canonical public HTTPS URL used by operators and agents",
+	)
+	webAuthFile := flags.String(
+		"web-auth-file",
+		"",
+		"operator access file (defaults to <state-dir>/web-auth.json)",
+	)
+	adminSocket := flags.String(
+		"admin-socket",
+		"/run/theatropolis/master-admin.sock",
+		"local administrative Unix socket",
+	)
+	if err := flags.Parse(arguments); err != nil {
+		return err
+	}
+	if flags.NArg() != 0 {
+		return errors.New("unexpected positional arguments")
+	}
+	if backupPath, applied, err := mastermigration.ApplyPendingRestore(*stateDirectory); err != nil {
+		return fmt.Errorf("apply staged Master migration: %w", err)
+	} else if applied {
+		slog.Info("Master migration restored", "backup_path", backupPath)
+	}
+	ctx, stop := signal.NotifyContext(
+		context.Background(),
+		os.Interrupt,
+		syscall.SIGTERM,
+	)
+	defer stop()
+
+	grpcListener, err := listenLoopback(*grpcAddress)
+	if err != nil {
+		return fmt.Errorf("listen for agent control: %w", err)
+	}
+	defer grpcListener.Close()
+	webListener, err := listenLoopback(*webAddress)
+	if err != nil {
+		return fmt.Errorf("listen for web interface: %w", err)
+	}
+	defer webListener.Close()
+	adminListener, err := listenUnixSocket(*adminSocket)
+	if err != nil {
+		return fmt.Errorf("listen for local administration: %w", err)
+	}
+	defer func() {
+		_ = adminListener.Close()
+		_ = os.Remove(*adminSocket)
+	}()
+
+	identities, err := identity.OpenRegistry(
+		filepath.Join(*stateDirectory, "identities.json"),
+	)
+	if err != nil {
+		return err
+	}
+	logger := slog.New(slog.NewJSONHandler(os.Stderr, nil))
+	slog.SetDefault(logger)
+	legacyQuarantine, firstProxyNodeStart, err := proxynode.PrepareMasterCutover(*stateDirectory, time.Now())
+	if err != nil {
+		return fmt.Errorf("prepare Proxy Node configuration cutover: %w", err)
+	}
+	if legacyQuarantine != "" {
+		logger.Warn("legacy proxy configuration quarantined", "path", legacyQuarantine)
+	}
+	deployments, err := deployment.NewDiskStore(
+		filepath.Join(*stateDirectory, "deployments"),
+	)
+	if err != nil {
+		return fmt.Errorf("open deployment storage: %w", err)
+	}
+	// poolRegistry is passed to the control server now and will be handed
+	// to the web interface for manual-entry management in a later phase.
+	poolRegistry, err := pool.Open(filepath.Join(*stateDirectory, "outbound-pool.json"))
+	if err != nil {
+		return fmt.Errorf("open outbound pool registry: %w", err)
+	}
+	if firstProxyNodeStart {
+		if err := poolRegistry.DiscardLegacyConfiguration(); err != nil {
+			return fmt.Errorf("discard legacy outbound-pool configuration: %w", err)
+		}
+	}
+	server := control.NewServer(
+		identities,
+		deployments,
+		poolRegistry,
+		logNotifier{logger: logger},
+		logger,
+	)
+	proxyNodes, err := proxynode.Open(
+		filepath.Join(*stateDirectory, "proxy-node-state.json"),
+		proxynode.BuildInfo{
+			Component: "master",
+			Version:   version,
+			Commit:    commit,
+		},
+	)
+	if err != nil {
+		return fmt.Errorf("open Proxy Node state: %w", err)
+	}
+	proxyDeployer, err := proxynode.NewDeployer(proxyNodes, poolRegistry, server)
+	if err != nil {
+		return fmt.Errorf("configure Proxy Node deployer: %w", err)
+	}
+	server.SetAgentRevocationGuard(proxyDeployer.GuardAgentRemoval)
+	billingEnforcer := proxynode.NewBillingEnforcer(proxyNodes, proxyDeployer, logger)
+	billingEnforcer.Start(ctx)
+	topologyReconciler := proxynode.NewTopologyReconciler(proxyDeployer, logger)
+	proxyDeployer.SetTopologyDesiredHook(topologyReconciler.Trigger)
+	topologyReconciler.Start(ctx)
+	proxyDeployer.SetTopologyAppliedHook(billingEnforcer.TriggerDeployment)
+	proxyDeployer.SetUserPlaneChangedHook(billingEnforcer.TriggerDeployment)
+	server.SetAuthoritativeProfileProvider(proxyDeployer.AuthoritativeAppliedProfile)
+	server.SetProxyNodeUserHandler(billingEnforcer.TriggerDeployment)
+	server.SetProxyNodeTopologyHandler(topologyReconciler.Trigger)
+	server.SetProxyNodeAddressHandler(func() {
+		billingEnforcer.TriggerAppliedRefresh()
+		// Initial connection address callbacks cannot race this retry ahead of
+		// profile replay: the control session is not marked deployment-ready
+		// until that authoritative replay has already occupied its slot.
+		topologyReconciler.Trigger()
+	})
+	billingEnforcer.TriggerDeployment()
+	server.SetManagedUserTrafficHandler(func(
+		agentID, epoch string,
+		observedAt time.Time,
+		usage []control.ManagedUserTraffic,
+		deltaReport bool,
+	) (bool, error) {
+		users := make([]proxynode.UserTraffic, 0, len(usage))
+		for _, entry := range usage {
+			users = append(users, proxynode.UserTraffic{
+				InboundPath: entry.InboundPath, Username: entry.Username,
+				UplinkBytes: entry.UplinkBytes, DownlinkBytes: entry.DownlinkBytes,
+			})
+		}
+		var changed bool
+		var err error
+		if deltaReport {
+			changed, err = proxyNodes.ApplyTrafficDeltaReport(agentID, observedAt, users)
+		} else {
+			changed, err = proxyNodes.ApplyTrafficReport(agentID, epoch, observedAt, users)
+		}
+		if changed && err == nil {
+			billingEnforcer.TriggerDeployment()
+		}
+		return changed, err
+	})
+	server.SetManagedUserTrafficFailureHandler(proxyNodes.RecordAccountingFailure)
+	server.SetLinkLatencyHandler(func(agentID string, observedAt time.Time, samples []control.LinkLatencyObservation) error {
+		observations := make([]proxynode.LinkLatencyObservation, 0, len(samples))
+		for _, sample := range samples {
+			observations = append(observations, proxynode.LinkLatencyObservation{
+				TargetID: sample.TargetID, Responded: sample.Responded,
+				Connected: sample.Connected, Duration: sample.Duration,
+			})
+		}
+		return proxyNodes.RecordLinkLatencySnapshot(agentID, observedAt, observations)
+	})
+	accessPath, err := resolveWebAccessPath(*stateDirectory, *webAuthFile)
+	if err != nil {
+		return fmt.Errorf("prepare unified web identity path: %w", err)
+	}
+	access, endUserAccess, err := webui.OpenUnifiedWebAccess(
+		accessPath,
+		filepath.Join(*stateDirectory, "end-user-auth.json"),
+		filepath.Join(*stateDirectory, "web-sessions.json"),
+		filepath.Join(*stateDirectory, "end-user-sessions.json"),
+	)
+	if err != nil {
+		return fmt.Errorf("load unified web identities: %w", err)
+	}
+	defer func() {
+		if err := endUserAccess.Close(); err != nil {
+			logger.Error("close end-user web access", "error", err)
+		}
+	}()
+	validEndUsers := make(map[string]struct{})
+	for _, user := range proxyNodes.Snapshot().Users {
+		if proxynode.IsSystemAdministrator(user) {
+			continue
+		}
+		validEndUsers[user.ID] = struct{}{}
+	}
+	if err := endUserAccess.ReconcileUsers(validEndUsers); err != nil {
+		return fmt.Errorf("reconcile end-user web access: %w", err)
+	}
+	masterUpdater, err := agentupdate.NewScheduler(*stateDirectory)
+	if err != nil {
+		return fmt.Errorf("configure master updater: %w", err)
+	}
+	ruleSetCacheDirectory := filepath.Join(*stateDirectory, "rule-set-catalogs")
+	geositeRuleSets := webui.NewGeositeRuleSetCatalog(
+		nil,
+		filepath.Join(ruleSetCacheDirectory, "geosite.json"),
+	)
+	geoipRuleSets := webui.NewGeoipRuleSetCatalog(
+		nil,
+		filepath.Join(ruleSetCacheDirectory, "geoip.json"),
+	)
+	geositeRuleSets.Start(ctx)
+	geoipRuleSets.Start(ctx)
+	restartRequests := make(chan struct{})
+	var restartOnce sync.Once
+	migrationService := &mastermigration.Service{
+		StateDirectory: *stateDirectory, Version: version,
+		Build:      proxynode.BuildInfo{Component: "master", Version: version, Commit: commit},
+		ProxyNodes: proxyNodes, Identities: identities, Deployments: deployments, Pool: poolRegistry,
+	}
+	webHandler, err := webui.New(webui.Options{
+		Registry:        identities,
+		Sessions:        server.Sessions,
+		Controller:      server,
+		Access:          access,
+		Releases:        webui.NewGitHubReleaseCatalog(nil),
+		SingBoxReleases: webui.NewSingBoxReleaseCatalog(nil),
+		GeositeRuleSets: geositeRuleSets,
+		GeoipRuleSets:   geoipRuleSets,
+		MasterUpdater:   masterUpdater,
+		PublicURL:       *publicURL,
+		Version:         version,
+		Logger:          logger,
+		ProxyNodes:      proxyNodes,
+		ProxyDeployer:   proxyDeployer,
+		ProxyUserSync:   billingEnforcer,
+		EndUserAccess:   endUserAccess,
+		MasterMigration: migrationUIAdapter{service: migrationService},
+		RequestRestart:  func() { restartOnce.Do(func() { close(restartRequests) }) },
+	})
+	if err != nil {
+		return fmt.Errorf("configure web interface: %w", err)
+	}
+	if err := proxyNodes.MarkReady(); err != nil {
+		return fmt.Errorf("record Proxy Node state readiness: %w", err)
+	}
+
+	grpcServer := grpc.NewServer(
+		grpc.MaxRecvMsgSize(maxWireMessageBytes),
+		grpc.MaxSendMsgSize(maxWireMessageBytes),
+		grpc.MaxConcurrentStreams(controlMaxStreams),
+		grpc.KeepaliveEnforcementPolicy(keepalive.EnforcementPolicy{
+			MinTime:             controlKeepaliveMinTime,
+			PermitWithoutStream: false,
+		}),
+		grpc.KeepaliveParams(keepalive.ServerParameters{
+			Time:    controlKeepaliveTime,
+			Timeout: controlKeepaliveTimeout,
+		}),
+	)
+	controlv1.RegisterAgentControlServiceServer(grpcServer, server)
+	healthServer := health.NewServer()
+	healthServer.SetServingStatus(
+		controlv1.AgentControlService_ServiceDesc.ServiceName,
+		healthv1.HealthCheckResponse_SERVING,
+	)
+	healthv1.RegisterHealthServer(grpcServer, healthServer)
+
+	webServer := &http.Server{
+		Handler:           webHandler,
+		ReadHeaderTimeout: 5 * time.Second,
+		ReadTimeout:       10 * time.Second,
+		WriteTimeout:      10 * time.Second,
+		IdleTimeout:       60 * time.Second,
+		MaxHeaderBytes:    16 << 10,
+	}
+	adminServer := &http.Server{
+		Handler:           adminHandler(identities),
+		ReadHeaderTimeout: 5 * time.Second,
+		ReadTimeout:       10 * time.Second,
+		WriteTimeout:      10 * time.Second,
+		IdleTimeout:       30 * time.Second,
+		MaxHeaderBytes:    8 << 10,
+	}
+
+	errorsChannel := make(chan error, 3)
+	go func() {
+		errorsChannel <- grpcServer.Serve(grpcListener)
+	}()
+	go func() {
+		errorsChannel <- webServer.Serve(webListener)
+	}()
+	go func() {
+		errorsChannel <- adminServer.Serve(adminListener)
+	}()
+	logger.Info(
+		"theatropolis master started",
+		"version", version,
+		"grpc_listen", grpcListener.Addr().String(),
+		"web_listen", webListener.Addr().String(),
+	)
+
+	var serveErr error
+	select {
+	case <-ctx.Done():
+	case <-restartRequests:
+		serveErr = errMasterRestartRequested
+	case serveErr = <-errorsChannel:
+		if errors.Is(serveErr, http.ErrServerClosed) ||
+			errors.Is(serveErr, grpc.ErrServerStopped) {
+			serveErr = nil
+		}
+	}
+	healthServer.SetServingStatus(
+		controlv1.AgentControlService_ServiceDesc.ServiceName,
+		healthv1.HealthCheckResponse_NOT_SERVING,
+	)
+	shutdownCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	_ = webServer.Shutdown(shutdownCtx)
+	_ = adminServer.Shutdown(shutdownCtx)
+	stopped := make(chan struct{})
+	go func() {
+		grpcServer.GracefulStop()
+		close(stopped)
+	}()
+	select {
+	case <-stopped:
+	case <-shutdownCtx.Done():
+		grpcServer.Stop()
+	}
+	return serveErr
+}
+
+// resolveWebAccessPath preserves arbitrary explicitly configured credential
+// paths. The one exception is the legacy installer-owned /etc path: release
+// self-updates cannot rewrite the old systemd unit, so the unprivileged master
+// copies that readable credential into its writable private state directory
+// before the unified identity migration runs. The installer later removes the
+// obsolete /etc copy only after a successful service restart.
+func resolveWebAccessPath(stateDirectory, configuredPath string) (string, error) {
+	targetPath := filepath.Join(stateDirectory, "web-auth.json")
+	configuredPath = strings.TrimSpace(configuredPath)
+	if configuredPath == "" {
+		return targetPath, nil
+	}
+	configuredPath = filepath.Clean(configuredPath)
+	if configuredPath != filepath.Clean(legacyInstalledWebAuth) {
+		return configuredPath, nil
+	}
+	if _, err := os.Lstat(targetPath); err == nil {
+		return targetPath, nil
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return "", err
+	}
+	if err := copyLegacyWebAccess(configuredPath, targetPath); err != nil {
+		return "", err
+	}
+	return targetPath, nil
+}
+
+func copyLegacyWebAccess(sourcePath, targetPath string) error {
+	info, err := os.Lstat(sourcePath)
+	if err != nil {
+		return fmt.Errorf("inspect legacy web identity file: %w", err)
+	}
+	if info.Mode()&os.ModeSymlink != 0 || !info.Mode().IsRegular() {
+		return errors.New("legacy web identity path is not a regular file")
+	}
+	if permissions := info.Mode().Perm(); permissions != 0o600 && permissions != 0o640 {
+		return fmt.Errorf("legacy web identity permissions are %04o, want 0600 or 0640", permissions)
+	}
+	source, err := os.Open(sourcePath)
+	if err != nil {
+		return fmt.Errorf("open legacy web identity file: %w", err)
+	}
+	defer source.Close()
+	encoded, err := io.ReadAll(io.LimitReader(source, webAuthMigrationMaxSize+1))
+	if err != nil {
+		return fmt.Errorf("read legacy web identity file: %w", err)
+	}
+	if len(encoded) == 0 || len(encoded) > webAuthMigrationMaxSize {
+		return errors.New("legacy web identity file has an invalid size")
+	}
+	directory := filepath.Dir(targetPath)
+	temporary, err := os.CreateTemp(directory, ".web-auth-migrate-*")
+	if err != nil {
+		return fmt.Errorf("create web identity migration file: %w", err)
+	}
+	temporaryPath := temporary.Name()
+	committed := false
+	defer func() {
+		_ = temporary.Close()
+		if !committed {
+			_ = os.Remove(temporaryPath)
+		}
+	}()
+	if err := temporary.Chmod(0o600); err != nil {
+		return fmt.Errorf("secure web identity migration file: %w", err)
+	}
+	if _, err := temporary.Write(encoded); err != nil {
+		return fmt.Errorf("write web identity migration file: %w", err)
+	}
+	if err := temporary.Sync(); err != nil {
+		return fmt.Errorf("synchronize web identity migration file: %w", err)
+	}
+	if err := temporary.Close(); err != nil {
+		return fmt.Errorf("close web identity migration file: %w", err)
+	}
+	if err := os.Rename(temporaryPath, targetPath); err != nil {
+		return fmt.Errorf("install migrated web identity file: %w", err)
+	}
+	committed = true
+	directoryHandle, err := os.Open(directory)
+	if err != nil {
+		return fmt.Errorf("open web identity directory: %w", err)
+	}
+	defer directoryHandle.Close()
+	if err := directoryHandle.Sync(); err != nil {
+		return fmt.Errorf("synchronize web identity directory: %w", err)
+	}
+	return nil
+}
+
+func setWebAdmin(arguments []string) error {
+	flags := flag.NewFlagSet("set-web-admin", flag.ContinueOnError)
+	flags.SetOutput(io.Discard)
+	stateDirectory := flags.String(
+		"state-dir",
+		"/var/lib/theatropolis/master",
+		"master state directory",
+	)
+	username := flags.String("username", "", "admin username")
+	passwordStdin := flags.Bool(
+		"password-stdin",
+		false,
+		"read the admin password from standard input",
+	)
+	replace := flags.Bool("replace", false, "replace an existing admin credential")
+	if err := flags.Parse(arguments); err != nil {
+		return err
+	}
+	if flags.NArg() != 0 {
+		return errors.New("positional arguments are not accepted")
+	}
+	if strings.TrimSpace(*stateDirectory) == "" {
+		return errors.New("--state-dir is required")
+	}
+	if strings.TrimSpace(*username) == "" {
+		return errors.New("--username is required")
+	}
+	if !*passwordStdin {
+		return errors.New("--password-stdin is required")
+	}
+	if runtime.GOOS != "windows" && effectiveUserID() != 0 {
+		return errors.New("set-web-admin must run as root")
+	}
+	if err := os.MkdirAll(*stateDirectory, 0o700); err != nil {
+		return fmt.Errorf("create master state directory: %w", err)
+	}
+	password, err := readAdminPassword(os.Stdin)
+	if err != nil {
+		return err
+	}
+	defer clear(password)
+
+	accessPath := filepath.Join(*stateDirectory, "web-auth.json")
+	if *replace {
+		if err := webui.ReplaceAdminAccess(accessPath, *username, password); err != nil {
+			return fmt.Errorf("replace web admin access: %w", err)
+		}
+		return nil
+	}
+	if err := webui.InitializeAdminAccess(accessPath, *username, password); err != nil {
+		return fmt.Errorf("initialize web admin access: %w", err)
+	}
+	return nil
+}
+
+func readAdminPassword(reader io.Reader) ([]byte, error) {
+	password, err := io.ReadAll(io.LimitReader(reader, maxAdminPasswordBytes+3))
+	if err != nil {
+		return nil, fmt.Errorf("read admin password: %w", err)
+	}
+	if bytes.HasSuffix(password, []byte{'\n'}) {
+		password = password[:len(password)-1]
+		if bytes.HasSuffix(password, []byte{'\r'}) {
+			password = password[:len(password)-1]
+		}
+	}
+	if len(password) == 0 {
+		return nil, errors.New("admin password is empty")
+	}
+	if len(password) > maxAdminPasswordBytes {
+		clear(password)
+		return nil, errors.New("admin password exceeds the size limit")
+	}
+	if bytes.ContainsAny(password, "\r\n") {
+		clear(password)
+		return nil, errors.New("admin password must be a single line")
+	}
+	return password, nil
+}
+
+func createEnrollment(arguments []string) error {
+	flags := flag.NewFlagSet("create-enrollment", flag.ContinueOnError)
+	flags.SetOutput(io.Discard)
+	adminSocket := flags.String(
+		"admin-socket",
+		"/run/theatropolis/master-admin.sock",
+		"local administrative Unix socket",
+	)
+	serverName := flags.String("server", "", "new server display name, or immutable record ID with --replace-agent")
+	expiresIn := flags.Duration("expires-in", 15*time.Minute, "token lifetime")
+	replaceAgent := flags.Bool("replace-agent", false, "replace an enrolled Agent while retaining its profile")
+	if err := flags.Parse(arguments); err != nil {
+		return err
+	}
+	if flags.NArg() != 0 || strings.TrimSpace(*serverName) == "" {
+		return errors.New("--server is required and positional arguments are not accepted")
+	}
+	if *expiresIn <= 0 || *expiresIn > 24*time.Hour {
+		return errors.New("--expires-in must be between 1ns and 24h")
+	}
+
+	enrollment := enrollmentRequest{
+		TTLSeconds: int64(expiresIn.Seconds()),
+		Replace:    *replaceAgent,
+	}
+	if *replaceAgent {
+		enrollment.AgentID = strings.TrimSpace(*serverName)
+	} else {
+		enrollment.DisplayName = strings.TrimSpace(*serverName)
+	}
+	payload, err := json.Marshal(enrollment)
+	if err != nil {
+		return err
+	}
+	transport := &http.Transport{
+		DialContext: func(ctx context.Context, _, _ string) (net.Conn, error) {
+			return (&net.Dialer{}).DialContext(ctx, "unix", *adminSocket)
+		},
+	}
+	client := &http.Client{Transport: transport, Timeout: 10 * time.Second}
+	request, err := http.NewRequest(
+		http.MethodPost,
+		"http://theatropolis/v1/enrollments",
+		strings.NewReader(string(payload)),
+	)
+	if err != nil {
+		return err
+	}
+	request.Header.Set("Content-Type", "application/json")
+	response, err := client.Do(request)
+	if err != nil {
+		return fmt.Errorf("contact local master: %w", err)
+	}
+	defer response.Body.Close()
+	body, err := io.ReadAll(io.LimitReader(response.Body, 8<<10))
+	if err != nil {
+		return err
+	}
+	if response.StatusCode != http.StatusCreated {
+		return fmt.Errorf(
+			"master rejected enrollment creation with status %d: %s",
+			response.StatusCode,
+			strings.TrimSpace(string(body)),
+		)
+	}
+	var created enrollmentResponse
+	if err := json.Unmarshal(body, &created); err != nil {
+		return fmt.Errorf("decode master response: %w", err)
+	}
+	fmt.Println(created.Token)
+	return nil
+}
+
+func listenLoopback(address string) (net.Listener, error) {
+	host, _, err := net.SplitHostPort(address)
+	if err != nil {
+		return nil, errors.New("listener must be an IP address and port")
+	}
+	ip := net.ParseIP(host)
+	if ip == nil || !ip.IsLoopback() {
+		return nil, errors.New("listener must use a literal loopback IP address")
+	}
+	return net.Listen("tcp", address)
+}
+
+func listenUnixSocket(path string) (net.Listener, error) {
+	if strings.TrimSpace(path) == "" {
+		return nil, errors.New("administrative socket path is required")
+	}
+	path = filepath.Clean(path)
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		return nil, err
+	}
+	if info, err := os.Lstat(path); err == nil {
+		if info.Mode()&os.ModeSocket == 0 {
+			return nil, errors.New("administrative socket path already exists and is not a socket")
+		}
+		if err := os.Remove(path); err != nil {
+			return nil, err
+		}
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return nil, err
+	}
+	listener, err := net.Listen("unix", path)
+	if err != nil {
+		return nil, err
+	}
+	if err := os.Chmod(path, 0o600); err != nil {
+		_ = listener.Close()
+		return nil, err
+	}
+	return listener, nil
+}
+
+type enrollmentRequest struct {
+	AgentID     string `json:"agent_id,omitempty"`
+	DisplayName string `json:"display_name,omitempty"`
+	TTLSeconds  int64  `json:"ttl_seconds"`
+	Replace     bool   `json:"replace,omitempty"`
+}
+
+type enrollmentResponse struct {
+	AgentID   string    `json:"agent_id,omitempty"`
+	Token     string    `json:"token"`
+	ExpiresAt time.Time `json:"expires_at"`
+}
+
+func adminHandler(registry *identity.Registry) http.Handler {
+	mux := http.NewServeMux()
+	mux.HandleFunc("/v1/enrollments", func(response http.ResponseWriter, request *http.Request) {
+		setSecurityHeaders(response.Header())
+		response.Header().Set("Cache-Control", "no-store")
+		if request.Method != http.MethodPost {
+			response.Header().Set("Allow", http.MethodPost)
+			http.Error(response, "method not allowed", http.StatusMethodNotAllowed)
+			return
+		}
+		body := http.MaxBytesReader(response, request.Body, 4<<10)
+		decoder := json.NewDecoder(body)
+		decoder.DisallowUnknownFields()
+		var enrollment enrollmentRequest
+		if err := decoder.Decode(&enrollment); err != nil {
+			http.Error(response, "invalid request", http.StatusBadRequest)
+			return
+		}
+		if err := ensureRequestEOF(decoder); err != nil {
+			http.Error(response, "invalid request", http.StatusBadRequest)
+			return
+		}
+		if enrollment.TTLSeconds <= 0 || enrollment.TTLSeconds > 24*60*60 {
+			http.Error(response, "invalid enrollment lifetime", http.StatusBadRequest)
+			return
+		}
+		ttl := time.Duration(enrollment.TTLSeconds) * time.Second
+		expiresAt := time.Now().UTC().Add(ttl)
+		var agentID string
+		var token []byte
+		var err error
+		if enrollment.Replace {
+			agentID = enrollment.AgentID
+			token, err = registry.CreateReplacementEnrollment(
+				request.Context(),
+				enrollment.AgentID,
+				expiresAt,
+			)
+		} else if strings.TrimSpace(enrollment.DisplayName) != "" {
+			agentID, token, err = registry.CreateEnrollmentForDisplayName(
+				request.Context(),
+				enrollment.DisplayName,
+				expiresAt,
+			)
+		} else {
+			// Compatibility for existing local administrative clients. New
+			// callers send display_name and receive an opaque record ID.
+			agentID = enrollment.AgentID
+			token, err = registry.CreateEnrollment(
+				request.Context(),
+				enrollment.AgentID,
+				expiresAt,
+			)
+		}
+		if err != nil {
+			status := http.StatusInternalServerError
+			switch {
+			case errors.Is(err, identity.ErrInvalidAgentID),
+				errors.Is(err, identity.ErrInvalidDisplayName):
+				status = http.StatusBadRequest
+			case errors.Is(err, identity.ErrAgentNotFound):
+				status = http.StatusNotFound
+			case errors.Is(err, identity.ErrAgentAlreadyEnrolled),
+				errors.Is(err, identity.ErrEnrollmentPending),
+				errors.Is(err, identity.ErrDisplayNameExists):
+				status = http.StatusConflict
+			default:
+				slog.Error(
+					"create local enrollment",
+					"agent_id",
+					enrollment.AgentID,
+					"error",
+					err,
+				)
+			}
+			http.Error(response, "enrollment was not created", status)
+			return
+		}
+		response.Header().Set("Content-Type", "application/json")
+		response.WriteHeader(http.StatusCreated)
+		_ = json.NewEncoder(response).Encode(enrollmentResponse{
+			AgentID:   agentID,
+			Token:     base64.RawURLEncoding.EncodeToString(token),
+			ExpiresAt: expiresAt,
+		})
+	})
+	return mux
+}
+
+func ensureRequestEOF(decoder *json.Decoder) error {
+	var extra any
+	if err := decoder.Decode(&extra); !errors.Is(err, io.EOF) {
+		if err == nil {
+			return errors.New("trailing JSON")
+		}
+		return err
+	}
+	return nil
+}
+
+func setSecurityHeaders(header http.Header) {
+	header.Set("Content-Security-Policy", "default-src 'none'; frame-ancestors 'none'")
+	header.Set("Referrer-Policy", "no-referrer")
+	header.Set("X-Content-Type-Options", "nosniff")
+	header.Set("X-Frame-Options", "DENY")
+}
+
+type logNotifier struct {
+	logger *slog.Logger
+}
+
+func (n logNotifier) Notify(ctx context.Context, event deployment.Event) error {
+	n.logger.InfoContext(
+		ctx,
+		"deployment event",
+		"deployment_id", event.Deployment.ID,
+		"agent_id", event.Deployment.AgentID,
+		"status", event.Deployment.Status,
+		"message", event.Message,
+	)
+	return nil
+}

@@ -1,0 +1,125 @@
+name: release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    environment: release-signing
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6
+        with:
+          go-version-file: go.mod
+          cache: true
+      - run: go test -count=1 ./...
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: '22'
+      - run: node --test tests/webui-recovery.test.cjs tests/webui-reverse-wireguard.test.cjs
+      - run: go vet ./...
+      - run: sh -n install.sh
+      - run: sh -n uninstall.sh
+      - run: sh tests/installer-release-tag.sh
+      - run: sh tests/installer-master.sh
+      - run: sh tests/installer-agent-token.sh
+      - run: sh tests/installer-security.sh
+      - run: sh tests/uninstaller.sh
+      - run: shellcheck --shell=sh install.sh uninstall.sh tests/*.sh
+      - name: Build release archives
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ -n "$(git status --porcelain --untracked-files=all)" ]]; then
+            echo "release source checkout must be clean before compilation" >&2
+            exit 1
+          fi
+          release_dir="$RUNNER_TEMP/theatropolis-release"
+          staging="$RUNNER_TEMP/theatropolis-staging"
+          mkdir -p "$release_dir" "$staging"
+          build_date="$(git show -s --format=%cI "$GITHUB_SHA")"
+          source_date_epoch="$(git show -s --format=%ct "$GITHUB_SHA")"
+          for architecture in amd64 arm64; do
+            rm -f "$staging/theatropolis-master" "$staging/theatropolis-agent" "$staging/theatropolis-update-helper"
+            for component in master agent update-helper; do
+              CGO_ENABLED=0 GOOS=linux GOARCH="$architecture" go build \
+                -trimpath \
+                -ldflags="-s -w -buildid= -X main.version=$GITHUB_REF_NAME -X main.commit=$GITHUB_SHA -X main.buildDate=$build_date" \
+                -o "$staging/theatropolis-$component" \
+                "./cmd/theatropolis-$component"
+              go version -m "$staging/theatropolis-$component" |
+                awk -v expected_revision="vcs.revision=$GITHUB_SHA" '
+                  $1 == "build" && $2 == "vcs.modified=false" { clean = 1 }
+                  $1 == "build" && $2 == expected_revision { revision = 1 }
+                  END { exit !(clean && revision) }
+                '
+            done
+            tar \
+              --sort=name \
+              --owner=0 \
+              --group=0 \
+              --numeric-owner \
+              --mtime="@$source_date_epoch" \
+              -C "$staging" \
+              -czf "$release_dir/theatropolis_linux_${architecture}.tar.gz" \
+              theatropolis-agent \
+              theatropolis-master \
+              theatropolis-update-helper
+          done
+          (
+            cd "$release_dir"
+            sha256sum theatropolis_linux_*.tar.gz > checksums.txt
+          )
+          # Keep all build outputs outside the checkout until every Go binary
+          # is complete. Otherwise the second and later builds record
+          # vcs.modified=true merely because an earlier artifact is untracked.
+          mkdir -p dist
+          cp "$release_dir"/theatropolis_linux_*.tar.gz "$release_dir/checksums.txt" dist/
+      - name: Sign release checksum manifest
+        env:
+          RELEASE_SIGNING_PRIVATE_KEY: ${{ secrets.RELEASE_SIGNING_PRIVATE_KEY }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ -z "${RELEASE_SIGNING_PRIVATE_KEY:-}" ]]; then
+            echo "RELEASE_SIGNING_PRIVATE_KEY is required" >&2
+            exit 1
+          fi
+          umask 077
+          signing_key="$(mktemp)"
+          trap 'rm -f "$signing_key"' EXIT
+          printf '%s\n' "$RELEASE_SIGNING_PRIVATE_KEY" >"$signing_key"
+          openssl dgst -sha256 \
+            -sign "$signing_key" \
+            -sigopt rsa_padding_mode:pss \
+            -sigopt rsa_pss_saltlen:32 \
+            -out dist/checksums.txt.sig \
+            dist/checksums.txt
+      - name: Publish GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          assets=(
+            dist/theatropolis_linux_amd64.tar.gz
+            dist/theatropolis_linux_arm64.tar.gz
+            dist/checksums.txt
+            dist/checksums.txt.sig
+          )
+          if gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1; then
+            echo "release $GITHUB_REF_NAME already exists; release assets are immutable" >&2
+            exit 1
+          fi
+          gh release create "$GITHUB_REF_NAME" "${assets[@]}" \
+            --verify-tag \
+            --title "$GITHUB_REF_NAME" \
+            --generate-notes

@@ -1,0 +1,23 @@
+{
+  "profile": "product-admin",
+  "sourceRoots": ["internal/webui/templates", "internal/webui/assets"],
+  "canonicalMap": "UX-CONTRACT.md",
+  "requiredCapabilities": [
+    "Table Selection",
+    "Select/Listbox",
+    "Date",
+    "Form",
+    "Scrollbar",
+    "Toast",
+    "CRUD"
+  ],
+  "ownership": {
+    "Select/Listbox": "native",
+    "Date": "native"
+  },
+  "commands": {
+    "test": "go test ./internal/webui ./internal/subscription ./internal/proxynode",
+    "build": "go build ./..."
+  },
+  "requiredCommands": ["test", "build"]
+}

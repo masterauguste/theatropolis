@@ -1,0 +1,3558 @@
+package webui
+
+import (
+	"bytes"
+	"context"
+	"crypto/rand"
+	"crypto/sha256"
+	"embed"
+	"encoding/base64"
+	"encoding/hex"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"html/template"
+	"io"
+	"log/slog"
+	"mime"
+	"net"
+	"net/http"
+	"net/url"
+	"regexp"
+	"slices"
+	"sort"
+	"strconv"
+	"strings"
+	"sync"
+	"time"
+
+	"github.com/masterauguste/theatropolis/internal/agentupdate"
+	"github.com/masterauguste/theatropolis/internal/control"
+	"github.com/masterauguste/theatropolis/internal/deployment"
+	"github.com/masterauguste/theatropolis/internal/identity"
+	"github.com/masterauguste/theatropolis/internal/pool"
+	"github.com/masterauguste/theatropolis/internal/proxynode"
+	"github.com/masterauguste/theatropolis/internal/singboxupdate"
+)
+
+const (
+	maxLoginBodyBytes             = 8 << 10
+	maxEnrollmentBodyBytes        = 4 << 10
+	maxMigrationArchiveBytes      = 128 << 20
+	enrollmentLimit               = 30
+	enrollmentWindow              = time.Minute
+	enrollmentResultLimit         = 64
+	enrollmentResultTTL           = 5 * time.Minute
+	configurationDeploymentPeriod = 60 * time.Second
+	defaultConfigurationJSON      = "{\n  \"inbounds\": [],\n  \"outbounds\": []\n}\n"
+)
+
+var (
+	//go:embed assets/* templates/* messages.json
+	webFiles embed.FS
+
+	domainLabelPattern          = regexp.MustCompile(`\A[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?\z`)
+	managedSingBoxDisplaySuffix = regexp.MustCompile(`(?i)[.-]theatropolis\.\d+\z`)
+	allowedTTLs                 = map[int64]time.Duration{
+		900:   15 * time.Minute,
+		3600:  time.Hour,
+		86400: 24 * time.Hour,
+	}
+)
+
+type SessionRegistry interface {
+	IsOnline(agentID string) bool
+	AgentInfo(agentID string) (control.AgentInfo, bool)
+}
+
+type ProxyUserSynchronizer interface {
+	TriggerDeployment()
+}
+
+type AgentController interface {
+	CanDeployConfiguration(agentID string) bool
+	CanDeployProxyNodeConfiguration(agentID string) bool
+	CanRelayACMEHTTP01(agentID string) bool
+	CanUpdateAgent(agentID string) bool
+	LatestAgentUpdate(agentID string) (control.AgentUpdateState, bool)
+	QueueAgentUpdate(context.Context, string, string, string) error
+	CanUpdateSingBox(agentID string) bool
+	LatestSingBoxUpdate(agentID string) (control.SingBoxUpdateState, bool)
+	QueueSingBoxUpdate(context.Context, string, string, string) error
+	LatestDeployment(context.Context, string) (deployment.Record, error)
+	QueueDeployment(
+		context.Context,
+		string,
+		string,
+		string,
+		[]byte,
+		time.Duration,
+	) (deployment.Record, error)
+	RevokeAgent(context.Context, string, bool) error
+	// DeploymentRecords lists the latest deployment record per agent for
+	// outbound-pool derivation.
+	DeploymentRecords(context.Context) ([]deployment.Record, error)
+	// PoolRegistry exposes the fleet-wide outbound pool; it may be nil, in
+	// which case every pool control is hidden.
+	PoolRegistry() *pool.Registry
+	// PropagateManualPoolChange redeploys agents whose configuration
+	// references pool entries after an operator pool mutation.
+	PropagateManualPoolChange(context.Context)
+	// RequestAddressProbe asks an online, probe-capable agent to resolve
+	// its public address for one explicit family ("ipv4" or "ipv6").
+	RequestAddressProbe(agentID, family string) error
+	// RequestManagedUserTraffic persists and clears the entrance Agent's
+	// current accounting interval before an administrator resets usage.
+	RequestManagedUserTraffic(context.Context, string) error
+	LinkLatency(agentID, outboundTag string) (control.LinkLatencyState, bool)
+	RequestLinkLatencyProbe(context.Context, string, control.LinkLatencyProbeTarget) (control.LinkLatencyState, error)
+	QueueOnlineMasterMigration(context.Context, string, string) (int, int, error)
+}
+
+type MasterMigrationService interface {
+	Export(context.Context, string) (string, []byte, error)
+	StageRestore(context.Context, []byte, string) (string, int, int, int, error)
+}
+
+type Options struct {
+	Registry        *identity.Registry
+	Sessions        SessionRegistry
+	Controller      AgentController
+	Access          *AccessManager
+	Releases        ReleaseCatalog
+	SingBoxReleases ReleaseCatalog
+	GeositeRuleSets RuleSetOptions
+	GeoipRuleSets   RuleSetOptions
+	GeositeContent  *http.Client
+	MasterUpdater   *agentupdate.Scheduler
+	PublicURL       string
+	Version         string
+	Logger          *slog.Logger
+	Now             func() time.Time
+	ProxyNodes      *proxynode.Store
+	ProxyDeployer   *proxynode.Deployer
+	ProxyUserSync   ProxyUserSynchronizer
+	EndUserAccess   *EndUserAccessManager
+	MasterMigration MasterMigrationService
+	RequestRestart  func()
+}
+
+type Handler struct {
+	registry             *identity.Registry
+	sessions             SessionRegistry
+	controller           AgentController
+	access               *AccessManager
+	releases             ReleaseCatalog
+	singBoxReleases      ReleaseCatalog
+	geositeRuleSets      RuleSetOptions
+	geoipRuleSets        RuleSetOptions
+	geositeContent       *http.Client
+	masterUpdater        *agentupdate.Scheduler
+	version              string
+	publicURL            string
+	publicScheme         string
+	publicHost           string
+	publicPort           string
+	masterAddress        string
+	assetVersion         string
+	logger               *slog.Logger
+	now                  func() time.Time
+	proxyNodes           *proxynode.Store
+	proxyDeployer        *proxynode.Deployer
+	proxyUserSync        ProxyUserSynchronizer
+	endUserAccess        *EndUserAccessManager
+	masterMigration      MasterMigrationService
+	requestRestart       func()
+	claimLimiter         *fixedWindowLimiter
+	ruleSetCache         *ruleSetCache
+	ruleSetLimiter       *fixedWindowLimiter
+	ruleSetGlobalLimiter *fixedWindowLimiter
+	subscriptionCache    *renderedSubscriptionCache
+	publicCacheOnce      sync.Once
+	templates            map[string]*template.Template
+	mux                  *http.ServeMux
+
+	enrollmentMu            sync.Mutex
+	enrollmentWindowStarted time.Time
+	enrollmentCount         int
+
+	resultMu sync.Mutex
+	results  map[string]enrollmentResult
+
+	userInviteMu      sync.Mutex
+	userInviteResults map[[sha256.Size]byte]map[string]endUserInvitationView
+
+	updateViewMu       sync.Mutex
+	sessionAgentUpdate map[[sha256.Size]byte]map[string]string
+
+	// agentMutationMu keeps web-originated enrollment creation/result storage
+	// and revocation/result removal in one order. Without it, a concurrent
+	// revoke could leave the browser holding a newly stored but already
+	// invalid installation command.
+	agentMutationMu sync.Mutex
+}
+
+func (h *Handler) ensurePublicCaches() {
+	h.publicCacheOnce.Do(func() {
+		if h.ruleSetCache == nil {
+			h.ruleSetCache = newRuleSetCache()
+		}
+		if h.ruleSetLimiter == nil {
+			h.ruleSetLimiter = newFixedWindowLimiter(publicRuleSetRequestsPerMinute, time.Minute)
+		}
+		if h.ruleSetGlobalLimiter == nil {
+			h.ruleSetGlobalLimiter = newFixedWindowLimiter(publicRuleSetGlobalPerMinute, time.Minute)
+		}
+		if h.subscriptionCache == nil {
+			h.subscriptionCache = newRenderedSubscriptionCache()
+		}
+		if h.now == nil {
+			h.now = time.Now
+		}
+	})
+}
+
+type pageData struct {
+	ReverseOnly                     bool
+	Locale                          string
+	Title                           string
+	ActiveNav                       string
+	AssetVersion                    string
+	PublicURL                       string
+	MasterAddress                   string
+	CSRFToken                       string
+	Error                           string
+	ErrorField                      string
+	Notice                          string
+	Username                        string
+	LegacyLogin                     bool
+	UnifiedLogin                    bool
+	AgentID                         string
+	AgentName                       string
+	TTLSeconds                      int64
+	Stats                           fleetStats
+	Agents                          []agentView
+	Agent                           *agentDetailView
+	Created                         *createdServerView
+	AgentVersions                   []agentVersionView
+	ReleaseCatalogWarning           string
+	LatestVersion                   string
+	SingBoxVersions                 []agentVersionView
+	SingBoxCatalogWarning           string
+	LatestSingBoxVersion            string
+	MasterVersion                   string
+	MasterUpdateEnabled             bool
+	MasterUpdate                    *agentUpdateView
+	MasterUpdateRequestID           string
+	Pool                            *poolView
+	PoolFormName                    string
+	PoolFormRemark                  string
+	PoolFormJSON                    string
+	ProxyNodes                      []proxyNodeListView
+	ProxyNode                       *proxyNodeDetailView
+	EndUsers                        []endUserListView
+	UserSearch                      string
+	UserTotal                       int
+	UserStart                       int
+	UserEnd                         int
+	UsersPreviousURL                string
+	UsersNextURL                    string
+	EndUser                         *endUserDetailView
+	UserSubscription                *userSubscriptionView
+	SubscriptionPolicy              *subscriptionPolicyView
+	EndUserLogin                    *endUserLoginView
+	EndUserPortal                   *endUserPortalView
+	AgentOptions                    []agentOptionView
+	Endpoint                        endpointView
+	ListenerOptions                 []listenerOptionView
+	ProxyDeployment                 *proxyDeploymentView
+	AccountingFailures              []accountingFailureView
+	AccountingFailureTotal          int
+	AdministratorProxyAccessEnabled bool
+	MigrationNotice                 string
+}
+
+type accountingFailureView struct {
+	AgentID    string
+	AgentName  string
+	Reason     string
+	OccurredAt string
+}
+
+type fleetStats struct {
+	Total     int
+	Online    int
+	Pending   int
+	Attention int
+}
+
+type agentView struct {
+	ID              string
+	Name            string
+	EnrollmentLabel string
+	EnrollmentClass string
+	ConnectionLabel string
+	ConnectionClass string
+	Detail          string
+	URL             string
+	IPv4            string
+	IPv6            string
+	AgentVersion    string
+	SingBoxVersion  string
+}
+
+type agentDetailView struct {
+	ReverseOnly           bool
+	ID                    string
+	Name                  string
+	URL                   string
+	Online                bool
+	DeploymentStatusURL   string
+	EnrollmentLabel       string
+	EnrollmentClass       string
+	ConnectionLabel       string
+	ConnectionClass       string
+	ConnectionDetail      string
+	Configuration         string
+	ConfigurationEnabled  bool
+	ConfigurationEditable bool
+	ConfigurationHint     string
+	Deployment            *deploymentView
+	AgentVersion          string
+	OperatingSystem       string
+	Architecture          string
+	SingBoxVersion        string
+	ACMEHTTP01Relay       bool
+	SingBoxUpdateEnabled  bool
+	SingBoxUpdateHint     string
+	SingBoxUpdateTarget   string
+	SingBoxUpdate         *agentUpdateView
+	UpdateEnabled         bool
+	UpdateHint            string
+	UpdateTarget          string
+	Update                *agentUpdateView
+	RevokeLabel           string
+	CanReplace            bool
+	SubscriptionDomainV4  string
+	SubscriptionDomainV6  string
+	IPv4                  string
+	IPv6                  string
+	EntranceAllocated     string
+	EntranceUsed          string
+	EntranceUnlimited     int
+	ProxyNodeReferences   []agentProxyNodeReferenceView
+	RemovalBlocked        bool
+	RetirementPending     bool
+	CanForceRemove        bool
+}
+
+type agentProxyNodeReferenceView struct {
+	ID                   string
+	Name                 string
+	URL                  string
+	Desired              bool
+	DesiredEntrance      bool
+	DesiredRelayHops     int
+	DesiredRelayHopLabel string
+	Applied              bool
+	AppliedEntrance      bool
+	AppliedRelayHops     int
+	AppliedRelayHopLabel string
+}
+
+type agentUpdateView struct {
+	TargetVersion  string
+	RunningVersion string
+	StatusLabel    string
+	StatusClass    string
+	Diagnostic     string
+	UpdatedAt      string
+}
+
+type agentVersionView struct {
+	Tag    string
+	Branch string
+}
+
+type deploymentView struct {
+	ID          string
+	RevisionID  string
+	StatusLabel string
+	StatusClass string
+	Diagnostic  string
+	Digest      string
+	UpdatedAt   string
+	Pending     bool
+}
+
+type createdServerView struct {
+	AgentID        string
+	DisplayName    string
+	InstallCommand string
+	ExpiresAt      string
+	ExpiresAtISO   string
+}
+
+type enrollmentResult struct {
+	owner     [credentialBytes]byte
+	created   createdServerView
+	createdAt time.Time
+}
+
+func New(options Options) (http.Handler, error) {
+	if options.Registry == nil {
+		return nil, errors.New("web UI identity registry is required")
+	}
+	if options.Sessions == nil {
+		return nil, errors.New("web UI session registry is required")
+	}
+	if options.Controller == nil {
+		return nil, errors.New("web UI agent controller is required")
+	}
+	if options.Access == nil {
+		return nil, errors.New("web UI access manager is required")
+	}
+	public, err := parsePublicURL(options.PublicURL)
+	if err != nil {
+		return nil, err
+	}
+	templates, err := parseLocalizedTemplates()
+	if err != nil {
+		return nil, fmt.Errorf("parse web UI templates: %w", err)
+	}
+	logger := options.Logger
+	if logger == nil {
+		logger = slog.Default()
+	}
+	now := options.Now
+	if now == nil {
+		now = time.Now
+	}
+	versionLabel := strings.TrimSpace(options.Version)
+	if versionLabel == "" {
+		versionLabel = "development"
+	}
+	versionDigest := sha256.Sum256([]byte(versionLabel))
+	geositeContent := options.GeositeContent
+	if geositeContent == nil {
+		geositeContent = &http.Client{
+			Timeout: 20 * time.Second,
+			CheckRedirect: func(request *http.Request, _ []*http.Request) error {
+				if request.URL.Scheme != "https" || request.URL.Hostname() != "raw.githubusercontent.com" {
+					return errors.New("Geosite content redirected to an untrusted host")
+				}
+				return nil
+			},
+		}
+	}
+
+	handler := &Handler{
+		registry:             options.Registry,
+		sessions:             options.Sessions,
+		controller:           options.Controller,
+		access:               options.Access,
+		releases:             options.Releases,
+		singBoxReleases:      options.SingBoxReleases,
+		geositeRuleSets:      options.GeositeRuleSets,
+		geoipRuleSets:        options.GeoipRuleSets,
+		geositeContent:       geositeContent,
+		masterUpdater:        options.MasterUpdater,
+		version:              versionLabel,
+		publicURL:            public.origin,
+		publicScheme:         public.scheme,
+		publicHost:           public.hostname,
+		publicPort:           public.port,
+		masterAddress:        net.JoinHostPort(public.hostname, public.port),
+		assetVersion:         base64.RawURLEncoding.EncodeToString(versionDigest[:12]),
+		logger:               logger,
+		now:                  now,
+		proxyNodes:           options.ProxyNodes,
+		proxyDeployer:        options.ProxyDeployer,
+		proxyUserSync:        options.ProxyUserSync,
+		endUserAccess:        options.EndUserAccess,
+		masterMigration:      options.MasterMigration,
+		requestRestart:       options.RequestRestart,
+		claimLimiter:         newFixedWindowLimiter(endUserClaimRequestsPerMinute, time.Minute),
+		ruleSetCache:         newRuleSetCache(),
+		ruleSetLimiter:       newFixedWindowLimiter(publicRuleSetRequestsPerMinute, time.Minute),
+		ruleSetGlobalLimiter: newFixedWindowLimiter(publicRuleSetGlobalPerMinute, time.Minute),
+		subscriptionCache:    newRenderedSubscriptionCache(),
+		templates:            templates,
+		mux:                  http.NewServeMux(),
+		results:              make(map[string]enrollmentResult),
+		userInviteResults:    make(map[[sha256.Size]byte]map[string]endUserInvitationView),
+		sessionAgentUpdate: make(
+			map[[sha256.Size]byte]map[string]string,
+		),
+	}
+	handler.routes()
+	return handler, nil
+}
+
+func (h *Handler) routes() {
+	h.mux.HandleFunc("GET /healthz", h.health)
+	h.mux.HandleFunc("GET /assets/app.css", h.asset("assets/app.css", "text/css; charset=utf-8"))
+	h.mux.HandleFunc("GET /assets/i18n.js", h.messageScript())
+	h.mux.HandleFunc("GET /assets/app.js", h.asset("assets/app.js", "text/javascript; charset=utf-8"))
+	h.mux.HandleFunc(
+		"GET /assets/dropdown.js",
+		h.asset("assets/dropdown.js", "text/javascript; charset=utf-8"),
+	)
+	h.mux.HandleFunc(
+		"GET /assets/subscription-rules.js",
+		h.asset("assets/subscription-rules.js", "text/javascript; charset=utf-8"),
+	)
+	h.mux.HandleFunc("GET /login", h.loginPage)
+	h.mux.HandleFunc("GET /session/csrf", h.sessionCSRF)
+	h.mux.HandleFunc("GET /language/{locale}", h.changeLanguage)
+	h.mux.HandleFunc("POST /login", h.login)
+	h.mux.HandleFunc("POST /logout", h.logout)
+	h.mux.HandleFunc("GET /servers", h.serversPage)
+	h.mux.HandleFunc("GET /proxy-nodes", h.proxyNodesPage)
+	h.mux.HandleFunc("GET /proxy-nodes/new", h.newProxyNodePage)
+	h.mux.HandleFunc("POST /proxy-nodes", h.createProxyNode)
+	h.mux.HandleFunc("POST /proxy-nodes/deploy", h.deployProxyNodes)
+	h.mux.HandleFunc("GET /proxy-nodes/deployment-status", h.proxyDeploymentStatus)
+	h.mux.HandleFunc("GET /proxy-nodes/{proxy_id}/manage", h.proxyNodePage)
+	h.mux.HandleFunc("GET /proxy-nodes/{proxy_id}/latencies", h.proxyNodeLatencies)
+	h.mux.HandleFunc("GET /proxy-nodes/{proxy_id}/links/{link_id}/latency-history", h.proxyLinkLatencyHistory)
+	h.mux.HandleFunc("POST /proxy-nodes/{proxy_id}/hops/{hop_id}/latency-probe", h.proxyHopLatencyProbe)
+	h.mux.HandleFunc("POST /proxy-nodes/{proxy_id}/links/{link_id}/latency-probe", h.proxyLinkLatencyProbe)
+	h.mux.HandleFunc("GET /proxy-nodes/{proxy_id}/users", h.proxyNodeUsersPage)
+	h.mux.HandleFunc("POST /proxy-nodes/{proxy_id}/rename", h.renameProxyNode)
+	h.mux.HandleFunc("POST /proxy-nodes/{proxy_id}/subscription-addresses", h.updateProxyNodeSubscriptionAddresses)
+	h.mux.HandleFunc("POST /proxy-nodes/{proxy_id}/delete", h.deleteProxyNode)
+	h.mux.HandleFunc("POST /proxy-nodes/{proxy_id}/deploy", h.deployProxyNodes)
+	h.mux.HandleFunc("POST /proxy-nodes/{proxy_id}/users", h.addProxyNodeUser)
+	h.mux.HandleFunc("POST /proxy-nodes/{proxy_id}/users/{user_id}/plan", h.updateProxyNodeUser)
+	h.mux.HandleFunc("POST /proxy-nodes/{proxy_id}/users/{user_id}/credential-reset", h.resetProxyNodeUserCredential)
+	h.mux.HandleFunc("POST /proxy-nodes/{proxy_id}/users/{user_id}/traffic-reset", h.resetProxyNodeUserTraffic)
+	h.mux.HandleFunc("POST /proxy-nodes/{proxy_id}/users/{user_id}/subscription-extend", h.extendProxyNodeUserSubscription)
+	h.mux.HandleFunc("POST /proxy-nodes/{proxy_id}/users/compensate", h.compensateProxyNodeSubscriptions)
+	h.mux.HandleFunc("POST /proxy-nodes/{proxy_id}/users/{user_id}/remove", h.removeProxyNodeUser)
+	h.mux.HandleFunc("GET /proxy-nodes/{proxy_id}/entrance", h.proxyEntrancePage)
+	h.mux.HandleFunc("POST /proxy-nodes/{proxy_id}/entrance", h.updateProxyEntrance)
+	h.mux.HandleFunc("GET /proxy-nodes/{proxy_id}/hops/{hop_id}", h.proxyHopPage)
+	h.mux.HandleFunc("POST /proxy-nodes/{proxy_id}/hops/{hop_id}", h.updateProxyHop)
+	h.mux.HandleFunc("POST /proxy-nodes/{proxy_id}/hops/{hop_id}/links", h.addProxyLink)
+	h.mux.HandleFunc("POST /proxy-nodes/{proxy_id}/hops/{hop_id}/block-rules", h.addProxyBlockRule)
+	h.mux.HandleFunc("POST /proxy-nodes/{proxy_id}/hops/{hop_id}/links/delete", h.deleteProxyLink)
+	h.mux.HandleFunc("GET /proxy-nodes/{proxy_id}/links/{link_id}", h.proxyLinkPage)
+	h.mux.HandleFunc("POST /proxy-nodes/{proxy_id}/links/{link_id}", h.updateProxyLink)
+	h.mux.HandleFunc("POST /proxy-nodes/{proxy_id}/links/{link_id}/destination", h.updateProxyLinkDestination)
+	h.mux.HandleFunc("POST /proxy-nodes/{proxy_id}/links/{link_id}/rules", h.addProxyRule)
+	h.mux.HandleFunc("POST /proxy-nodes/{proxy_id}/links/{link_id}/rules/{rule_id}", h.updateProxyRule)
+	h.mux.HandleFunc("POST /proxy-nodes/{proxy_id}/links/{link_id}/rules/delete", h.deleteProxyRule)
+	h.mux.HandleFunc("POST /proxy-nodes/{proxy_id}/links/{link_id}/rules/move", h.moveProxyRule)
+	h.mux.HandleFunc("POST /proxy-nodes/{proxy_id}/hops/{hop_id}/rules/reorder", h.reorderProxyRules)
+	h.mux.HandleFunc("POST /proxy-nodes/{proxy_id}/block-rules/{rule_id}", h.updateProxyBlockRule)
+	h.mux.HandleFunc("POST /proxy-nodes/{proxy_id}/block-rules/{rule_id}/delete", h.deleteProxyBlockRule)
+	h.mux.HandleFunc("POST /proxy-nodes/{proxy_id}/block-rules/{rule_id}/move", h.moveProxyBlockRule)
+	h.mux.HandleFunc("POST /proxy-nodes/{proxy_id}/links/{link_id}/fallback", h.updateProxyLinkFallback)
+	h.mux.HandleFunc("POST /proxy-nodes/{proxy_id}/links/{link_id}/move", h.moveProxyLink)
+	h.mux.HandleFunc("POST /proxy-nodes/{proxy_id}/hops/{hop_id}/final", h.updateProxyFinal)
+	h.mux.HandleFunc("GET /users", h.endUsersPage)
+	h.mux.HandleFunc("POST /users", h.createEndUser)
+	h.mux.HandleFunc("GET /users/{user_id}", h.endUserPage)
+	h.mux.HandleFunc("POST /users/{user_id}/access", h.addUserProxyAccess)
+	h.mux.HandleFunc("POST /users/{user_id}/access/remove", h.removeUserProxyAccess)
+	h.mux.HandleFunc("POST /users/{user_id}/access/update", h.updateUserProxyAccess)
+	h.mux.HandleFunc("POST /users/{user_id}/credentials/reset", h.resetEndUserCredentials)
+	h.mux.HandleFunc("POST /users/{user_id}/rename", h.renameEndUser)
+	h.mux.HandleFunc("POST /users/{user_id}/delete", h.deleteEndUser)
+	h.mux.HandleFunc("POST /users/{user_id}/login/invitation", h.issueEndUserInvitation)
+	h.mux.HandleFunc("GET /users/{user_id}/subscription", h.userSubscriptionRoot)
+	h.mux.HandleFunc("GET /users/{user_id}/subscription/nodes", h.userSubscriptionNodesPage)
+	h.mux.HandleFunc("GET /users/{user_id}/subscription/rules", h.userSubscriptionRulesPage)
+	h.mux.HandleFunc("POST /users/{user_id}/subscription/token", h.rotateUserSubscriptionToken)
+	h.mux.HandleFunc("POST /users/{user_id}/subscription/reset", h.resetUserSubscription)
+	h.mux.HandleFunc("POST /users/{user_id}/subscription/revoke", h.revokeUserSubscriptionToken)
+	h.mux.HandleFunc("GET /subscriptions", h.subscriptionPolicyPage)
+	h.mux.HandleFunc("GET /subscriptions/admin", h.administratorSubscriptionPage)
+	h.mux.HandleFunc("GET /subscriptions/rule-set-options", h.subscriptionRuleSetOptions)
+	h.mux.HandleFunc("POST /subscriptions/default", h.updateSubscriptionDefault)
+	h.mux.HandleFunc("POST /subscriptions/groups", h.saveSubscriptionGroup)
+	h.mux.HandleFunc("POST /subscriptions/groups/{group_id}", h.saveSubscriptionGroup)
+	h.mux.HandleFunc("POST /subscriptions/groups/{group_id}/delete", h.deleteSubscriptionGroup)
+	h.mux.HandleFunc("POST /subscriptions/rules/{rule_id}/action", h.updateSubscriptionRuleAction)
+	h.mux.HandleFunc("POST /subscriptions/rules", h.addSubscriptionRule)
+	h.mux.HandleFunc("POST /subscriptions/rules/{rule_id}", h.updateSubscriptionRule)
+	h.mux.HandleFunc("POST /subscriptions/rules/{rule_id}/delete", h.deleteSubscriptionRule)
+	h.mux.HandleFunc("POST /subscriptions/rules/{rule_id}/move", h.moveSubscriptionRule)
+	h.mux.HandleFunc("POST /subscriptions/rules/reorder", h.reorderSubscriptionRules)
+	h.mux.HandleFunc("GET /subscription-rule-sets/{kind}/{name}", h.publicSurgeRuleSet)
+	h.mux.HandleFunc("GET /subscriptions/{token}/{format}", h.publicUserSubscription)
+	h.mux.HandleFunc("GET /portal/login", h.endUserLoginPage)
+	h.mux.HandleFunc("POST /portal/login", h.endUserLogin)
+	h.mux.HandleFunc("POST /portal/logout", h.endUserLogout)
+	h.mux.HandleFunc("GET /claim/{token}", h.endUserClaimLink)
+	h.mux.HandleFunc("GET /claim", h.endUserClaimPage)
+	h.mux.HandleFunc("POST /claim", h.endUserClaim)
+	h.mux.HandleFunc("GET /portal", h.endUserPortal)
+	h.mux.HandleFunc("GET /servers/content", h.serversContent)
+	h.mux.HandleFunc("GET /pool", h.poolPage)
+	h.mux.HandleFunc("GET /pool/content", h.poolContent)
+	h.mux.HandleFunc("POST /pool", h.upsertPoolEntry)
+	h.mux.HandleFunc("POST /pool/delete", h.deletePoolEntry)
+	h.mux.HandleFunc("GET /settings", h.settingsPage)
+	h.mux.HandleFunc("GET /settings/versions", h.masterVersions)
+	h.mux.HandleFunc("GET /settings/update-status", h.masterUpdateStatus)
+	h.mux.HandleFunc("POST /settings/migration/export", h.exportMasterMigration)
+	h.mux.HandleFunc("POST /settings/migration/restore", h.restoreMasterMigration)
+	h.mux.HandleFunc("POST /settings/migration/cutover", h.cutoverMasterMigration)
+	h.mux.HandleFunc("POST /settings/accounting-errors/clear", h.clearAccountingErrors)
+	h.mux.HandleFunc("POST /settings/administrator-proxy-access", h.updateAdministratorProxyAccess)
+	h.mux.HandleFunc("GET /servers/new", h.newServerPage)
+	h.mux.HandleFunc("GET /servers/enrollment-result", h.enrollmentResultPage)
+	h.mux.HandleFunc(
+		"GET /servers/{agent_id}/deployment-status",
+		h.deploymentStatus,
+	)
+	h.mux.HandleFunc("GET /servers/{agent_id}/manage", h.serverPage)
+	h.mux.HandleFunc("GET /servers/versions", h.fleetVersions)
+	h.mux.HandleFunc(
+		"GET /servers/{agent_id}/versions",
+		h.serverVersions,
+	)
+	h.mux.HandleFunc(
+		"GET /servers/{agent_id}/rule-set-options",
+		h.serverRuleSetOptions,
+	)
+	h.mux.HandleFunc(
+		"GET /servers/{agent_id}/pool-options",
+		h.serverPoolOptions,
+	)
+	h.mux.HandleFunc(
+		"POST /servers/{agent_id}/address",
+		h.setServerAddress,
+	)
+	h.mux.HandleFunc(
+		"POST /servers/{agent_id}/subscription-domains",
+		h.setServerSubscriptionDomains,
+	)
+	h.mux.HandleFunc(
+		"POST /servers/{agent_id}/probe-address",
+		h.requestAddressProbe,
+	)
+	h.mux.HandleFunc("POST /servers/{agent_id}/revoke", h.revokeServer)
+	h.mux.HandleFunc("POST /servers/{agent_id}/rename", h.renameServer)
+	h.mux.HandleFunc("POST /servers/{agent_id}/connectivity", h.updateServerConnectivity)
+	h.mux.HandleFunc("POST /servers/{agent_id}/replace", h.replaceServer)
+	h.mux.HandleFunc("POST /servers/agent-update-all", h.updateAllAgents)
+	h.mux.HandleFunc("POST /servers/sing-box-update-all", h.updateAllSingBox)
+	h.mux.HandleFunc("POST /servers/{agent_id}/agent-update", h.updateAgent)
+	h.mux.HandleFunc("POST /servers/{agent_id}/sing-box-update", h.updateSingBox)
+	h.mux.HandleFunc("POST /master-update", h.updateMaster)
+	h.mux.HandleFunc("POST /servers", h.createServer)
+	h.mux.HandleFunc("GET /", h.root)
+}
+
+func (h *Handler) ServeHTTP(response http.ResponseWriter, request *http.Request) {
+	setSecurityHeaders(response.Header())
+	if request.URL.Path != "/healthz" && !h.validRequestHost(request.Host) {
+		writeUserError(response, "request host is not configured", http.StatusMisdirectedRequest)
+		return
+	}
+	locale, hasPreference := localeForRequest(request)
+	response.Header().Set("Content-Language", locale)
+	if request.URL.Path != "/healthz" && !hasPreference {
+		response = &languagePreferenceResponseWriter{
+			ResponseWriter: response,
+			cookie:         h.languagePreferenceCookie(locale),
+		}
+	}
+	h.mux.ServeHTTP(response, request)
+}
+
+type languagePreferenceResponseWriter struct {
+	http.ResponseWriter
+	cookie      *http.Cookie
+	wroteHeader bool
+}
+
+func (w *languagePreferenceResponseWriter) Unwrap() http.ResponseWriter {
+	return w.ResponseWriter
+}
+
+func (w *languagePreferenceResponseWriter) WriteHeader(status int) {
+	if w.wroteHeader {
+		return
+	}
+	w.wroteHeader = true
+	w.persistForHTML()
+	w.ResponseWriter.WriteHeader(status)
+}
+
+func (w *languagePreferenceResponseWriter) Write(body []byte) (int, error) {
+	if !w.wroteHeader {
+		w.WriteHeader(http.StatusOK)
+	}
+	return w.ResponseWriter.Write(body)
+}
+
+func (w *languagePreferenceResponseWriter) persistForHTML() {
+	if strings.HasPrefix(strings.ToLower(w.Header().Get("Content-Type")), "text/html") &&
+		!responseHasCookie(w.Header(), languageCookieName) {
+		http.SetCookie(w.ResponseWriter, w.cookie)
+	}
+}
+
+func responseHasCookie(header http.Header, name string) bool {
+	prefix := name + "="
+	for _, value := range header.Values("Set-Cookie") {
+		if strings.HasPrefix(strings.TrimSpace(value), prefix) {
+			return true
+		}
+	}
+	return false
+}
+
+func (h *Handler) root(response http.ResponseWriter, request *http.Request) {
+	if request.URL.Path != "/" {
+		http.NotFound(response, request)
+		return
+	}
+	if _, ok := h.authenticate(response, request); !ok {
+		http.Redirect(response, request, "/login", http.StatusSeeOther)
+		return
+	}
+	http.Redirect(response, request, "/servers", http.StatusSeeOther)
+}
+
+func (h *Handler) health(response http.ResponseWriter, _ *http.Request) {
+	response.Header().Set("Content-Type", "application/json")
+	response.Header().Set("Cache-Control", "no-store")
+	_, _ = io.WriteString(response, `{"status":"ok"}`+"\n")
+}
+
+func (h *Handler) asset(path, contentType string) http.HandlerFunc {
+	content, err := webFiles.ReadFile(path)
+	if err != nil {
+		panic(fmt.Sprintf("read embedded web asset %q: %v", path, err))
+	}
+	return func(response http.ResponseWriter, _ *http.Request) {
+		response.Header().Set("Content-Type", contentType)
+		response.Header().Set("Cache-Control", "public, max-age=300")
+		_, _ = response.Write(content)
+	}
+}
+
+func (h *Handler) loginPage(response http.ResponseWriter, request *http.Request) {
+	if _, ok := h.authenticate(response, request); ok {
+		http.Redirect(response, request, "/servers", http.StatusSeeOther)
+		return
+	}
+	if h.endUserAccess != nil && h.endUserAccess.Unified() {
+		if _, ok := h.authenticateEndUser(request); ok {
+			http.Redirect(response, request, "/portal", http.StatusSeeOther)
+			return
+		}
+	}
+	data := loginPageData(h.access.Mode(), "")
+	data.UnifiedLogin = h.endUserAccess != nil && h.endUserAccess.Unified()
+	h.render(
+		response,
+		http.StatusOK,
+		"login.html",
+		data,
+	)
+}
+
+func (h *Handler) login(response http.ResponseWriter, request *http.Request) {
+	if h.rejectInvalidMutationOrigin(response, request) {
+		return
+	}
+	mode := h.access.Mode()
+	if h.endUserAccess != nil && h.endUserAccess.Unified() {
+		h.unifiedLogin(response, request, mode)
+		return
+	}
+	var (
+		username string
+		password string
+		err      error
+	)
+	switch mode {
+	case LegacyAccessKey:
+		var form url.Values
+		form, err = readExactForm(
+			response,
+			request,
+			maxLoginBodyBytes,
+			"access_key",
+		)
+		if err == nil {
+			password = form.Get("access_key")
+		}
+	case UsernamePassword:
+		var form url.Values
+		form, err = readExactForm(
+			response,
+			request,
+			maxLoginBodyBytes,
+			"password",
+			"username",
+		)
+		if err == nil {
+			username = form.Get("username")
+			password = form.Get("password")
+		}
+	default:
+		h.logger.Error("unsupported web credential mode", "mode", mode)
+		writeUserError(
+			response,
+			"interface could not authenticate",
+			http.StatusInternalServerError,
+		)
+		return
+	}
+	if err != nil {
+		writeUserError(response, "invalid request", http.StatusBadRequest)
+		return
+	}
+	session, err := h.access.LoginForClient(
+		loginClientIdentity(request),
+		username,
+		password,
+	)
+	if err != nil {
+		status := http.StatusUnauthorized
+		message := "The username or password was not accepted."
+		if mode == LegacyAccessKey {
+			message = "The access key was not accepted."
+		}
+		if errors.Is(err, ErrLoginRateLimited) {
+			status = http.StatusTooManyRequests
+			message = "Too many attempts. Wait one minute and try again."
+			response.Header().Set("Retry-After", "60")
+		}
+		data := loginPageData(mode, username)
+		data.Error = message
+		h.render(response, status, "login.html", data)
+		return
+	}
+	http.SetCookie(response, NewSessionCookie(session.Token, session.ExpiresAt))
+	http.Redirect(response, request, "/servers", http.StatusSeeOther)
+}
+
+func (h *Handler) unifiedLogin(
+	response http.ResponseWriter,
+	request *http.Request,
+	mode CredentialMode,
+) {
+	form, err := readExactForm(response, request, maxLoginBodyBytes, "password", "username")
+	if err != nil {
+		writeUserError(response, "invalid request", http.StatusBadRequest)
+		return
+	}
+	username := strings.TrimSpace(strings.ToLower(form.Get("username")))
+	client := loginClientIdentity(request)
+	identity, err := h.endUserAccess.LoginIdentityForClient(client, username, form.Get("password"))
+	if err == nil {
+		switch identity.Role {
+		case identityRoleAdministrator:
+			session, sessionErr := h.access.createAuthenticatedSession(h.currentTime(), sha256.Sum256([]byte(client)))
+			if sessionErr != nil {
+				h.logger.Error("create administrator session", "error", sessionErr)
+				writeUserError(response, "interface could not authenticate", http.StatusInternalServerError)
+				return
+			}
+			http.SetCookie(response, NewSessionCookie(session.Token, session.ExpiresAt))
+			http.Redirect(response, request, "/servers", http.StatusSeeOther)
+			return
+		case identityRoleUser:
+			http.SetCookie(response, NewEndUserSessionCookie(identity.UserSession.Token, identity.UserSession.ExpiresAt))
+			http.Redirect(response, request, "/portal", http.StatusSeeOther)
+			return
+		default:
+			err = ErrAuthenticationFailed
+		}
+	}
+	status := http.StatusUnauthorized
+	message := "The username or password was not accepted."
+	if errors.Is(err, ErrLoginRateLimited) {
+		status = http.StatusTooManyRequests
+		message = "Too many attempts. Wait one minute and try again."
+		response.Header().Set("Retry-After", "60")
+	}
+	data := loginPageData(mode, username)
+	data.UnifiedLogin = true
+	data.Error = message
+	h.render(response, status, "login.html", data)
+}
+
+func loginPageData(mode CredentialMode, username string) pageData {
+	return pageData{
+		Title:       "Sign in",
+		Username:    username,
+		LegacyLogin: mode == LegacyAccessKey,
+	}
+}
+
+func (h *Handler) logout(response http.ResponseWriter, request *http.Request) {
+	if h.rejectInvalidMutationOrigin(response, request) {
+		return
+	}
+	sessionToken, ok := h.sessionToken(request)
+	if !ok {
+		http.Redirect(response, request, "/login", http.StatusSeeOther)
+		return
+	}
+	form, err := readExactForm(response, request, maxLoginBodyBytes, "csrf_token")
+	if err != nil || !h.authorizeCSRF(response, sessionToken, form.Get("csrf_token")) {
+		writeUserError(response, "request was not authorized", http.StatusForbidden)
+		return
+	}
+	if err := h.access.Logout(sessionToken); err != nil {
+		h.logger.Error("persist web logout", "error", err)
+		writeUserError(response, "logout could not be completed", http.StatusInternalServerError)
+		return
+	}
+	h.updateViewMu.Lock()
+	tokenDigest, _ := credentialDigest(sessionToken)
+	delete(h.sessionAgentUpdate, tokenDigest)
+	h.updateViewMu.Unlock()
+	http.SetCookie(response, DeleteSessionCookie())
+	http.Redirect(response, request, "/login", http.StatusSeeOther)
+}
+
+func (h *Handler) serversPage(response http.ResponseWriter, request *http.Request) {
+	session, ok := h.requireAuthentication(response, request)
+	if !ok {
+		return
+	}
+	h.render(response, http.StatusOK, "servers.html", pageData{
+		Title:     "Servers",
+		ActiveNav: "servers",
+		CSRFToken: session.CSRFToken,
+	})
+}
+
+func (h *Handler) serversContent(response http.ResponseWriter, request *http.Request) {
+	session, ok := h.authenticate(response, request)
+	if !ok {
+		writeUserError(response, "unauthorized", http.StatusUnauthorized)
+		return
+	}
+	if request.URL.RawQuery != "" {
+		http.NotFound(response, request)
+		return
+	}
+	h.render(response, http.StatusOK, "servers-content", h.serversPageData(session))
+}
+
+func (h *Handler) serversPageData(session Session) pageData {
+	now := h.currentTime()
+	snapshots := h.registry.Snapshot(now)
+	agents := make([]agentView, 0, len(snapshots))
+	stats := fleetStats{Total: len(snapshots)}
+	for _, snapshot := range snapshots {
+		online := snapshot.State == identity.AgentStateEnrolled &&
+			h.sessions.IsOnline(snapshot.ID)
+		view := agentViewFor(snapshot, now, online)
+		if snapshot.State == identity.AgentStateEnrolled {
+			view.IPv4, view.IPv6 = h.poolAddresses(snapshot.ID)
+		}
+		if info, exists := h.sessions.AgentInfo(snapshot.ID); exists {
+			view.AgentVersion = strings.TrimSpace(info.Version)
+			view.SingBoxVersion = displaySingBoxVersion(info.SingBoxVersion)
+		}
+		agents = append(agents, view)
+		switch {
+		case snapshot.State == identity.AgentStatePending:
+			stats.Pending++
+		case snapshot.State == identity.AgentStateExpired:
+			stats.Attention++
+		case snapshot.State == identity.AgentStateEnrolled && online:
+			stats.Online++
+		case snapshot.State == identity.AgentStateEnrolled:
+			stats.Attention++
+		}
+	}
+	return pageData{
+		Title:     "Servers",
+		ActiveNav: "servers",
+		CSRFToken: session.CSRFToken,
+		Stats:     stats,
+		Agents:    agents,
+	}
+}
+
+func (h *Handler) settingsPage(response http.ResponseWriter, request *http.Request) {
+	session, ok := h.requireAuthentication(response, request)
+	if !ok {
+		return
+	}
+	if request.URL.RawQuery != "" {
+		http.NotFound(response, request)
+		return
+	}
+	h.render(
+		response,
+		http.StatusOK,
+		"settings.html",
+		h.settingsPageData(session),
+	)
+}
+
+func (h *Handler) settingsPageData(session Session) pageData {
+	var masterUpdate *agentUpdateView
+	if h.masterUpdater != nil {
+		if result, exists, err := h.masterUpdater.LoadResult(); err == nil && exists {
+			if result.Status == "failed" {
+				if err := h.masterUpdater.AcknowledgeResult(result.RequestID); err != nil {
+					h.logger.Warn("discard stale master update failure", "error", err)
+				}
+			} else {
+				masterUpdate = updateResultViewFor(result)
+			}
+		}
+	}
+	failures := []accountingFailureView{}
+	failureTotal := 0
+	if h.proxyNodes != nil {
+		recorded := h.proxyNodes.Snapshot().AccountingFailures
+		failureTotal = len(recorded)
+		const visibleFailureLimit = 50
+		for index := len(recorded) - 1; index >= 0 && len(failures) < visibleFailureLimit; index-- {
+			failure := recorded[index]
+			failures = append(failures, accountingFailureView{
+				AgentID:    failure.AgentID,
+				AgentName:  h.agentDisplayName(failure.AgentID),
+				Reason:     accountingFailureLabel(failure.Reason),
+				OccurredAt: failure.OccurredAt.In(proxynode.BillingLocation()).Format("2 Jan 2006, 15:04:05 UTC+8"),
+			})
+		}
+	}
+	return pageData{
+		Title:                           "Settings",
+		ActiveNav:                       "settings",
+		CSRFToken:                       session.CSRFToken,
+		MasterVersion:                   h.version,
+		MasterUpdate:                    masterUpdate,
+		AccountingFailures:              failures,
+		AccountingFailureTotal:          failureTotal,
+		AdministratorProxyAccessEnabled: h.proxyNodes != nil && h.proxyNodes.Snapshot().AdministratorProxyAccessEnabled,
+	}
+}
+
+func (h *Handler) updateAdministratorProxyAccess(response http.ResponseWriter, request *http.Request) {
+	session, form, ok := h.authorizeProxyMutation(response, request, "enabled")
+	if !ok {
+		return
+	}
+	enabled := false
+	switch form.Get("enabled") {
+	case "true":
+		enabled = true
+	case "false":
+	default:
+		h.renderSettingsError(response, http.StatusBadRequest, session, "Choose whether administrator proxy access is enabled.")
+		return
+	}
+	changed, err := h.proxyNodes.SetAdministratorProxyAccess(enabled)
+	if err != nil {
+		h.logger.Error("update administrator proxy access", "enabled", enabled, "error", err)
+		h.renderSettingsError(response, http.StatusInternalServerError, session, "Administrator proxy access could not be updated.")
+		return
+	}
+	if changed {
+		h.triggerProxyUserSync()
+	}
+	data := h.settingsPageData(session)
+	if enabled {
+		data.Notice = "Administrator proxy access enabled."
+	} else {
+		data.Notice = "Administrator proxy access disabled."
+	}
+	h.render(response, http.StatusOK, "settings.html", data)
+}
+
+func (h *Handler) renderSettingsError(response http.ResponseWriter, status int, session Session, message string) {
+	data := h.settingsPageData(session)
+	data.Error = message
+	h.render(response, status, "settings.html", data)
+}
+
+func (h *Handler) exportMasterMigration(response http.ResponseWriter, request *http.Request) {
+	sessionToken, ok := h.sessionToken(request)
+	if !ok {
+		h.redirectToLogin(response, request)
+		return
+	}
+	if h.rejectInvalidMutationOrigin(response, request) {
+		return
+	}
+	form, err := readExactForm(response, request, 4<<10, "csrf_token", "passphrase", "passphrase_confirm")
+	if err != nil || !h.authorizeCSRF(response, sessionToken, form.Get("csrf_token")) {
+		writeUserError(response, "request was not authorized", http.StatusForbidden)
+		return
+	}
+	session, err := h.authenticateSession(response, sessionToken)
+	if err != nil {
+		h.redirectToLogin(response, request)
+		return
+	}
+	if h.masterMigration == nil {
+		h.renderSettingsError(response, http.StatusConflict, session, "Master migration is unavailable.")
+		return
+	}
+	passphrase := form.Get("passphrase")
+	if passphrase == "" || passphrase != form.Get("passphrase_confirm") {
+		h.renderSettingsError(response, http.StatusBadRequest, session, "Enter the same migration passphrase twice.")
+		return
+	}
+	filename, encoded, err := h.masterMigration.Export(request.Context(), passphrase)
+	if err != nil {
+		h.logger.Warn("export Master migration", "error", err)
+		h.renderSettingsError(response, http.StatusBadRequest, session, "The migration archive could not be created.")
+		return
+	}
+	response.Header().Set("Content-Type", "application/zip")
+	response.Header().Set("Content-Disposition", mime.FormatMediaType("attachment", map[string]string{"filename": filename}))
+	response.Header().Set("Cache-Control", "no-store")
+	response.Header().Set("X-Content-Type-Options", "nosniff")
+	response.WriteHeader(http.StatusOK)
+	_, _ = response.Write(encoded)
+}
+
+func (h *Handler) restoreMasterMigration(response http.ResponseWriter, request *http.Request) {
+	sessionToken, ok := h.sessionToken(request)
+	if !ok {
+		h.redirectToLogin(response, request)
+		return
+	}
+	if h.rejectInvalidMutationOrigin(response, request) {
+		return
+	}
+	request.Body = http.MaxBytesReader(response, request.Body, maxMigrationArchiveBytes+(1<<20))
+	if err := request.ParseMultipartForm(maxMigrationArchiveBytes); err != nil {
+		writeUserError(response, "migration archive is too large or malformed", http.StatusBadRequest)
+		return
+	}
+	if request.MultipartForm != nil {
+		defer request.MultipartForm.RemoveAll()
+	}
+	if !h.authorizeCSRF(response, sessionToken, request.FormValue("csrf_token")) {
+		writeUserError(response, "request was not authorized", http.StatusForbidden)
+		return
+	}
+	session, err := h.authenticateSession(response, sessionToken)
+	if err != nil {
+		h.redirectToLogin(response, request)
+		return
+	}
+	if h.masterMigration == nil || h.requestRestart == nil {
+		h.renderSettingsError(response, http.StatusConflict, session, "Master migration is unavailable.")
+		return
+	}
+	if request.FormValue("confirmation") != "RESTORE" {
+		h.renderSettingsError(response, http.StatusBadRequest, session, "Type RESTORE to confirm the migration.")
+		return
+	}
+	file, _, err := request.FormFile("archive")
+	if err != nil {
+		h.renderSettingsError(response, http.StatusBadRequest, session, "Choose a migration archive.")
+		return
+	}
+	defer file.Close()
+	encoded, err := io.ReadAll(io.LimitReader(file, maxMigrationArchiveBytes+1))
+	if err != nil || len(encoded) > maxMigrationArchiveBytes {
+		h.renderSettingsError(response, http.StatusBadRequest, session, "The migration archive is too large or unreadable.")
+		return
+	}
+	migrationID, agents, users, nodes, err := h.masterMigration.StageRestore(request.Context(), encoded, request.FormValue("passphrase"))
+	if err != nil {
+		h.logger.Warn("stage Master migration restore", "error", err)
+		h.renderSettingsError(response, http.StatusBadRequest, session, "The migration archive could not be restored. Check the passphrase and make sure this Master has no fleet data.")
+		return
+	}
+	h.logger.Info("Master migration restore staged", "migration_id", migrationID, "agents", agents, "users", users, "proxy_nodes", nodes)
+	h.render(response, http.StatusAccepted, "master-restoring.html", pageData{
+		Title: "Restoring Master", ActiveNav: "settings", CSRFToken: session.CSRFToken,
+		MigrationNotice: fmt.Sprintf("%d servers, %d users, and %d Proxy Nodes were validated.", agents, users, nodes),
+	})
+	go func() { time.Sleep(750 * time.Millisecond); h.requestRestart() }()
+}
+
+func (h *Handler) cutoverMasterMigration(response http.ResponseWriter, request *http.Request) {
+	sessionToken, ok := h.sessionToken(request)
+	if !ok {
+		h.redirectToLogin(response, request)
+		return
+	}
+	if h.rejectInvalidMutationOrigin(response, request) {
+		return
+	}
+	form, err := readExactForm(response, request, 8<<10, "csrf_token", "master_address", "confirmation")
+	if err != nil || !h.authorizeCSRF(response, sessionToken, form.Get("csrf_token")) {
+		writeUserError(response, "request was not authorized", http.StatusForbidden)
+		return
+	}
+	session, err := h.authenticateSession(response, sessionToken)
+	if err != nil {
+		h.redirectToLogin(response, request)
+		return
+	}
+	if form.Get("confirmation") != "MIGRATE" {
+		h.renderSettingsError(response, http.StatusBadRequest, session, "Type MIGRATE to confirm the Agent cutover.")
+		return
+	}
+	address := strings.TrimSpace(form.Get("master_address"))
+	host, port, splitErr := net.SplitHostPort(address)
+	if splitErr != nil || strings.TrimSpace(host) == "" || strings.TrimSpace(port) == "" {
+		h.renderSettingsError(response, http.StatusBadRequest, session, "Enter the new Master as host:port.")
+		return
+	}
+	migrationID, err := randomOpaqueID("migration")
+	if err != nil {
+		h.renderSettingsError(response, http.StatusInternalServerError, session, "The Agent cutover could not be prepared.")
+		return
+	}
+	queued, skipped, err := h.controller.QueueOnlineMasterMigration(request.Context(), migrationID, net.JoinHostPort(host, port))
+	if err != nil {
+		h.renderSettingsError(response, http.StatusConflict, session, "The Agent cutover could not be queued.")
+		return
+	}
+	data := h.settingsPageData(session)
+	data.MigrationNotice = fmt.Sprintf("Migration command sent to %d online servers; %d offline or incompatible servers were left unchanged.", queued, skipped)
+	h.render(response, http.StatusOK, "settings.html", data)
+}
+
+func accountingFailureLabel(reason string) string {
+	switch reason {
+	case proxynode.AccountingFailureCollection:
+		return "Entrance sample collection failed"
+	case proxynode.AccountingFailurePersistence:
+		return "Master could not persist usage"
+	default:
+		return "Accounting failure"
+	}
+}
+
+func (h *Handler) clearAccountingErrors(response http.ResponseWriter, request *http.Request) {
+	sessionToken, ok := h.sessionToken(request)
+	if !ok {
+		h.redirectToLogin(response, request)
+		return
+	}
+	if h.rejectInvalidMutationOrigin(response, request) {
+		return
+	}
+	form, err := readExactForm(response, request, 4<<10, "csrf_token", "confirmation")
+	if err != nil || !h.authorizeCSRF(response, sessionToken, form.Get("csrf_token")) {
+		writeUserError(response, "request was not authorized", http.StatusForbidden)
+		return
+	}
+	session, err := h.authenticateSession(response, sessionToken)
+	if err != nil {
+		h.redirectToLogin(response, request)
+		return
+	}
+	if form.Get("confirmation") != "clear" {
+		h.renderSettingsError(response, http.StatusBadRequest, session, "Confirm that you want to clear the error log.")
+		return
+	}
+	if h.proxyNodes == nil {
+		h.renderSettingsError(response, http.StatusConflict, session, "Accounting is unavailable.")
+		return
+	}
+	if err := h.proxyNodes.ClearAccountingFailures(); err != nil {
+		h.logger.Error("clear accounting error log", "error", err)
+		h.renderSettingsError(response, http.StatusInternalServerError, session, "The error log could not be cleared.")
+		return
+	}
+	data := h.settingsPageData(session)
+	data.Notice = "Accounting error log cleared."
+	h.render(response, http.StatusOK, "settings.html", data)
+}
+
+func (h *Handler) masterVersions(response http.ResponseWriter, request *http.Request) {
+	response.Header().Set("Cache-Control", "no-store")
+	if _, ok := h.authenticate(response, request); !ok {
+		writeUserError(response, "unauthorized", http.StatusUnauthorized)
+		return
+	}
+	versions, latest, warning := h.releaseVersions(request.Context())
+	response.Header().Set("Content-Type", "application/json")
+	if err := json.NewEncoder(response).Encode(versionCatalogResponse{
+		LatestVersion:       latest,
+		AgentVersions:       versions,
+		AgentCatalogWarning: warning,
+	}); err != nil {
+		h.logger.Warn("encode master version catalog", "error", err)
+	}
+}
+
+func (h *Handler) masterUpdateStatus(response http.ResponseWriter, request *http.Request) {
+	if _, ok := h.authenticate(response, request); !ok {
+		response.Header().Set("Content-Type", "application/json")
+		response.WriteHeader(http.StatusUnauthorized)
+		_, _ = io.WriteString(response, `{"status":"restarting"}`+"\n")
+		return
+	}
+	requestID := request.URL.Query().Get("request_id")
+	if !agentupdate.ValidRequestID(requestID) || h.masterUpdater == nil {
+		writeUserError(response, "invalid update status request", http.StatusBadRequest)
+		return
+	}
+	result, exists, err := h.masterUpdater.LoadResult()
+	if err != nil {
+		writeUserError(response, "update status could not be loaded", http.StatusInternalServerError)
+		return
+	}
+	status := "updating"
+	if exists && result.RequestID == requestID {
+		status = result.Status
+		if status == "applied" && h.version != result.TargetVersion {
+			status = "restarting"
+		}
+	}
+	response.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(response).Encode(map[string]string{
+		"status":          status,
+		"running_version": result.RunningVersion,
+		"diagnostic":      result.Diagnostic,
+	})
+}
+
+func (h *Handler) serverPage(response http.ResponseWriter, request *http.Request) {
+	session, ok := h.requireAuthentication(response, request)
+	if !ok {
+		return
+	}
+	if request.URL.RawQuery != "" {
+		http.NotFound(response, request)
+		return
+	}
+	snapshot, ok := h.agentSnapshot(request.PathValue("agent_id"))
+	if !ok {
+		http.NotFound(response, request)
+		return
+	}
+	data, err := h.serverPageData(request.Context(), session, snapshot, "")
+	if err != nil {
+		h.logger.Error(
+			"load server management page",
+			"agent_id",
+			snapshot.ID,
+			"error",
+			err,
+		)
+		writeUserError(response, "server details could not be loaded", http.StatusInternalServerError)
+		return
+	}
+	h.render(response, http.StatusOK, "server.html", data)
+}
+
+func (h *Handler) deploymentStatus(
+	response http.ResponseWriter,
+	request *http.Request,
+) {
+	if _, ok := h.requireAuthentication(response, request); !ok {
+		return
+	}
+	if request.URL.RawQuery != "" {
+		http.NotFound(response, request)
+		return
+	}
+	snapshot, ok := h.agentSnapshot(request.PathValue("agent_id"))
+	if !ok {
+		http.NotFound(response, request)
+		return
+	}
+	record, err := h.controller.LatestDeployment(request.Context(), snapshot.ID)
+	if err != nil && !errors.Is(err, deployment.ErrNotFound) {
+		h.logger.Error(
+			"load deployment polling status",
+			"agent_id",
+			snapshot.ID,
+			"error",
+			err,
+		)
+		writeUserError(response, "deployment status could not be loaded", http.StatusInternalServerError)
+		return
+	}
+	pending := false
+	var view *deploymentView
+	if err == nil {
+		view = deploymentViewFor(record)
+		pending = view.Pending
+	}
+	response.Header().Set("Content-Type", "application/json")
+	response.Header().Set("Cache-Control", "no-store")
+	if err := json.NewEncoder(response).Encode(struct {
+		Pending     bool   `json:"pending"`
+		StatusLabel string `json:"status_label,omitempty"`
+		StatusClass string `json:"status_class,omitempty"`
+		Diagnostic  string `json:"diagnostic,omitempty"`
+	}{
+		Pending:     pending,
+		StatusLabel: localizedText(response.Header().Get("Content-Language"), deploymentStatusLabel(view)),
+		StatusClass: deploymentStatusClass(view),
+		Diagnostic:  deploymentDiagnostic(view),
+	}); err != nil {
+		h.logger.Error(
+			"write deployment polling status",
+			"agent_id",
+			snapshot.ID,
+			"error",
+			err,
+		)
+	}
+}
+
+func deploymentStatusLabel(view *deploymentView) string {
+	if view == nil {
+		return ""
+	}
+	return view.StatusLabel
+}
+
+func deploymentStatusClass(view *deploymentView) string {
+	if view == nil {
+		return ""
+	}
+	return view.StatusClass
+}
+
+func deploymentDiagnostic(view *deploymentView) string {
+	if view == nil {
+		return ""
+	}
+	return view.Diagnostic
+}
+
+func (h *Handler) revokeServer(response http.ResponseWriter, request *http.Request) {
+	sessionToken, ok := h.sessionToken(request)
+	if !ok {
+		h.redirectToLogin(response, request)
+		return
+	}
+	if h.rejectInvalidMutationOrigin(response, request) {
+		return
+	}
+	form, err := readFormWithOptional(
+		response,
+		request,
+		maxEnrollmentBodyBytes,
+		[]string{"agent_id", "confirm_revoke", "csrf_token"},
+		"force",
+	)
+	if err != nil || !h.authorizeCSRF(response, sessionToken, form.Get("csrf_token")) {
+		writeUserError(response, "request was not authorized", http.StatusForbidden)
+		return
+	}
+	session, err := h.authenticateSession(response, sessionToken)
+	if err != nil {
+		h.redirectToLogin(response, request)
+		return
+	}
+	h.agentMutationMu.Lock()
+	defer h.agentMutationMu.Unlock()
+	agentID := request.PathValue("agent_id")
+	if form.Get("agent_id") != agentID || form.Get("confirm_revoke") != "yes" {
+		writeUserError(response, "request was not authorized", http.StatusForbidden)
+		return
+	}
+	snapshot, ok := h.agentSnapshot(agentID)
+	if !ok {
+		http.NotFound(response, request)
+		return
+	}
+	force := form.Get("force") == "yes"
+	if force {
+		if snapshot.State != identity.AgentStateEnrolled || h.sessions.IsOnline(agentID) {
+			h.renderServerRevokeError(
+				response, request, session, snapshot,
+				"Force removal is only available while the Server is enrolled and offline. Wait for the Agent to disconnect, then try again.",
+			)
+			return
+		}
+	} else if references, retirementPending := h.agentProxyNodeReferences(agentID); len(references) > 0 || retirementPending {
+		message := "This Server is still used by one or more Proxy Nodes. Move the affected Hops, or delete the branches or Proxy Nodes that use them before removing it."
+		if len(references) == 0 {
+			message = "This Server still owns an applied Proxy Node configuration. Finish or retry the topology change before removing it."
+		}
+		h.renderServerRevokeError(response, request, session, snapshot, message)
+		return
+	}
+	if err := h.controller.RevokeAgent(request.Context(), agentID, force); err != nil {
+		if errors.Is(err, identity.ErrAgentNotFound) {
+			http.NotFound(response, request)
+			return
+		}
+		if errors.Is(err, control.ErrAgentOnline) {
+			h.renderServerRevokeError(
+				response, request, session, snapshot,
+				"This Server reconnected before it could be removed. Wait until the Agent is offline, then try again.",
+			)
+			return
+		}
+		if errors.Is(err, proxynode.ErrAgentReferenced) {
+			h.renderServerRevokeError(
+				response, request, session, snapshot,
+				"This Server is still used by Proxy Node topology. Review its assignments and finish the topology change before removing it.",
+			)
+			return
+		}
+		if errors.Is(err, proxynode.ErrDeploymentActive) {
+			h.renderServerRevokeError(
+				response, request, session, snapshot,
+				"Wait for the current Proxy Node change to finish, then try removing this Server again.",
+			)
+			return
+		}
+		h.logger.Error("revoke server", "agent_id", agentID, "error", err)
+		writeUserError(response, "server access could not be revoked", http.StatusInternalServerError)
+		return
+	}
+	h.removeEnrollmentResultsForAgent(agentID)
+	h.logger.Info("server access revoked", "agent_id", agentID)
+	http.Redirect(response, request, "/servers", http.StatusSeeOther)
+}
+
+func (h *Handler) renderServerRevokeError(
+	response http.ResponseWriter,
+	request *http.Request,
+	session Session,
+	snapshot identity.AgentSnapshot,
+	message string,
+) {
+	data, err := h.serverPageData(request.Context(), session, snapshot, "")
+	if err != nil {
+		h.logger.Error("render server removal error", "agent_id", snapshot.ID, "error", err)
+		writeUserError(response, "server details could not be loaded", http.StatusInternalServerError)
+		return
+	}
+	data.Error = message
+	data.ErrorField = "revoke"
+	h.render(response, http.StatusConflict, "server.html", data)
+}
+
+func (h *Handler) renameServer(response http.ResponseWriter, request *http.Request) {
+	sessionToken, ok := h.sessionToken(request)
+	if !ok {
+		h.redirectToLogin(response, request)
+		return
+	}
+	if h.rejectInvalidMutationOrigin(response, request) {
+		return
+	}
+	form, err := readExactForm(
+		response,
+		request,
+		maxEnrollmentBodyBytes,
+		"csrf_token",
+		"display_name",
+	)
+	if err != nil || !h.authorizeCSRF(response, sessionToken, form.Get("csrf_token")) {
+		writeUserError(response, "request was not authorized", http.StatusForbidden)
+		return
+	}
+	session, err := h.authenticateSession(response, sessionToken)
+	if err != nil {
+		h.redirectToLogin(response, request)
+		return
+	}
+	agentID := request.PathValue("agent_id")
+	snapshot, exists := h.agentSnapshot(agentID)
+	if !exists {
+		http.NotFound(response, request)
+		return
+	}
+	if err := h.registry.RenameDisplayName(agentID, form.Get("display_name")); err != nil {
+		status := http.StatusInternalServerError
+		message := "The server name could not be changed."
+		switch {
+		case errors.Is(err, identity.ErrInvalidDisplayName):
+			status = http.StatusBadRequest
+			message = "Use 1–60 letters or numbers; ordinary spaces and . _ - are allowed."
+		case errors.Is(err, identity.ErrDisplayNameExists):
+			status = http.StatusConflict
+			message = "That server name is already in use."
+		case errors.Is(err, identity.ErrAgentNotFound):
+			http.NotFound(response, request)
+			return
+		default:
+			h.logger.Error("rename server", "agent_id", agentID, "error", err)
+		}
+		data, dataErr := h.serverPageData(request.Context(), session, snapshot, "")
+		if dataErr != nil {
+			writeUserError(response, "server details could not be loaded", http.StatusInternalServerError)
+			return
+		}
+		data.Error = message
+		data.ErrorField = "display_name"
+		data.AgentName = identity.NormalizeDisplayName(form.Get("display_name"))
+		h.render(response, status, "server.html", data)
+		return
+	}
+	h.logger.Info("server renamed", "agent_id", agentID, "display_name", h.registry.DisplayName(agentID))
+	http.Redirect(response, request, "/servers/"+url.PathEscape(agentID)+"/manage", http.StatusSeeOther)
+}
+
+func (h *Handler) replaceServer(response http.ResponseWriter, request *http.Request) {
+	sessionToken, ok := h.sessionToken(request)
+	if !ok {
+		h.redirectToLogin(response, request)
+		return
+	}
+	if h.rejectInvalidMutationOrigin(response, request) {
+		return
+	}
+	form, err := readExactForm(
+		response,
+		request,
+		maxEnrollmentBodyBytes,
+		"agent_id",
+		"csrf_token",
+		"ttl_seconds",
+	)
+	if err != nil || !h.authorizeCSRF(response, sessionToken, form.Get("csrf_token")) {
+		writeUserError(response, "request was not authorized", http.StatusForbidden)
+		return
+	}
+	if _, err := h.authenticateSession(response, sessionToken); err != nil {
+		h.redirectToLogin(response, request)
+		return
+	}
+	agentID := request.PathValue("agent_id")
+	if form.Get("agent_id") != agentID {
+		writeUserError(response, "request was not authorized", http.StatusForbidden)
+		return
+	}
+	snapshot, exists := h.agentSnapshot(agentID)
+	if !exists || snapshot.State != identity.AgentStateEnrolled {
+		http.NotFound(response, request)
+		return
+	}
+	ttlSeconds, parseErr := strconv.ParseInt(form.Get("ttl_seconds"), 10, 64)
+	ttl, ttlAllowed := allowedTTLs[ttlSeconds]
+	if parseErr != nil || !ttlAllowed {
+		writeUserError(response, "choose a supported enrollment lifetime", http.StatusBadRequest)
+		return
+	}
+	if !h.allowEnrollment(h.currentTime()) {
+		response.Header().Set("Retry-After", "60")
+		writeUserError(response, "too many enrollment credentials were created", http.StatusTooManyRequests)
+		return
+	}
+
+	expiresAt := h.currentTime().Add(ttl)
+	h.agentMutationMu.Lock()
+	defer h.agentMutationMu.Unlock()
+	token, err := h.registry.CreateReplacementEnrollment(
+		request.Context(),
+		agentID,
+		expiresAt,
+	)
+	if err != nil {
+		statusCode := http.StatusInternalServerError
+		if errors.Is(err, identity.ErrEnrollmentPending) {
+			statusCode = http.StatusConflict
+		} else if errors.Is(err, identity.ErrAgentNotFound) {
+			statusCode = http.StatusNotFound
+		} else {
+			h.logger.Error("create replacement enrollment", "agent_id", agentID, "error", err)
+		}
+		writeUserError(response, "replacement enrollment was not created", statusCode)
+		return
+	}
+	encodedToken := base64.RawURLEncoding.EncodeToString(token)
+	defer clear(token)
+	created := createdServerView{
+		AgentID:        agentID,
+		DisplayName:    snapshot.DisplayName,
+		InstallCommand: h.installCommand(encodedToken),
+		ExpiresAt:      expiresAt.In(proxynode.BillingLocation()).Format("2 Jan 2006, 15:04 UTC+8"),
+		ExpiresAtISO:   expiresAt.In(proxynode.BillingLocation()).Format(time.RFC3339),
+	}
+	resultID, err := h.storeEnrollmentResult(sessionToken, created, h.currentTime())
+	if err != nil {
+		h.logger.Error("store replacement result", "agent_id", agentID, "error", err)
+		writeUserError(response, "replacement result could not be prepared", http.StatusInternalServerError)
+		return
+	}
+	h.redirectEnrollmentResult(response, request, resultID)
+}
+
+func (h *Handler) updateAgent(response http.ResponseWriter, request *http.Request) {
+	sessionToken, ok := h.sessionToken(request)
+	if !ok {
+		h.redirectToLogin(response, request)
+		return
+	}
+	if h.rejectInvalidMutationOrigin(response, request) {
+		return
+	}
+	form, err := readExactForm(
+		response,
+		request,
+		maxEnrollmentBodyBytes,
+		"csrf_token",
+		"target_version",
+	)
+	if err != nil || !h.authorizeCSRF(response, sessionToken, form.Get("csrf_token")) {
+		writeUserError(response, "request was not authorized", http.StatusForbidden)
+		return
+	}
+	session, err := h.authenticateSession(response, sessionToken)
+	if err != nil {
+		h.redirectToLogin(response, request)
+		return
+	}
+	snapshot, ok := h.agentSnapshot(request.PathValue("agent_id"))
+	if !ok {
+		http.NotFound(response, request)
+		return
+	}
+	targetVersion := strings.TrimSpace(form.Get("target_version"))
+	if !agentupdate.ValidVersion(targetVersion) {
+		h.renderAgentUpdateError(
+			response,
+			http.StatusBadRequest,
+			session,
+			snapshot,
+			targetVersion,
+			"Enter an exact release such as v0.0.10.",
+		)
+		return
+	}
+	if h.releases == nil {
+		h.renderAgentUpdateError(
+			response,
+			http.StatusServiceUnavailable,
+			session,
+			snapshot,
+			targetVersion,
+			"The release catalog could not be checked. Try again.",
+		)
+		return
+	}
+	releases, releaseErr := h.releases.Versions(request.Context())
+	if releaseErr != nil {
+		h.renderAgentUpdateError(
+			response,
+			http.StatusServiceUnavailable,
+			session,
+			snapshot,
+			targetVersion,
+			"The release catalog could not be checked. Try again.",
+		)
+		return
+	}
+	if !containsRelease(releases, targetVersion) {
+		h.renderAgentUpdateError(
+			response,
+			http.StatusBadRequest,
+			session,
+			snapshot,
+			targetVersion,
+			"That release does not have the required downloadable binaries.",
+		)
+		return
+	}
+	if snapshot.State != identity.AgentStateEnrolled ||
+		!h.controller.CanUpdateAgent(snapshot.ID) {
+		h.renderAgentUpdateError(
+			response,
+			http.StatusConflict,
+			session,
+			snapshot,
+			targetVersion,
+			"Update control is unavailable until this server is online with a compatible agent.",
+		)
+		return
+	}
+	requestID, err := randomOpaqueID("update")
+	if err != nil {
+		h.logger.Error("generate agent update ID", "agent_id", snapshot.ID, "error", err)
+		writeUserError(response, "agent update could not be prepared", http.StatusInternalServerError)
+		return
+	}
+	if err := h.controller.QueueAgentUpdate(
+		request.Context(),
+		snapshot.ID,
+		requestID,
+		targetVersion,
+	); err != nil {
+		status := http.StatusConflict
+		message := "The agent could not accept the update request."
+		if errors.Is(err, control.ErrAgentOffline) {
+			message = "The agent went offline before the update request could be delivered."
+		}
+		if !errors.Is(err, agentupdate.ErrUpdatePending) &&
+			!errors.Is(err, control.ErrAgentOffline) {
+			h.logger.Error("queue agent update", "agent_id", snapshot.ID, "error", err)
+			status = http.StatusInternalServerError
+		}
+		h.renderAgentUpdateError(
+			response,
+			status,
+			session,
+			snapshot,
+			targetVersion,
+			message,
+		)
+		return
+	}
+	h.rememberAgentUpdate(sessionToken, snapshot.ID, requestID)
+	http.Redirect(response, request, "/servers/"+url.PathEscape(snapshot.ID)+"/manage", http.StatusSeeOther)
+}
+
+func (h *Handler) updateAllAgents(response http.ResponseWriter, request *http.Request) {
+	sessionToken, ok := h.sessionToken(request)
+	if !ok {
+		h.redirectToLogin(response, request)
+		return
+	}
+	if h.rejectInvalidMutationOrigin(response, request) {
+		return
+	}
+	form, err := readExactForm(
+		response,
+		request,
+		maxEnrollmentBodyBytes,
+		"csrf_token",
+	)
+	if err != nil || !h.authorizeCSRF(response, sessionToken, form.Get("csrf_token")) {
+		writeUserError(response, "request was not authorized", http.StatusForbidden)
+		return
+	}
+	session, err := h.authenticateSession(response, sessionToken)
+	if err != nil {
+		h.redirectToLogin(response, request)
+		return
+	}
+	if h.releases == nil {
+		writeUserError(response, "the latest release could not be determined", http.StatusServiceUnavailable)
+		return
+	}
+	releases, err := h.releases.Versions(request.Context())
+	if err != nil || len(releases) == 0 {
+		writeUserError(response, "the latest release could not be determined", http.StatusServiceUnavailable)
+		return
+	}
+	targetVersion := releases[0].Tag
+	queued := 0
+	skipped := 0
+	for _, snapshot := range h.registry.Snapshot(h.currentTime()) {
+		if snapshot.State != identity.AgentStateEnrolled {
+			continue
+		}
+		info, online := h.sessions.AgentInfo(snapshot.ID)
+		if !online || info.Version == targetVersion ||
+			!h.controller.CanUpdateAgent(snapshot.ID) {
+			skipped++
+			continue
+		}
+		requestID, idErr := randomOpaqueID("update")
+		if idErr != nil {
+			h.logger.Error("generate agent update ID", "agent_id", snapshot.ID, "error", idErr)
+			skipped++
+			continue
+		}
+		if err := h.controller.QueueAgentUpdate(
+			request.Context(),
+			snapshot.ID,
+			requestID,
+			targetVersion,
+		); err != nil {
+			if !errors.Is(err, agentupdate.ErrUpdatePending) &&
+				!errors.Is(err, control.ErrAgentOffline) {
+				h.logger.Error("queue agent update", "agent_id", snapshot.ID, "error", err)
+			}
+			skipped++
+			continue
+		}
+		h.rememberAgentUpdate(sessionToken, snapshot.ID, requestID)
+		queued++
+	}
+	h.logger.Info(
+		"fleet agent update queued",
+		"target_version", targetVersion,
+		"queued", queued,
+		"skipped", skipped,
+	)
+	notice := fmt.Sprintf("Queued agent update to %s for %d server(s).", targetVersion, queued)
+	if skipped > 0 {
+		notice += fmt.Sprintf(
+			" %d enrolled server(s) skipped (offline, incompatible, already up to date, or already updating).",
+			skipped,
+		)
+	}
+	h.render(response, http.StatusOK, "servers.html", pageData{
+		Title:     "Servers",
+		ActiveNav: "servers",
+		CSRFToken: session.CSRFToken,
+		Notice:    notice,
+	})
+}
+
+func (h *Handler) updateAllSingBox(response http.ResponseWriter, request *http.Request) {
+	sessionToken, ok := h.sessionToken(request)
+	if !ok {
+		h.redirectToLogin(response, request)
+		return
+	}
+	if h.rejectInvalidMutationOrigin(response, request) {
+		return
+	}
+	form, err := readExactForm(
+		response,
+		request,
+		maxEnrollmentBodyBytes,
+		"csrf_token",
+		"target_version",
+	)
+	if err != nil || !h.authorizeCSRF(response, sessionToken, form.Get("csrf_token")) {
+		writeUserError(response, "request was not authorized", http.StatusForbidden)
+		return
+	}
+	session, err := h.authenticateSession(response, sessionToken)
+	if err != nil {
+		h.redirectToLogin(response, request)
+		return
+	}
+	renderError := func(status int, message string) {
+		h.render(response, status, "servers.html", pageData{
+			Title:     "Servers",
+			ActiveNav: "servers",
+			CSRFToken: session.CSRFToken,
+			Error:     message,
+		})
+	}
+	targetVersion := strings.TrimSpace(form.Get("target_version"))
+	if !singboxupdate.ValidVersion(targetVersion) {
+		renderError(
+			http.StatusBadRequest,
+			"Choose an exact signed Theatropolis managed-user sing-box build.",
+		)
+		return
+	}
+	if h.singBoxReleases == nil {
+		renderError(http.StatusServiceUnavailable, "The sing-box release catalog is unavailable.")
+		return
+	}
+	releases, err := h.singBoxReleases.Versions(request.Context())
+	if err != nil {
+		renderError(
+			http.StatusServiceUnavailable,
+			"The sing-box release catalog could not be loaded.",
+		)
+		return
+	}
+	if !containsRelease(releases, targetVersion) {
+		renderError(
+			http.StatusBadRequest,
+			"That sing-box release does not have the required signed binaries.",
+		)
+		return
+	}
+
+	queued := 0
+	skipped := 0
+	for _, snapshot := range h.registry.Snapshot(h.currentTime()) {
+		if snapshot.State != identity.AgentStateEnrolled {
+			continue
+		}
+		info, online := h.sessions.AgentInfo(snapshot.ID)
+		if !online || info.SingBoxVersion == targetVersion ||
+			!h.controller.CanUpdateSingBox(snapshot.ID) {
+			skipped++
+			continue
+		}
+		requestID, idErr := randomOpaqueID("singbox")
+		if idErr != nil {
+			h.logger.Error(
+				"generate sing-box update ID",
+				"agent_id", snapshot.ID,
+				"error", idErr,
+			)
+			skipped++
+			continue
+		}
+		if queueErr := h.controller.QueueSingBoxUpdate(
+			request.Context(),
+			snapshot.ID,
+			requestID,
+			targetVersion,
+		); queueErr != nil {
+			if !errors.Is(queueErr, singboxupdate.ErrUpdatePending) &&
+				!errors.Is(queueErr, control.ErrAgentOffline) {
+				h.logger.Error(
+					"queue fleet sing-box update",
+					"agent_id", snapshot.ID,
+					"error", queueErr,
+				)
+			}
+			skipped++
+			continue
+		}
+		queued++
+	}
+	h.logger.Info(
+		"fleet sing-box update queued",
+		"target_version", targetVersion,
+		"queued", queued,
+		"skipped", skipped,
+	)
+	notice := fmt.Sprintf(
+		"Queued sing-box %s for %d connected server(s).",
+		targetVersion,
+		queued,
+	)
+	if skipped > 0 {
+		notice += fmt.Sprintf(
+			" %d enrolled server(s) skipped (offline, incompatible, already on that version, or already updating).",
+			skipped,
+		)
+	}
+	h.render(response, http.StatusOK, "servers.html", pageData{
+		Title:     "Servers",
+		ActiveNav: "servers",
+		CSRFToken: session.CSRFToken,
+		Notice:    notice,
+	})
+}
+
+func (h *Handler) updateSingBox(
+	response http.ResponseWriter,
+	request *http.Request,
+) {
+	sessionToken, ok := h.sessionToken(request)
+	if !ok {
+		h.redirectToLogin(response, request)
+		return
+	}
+	if h.rejectInvalidMutationOrigin(response, request) {
+		return
+	}
+	form, err := readExactForm(
+		response,
+		request,
+		maxEnrollmentBodyBytes,
+		"csrf_token",
+		"target_version",
+	)
+	if err != nil ||
+		!h.authorizeCSRF(response, sessionToken, form.Get("csrf_token")) {
+		writeUserError(response, "request was not authorized", http.StatusForbidden)
+		return
+	}
+	session, err := h.authenticateSession(response, sessionToken)
+	if err != nil {
+		h.redirectToLogin(response, request)
+		return
+	}
+	snapshot, ok := h.agentSnapshot(request.PathValue("agent_id"))
+	if !ok {
+		http.NotFound(response, request)
+		return
+	}
+	targetVersion := strings.TrimSpace(form.Get("target_version"))
+	message := ""
+	statusCode := http.StatusBadRequest
+	if !singboxupdate.ValidVersion(targetVersion) {
+		message = "Choose an exact signed Theatropolis managed-user sing-box build."
+	} else if snapshot.State != identity.AgentStateEnrolled ||
+		!h.controller.CanUpdateSingBox(snapshot.ID) {
+		message = "sing-box update control is unavailable until this server is online with a compatible agent."
+		statusCode = http.StatusConflict
+	} else {
+		requestID, randomErr := randomOpaqueID("singbox")
+		if randomErr != nil {
+			writeUserError(
+				response,
+				"sing-box update could not be prepared",
+				http.StatusInternalServerError,
+			)
+			return
+		}
+		if queueErr := h.controller.QueueSingBoxUpdate(
+			request.Context(),
+			snapshot.ID,
+			requestID,
+			targetVersion,
+		); queueErr != nil {
+			statusCode = http.StatusConflict
+			message = "The agent could not accept the sing-box update request."
+			if !errors.Is(queueErr, singboxupdate.ErrUpdatePending) &&
+				!errors.Is(queueErr, control.ErrAgentOffline) {
+				h.logger.Error(
+					"queue sing-box update",
+					"agent_id", snapshot.ID,
+					"error", queueErr,
+				)
+				statusCode = http.StatusInternalServerError
+			}
+		}
+	}
+	if message != "" {
+		data, dataErr := h.serverPageData(
+			context.Background(),
+			session,
+			snapshot,
+			"",
+		)
+		if dataErr != nil {
+			writeUserError(
+				response,
+				"server details could not be loaded",
+				http.StatusInternalServerError,
+			)
+			return
+		}
+		data.Error = message
+		data.ErrorField = "sing_box_target_version"
+		data.Agent.SingBoxUpdateTarget = targetVersion
+		h.render(response, statusCode, "server.html", data)
+		return
+	}
+	http.Redirect(
+		response,
+		request,
+		"/servers/"+url.PathEscape(snapshot.ID)+"/manage",
+		http.StatusSeeOther,
+	)
+}
+
+func (h *Handler) updateMaster(response http.ResponseWriter, request *http.Request) {
+	sessionToken, ok := h.sessionToken(request)
+	if !ok {
+		h.redirectToLogin(response, request)
+		return
+	}
+	if h.rejectInvalidMutationOrigin(response, request) {
+		return
+	}
+	form, err := readExactForm(
+		response,
+		request,
+		maxEnrollmentBodyBytes,
+		"csrf_token",
+	)
+	if err != nil || !h.authorizeCSRF(response, sessionToken, form.Get("csrf_token")) {
+		writeUserError(response, "request was not authorized", http.StatusForbidden)
+		return
+	}
+	if _, err := h.authenticateSession(response, sessionToken); err != nil {
+		h.redirectToLogin(response, request)
+		return
+	}
+	if h.masterUpdater == nil || h.releases == nil {
+		writeUserError(response, "master update control is unavailable", http.StatusConflict)
+		return
+	}
+	releases, err := h.releases.Versions(request.Context())
+	if err != nil || len(releases) == 0 {
+		writeUserError(response, "the latest release could not be determined", http.StatusServiceUnavailable)
+		return
+	}
+	targetVersion := releases[0].Tag
+	if targetVersion == h.version {
+		http.Redirect(response, request, "/settings", http.StatusSeeOther)
+		return
+	}
+	requestID, err := randomOpaqueID("master")
+	if err != nil {
+		writeUserError(response, "master update could not be prepared", http.StatusInternalServerError)
+		return
+	}
+	if err := h.masterUpdater.Schedule(requestID, targetVersion); err != nil {
+		status := http.StatusInternalServerError
+		if errors.Is(err, agentupdate.ErrUpdatePending) {
+			status = http.StatusConflict
+		}
+		writeUserError(response, "master update could not be scheduled", status)
+		return
+	}
+	h.logger.Info(
+		"master update scheduled",
+		"target_version", targetVersion,
+		"request_id", requestID,
+	)
+	statusURL := "/settings/update-status?request_id=" + url.QueryEscape(requestID)
+	if strings.Contains(request.Header.Get("Accept"), "application/json") {
+		response.Header().Set("Content-Type", "application/json")
+		response.WriteHeader(http.StatusAccepted)
+		_ = json.NewEncoder(response).Encode(map[string]string{
+			"request_id": requestID,
+			"status_url": statusURL,
+		})
+		return
+	}
+	h.render(response, http.StatusAccepted, "master-updating.html", pageData{
+		Title:                 "Updating master",
+		ActiveNav:             "settings",
+		CSRFToken:             form.Get("csrf_token"),
+		MasterVersion:         h.version,
+		MasterUpdateRequestID: requestID,
+	})
+}
+
+func (h *Handler) renderAgentUpdateError(
+	response http.ResponseWriter,
+	status int,
+	session Session,
+	snapshot identity.AgentSnapshot,
+	targetVersion string,
+	message string,
+) {
+	data, err := h.serverPageData(
+		context.Background(),
+		session,
+		snapshot,
+		"",
+	)
+	if err != nil {
+		writeUserError(response, "server details could not be loaded", http.StatusInternalServerError)
+		return
+	}
+	data.Error = message
+	data.ErrorField = "target_version"
+	h.render(response, status, "server.html", data)
+}
+
+func (h *Handler) serverPageData(
+	ctx context.Context,
+	session Session,
+	snapshot identity.AgentSnapshot,
+	configurationOverride string,
+) (pageData, error) {
+	now := h.currentTime()
+	online := snapshot.State == identity.AgentStateEnrolled &&
+		h.sessions.IsOnline(snapshot.ID)
+	summary := agentViewFor(snapshot, now, online)
+	detail := &agentDetailView{
+		ID:                  snapshot.ID,
+		Name:                snapshot.DisplayName,
+		URL:                 "/servers/" + url.PathEscape(snapshot.ID) + "/manage",
+		Online:              online,
+		DeploymentStatusURL: "/servers/" + url.PathEscape(snapshot.ID) + "/deployment-status",
+		EnrollmentLabel:     summary.EnrollmentLabel,
+		EnrollmentClass:     summary.EnrollmentClass,
+		ConnectionLabel:     summary.ConnectionLabel,
+		ConnectionClass:     summary.ConnectionClass,
+		ConnectionDetail:    summary.Detail,
+		Configuration:       defaultConfigurationJSON,
+		RevokeLabel:         "Remove server entry",
+	}
+	if registry := h.controller.PoolRegistry(); registry != nil {
+		detail.SubscriptionDomainV4, detail.SubscriptionDomainV6 = registry.SubscriptionDomains(snapshot.ID)
+		detail.IPv4, detail.IPv6 = h.poolAddresses(snapshot.ID)
+	}
+	if h.proxyNodes != nil {
+		detail.ReverseOnly = h.proxyNodes.AgentReverseOnly(snapshot.ID)
+		usage, err := h.proxyNodes.EntranceUsageForAgent(snapshot.ID)
+		if err != nil {
+			return pageData{}, err
+		}
+		detail.EntranceAllocated = formatByteCount(usage.AllocatedBytes)
+		detail.EntranceUsed = formatByteCount(usage.UsedBytes)
+		detail.EntranceUnlimited = usage.UnlimitedUsers
+		detail.ProxyNodeReferences, detail.RetirementPending = h.agentProxyNodeReferences(snapshot.ID)
+		detail.RemovalBlocked = len(detail.ProxyNodeReferences) > 0 || detail.RetirementPending
+		detail.CanForceRemove = detail.RemovalBlocked &&
+			snapshot.State == identity.AgentStateEnrolled && !online
+	}
+	if info, exists := h.sessions.AgentInfo(snapshot.ID); exists {
+		detail.AgentVersion = info.Version
+		detail.SingBoxVersion = displaySingBoxVersion(info.SingBoxVersion)
+		detail.OperatingSystem = info.OperatingSystem
+		detail.Architecture = info.Architecture
+	}
+	detail.ACMEHTTP01Relay = online && h.controller.CanRelayACMEHTTP01(snapshot.ID)
+	switch snapshot.State {
+	case identity.AgentStatePending:
+		detail.ConfigurationHint = "The server must enroll before it can receive configuration."
+		detail.RevokeLabel = "Cancel enrollment"
+	case identity.AgentStateExpired:
+		detail.ConfigurationHint = "Remove this expired entry, then add the server again."
+		detail.RevokeLabel = "Remove expired entry"
+	case identity.AgentStateEnrolled:
+		detail.CanReplace = true
+		switch {
+		case !online:
+			detail.ConfigurationHint = "The agent must be online before a configuration can be deployed."
+		case !h.controller.CanDeployProxyNodeConfiguration(snapshot.ID):
+			detail.ConfigurationHint = "This Agent must be upgraded before it can receive Proxy Node configurations. A legacy configuration may still be active until that upgrade completes."
+		default:
+			detail.ConfigurationEnabled = true
+			detail.ConfigurationEditable = true
+			detail.ConfigurationHint = "The agent checks the JSON with sing-box, atomically activates it, and rolls back if startup fails."
+		}
+		if h.controller.CanUpdateAgent(snapshot.ID) {
+			detail.UpdateEnabled = true
+			detail.UpdateHint = "Choose an exact published Theatropolis release. The agent verifies the official checksum before replacing itself."
+		} else if online {
+			detail.UpdateHint = "Install the current agent once manually to enable secure remote updates."
+		} else {
+			detail.UpdateHint = "The agent must be online before an update can be requested."
+		}
+		if h.controller.CanUpdateSingBox(snapshot.ID) {
+			detail.SingBoxUpdateEnabled = true
+			detail.SingBoxUpdateHint = "Choose a signed sing-box build with live AnyTLS, Hysteria2, and Shadowsocks user management. Its capability manifest, checksums, and GitHub asset digest are verified before installation."
+		} else if online {
+			detail.SingBoxUpdateHint = "Rerun the current agent installer once to enable secure sing-box installation and updates."
+		} else {
+			detail.SingBoxUpdateHint = "The agent must be online before sing-box can be installed or updated."
+		}
+	}
+
+	record, err := h.controller.LatestDeployment(ctx, snapshot.ID)
+	if err == nil {
+		if len(record.ConfigJSON) != 0 {
+			detail.Configuration = string(record.ConfigJSON)
+		}
+		detail.Deployment = deploymentViewFor(record)
+		if detail.Deployment.Pending {
+			detail.ConfigurationEditable = false
+			detail.ConfigurationHint = "Wait for the current deployment result. This page refreshes automatically."
+		}
+	} else if !errors.Is(err, deployment.ErrNotFound) {
+		return pageData{}, err
+	}
+	if configurationOverride != "" {
+		detail.Configuration = configurationOverride
+	}
+	if update, exists := h.controller.LatestAgentUpdate(snapshot.ID); exists {
+		if update.Status != "failed" && update.Status != "rejected" ||
+			h.sessionOwnsAgentUpdate(session.Token, snapshot.ID, update.RequestID) {
+			detail.Update = agentUpdateViewFor(update)
+		}
+	}
+	if update, exists := h.controller.LatestSingBoxUpdate(snapshot.ID); exists {
+		detail.SingBoxUpdate = singBoxUpdateViewFor(update)
+	}
+	return pageData{
+		Title:     snapshot.DisplayName,
+		ActiveNav: "servers",
+		CSRFToken: session.CSRFToken,
+		AgentName: snapshot.DisplayName,
+		Agent:     detail,
+	}, nil
+}
+
+func (h *Handler) agentProxyNodeReferences(agentID string) ([]agentProxyNodeReferenceView, bool) {
+	if h.proxyNodes == nil {
+		return nil, false
+	}
+	state := h.proxyNodes.Snapshot()
+	desiredNodeIDs := make(map[string]struct{}, len(state.ProxyNodes))
+	for _, node := range state.ProxyNodes {
+		desiredNodeIDs[node.ID] = struct{}{}
+	}
+	type referenceAccumulator struct {
+		view               agentProxyNodeReferenceView
+		desiredRelayHopIDs map[string]struct{}
+		appliedRelayHopIDs map[string]struct{}
+	}
+	references := make(map[string]*referenceAccumulator)
+	collect := func(nodes []proxynode.ProxyNode, desired bool) {
+		for _, node := range nodes {
+			var reference *referenceAccumulator
+			for _, hop := range node.Hops {
+				if hop.AgentID != agentID {
+					continue
+				}
+				if reference == nil {
+					reference = references[node.ID]
+					if reference == nil {
+						reference = &referenceAccumulator{
+							view: agentProxyNodeReferenceView{
+								ID: node.ID, Name: node.Name, URL: proxyNodeURL(node.ID),
+							},
+							desiredRelayHopIDs: make(map[string]struct{}),
+							appliedRelayHopIDs: make(map[string]struct{}),
+						}
+						references[node.ID] = reference
+					}
+				}
+				if desired {
+					reference.view.Desired = true
+					reference.view.Name = node.Name
+					if hop.ID == node.Entrance.HopID {
+						reference.view.DesiredEntrance = true
+					} else {
+						reference.desiredRelayHopIDs[hop.ID] = struct{}{}
+					}
+				} else {
+					reference.view.Applied = true
+					if hop.ID == node.Entrance.HopID {
+						reference.view.AppliedEntrance = true
+					} else {
+						reference.appliedRelayHopIDs[hop.ID] = struct{}{}
+					}
+				}
+			}
+		}
+	}
+	collect(state.AppliedProxyNodes, false)
+	collect(state.ProxyNodes, true)
+
+	views := make([]agentProxyNodeReferenceView, 0, len(references))
+	for _, reference := range references {
+		reference.view.DesiredRelayHops = len(reference.desiredRelayHopIDs)
+		reference.view.DesiredRelayHopLabel = localizedCount(localeEnglish, reference.view.DesiredRelayHops, "relay-hop")
+		reference.view.AppliedRelayHops = len(reference.appliedRelayHopIDs)
+		reference.view.AppliedRelayHopLabel = localizedCount(localeEnglish, reference.view.AppliedRelayHops, "relay-hop")
+		if _, nodeStillDesired := desiredNodeIDs[reference.view.ID]; reference.view.Applied && !nodeStillDesired {
+			// The desired Node no longer has an editor. Keep the runtime
+			// assignment visible without linking to a guaranteed 404 page.
+			reference.view.URL = "/proxy-nodes"
+		}
+		views = append(views, reference.view)
+	}
+	sort.Slice(views, func(left, right int) bool {
+		leftName := strings.ToLower(views[left].Name)
+		rightName := strings.ToLower(views[right].Name)
+		if leftName == rightName {
+			return views[left].ID < views[right].ID
+		}
+		return leftName < rightName
+	})
+	return views, slices.Contains(state.ManagedAgents, agentID) && len(views) == 0
+}
+
+func containsRelease(releases []AgentRelease, target string) bool {
+	for _, release := range releases {
+		if release.Tag == target {
+			return true
+		}
+	}
+	return false
+}
+
+func (h *Handler) rememberAgentUpdate(sessionToken, agentID, requestID string) {
+	tokenDigest, valid := credentialDigest(sessionToken)
+	if valid != 1 {
+		return
+	}
+	h.updateViewMu.Lock()
+	defer h.updateViewMu.Unlock()
+	requests := h.sessionAgentUpdate[tokenDigest]
+	if requests == nil {
+		requests = make(map[string]string)
+		h.sessionAgentUpdate[tokenDigest] = requests
+	}
+	requests[agentID] = requestID
+}
+
+func (h *Handler) sessionOwnsAgentUpdate(
+	sessionToken string,
+	agentID string,
+	requestID string,
+) bool {
+	tokenDigest, valid := credentialDigest(sessionToken)
+	if valid != 1 {
+		return false
+	}
+	h.updateViewMu.Lock()
+	defer h.updateViewMu.Unlock()
+	return h.sessionAgentUpdate[tokenDigest][agentID] == requestID
+}
+
+type versionCatalogResponse struct {
+	LatestVersion         string             `json:"latest_version"`
+	AgentVersions         []agentVersionView `json:"agent_versions"`
+	AgentCatalogWarning   string             `json:"agent_catalog_warning,omitempty"`
+	LatestSingBoxVersion  string             `json:"latest_sing_box_version"`
+	SingBoxVersions       []agentVersionView `json:"sing_box_versions"`
+	SingBoxCatalogWarning string             `json:"sing_box_catalog_warning,omitempty"`
+}
+
+func (h *Handler) fleetVersions(response http.ResponseWriter, request *http.Request) {
+	response.Header().Set("Cache-Control", "no-store")
+	if _, ok := h.authenticate(response, request); !ok {
+		writeUserError(response, "unauthorized", http.StatusUnauthorized)
+		return
+	}
+	if request.URL.Query().Get("catalog") != "sing-box" {
+		writeUserError(response, "unknown version catalog", http.StatusBadRequest)
+		return
+	}
+	result := versionCatalogResponse{}
+	result.SingBoxVersions, result.LatestSingBoxVersion,
+		result.SingBoxCatalogWarning = h.releaseVersionsFor(
+		request.Context(),
+		h.singBoxReleases,
+		"sing-box",
+	)
+	response.Header().Set("Content-Type", "application/json")
+	if err := json.NewEncoder(response).Encode(result); err != nil {
+		h.logger.Warn("encode fleet version catalog", "error", err)
+	}
+}
+
+func (h *Handler) serverVersions(response http.ResponseWriter, request *http.Request) {
+	response.Header().Set("Cache-Control", "no-store")
+	if _, ok := h.authenticate(response, request); !ok {
+		writeUserError(response, "unauthorized", http.StatusUnauthorized)
+		return
+	}
+	if _, exists := h.agentSnapshot(request.PathValue("agent_id")); !exists {
+		http.NotFound(response, request)
+		return
+	}
+	result := versionCatalogResponse{}
+	switch request.URL.Query().Get("catalog") {
+	case "agent":
+		result.AgentVersions, result.LatestVersion, result.AgentCatalogWarning =
+			h.releaseVersions(request.Context())
+	case "sing-box":
+		result.SingBoxVersions, result.LatestSingBoxVersion,
+			result.SingBoxCatalogWarning = h.releaseVersionsFor(
+			request.Context(),
+			h.singBoxReleases,
+			"sing-box",
+		)
+	default:
+		writeUserError(response, "unknown version catalog", http.StatusBadRequest)
+		return
+	}
+	response.Header().Set("Content-Type", "application/json")
+	if err := json.NewEncoder(response).Encode(result); err != nil {
+		h.logger.Warn("encode version catalog", "error", err)
+	}
+}
+
+func (h *Handler) releaseVersions(
+	ctx context.Context,
+) ([]agentVersionView, string, string) {
+	return h.releaseVersionsFor(ctx, h.releases, "Theatropolis")
+}
+
+func (h *Handler) releaseVersionsFor(
+	ctx context.Context,
+	catalog ReleaseCatalog,
+	component string,
+) ([]agentVersionView, string, string) {
+	if catalog == nil {
+		return nil, "", "Version lookup failed: release catalog is unavailable."
+	}
+	releases, err := catalog.Versions(ctx)
+	if err != nil {
+		h.logger.Warn("load release catalog", "component", component, "error", err)
+		return nil, "", catalogDiagnostic(err)
+	}
+	versions := make([]agentVersionView, 0, len(releases))
+	for _, release := range releases {
+		branch := "Stable"
+		if release.Prerelease {
+			branch = "Testing"
+			tag := release.Tag
+			if strings.Contains(tag, "-alpha.") {
+				branch = "Alpha"
+			} else if strings.Contains(tag, "-beta.") {
+				branch = "Beta"
+			} else if strings.Contains(tag, "-rc.") {
+				branch = "Release Candidate"
+			}
+		}
+		versions = append(versions, agentVersionView{
+			Tag:    release.Tag,
+			Branch: branch,
+		})
+	}
+	latest := ""
+	if len(releases) != 0 {
+		latest = releases[0].Tag
+	}
+	return versions, latest, ""
+}
+
+type ruleSetOptionsResponse struct {
+	Options []string `json:"options"`
+	Warning string   `json:"warning,omitempty"`
+}
+
+func (h *Handler) serverRuleSetOptions(response http.ResponseWriter, request *http.Request) {
+	if _, ok := h.authenticate(response, request); !ok {
+		writeUserError(response, "unauthorized", http.StatusUnauthorized)
+		return
+	}
+	if _, exists := h.agentSnapshot(request.PathValue("agent_id")); !exists {
+		http.NotFound(response, request)
+		return
+	}
+	h.writeRuleSetOptions(response, request)
+}
+
+func (h *Handler) subscriptionRuleSetOptions(response http.ResponseWriter, request *http.Request) {
+	if _, ok := h.authenticate(response, request); !ok {
+		writeUserError(response, "unauthorized", http.StatusUnauthorized)
+		return
+	}
+	h.writeRuleSetOptions(response, request)
+}
+
+func (h *Handler) writeRuleSetOptions(response http.ResponseWriter, request *http.Request) {
+	var catalog RuleSetOptions
+	switch request.URL.Query().Get("kind") {
+	case "geosite":
+		catalog = h.geositeRuleSets
+	case "geoip":
+		catalog = h.geoipRuleSets
+	default:
+		writeUserError(response, "unknown rule-set catalog", http.StatusBadRequest)
+		return
+	}
+	result := ruleSetOptionsResponse{}
+	if catalog == nil {
+		result.Warning = "Rule-set lookup failed: rule-set catalog is unavailable."
+	} else if options, err := catalog.Options(request.Context()); err != nil {
+		h.logger.Warn("load rule-set catalog", "kind", request.URL.Query().Get("kind"), "error", err)
+		result.Warning = ruleSetDiagnostic(err)
+	} else {
+		result.Options = options
+	}
+	response.Header().Set("Content-Type", "application/json")
+	response.Header().Set("Cache-Control", "no-store")
+	if err := json.NewEncoder(response).Encode(result); err != nil {
+		h.logger.Warn("encode rule-set catalog", "error", err)
+	}
+}
+
+func singBoxUpdateViewFor(
+	state control.SingBoxUpdateState,
+) *agentUpdateView {
+	return agentUpdateViewFor(control.AgentUpdateState{
+		TargetVersion:  state.TargetVersion,
+		RunningVersion: state.RunningVersion,
+		Status:         state.Status,
+		Diagnostic:     state.Diagnostic,
+		UpdatedAt:      state.UpdatedAt,
+	})
+}
+
+func agentUpdateViewFor(state control.AgentUpdateState) *agentUpdateView {
+	label := "Unknown"
+	if state.Status != "" {
+		label = strings.ToUpper(state.Status[:1]) + state.Status[1:]
+	}
+	class := "pending"
+	switch state.Status {
+	case "applied":
+		class = "enrolled"
+	case "failed", "rejected":
+		class = "expired"
+	}
+	return &agentUpdateView{
+		TargetVersion:  state.TargetVersion,
+		RunningVersion: state.RunningVersion,
+		StatusLabel:    label,
+		StatusClass:    class,
+		Diagnostic:     state.Diagnostic,
+		UpdatedAt:      state.UpdatedAt.In(proxynode.BillingLocation()).Format("2 Jan 2006, 15:04:05 UTC+8"),
+	}
+}
+
+func updateResultViewFor(result agentupdate.Result) *agentUpdateView {
+	state := control.AgentUpdateState{
+		TargetVersion:  result.TargetVersion,
+		RunningVersion: result.RunningVersion,
+		Status:         result.Status,
+		Diagnostic:     result.Diagnostic,
+		UpdatedAt:      result.ObservedAt,
+	}
+	return agentUpdateViewFor(state)
+}
+
+func (h *Handler) newServerPage(response http.ResponseWriter, request *http.Request) {
+	session, ok := h.requireAuthentication(response, request)
+	if !ok {
+		return
+	}
+	h.render(response, http.StatusOK, "new-server.html", pageData{
+		Title:      "Add server",
+		ActiveNav:  "servers",
+		CSRFToken:  session.CSRFToken,
+		TTLSeconds: 900,
+	})
+}
+
+func (h *Handler) enrollmentResultPage(response http.ResponseWriter, request *http.Request) {
+	sessionToken, ok := h.sessionToken(request)
+	if !ok {
+		h.redirectToLogin(response, request)
+		return
+	}
+	session, err := h.authenticateSession(response, sessionToken)
+	if err != nil {
+		h.redirectToLogin(response, request)
+		return
+	}
+	query := request.URL.Query()
+	resultIDs, exists := query["id"]
+	if len(query) != 1 || !exists || len(resultIDs) != 1 {
+		http.Redirect(response, request, "/servers", http.StatusSeeOther)
+		return
+	}
+	created, ok := h.takeEnrollmentResult(sessionToken, resultIDs[0], h.currentTime())
+	if !ok {
+		http.Redirect(response, request, "/servers", http.StatusSeeOther)
+		return
+	}
+	h.render(response, http.StatusOK, "server-created.html", pageData{
+		Title:     "Enrollment ready",
+		ActiveNav: "servers",
+		CSRFToken: session.CSRFToken,
+		Created:   &created,
+	})
+}
+
+func (h *Handler) redirectEnrollmentResult(response http.ResponseWriter, request *http.Request, resultID string) {
+	location := "/servers/enrollment-result?id=" + url.QueryEscape(resultID)
+	if request.Header.Get("X-Theatropolis-Form") == "1" {
+		// A fetch-followed 303 would consume the one-time result before the
+		// browser navigates there. Let the form adapter navigate directly.
+		response.Header().Set("X-Theatropolis-Redirect", location)
+		response.Header().Set("Cache-Control", "no-store")
+		response.WriteHeader(http.StatusNoContent)
+		return
+	}
+	http.Redirect(response, request, location, http.StatusSeeOther)
+}
+
+func (h *Handler) createServer(response http.ResponseWriter, request *http.Request) {
+	sessionToken, ok := h.sessionToken(request)
+	if !ok {
+		h.redirectToLogin(response, request)
+		return
+	}
+	if h.rejectInvalidMutationOrigin(response, request) {
+		return
+	}
+	form, err := readFormWithOptional(
+		response,
+		request,
+		maxEnrollmentBodyBytes,
+		[]string{"display_name", "csrf_token", "ttl_seconds"},
+		"reverse_only",
+	)
+	if err != nil || !h.authorizeCSRF(response, sessionToken, form.Get("csrf_token")) {
+		writeUserError(response, "request was not authorized", http.StatusForbidden)
+		return
+	}
+	session, err := h.authenticateSession(response, sessionToken)
+	if err != nil {
+		h.redirectToLogin(response, request)
+		return
+	}
+
+	agentID := ""
+	agentName := identity.NormalizeDisplayName(form.Get("display_name"))
+	reverseOnly, modeErr := parseBinaryChoice(form.Get("reverse_only"), "connectivity mode")
+	if modeErr != nil || (reverseOnly && h.proxyNodes == nil) {
+		writeUserError(response, "invalid connectivity mode", http.StatusBadRequest)
+		return
+	}
+	ttlSeconds, parseErr := strconv.ParseInt(form.Get("ttl_seconds"), 10, 64)
+	ttl, ttlAllowed := allowedTTLs[ttlSeconds]
+	if parseErr != nil || !ttlAllowed {
+		h.renderNewServerError(
+			response,
+			http.StatusBadRequest,
+			session,
+			agentID,
+			agentName,
+			900,
+			"Choose a supported enrollment lifetime.",
+			"ttl_seconds",
+			reverseOnly,
+		)
+		return
+	}
+	if !h.allowEnrollment(h.currentTime()) {
+		response.Header().Set("Retry-After", "60")
+		h.renderNewServerError(
+			response,
+			http.StatusTooManyRequests,
+			session,
+			agentID,
+			agentName,
+			ttlSeconds,
+			"Too many enrollment credentials were created. Wait one minute and try again.",
+			"",
+			reverseOnly,
+		)
+		return
+	}
+
+	expiresAt := h.currentTime().Add(ttl)
+	h.agentMutationMu.Lock()
+	defer h.agentMutationMu.Unlock()
+	agentID, token, err := h.registry.CreateEnrollmentForDisplayName(request.Context(), agentName, expiresAt)
+	if err != nil {
+		message := "The server entry could not be created."
+		status := http.StatusInternalServerError
+		errorField := ""
+		switch {
+		case errors.Is(err, identity.ErrInvalidAgentID),
+			errors.Is(err, identity.ErrInvalidDisplayName):
+			status = http.StatusBadRequest
+			message = "Use 1–60 letters or numbers; ordinary spaces and . _ - are allowed."
+			errorField = "display_name"
+		case errors.Is(err, identity.ErrDisplayNameExists):
+			status = http.StatusConflict
+			message = "That server name is already in use."
+			errorField = "display_name"
+		case errors.Is(err, identity.ErrAgentAlreadyEnrolled):
+			status = http.StatusConflict
+			message = "That server ID is already enrolled."
+		case errors.Is(err, identity.ErrEnrollmentPending):
+			status = http.StatusConflict
+			message = "That server already has a valid enrollment command. Use it or wait for it to expire."
+		default:
+			h.logger.Error(
+				"create agent enrollment",
+				"agent_id",
+				agentID,
+				"error",
+				err,
+			)
+		}
+		h.renderNewServerError(
+			response,
+			status,
+			session,
+			agentID,
+			agentName,
+			ttlSeconds,
+			message,
+			errorField,
+			reverseOnly,
+		)
+		return
+	}
+	encodedToken := base64.RawURLEncoding.EncodeToString(token)
+	if reverseOnly {
+		if !h.applyProxyTopologyMutation(response, func() error { return h.proxyNodes.SetAgentReverseOnly(agentID, true) }) {
+			_ = h.registry.Revoke(request.Context(), agentID)
+			clear(token)
+			return
+		}
+	}
+	defer clear(token)
+	created := createdServerView{
+		AgentID:        agentID,
+		DisplayName:    agentName,
+		InstallCommand: h.installCommand(encodedToken),
+		ExpiresAt:      expiresAt.In(proxynode.BillingLocation()).Format("2 Jan 2006, 15:04 UTC+8"),
+		ExpiresAtISO:   expiresAt.In(proxynode.BillingLocation()).Format(time.RFC3339),
+	}
+	resultID, err := h.storeEnrollmentResult(sessionToken, created, h.currentTime())
+	if err != nil {
+		h.logger.Error("store enrollment result", "agent_id", agentID, "error", err)
+		writeUserError(response, "enrollment result could not be prepared", http.StatusInternalServerError)
+		return
+	}
+	h.redirectEnrollmentResult(response, request, resultID)
+}
+
+func (h *Handler) renderNewServerError(
+	response http.ResponseWriter,
+	status int,
+	session Session,
+	agentID string,
+	agentName string,
+	ttlSeconds int64,
+	message string,
+	errorField string,
+	reverseOnly bool,
+) {
+	h.render(response, status, "new-server.html", pageData{
+		Title:       "Add server",
+		ActiveNav:   "servers",
+		CSRFToken:   session.CSRFToken,
+		AgentID:     agentID,
+		AgentName:   agentName,
+		TTLSeconds:  ttlSeconds,
+		ReverseOnly: reverseOnly,
+		Error:       message,
+		ErrorField:  errorField,
+	})
+}
+
+func agentViewFor(snapshot identity.AgentSnapshot, now time.Time, online bool) agentView {
+	view := agentView{
+		ID:   snapshot.ID,
+		Name: snapshot.DisplayName,
+		URL:  "/servers/" + url.PathEscape(snapshot.ID) + "/manage",
+	}
+	switch snapshot.State {
+	case identity.AgentStatePending:
+		view.EnrollmentLabel = "Pending"
+		view.EnrollmentClass = "pending"
+		view.ConnectionLabel = "Not connected"
+		view.ConnectionClass = "offline"
+		view.Detail = "Expires " + relativeTime(snapshot.EnrollmentExpiresAt, now)
+	case identity.AgentStateExpired:
+		view.EnrollmentLabel = "Expired"
+		view.EnrollmentClass = "expired"
+		view.ConnectionLabel = "Not connected"
+		view.ConnectionClass = "offline"
+		view.Detail = "Create a new enrollment command"
+	case identity.AgentStateEnrolled:
+		view.EnrollmentLabel = "Enrolled"
+		view.EnrollmentClass = "enrolled"
+		if online {
+			view.ConnectionLabel = "Online"
+			view.ConnectionClass = "online"
+			view.Detail = "Authenticated control session"
+		} else {
+			view.ConnectionLabel = "Offline"
+			view.ConnectionClass = "offline"
+			view.Detail = "No active control session"
+		}
+	}
+	return view
+}
+
+func displaySingBoxVersion(version string) string {
+	return managedSingBoxDisplaySuffix.ReplaceAllString(strings.TrimSpace(version), "")
+}
+
+func deploymentViewFor(record deployment.Record) *deploymentView {
+	view := &deploymentView{
+		ID:         record.ID,
+		RevisionID: record.RevisionID,
+		Digest:     hex.EncodeToString(record.ConfigSHA256[:]),
+		UpdatedAt:  record.UpdatedAt.In(proxynode.BillingLocation()).Format("2 Jan 2006, 15:04:05 UTC+8"),
+		Diagnostic: record.Diagnostic,
+	}
+	switch record.Status {
+	case deployment.StatusQueued:
+		view.StatusLabel = "Queued"
+		view.StatusClass = "pending"
+		view.Pending = true
+	case deployment.StatusValidating:
+		view.StatusLabel = "Validating"
+		view.StatusClass = "pending"
+		view.Pending = true
+	case deployment.StatusValidated:
+		view.StatusLabel = "Validated"
+		view.StatusClass = "online"
+	case deployment.StatusDeploying:
+		view.StatusLabel = "Deploying"
+		view.StatusClass = "pending"
+		view.Pending = true
+	case deployment.StatusApplied:
+		view.StatusLabel = "Applied"
+		view.StatusClass = "online"
+	case deployment.StatusRuntimeFailed:
+		view.StatusLabel = "Runtime failure"
+		view.StatusClass = "expired"
+	case deployment.StatusValidationFailed:
+		view.StatusLabel = "Validation failed"
+		view.StatusClass = "expired"
+	case deployment.StatusActivationFailed:
+		view.StatusLabel = "Activation failed"
+		view.StatusClass = "expired"
+	case deployment.StatusInternalError:
+		view.StatusLabel = "Agent error"
+		view.StatusClass = "expired"
+	case deployment.StatusDeliveryFailed:
+		view.StatusLabel = "Delivery failed"
+		view.StatusClass = "expired"
+	default:
+		view.StatusLabel = "Unknown"
+		view.StatusClass = "offline"
+	}
+	return view
+}
+
+func (h *Handler) agentSnapshot(agentID string) (identity.AgentSnapshot, bool) {
+	if strings.TrimSpace(agentID) == "" {
+		return identity.AgentSnapshot{}, false
+	}
+	for _, snapshot := range h.registry.Snapshot(h.currentTime()) {
+		if snapshot.ID == agentID {
+			return snapshot, true
+		}
+	}
+	return identity.AgentSnapshot{}, false
+}
+
+func (h *Handler) agentDisplayName(agentID string) string {
+	if h.registry == nil {
+		return agentID
+	}
+	return h.registry.DisplayName(agentID)
+}
+
+func randomOpaqueID(prefix string) (string, error) {
+	var random [18]byte
+	if _, err := rand.Read(random[:]); err != nil {
+		return "", err
+	}
+	encoded := base64.RawURLEncoding.EncodeToString(random[:])
+	clear(random[:])
+	return prefix + "_" + encoded, nil
+}
+
+func (h *Handler) installCommand(token string) string {
+	return "curl --proto '=https' --tlsv1.2 -fsSL " +
+		"https://raw.githubusercontent.com/masterauguste/theatropolis/main/install.sh" +
+		" | sudo sh -s -- agent --master " + shellQuote(h.masterAddress) +
+		" --token " + shellQuote(token)
+}
+
+func (h *Handler) storeEnrollmentResult(
+	sessionToken string,
+	created createdServerView,
+	now time.Time,
+) (string, error) {
+	owner, valid := credentialDigest(sessionToken)
+	if valid != 1 {
+		return "", ErrAuthenticationFailed
+	}
+
+	for attempts := 0; attempts < 3; attempts++ {
+		var randomID [credentialBytes]byte
+		if _, err := rand.Read(randomID[:]); err != nil {
+			return "", fmt.Errorf("generate result ID: %w", err)
+		}
+		resultID := base64.RawURLEncoding.EncodeToString(randomID[:])
+		clear(randomID[:])
+
+		h.resultMu.Lock()
+		h.purgeEnrollmentResultsLocked(now)
+		if _, collision := h.results[resultID]; collision {
+			h.resultMu.Unlock()
+			continue
+		}
+		if len(h.results) >= enrollmentResultLimit {
+			h.evictOldestEnrollmentResultLocked()
+		}
+		h.results[resultID] = enrollmentResult{
+			owner:     owner,
+			created:   created,
+			createdAt: now,
+		}
+		h.resultMu.Unlock()
+		return resultID, nil
+	}
+	return "", errors.New("could not allocate a unique result ID")
+}
+
+func (h *Handler) takeEnrollmentResult(
+	sessionToken string,
+	resultID string,
+	now time.Time,
+) (createdServerView, bool) {
+	owner, valid := credentialDigest(sessionToken)
+	if valid != 1 || len(resultID) != encodedCredentialLength {
+		return createdServerView{}, false
+	}
+	h.resultMu.Lock()
+	defer h.resultMu.Unlock()
+	h.purgeEnrollmentResultsLocked(now)
+	result, exists := h.results[resultID]
+	if !exists || result.owner != owner {
+		return createdServerView{}, false
+	}
+	delete(h.results, resultID)
+	return result.created, true
+}
+
+func (h *Handler) purgeEnrollmentResultsLocked(now time.Time) {
+	for resultID, result := range h.results {
+		if !now.Before(result.createdAt.Add(enrollmentResultTTL)) {
+			delete(h.results, resultID)
+		}
+	}
+}
+
+func (h *Handler) removeEnrollmentResultsForAgent(agentID string) {
+	h.resultMu.Lock()
+	defer h.resultMu.Unlock()
+	for resultID, result := range h.results {
+		if result.created.AgentID == agentID {
+			delete(h.results, resultID)
+		}
+	}
+}
+
+func (h *Handler) evictOldestEnrollmentResultLocked() {
+	var oldestID string
+	var oldestAt time.Time
+	for resultID, result := range h.results {
+		if oldestID == "" || result.createdAt.Before(oldestAt) {
+			oldestID = resultID
+			oldestAt = result.createdAt
+		}
+	}
+	if oldestID != "" {
+		delete(h.results, oldestID)
+	}
+}
+
+func shellQuote(value string) string {
+	return "'" + strings.ReplaceAll(value, "'", `'\"'\"'`) + "'"
+}
+
+func (h *Handler) render(
+	response http.ResponseWriter,
+	status int,
+	templateName string,
+	data pageData,
+) {
+	locale := normalizeLocale(response.Header().Get("Content-Language"))
+	data.Locale = locale
+	data.AssetVersion = h.assetVersion
+	data.PublicURL = h.publicURL
+	data.MasterAddress = h.masterAddress
+	var rendered bytes.Buffer
+	templates := h.templates[locale]
+	if templates == nil {
+		templates = h.templates[localeEnglish]
+	}
+	localizePageData(locale, &data)
+	if err := templates.ExecuteTemplate(&rendered, templateName, data); err != nil {
+		h.logger.Error("render web UI", "template", templateName, "error", err)
+		writeUserError(response, "interface could not be rendered", http.StatusInternalServerError)
+		return
+	}
+	response.Header().Set("Content-Type", "text/html; charset=utf-8")
+	response.Header().Set("Cache-Control", "no-store")
+	// Some mutations return a result page (rather than a redirect), including
+	// fleet updates and staged migration. Enhanced forms must never GET the
+	// POST-only action URL to show that result.
+	switch templateName {
+	case "settings.html", "master-restoring.html":
+		response.Header().Set("Content-Location", "/settings")
+	case "servers.html":
+		response.Header().Set("Content-Location", "/servers")
+	}
+	response.WriteHeader(status)
+	if _, err := response.Write(rendered.Bytes()); err != nil {
+		h.logger.Warn("write web UI response", "template", templateName, "error", err)
+	}
+}
+
+func (h *Handler) authenticateSession(
+	response http.ResponseWriter,
+	token string,
+) (Session, error) {
+	session, err := h.access.Authenticate(token)
+	if err == nil && response.Header().Get("Set-Cookie") == "" {
+		http.SetCookie(response, NewSessionCookie(session.Token, session.ExpiresAt))
+	}
+	return session, err
+}
+
+func (h *Handler) authorizeCSRF(
+	response http.ResponseWriter,
+	token string,
+	csrfToken string,
+) bool {
+	if !h.access.AuthorizeCSRF(token, csrfToken) {
+		return false
+	}
+	_, err := h.authenticateSession(response, token)
+	return err == nil
+}
+
+func (h *Handler) authenticate(
+	response http.ResponseWriter,
+	request *http.Request,
+) (Session, bool) {
+	token, ok := h.sessionToken(request)
+	if !ok {
+		return Session{}, false
+	}
+	session, err := h.authenticateSession(response, token)
+	return session, err == nil
+}
+
+func (h *Handler) requireAuthentication(
+	response http.ResponseWriter,
+	request *http.Request,
+) (Session, bool) {
+	session, ok := h.authenticate(response, request)
+	if !ok {
+		h.redirectToLogin(response, request)
+		return Session{}, false
+	}
+	return session, true
+}
+
+func (h *Handler) sessionToken(request *http.Request) (string, bool) {
+	cookie, err := request.Cookie(SessionCookieName)
+	if err != nil || cookie.Value == "" {
+		return "", false
+	}
+	return cookie.Value, true
+}
+
+// loginClientIdentity returns the peer address Caddy appended to
+// X-Forwarded-For. The web listener is loopback-only, so the last element is
+// controlled by the local reverse proxy; direct development requests fall
+// back to RemoteAddr. The value is used only as an in-memory rate-limit key.
+func loginClientIdentity(request *http.Request) string {
+	if values := request.Header.Values("X-Forwarded-For"); len(values) > 0 {
+		parts := strings.Split(values[len(values)-1], ",")
+		candidate := strings.TrimSpace(parts[len(parts)-1])
+		if address := net.ParseIP(candidate); address != nil {
+			return address.String()
+		}
+	}
+	host, _, err := net.SplitHostPort(request.RemoteAddr)
+	if err == nil {
+		if address := net.ParseIP(host); address != nil {
+			return address.String()
+		}
+	}
+	return "unknown"
+}
+
+func (h *Handler) redirectToLogin(response http.ResponseWriter, request *http.Request) {
+	if _, ok := h.sessionToken(request); ok {
+		http.SetCookie(response, DeleteSessionCookie())
+	}
+	http.Redirect(response, request, "/login", http.StatusSeeOther)
+}
+
+func (h *Handler) rejectInvalidMutationOrigin(
+	response http.ResponseWriter,
+	request *http.Request,
+) bool {
+	reason := h.mutationOriginRejection(request)
+	if reason == "" {
+		return false
+	}
+	writeUserError(
+		response,
+		"request origin is not allowed ("+reason+")",
+		http.StatusForbidden,
+	)
+	return true
+}
+
+func (h *Handler) mutationOriginRejection(request *http.Request) string {
+	if request.Header.Get("Content-Encoding") != "" {
+		return "content_encoding"
+	}
+	if request.URL.RawQuery != "" {
+		return "query_string"
+	}
+	fetchSiteValues := request.Header.Values("Sec-Fetch-Site")
+	if len(fetchSiteValues) > 1 {
+		return "multiple_fetch_site_headers"
+	}
+	fetchSite := ""
+	if len(fetchSiteValues) == 1 {
+		fetchSite = fetchSiteValues[0]
+	}
+	// "none" is valid for browser-initiated navigation, and unknown values
+	// must be ignored for forward compatibility when Origin is present.
+	switch fetchSite {
+	case "cross-site":
+		return "cross_site"
+	case "same-site":
+		return "same_site"
+	}
+
+	originValues := request.Header.Values("Origin")
+	if len(originValues) == 0 {
+		// Some privacy clients omit Origin. Sec-Fetch-* headers are controlled
+		// by the browser, while the canonical request Host was already checked.
+		if fetchSite == "same-origin" || fetchSite == "none" {
+			return ""
+		}
+		return "missing_origin"
+	}
+	if len(originValues) != 1 {
+		return "multiple_origin_headers"
+	}
+	origin := originValues[0]
+	parsed, err := url.Parse(origin)
+	if err != nil ||
+		parsed.Scheme == "" ||
+		parsed.User != nil ||
+		parsed.Path != "" ||
+		parsed.RawQuery != "" ||
+		parsed.Fragment != "" {
+		return "invalid_origin"
+	}
+	host, port, err := splitAuthority(parsed.Host, defaultPort(parsed.Scheme))
+	if err != nil {
+		return "invalid_origin"
+	}
+	if !(strings.EqualFold(parsed.Scheme, h.publicScheme) &&
+		strings.EqualFold(host, h.publicHost) &&
+		port == h.publicPort) {
+		return "origin_mismatch"
+	}
+	return ""
+}
+
+func (h *Handler) validRequestHost(hostHeader string) bool {
+	host, port, err := splitAuthority(hostHeader, defaultPort(h.publicScheme))
+	return err == nil &&
+		strings.EqualFold(host, h.publicHost) &&
+		port == h.publicPort
+}
+
+func setSecurityHeaders(header http.Header) {
+	header.Set(
+		"Content-Security-Policy",
+		"default-src 'none'; script-src 'self'; style-src 'self'; "+
+			"img-src 'self' data:; connect-src 'self'; font-src 'self'; "+
+			"object-src 'none'; base-uri 'none'; form-action 'self'; frame-ancestors 'none'",
+	)
+	header.Set("Cross-Origin-Opener-Policy", "same-origin")
+	header.Set("Cross-Origin-Resource-Policy", "same-origin")
+	header.Set(
+		"Permissions-Policy",
+		"accelerometer=(), camera=(), geolocation=(), gyroscope=(), microphone=(), payment=(), usb=()",
+	)
+	// no-referrer serializes Origin as "null" for non-CORS form POSTs.
+	// strict-origin preserves the exact origin without disclosing paths or queries.
+	header.Set("Referrer-Policy", "strict-origin")
+	header.Set("X-Content-Type-Options", "nosniff")
+	header.Set("X-Frame-Options", "DENY")
+	header.Set("X-Robots-Tag", "noindex, nofollow, noarchive")
+}
+
+func readExactForm(
+	response http.ResponseWriter,
+	request *http.Request,
+	maxBytes int64,
+	fields ...string,
+) (url.Values, error) {
+	values, err := readFormValues(response, request, maxBytes)
+	if err != nil {
+		return nil, err
+	}
+	if len(values) != len(fields) {
+		return nil, errors.New("form contains unexpected fields")
+	}
+	slices.Sort(fields)
+	for _, field := range fields {
+		value, exists := values[field]
+		if !exists || len(value) != 1 {
+			return nil, errors.New("form is missing a field or contains duplicates")
+		}
+	}
+	return values, nil
+}
+
+// readFormWithOptional enforces the same strict single-value shape as
+// readExactForm while allowing the listed optional fields to be absent.
+func readFormWithOptional(
+	response http.ResponseWriter,
+	request *http.Request,
+	maxBytes int64,
+	required []string,
+	optional ...string,
+) (url.Values, error) {
+	values, err := readFormValues(response, request, maxBytes)
+	if err != nil {
+		return nil, err
+	}
+	allowed := make(map[string]struct{}, len(required)+len(optional))
+	for _, field := range required {
+		allowed[field] = struct{}{}
+	}
+	for _, field := range optional {
+		allowed[field] = struct{}{}
+	}
+	for field, value := range values {
+		if _, ok := allowed[field]; !ok || len(value) != 1 {
+			return nil, errors.New("form contains unexpected fields")
+		}
+	}
+	for _, field := range required {
+		if _, exists := values[field]; !exists {
+			return nil, errors.New("form is missing a field or contains duplicates")
+		}
+	}
+	return values, nil
+}
+
+func readFormValues(
+	response http.ResponseWriter,
+	request *http.Request,
+	maxBytes int64,
+) (url.Values, error) {
+	if request.Body == nil {
+		return nil, errors.New("request body is required")
+	}
+	mediaType, parameters, err := mime.ParseMediaType(request.Header.Get("Content-Type"))
+	if err != nil || mediaType != "application/x-www-form-urlencoded" {
+		return nil, errors.New("content type must be application/x-www-form-urlencoded")
+	}
+	// Fetch serializes URLSearchParams with this standards-defined charset
+	// parameter. Accept only UTF-8; arbitrary parameters remain rejected so
+	// callers still get one unambiguous form encoding.
+	for name, value := range parameters {
+		if !strings.EqualFold(name, "charset") || !strings.EqualFold(value, "utf-8") {
+			return nil, errors.New("content type must be application/x-www-form-urlencoded with UTF-8")
+		}
+	}
+	body := http.MaxBytesReader(response, request.Body, maxBytes)
+	defer body.Close()
+	encoded, err := io.ReadAll(body)
+	if err != nil {
+		return nil, err
+	}
+	values, err := url.ParseQuery(string(encoded))
+	if err != nil {
+		return nil, err
+	}
+	return values, nil
+}
+
+func (h *Handler) allowEnrollment(now time.Time) bool {
+	h.enrollmentMu.Lock()
+	defer h.enrollmentMu.Unlock()
+	if h.enrollmentWindowStarted.IsZero() ||
+		now.Before(h.enrollmentWindowStarted) ||
+		!now.Before(h.enrollmentWindowStarted.Add(enrollmentWindow)) {
+		h.enrollmentWindowStarted = now
+		h.enrollmentCount = 0
+	}
+	if h.enrollmentCount >= enrollmentLimit {
+		return false
+	}
+	h.enrollmentCount++
+	return true
+}
+
+func (h *Handler) currentTime() time.Time {
+	return h.now().UTC()
+}
+
+type parsedPublicURL struct {
+	origin   string
+	scheme   string
+	hostname string
+	port     string
+}
+
+func parsePublicURL(raw string) (parsedPublicURL, error) {
+	parsed, err := url.Parse(strings.TrimSpace(raw))
+	if err != nil {
+		return parsedPublicURL{}, fmt.Errorf("parse public web URL: %w", err)
+	}
+	scheme := strings.ToLower(parsed.Scheme)
+	hostname := strings.TrimSuffix(strings.ToLower(parsed.Hostname()), ".")
+	if scheme != "https" && !(scheme == "http" && hostname == "localhost") {
+		return parsedPublicURL{}, errors.New("public web URL must use HTTPS except on localhost")
+	}
+	if parsed.Opaque != "" ||
+		parsed.User != nil ||
+		(parsed.Path != "" && parsed.Path != "/") ||
+		parsed.RawPath != "" ||
+		parsed.ForceQuery ||
+		parsed.RawQuery != "" ||
+		parsed.Fragment != "" {
+		return parsedPublicURL{}, errors.New("public web URL must contain only a scheme and host")
+	}
+	if !validHostname(hostname) {
+		return parsedPublicURL{}, errors.New("public web URL contains an invalid host")
+	}
+	port := parsed.Port()
+	if port == "" {
+		port = defaultPort(scheme)
+	}
+	portNumber, err := strconv.ParseUint(port, 10, 16)
+	if err != nil || portNumber == 0 {
+		return parsedPublicURL{}, errors.New("public web URL contains an invalid port")
+	}
+	port = strconv.FormatUint(portNumber, 10)
+
+	displayHost := hostname
+	if strings.Contains(hostname, ":") {
+		displayHost = "[" + hostname + "]"
+	}
+	if port != defaultPort(scheme) {
+		displayHost = net.JoinHostPort(hostname, port)
+	}
+	return parsedPublicURL{
+		origin:   scheme + "://" + displayHost,
+		scheme:   scheme,
+		hostname: hostname,
+		port:     port,
+	}, nil
+}
+
+func validHostname(host string) bool {
+	if host == "" || len(host) > 253 {
+		return false
+	}
+	if net.ParseIP(host) != nil || host == "localhost" {
+		return true
+	}
+	labels := strings.Split(host, ".")
+	if len(labels) < 2 {
+		return false
+	}
+	for _, label := range labels {
+		if !domainLabelPattern.MatchString(label) {
+			return false
+		}
+	}
+	return true
+}
+
+func splitAuthority(authority, fallbackPort string) (string, string, error) {
+	if authority == "" ||
+		strings.ContainsAny(authority, "/\\?#@") {
+		return "", "", errors.New("invalid authority")
+	}
+	candidate, err := url.Parse("//" + authority)
+	if err != nil ||
+		candidate.Host != authority ||
+		candidate.User != nil ||
+		candidate.Path != "" {
+		return "", "", errors.New("invalid authority")
+	}
+	host := strings.TrimSuffix(strings.ToLower(candidate.Hostname()), ".")
+	if !validHostname(host) {
+		return "", "", errors.New("invalid authority host")
+	}
+	port := candidate.Port()
+	if port == "" {
+		port = fallbackPort
+	}
+	portNumber, err := strconv.ParseUint(port, 10, 16)
+	if err != nil || portNumber == 0 {
+		return "", "", errors.New("invalid authority port")
+	}
+	return host, strconv.FormatUint(portNumber, 10), nil
+}
+
+func defaultPort(scheme string) string {
+	if strings.EqualFold(scheme, "http") {
+		return "80"
+	}
+	return "443"
+}
+
+func relativeTime(future, now time.Time) string {
+	remaining := future.Sub(now)
+	if remaining <= 0 {
+		return "now"
+	}
+	if remaining < time.Minute {
+		return "in less than a minute"
+	}
+	if remaining < 2*time.Minute {
+		return "in 1 minute"
+	}
+	if remaining < time.Hour {
+		return fmt.Sprintf("in %d minutes", int(remaining/time.Minute))
+	}
+	if remaining < 2*time.Hour {
+		return "in 1 hour"
+	}
+	return fmt.Sprintf("in %d hours", int(remaining/time.Hour))
+}
+
+// Ensure Handler still satisfies the interface if its construction changes.
+var _ http.Handler = (*Handler)(nil)

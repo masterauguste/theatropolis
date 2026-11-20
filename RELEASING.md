@@ -1,0 +1,62 @@
+# Release signing
+
+The release workflow requires an RSA private key in the `RELEASE_SIGNING_PRIVATE_KEY` GitHub Actions environment secret. Configure that secret on a protected environment named `release-signing`, require a reviewer, and restrict deployment to release tags. Do not store the private key in the repository or as a repository-wide secret.
+
+The corresponding embedded public-key SHA-256 fingerprint is:
+
+```text
+ff2f69ff282be2a5f885e01ccaa458dcabe2ee02a789235989f2b81d50689fb2
+```
+
+Routine release creation does not require the private key on the developer's
+machine: pushing a release tag starts GitHub Actions, which reads the key from
+the protected `release-signing` environment. Keep a separate recovery copy in
+a password manager or secrets manager so that the environment secret can be
+restored without rotating the signing identity.
+
+Before adding or replacing the secret, derive the candidate public key and confirm its DER fingerprint:
+
+```sh
+openssl pkey -in release-signing-private.pem -pubout -outform DER |
+  openssl dgst -sha256
+```
+
+The workflow produces `checksums.txt.sig` with RSA-PSS/SHA-256 and refuses to replace an existing GitHub release. Rotating the key requires changing the public key in both `internal/agentupdate/update.go` and `install.sh` in a release signed by the old key. Retain the old private key until that transition release is deployed everywhere.
+
+## sing-box build signing
+
+V2Ray-API sing-box builds are published separately by
+`masterauguste/sing-box-v2ray-api-builds`. That repository uses its own
+`RELEASE_SIGNING_PRIVATE_KEY` secret rather than the Theatropolis release key,
+so compromise of one build workflow does not expose the other signing
+identity. Its public-key SHA-256 fingerprint is:
+
+```text
+3b76197b4c5e4bd3b368610d3367f1f6d5b16f0893f4f57fda878ba7de97fb13
+```
+
+The public key is embedded in `internal/singboxupdate/update.go`. Keep a
+separate recovery copy of the private key; rotating it requires a
+Theatropolis release that trusts the replacement public key before new
+sing-box artifacts are signed exclusively by that key.
+
+## Release workflow behavior
+
+Ordinary CI runs on branch pushes and pull requests. Tag pushes do not start a
+duplicate CI run; `v*` tags start the release workflow as the one authoritative
+test, build, signing, and publication path.
+
+`TestObservedAddressAndProbeReportEndToEnd` explicitly closes its raw gRPC
+client streams and waits for the corresponding server handlers to unregister
+before its temporary state directory is cleaned up. Preserve that teardown
+barrier: deployment-report handling writes the outbound-pool render stamp after
+transitioning the deployment record, so waiting for status alone is not enough
+to prove persistence has finished.
+
+Release binaries and archives are staged under `RUNNER_TEMP` until every Go
+build is complete. Do not write an earlier component or architecture into the
+checkout while later binaries are still building: Go treats those untracked
+artifacts as a dirty worktree and embeds `vcs.modified=true` in the later
+binaries even when the tagged source is clean.
+
+The release build refuses a dirty checkout before compilation and checks every binary's embedded VCS revision against the release commit plus `vcs.modified=false` before archiving. Do not disable VCS stamping to hide a dirty build.

@@ -1,0 +1,692 @@
+package webui
+
+import (
+	"context"
+	"encoding/json"
+	"errors"
+	"io"
+	"net/http"
+	"net/netip"
+	"net/url"
+	"strconv"
+	"strings"
+
+	"github.com/masterauguste/theatropolis/internal/control"
+	"github.com/masterauguste/theatropolis/internal/deployment"
+	"github.com/masterauguste/theatropolis/internal/identity"
+	"github.com/masterauguste/theatropolis/internal/pool"
+)
+
+// maxPoolFormBytes caps one manual pool entry submission: the stored outbound
+// object limit plus room for the name, CSRF token, and form encoding.
+const maxPoolFormBytes = pool.MaxManualOutboundBytes + 8<<10
+
+type poolUserView struct {
+	Label string
+	Ref   string
+}
+
+type poolInboundView struct {
+	DialogID   string
+	AgentID    string
+	AgentName  string
+	Tag        string
+	Type       string
+	Port       int
+	IPv4       string
+	IPv6       string
+	Users      []poolUserView
+	AddressURL string
+	OverrideV4 string
+	OverrideV6 string
+}
+
+type poolManualView struct {
+	Name     string
+	Remark   string
+	Type     string
+	Port     int
+	Outbound string
+}
+
+type poolView struct {
+	Inbounds    []poolInboundView
+	Manual      []poolManualView
+	Diagnostics []string
+}
+
+type poolOption struct {
+	Ref        string `json:"ref"`
+	Remark     string `json:"remark,omitempty"`
+	AgentID    string `json:"agent_id,omitempty"`
+	AgentName  string `json:"agent_name,omitempty"`
+	InboundTag string `json:"inbound_tag,omitempty"`
+	User       string `json:"user,omitempty"`
+	Type       string `json:"type"`
+	Port       int    `json:"port,omitempty"`
+	IPv4       string `json:"ipv4,omitempty"`
+	IPv6       string `json:"ipv6,omitempty"`
+	Available  bool   `json:"available"`
+	Manual     bool   `json:"manual"`
+}
+
+type poolOptionsResponse struct {
+	Options []poolOption `json:"options"`
+	Warning string       `json:"warning,omitempty"`
+}
+
+// derivePoolEntries builds the pool view for every enrolled agent except
+// excludeAgentID ("" keeps all) plus the manual entries. Diagnostics describe
+// skipped agents, inbounds, and users.
+func (h *Handler) derivePoolEntries(
+	ctx context.Context,
+	excludeAgentID string,
+) ([]pool.Entry, []string) {
+	var agentIDs []string
+	for _, snapshot := range h.registry.Snapshot(h.currentTime()) {
+		if snapshot.State != identity.AgentStateEnrolled || snapshot.ID == excludeAgentID {
+			continue
+		}
+		agentIDs = append(agentIDs, snapshot.ID)
+	}
+	records, err := h.controller.DeploymentRecords(ctx)
+	if err != nil {
+		h.logger.Error("list deployment records for pool derivation", "error", err)
+		return nil, []string{"deployed configurations could not be loaded"}
+	}
+	deployments := make(map[string]*deployment.Record, len(records))
+	for index := range records {
+		deployments[records[index].AgentID] = &records[index]
+	}
+	var diagnostics []string
+	entries := pool.Derive(pool.DeriveInput{
+		AgentIDs:    agentIDs,
+		Deployments: deployments,
+		Registry:    h.controller.PoolRegistry(),
+		Diagnostics: &diagnostics,
+	})
+	return entries, h.displayPoolDiagnostics(diagnostics, agentIDs)
+}
+
+// displayPoolDiagnostics keeps immutable Agent record IDs out of operator-facing
+// warnings while leaving the pool package's internal reference format intact.
+// Pool diagnostics always identify their Agent at the beginning of the note;
+// matching that prefix avoids rewriting coincidental text inside parser errors.
+func (h *Handler) displayPoolDiagnostics(diagnostics, agentIDs []string) []string {
+	result := append([]string(nil), diagnostics...)
+	for index, diagnostic := range result {
+		for _, agentID := range agentIDs {
+			quotedPrefix := "agent " + strconv.Quote(agentID)
+			plainPrefix := "agent " + agentID
+			switch {
+			case strings.HasPrefix(diagnostic, quotedPrefix+" "), strings.HasPrefix(diagnostic, quotedPrefix+":"):
+				result[index] = "server " + strconv.Quote(h.agentDisplayName(agentID)) + diagnostic[len(quotedPrefix):]
+			case strings.HasPrefix(diagnostic, plainPrefix+" "), strings.HasPrefix(diagnostic, plainPrefix+":"):
+				result[index] = "server " + strconv.Quote(h.agentDisplayName(agentID)) + diagnostic[len(plainPrefix):]
+			default:
+				continue
+			}
+			break
+		}
+	}
+	return result
+}
+
+// poolPageView builds the read-only derived pool view for the pool page,
+// or nil when the pool is not wired into this master.
+func (h *Handler) poolPageView(ctx context.Context) *poolView {
+	registry := h.controller.PoolRegistry()
+	if registry == nil {
+		return nil
+	}
+	entries, diagnostics := h.derivePoolEntries(ctx, "")
+	view := &poolView{Diagnostics: diagnostics}
+	// Derive sorts by agent, inbound tag, then user. Collapse its user-level
+	// routing options into one page summary per inbound while retaining each
+	// user inside the summary's detail dialog.
+	for _, entry := range entries {
+		if entry.Manual {
+			continue
+		}
+		if len(view.Inbounds) == 0 ||
+			view.Inbounds[len(view.Inbounds)-1].AgentID != entry.AgentID ||
+			view.Inbounds[len(view.Inbounds)-1].Tag != entry.InboundTag {
+			overrideV4, overrideV6 := registry.Overrides(entry.AgentID)
+			view.Inbounds = append(view.Inbounds, poolInboundView{
+				DialogID:   "pool-inbound-" + strconv.Itoa(len(view.Inbounds)),
+				AgentID:    entry.AgentID,
+				AgentName:  h.agentDisplayName(entry.AgentID),
+				Tag:        entry.InboundTag,
+				Type:       entry.Type,
+				Port:       entry.Port,
+				IPv4:       entry.IPv4,
+				IPv6:       entry.IPv6,
+				AddressURL: "/servers/" + url.PathEscape(entry.AgentID) + "/address",
+				OverrideV4: overrideV4,
+				OverrideV6: overrideV6,
+			})
+		}
+		inbound := &view.Inbounds[len(view.Inbounds)-1]
+		inbound.Users = append(inbound.Users, poolUserView{
+			Label: poolUserLabel(entry),
+			Ref:   entry.Ref,
+		})
+	}
+	for _, manual := range registry.Manual() {
+		view.Manual = append(view.Manual, poolManualView{
+			Name:     manual.Name,
+			Remark:   manual.Remark,
+			Type:     poolManualType(manual.Outbound),
+			Port:     poolManualPort(manual.Outbound),
+			Outbound: string(manual.Outbound),
+		})
+	}
+	return view
+}
+
+func poolUserLabel(entry pool.Entry) string {
+	switch {
+	case entry.ServerKeyOnly:
+		return "server key"
+	case entry.User == "":
+		return "unnamed user"
+	default:
+		return entry.User
+	}
+}
+
+// poolManualType/poolManualPort mirror the pool package's display helpers for
+// manual outbounds without depending on its unexported parsing.
+func poolManualType(outbound json.RawMessage) string {
+	var object struct {
+		Type string `json:"type"`
+	}
+	if err := json.Unmarshal(outbound, &object); err != nil {
+		return ""
+	}
+	return object.Type
+}
+
+func poolManualPort(outbound json.RawMessage) int {
+	var object struct {
+		ServerPort int `json:"server_port"`
+	}
+	if err := json.Unmarshal(outbound, &object); err != nil {
+		return 0
+	}
+	return object.ServerPort
+}
+
+// poolAddresses resolves each family independently for the server list.
+// Source attribution is intentionally omitted from the UI.
+func (h *Handler) poolAddresses(agentID string) (ipv4, ipv6 string) {
+	registry := h.controller.PoolRegistry()
+	if registry == nil {
+		return "", ""
+	}
+	ipv4, _ = registry.AgentAddressForFamily(agentID, pool.FamilyIPv4)
+	ipv6, _ = registry.AgentAddressForFamily(agentID, pool.FamilyIPv6)
+	return ipv4, ipv6
+}
+
+func (h *Handler) poolPage(response http.ResponseWriter, request *http.Request) {
+	session, ok := h.requireAuthentication(response, request)
+	if !ok {
+		return
+	}
+	if request.URL.RawQuery != "" {
+		http.NotFound(response, request)
+		return
+	}
+	h.render(
+		response,
+		http.StatusOK,
+		"pool.html",
+		h.poolPageData(request.Context(), session),
+	)
+}
+
+func (h *Handler) poolPageData(_ context.Context, session Session) pageData {
+	registry := h.controller.PoolRegistry()
+	var view *poolView
+	if registry != nil {
+		view = &poolView{}
+		for _, manual := range registry.Manual() {
+			view.Manual = append(view.Manual, poolManualView{
+				Name:     manual.Name,
+				Remark:   manual.Remark,
+				Type:     poolManualType(manual.Outbound),
+				Port:     poolManualPort(manual.Outbound),
+				Outbound: string(manual.Outbound),
+			})
+		}
+	}
+	return pageData{
+		Title:     "Pool",
+		ActiveNav: "pool",
+		CSRFToken: session.CSRFToken,
+		Pool:      view,
+	}
+}
+
+func (h *Handler) poolContent(response http.ResponseWriter, request *http.Request) {
+	session, ok := h.authenticate(response, request)
+	if !ok {
+		writeUserError(response, "unauthorized", http.StatusUnauthorized)
+		return
+	}
+	if request.URL.RawQuery != "" {
+		http.NotFound(response, request)
+		return
+	}
+	h.render(response, http.StatusOK, "pool-content", pageData{
+		Title:     "Pool",
+		ActiveNav: "pool",
+		CSRFToken: session.CSRFToken,
+		Pool:      h.poolPageView(request.Context()),
+	})
+}
+
+func (h *Handler) upsertPoolEntry(response http.ResponseWriter, request *http.Request) {
+	sessionToken, ok := h.sessionToken(request)
+	if !ok {
+		h.redirectToLogin(response, request)
+		return
+	}
+	if h.rejectInvalidMutationOrigin(response, request) {
+		return
+	}
+	form, err := readExactForm(
+		response,
+		request,
+		maxPoolFormBytes,
+		"csrf_token",
+		"name",
+		"remark",
+		"outbound_json",
+	)
+	if err != nil || !h.authorizeCSRF(response, sessionToken, form.Get("csrf_token")) {
+		writeUserError(response, "request was not authorized", http.StatusForbidden)
+		return
+	}
+	session, err := h.access.Authenticate(sessionToken)
+	if err != nil {
+		h.redirectToLogin(response, request)
+		return
+	}
+	registry := h.controller.PoolRegistry()
+	if registry == nil {
+		writeUserError(response, "the outbound pool is unavailable", http.StatusConflict)
+		return
+	}
+
+	name := strings.TrimSpace(form.Get("name"))
+	remark := strings.TrimSpace(form.Get("remark"))
+	outboundInput := strings.TrimSpace(form.Get("outbound_json"))
+	outbound := json.RawMessage(outboundInput)
+	if !strings.HasPrefix(outboundInput, "{") {
+		parsed, uriRemark, parseErr := pool.ParseOutboundURI(outboundInput)
+		if parseErr != nil {
+			outbound = nil
+		} else {
+			outbound = parsed
+			if remark == "" {
+				remark = uriRemark
+			}
+		}
+	}
+	if err := registry.UpsertManualWithRemark(name, remark, outbound); err != nil {
+		status := http.StatusInternalServerError
+		message := "The pool entry could not be saved."
+		errorField := ""
+		switch {
+		case errors.Is(err, pool.ErrInvalidName):
+			status = http.StatusBadRequest
+			message = "Use a valid entry name: letters, numbers, dots, underscores, and hyphens only."
+			errorField = "pool_name"
+		case errors.Is(err, pool.ErrInvalidOutbound):
+			status = http.StatusBadRequest
+			message = "Enter a supported proxy URI or one complete outbound JSON object with a non-empty \"type\"."
+			errorField = "pool_json"
+		case errors.Is(err, pool.ErrInvalidRemark):
+			status = http.StatusBadRequest
+			message = "Keep the remark to 256 characters or fewer."
+			errorField = "pool_remark"
+		default:
+			h.logger.Error("upsert pool manual entry", "name", name, "error", err)
+		}
+		data := h.poolPageData(request.Context(), session)
+		data.Error = message
+		data.ErrorField = errorField
+		data.PoolFormName = name
+		data.PoolFormRemark = remark
+		data.PoolFormJSON = outboundInput
+		h.render(response, status, "pool.html", data)
+		return
+	}
+	h.controller.PropagateManualPoolChange(request.Context())
+	h.logger.Info("pool manual entry saved", "name", name)
+	http.Redirect(response, request, "/pool", http.StatusSeeOther)
+}
+
+func (h *Handler) deletePoolEntry(response http.ResponseWriter, request *http.Request) {
+	sessionToken, ok := h.sessionToken(request)
+	if !ok {
+		h.redirectToLogin(response, request)
+		return
+	}
+	if h.rejectInvalidMutationOrigin(response, request) {
+		return
+	}
+	form, err := readExactForm(
+		response,
+		request,
+		maxEnrollmentBodyBytes,
+		"confirm_delete",
+		"csrf_token",
+		"name",
+	)
+	if err != nil || !h.authorizeCSRF(response, sessionToken, form.Get("csrf_token")) {
+		writeUserError(response, "request was not authorized", http.StatusForbidden)
+		return
+	}
+	session, err := h.access.Authenticate(sessionToken)
+	if err != nil {
+		h.redirectToLogin(response, request)
+		return
+	}
+	registry := h.controller.PoolRegistry()
+	if registry == nil {
+		writeUserError(response, "the outbound pool is unavailable", http.StatusConflict)
+		return
+	}
+
+	name := form.Get("name")
+	if form.Get("confirm_delete") != "yes" {
+		writeUserError(response, "request was not authorized", http.StatusForbidden)
+		return
+	}
+	if err := registry.RemoveManual(name); err != nil {
+		if errors.Is(err, pool.ErrManualNotFound) {
+			data := h.poolPageData(request.Context(), session)
+			data.Error = "That pool entry no longer exists."
+			h.render(response, http.StatusNotFound, "pool.html", data)
+			return
+		}
+		h.logger.Error("delete pool manual entry", "name", name, "error", err)
+		writeUserError(response, "the pool entry could not be deleted", http.StatusInternalServerError)
+		return
+	}
+	h.controller.PropagateManualPoolChange(request.Context())
+	h.logger.Info("pool manual entry deleted", "name", name)
+	http.Redirect(response, request, "/pool", http.StatusSeeOther)
+}
+
+func (h *Handler) serverPoolOptions(response http.ResponseWriter, request *http.Request) {
+	if _, ok := h.authenticate(response, request); !ok {
+		writeUserError(response, "unauthorized", http.StatusUnauthorized)
+		return
+	}
+	agentID := request.PathValue("agent_id")
+	if _, exists := h.agentSnapshot(agentID); !exists {
+		http.NotFound(response, request)
+		return
+	}
+	result := poolOptionsResponse{Options: []poolOption{}}
+	if h.controller.PoolRegistry() == nil {
+		result.Warning = "Pool lookup failed: the outbound pool is unavailable."
+	} else {
+		manualRemarks := make(map[string]string)
+		for _, manual := range h.controller.PoolRegistry().Manual() {
+			manualRemarks["manual/"+manual.Name] = manual.Remark
+		}
+		entries, diagnostics := h.derivePoolEntries(request.Context(), agentID)
+		for _, entry := range entries {
+			result.Options = append(result.Options, poolOption{
+				Ref:        entry.Ref,
+				Remark:     manualRemarks[entry.Ref],
+				AgentID:    entry.AgentID,
+				AgentName:  h.agentDisplayName(entry.AgentID),
+				InboundTag: entry.InboundTag,
+				User:       poolUserLabel(entry),
+				Type:       entry.Type,
+				Port:       entry.Port,
+				IPv4:       entry.IPv4,
+				IPv6:       entry.IPv6,
+				Available:  entry.Available,
+				Manual:     entry.Manual,
+			})
+		}
+		if len(diagnostics) > 0 {
+			result.Warning = strings.Join(diagnostics, "; ")
+		}
+	}
+	response.Header().Set("Content-Type", "application/json")
+	if err := json.NewEncoder(response).Encode(result); err != nil {
+		h.logger.Warn("encode pool options", "agent_id", agentID, "error", err)
+	}
+}
+
+func (h *Handler) setServerAddress(response http.ResponseWriter, request *http.Request) {
+	sessionToken, ok := h.sessionToken(request)
+	if !ok {
+		h.redirectToLogin(response, request)
+		return
+	}
+	if h.rejectInvalidMutationOrigin(response, request) {
+		return
+	}
+	form, err := readExactForm(
+		response,
+		request,
+		maxEnrollmentBodyBytes,
+		"csrf_token",
+		"override_ipv4",
+		"override_ipv6",
+	)
+	if err != nil || !h.authorizeCSRF(response, sessionToken, form.Get("csrf_token")) {
+		writeUserError(response, "request was not authorized", http.StatusForbidden)
+		return
+	}
+	if _, err := h.access.Authenticate(sessionToken); err != nil {
+		h.redirectToLogin(response, request)
+		return
+	}
+	snapshot, ok := h.agentSnapshot(request.PathValue("agent_id"))
+	if !ok {
+		http.NotFound(response, request)
+		return
+	}
+	registry := h.controller.PoolRegistry()
+	if registry == nil {
+		writeUserError(response, "the outbound pool is unavailable", http.StatusConflict)
+		return
+	}
+	if snapshot.State != identity.AgentStateEnrolled {
+		writeUserError(response, "the server must be enrolled first", http.StatusConflict)
+		return
+	}
+
+	overrideV4 := strings.TrimSpace(form.Get("override_ipv4"))
+	overrideV6 := strings.TrimSpace(form.Get("override_ipv6"))
+	if overrideV4 != "" {
+		address, err := netip.ParseAddr(overrideV4)
+		if err != nil || !address.Is4() {
+			writeUserError(response, "the IPv4 override must be an IPv4 address or empty", http.StatusBadRequest)
+			return
+		}
+	}
+	if overrideV6 != "" {
+		address, err := netip.ParseAddr(overrideV6)
+		if err != nil || !address.Is6() {
+			writeUserError(response, "the IPv6 override must be an IPv6 address or empty", http.StatusBadRequest)
+			return
+		}
+	}
+	if err := registry.SetOverrides(snapshot.ID, overrideV4, overrideV6); err != nil {
+		if errors.Is(err, pool.ErrInvalidAddress) {
+			// The registry rejects anything that is not a globally routable
+			// address (private, ULA, CGNAT, reserved).
+			writeUserError(response, "address overrides must be public IP addresses", http.StatusBadRequest)
+			return
+		}
+		if errors.Is(err, pool.ErrInvalidName) {
+			writeUserError(response, "invalid server ID", http.StatusBadRequest)
+			return
+		}
+		h.logger.Error("set pool address override", "agent_id", snapshot.ID, "error", err)
+		writeUserError(response, "the address override could not be saved", http.StatusInternalServerError)
+		return
+	}
+	h.controller.PropagateManualPoolChange(request.Context())
+	h.logger.Info("pool address override saved", "agent_id", snapshot.ID)
+	http.Redirect(response, request, "/pool", http.StatusSeeOther)
+}
+
+func (h *Handler) setServerSubscriptionDomains(response http.ResponseWriter, request *http.Request) {
+	sessionToken, ok := h.sessionToken(request)
+	if !ok {
+		h.redirectToLogin(response, request)
+		return
+	}
+	if h.rejectInvalidMutationOrigin(response, request) {
+		return
+	}
+	form, err := readExactForm(
+		response,
+		request,
+		maxEnrollmentBodyBytes,
+		"csrf_token",
+		"subscription_domain_ipv4",
+		"subscription_domain_ipv6",
+	)
+	if err != nil || !h.authorizeCSRF(response, sessionToken, form.Get("csrf_token")) {
+		writeUserError(response, "request was not authorized", http.StatusForbidden)
+		return
+	}
+	session, err := h.authenticateSession(response, sessionToken)
+	if err != nil {
+		h.redirectToLogin(response, request)
+		return
+	}
+	snapshot, ok := h.agentSnapshot(request.PathValue("agent_id"))
+	if !ok {
+		http.NotFound(response, request)
+		return
+	}
+	registry := h.controller.PoolRegistry()
+	if registry == nil {
+		writeUserError(response, "the outbound pool is unavailable", http.StatusConflict)
+		return
+	}
+	ipv4, ipv4Err := pool.NormalizeSubscriptionDomain(form.Get("subscription_domain_ipv4"))
+	ipv6, ipv6Err := pool.NormalizeSubscriptionDomain(form.Get("subscription_domain_ipv6"))
+	if ipv4Err != nil || ipv6Err != nil {
+		data, pageErr := h.serverPageData(request.Context(), session, snapshot, "")
+		if pageErr != nil {
+			writeUserError(response, "server details could not be loaded", http.StatusInternalServerError)
+			return
+		}
+		data.Error = "Enter DNS hostnames without a scheme, port, path, wildcard, or IP address."
+		data.ErrorField = "subscription_domain_ipv4"
+		if ipv6Err != nil {
+			data.ErrorField = "subscription_domain_ipv6"
+		}
+		data.Agent.SubscriptionDomainV4 = form.Get("subscription_domain_ipv4")
+		data.Agent.SubscriptionDomainV6 = form.Get("subscription_domain_ipv6")
+		h.render(response, http.StatusBadRequest, "server.html", data)
+		return
+	}
+	if err := registry.SetSubscriptionDomains(snapshot.ID, ipv4, ipv6); err != nil {
+		h.logger.Error("save agent subscription domains", "agent_id", snapshot.ID, "error", err)
+		writeUserError(response, "the subscription domains could not be saved", http.StatusInternalServerError)
+		return
+	}
+	h.logger.Info(
+		"agent subscription domains saved",
+		"agent_id",
+		snapshot.ID,
+		"subscription_domain_ipv4",
+		ipv4,
+		"subscription_domain_ipv6",
+		ipv6,
+	)
+	http.Redirect(
+		response,
+		request,
+		"/servers/"+url.PathEscape(snapshot.ID)+"/manage",
+		http.StatusSeeOther,
+	)
+}
+
+// requestAddressProbe asks the SOURCE agent (the path agent_id, whose pool
+// address is unknown) to resolve its public address for one IP family. It is
+// a fetch API for the guided config editor, so failures are plain-text status
+// responses rather than redirects or re-rendered pages.
+func (h *Handler) requestAddressProbe(response http.ResponseWriter, request *http.Request) {
+	sessionToken, ok := h.sessionToken(request)
+	if !ok {
+		writeUserError(response, "unauthorized", http.StatusUnauthorized)
+		return
+	}
+	if h.rejectInvalidMutationOrigin(response, request) {
+		return
+	}
+	form, err := readExactForm(
+		response,
+		request,
+		maxEnrollmentBodyBytes,
+		"csrf_token",
+		"family",
+	)
+	if err != nil || !h.authorizeCSRF(response, sessionToken, form.Get("csrf_token")) {
+		writeUserError(response, "request was not authorized", http.StatusForbidden)
+		return
+	}
+	if _, err := h.access.Authenticate(sessionToken); err != nil {
+		writeUserError(response, "unauthorized", http.StatusUnauthorized)
+		return
+	}
+	family, err := pool.ParseFamily(form.Get("family"))
+	if err != nil || family == pool.FamilyAuto {
+		writeUserError(response, "family must be ipv4 or ipv6", http.StatusBadRequest)
+		return
+	}
+	snapshot, ok := h.agentSnapshot(request.PathValue("agent_id"))
+	if !ok {
+		http.NotFound(response, request)
+		return
+	}
+	if snapshot.State != identity.AgentStateEnrolled {
+		writeUserError(response, "the server must be enrolled first", http.StatusConflict)
+		return
+	}
+	if err := h.controller.RequestAddressProbe(snapshot.ID, family.String()); err != nil {
+		status := http.StatusInternalServerError
+		message := "The probe request could not be delivered."
+		switch {
+		case errors.Is(err, control.ErrAgentOffline):
+			status = http.StatusConflict
+			message = "The agent is offline. Reconnect it before requesting a probe."
+		case errors.Is(err, control.ErrAgentProbeUnsupported):
+			status = http.StatusConflict
+			message = "This agent does not support address probes. Update the agent first."
+		case errors.Is(err, control.ErrProbeFamilyInvalid):
+			status = http.StatusBadRequest
+			message = "family must be ipv4 or ipv6"
+		default:
+			h.logger.Error(
+				"request address probe",
+				"agent_id", snapshot.ID,
+				"family", family.String(),
+				"error", err,
+			)
+		}
+		writeUserError(response, message, status)
+		return
+	}
+	h.logger.Info("address probe requested", "agent_id", snapshot.ID, "family", family.String())
+	response.Header().Set("Content-Type", "application/json")
+	response.WriteHeader(http.StatusAccepted)
+	_, _ = io.WriteString(response, `{"status":"probe requested"}`+"\n")
+}

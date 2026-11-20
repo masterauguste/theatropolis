@@ -1,0 +1,825 @@
+package agent
+
+import (
+	"context"
+	"crypto/ed25519"
+	"crypto/rand"
+	"crypto/sha256"
+	"errors"
+	"fmt"
+	"net"
+	"slices"
+	"strings"
+	"sync/atomic"
+	"testing"
+	"time"
+
+	controlv1 "github.com/masterauguste/theatropolis/api/gen/theatropolis/control/v1"
+	"github.com/masterauguste/theatropolis/internal/control"
+	"github.com/masterauguste/theatropolis/internal/identity"
+	"github.com/masterauguste/theatropolis/internal/singbox"
+	"google.golang.org/grpc"
+	"google.golang.org/grpc/credentials/insecure"
+	"google.golang.org/grpc/test/bufconn"
+)
+
+type testConfigurationManager struct {
+	result singbox.ApplyResult
+	err    error
+	reset  error
+	resets int
+}
+
+type trafficConfigurationManager struct {
+	*testConfigurationManager
+	calls atomic.Int32
+}
+
+func (m *trafficConfigurationManager) ManagedUserTraffic(context.Context) (singbox.ManagedUserTrafficSnapshot, error) {
+	m.calls.Add(1)
+	return singbox.ManagedUserTrafficSnapshot{
+		Users: []singbox.ManagedUserTraffic{{
+			InboundPath: "inbound/1", Username: "member-1", UplinkBytes: 10, DownlinkBytes: 20,
+		}},
+	}, nil
+}
+
+func (m *testConfigurationManager) ResetForEnrollment() error {
+	m.resets++
+	return m.reset
+}
+
+func (*testConfigurationManager) Start(
+	context.Context,
+) (singbox.StartupResult, error) {
+	return singbox.StartupResult{}, nil
+}
+
+func (m *testConfigurationManager) Apply(
+	context.Context,
+	[]byte,
+	[]byte,
+) (singbox.ApplyResult, error) {
+	return m.result, m.err
+}
+
+func (*testConfigurationManager) Stop(context.Context) error {
+	return nil
+}
+
+func (*testConfigurationManager) Events() <-chan singbox.RuntimeEvent {
+	return nil
+}
+
+type enrollmentClient struct {
+	request  *controlv1.EnrollRequest
+	response *controlv1.EnrollResponse
+}
+
+func (c *enrollmentClient) Enroll(
+	_ context.Context,
+	request *controlv1.EnrollRequest,
+	_ ...grpc.CallOption,
+) (*controlv1.EnrollResponse, error) {
+	c.request = request
+	return c.response, nil
+}
+
+func (*enrollmentClient) Connect(
+	context.Context,
+	...grpc.CallOption,
+) (grpc.BidiStreamingClient[controlv1.AgentFrame, controlv1.MasterFrame], error) {
+	return nil, errors.New("not implemented")
+}
+
+func TestEnrollDisablesPreviousProfileWithoutSendingServerIdentity(t *testing.T) {
+	t.Parallel()
+
+	_, privateKey, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	manager := &testConfigurationManager{}
+	runner := &Runner{
+		PrivateKey: privateKey,
+		Manager:    manager,
+	}
+	client := &enrollmentClient{response: &controlv1.EnrollResponse{EnrolledAtUnix: time.Now().Unix()}}
+	if err := runner.Enroll(
+		context.Background(),
+		client,
+		make([]byte, identity.EnrollmentTokenBytes),
+	); err != nil {
+		t.Fatal(err)
+	}
+	if manager.resets != 1 {
+		t.Fatalf("profile reset count = %d", manager.resets)
+	}
+	if len(client.request.GetPublicKey()) != ed25519.PublicKeySize {
+		t.Fatalf("enrollment public key length = %d", len(client.request.GetPublicKey()))
+	}
+}
+
+func TestEnrollFailsClosedWhenPreviousProfileCannotBeDisabled(t *testing.T) {
+	t.Parallel()
+
+	_, privateKey, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	manager := &testConfigurationManager{reset: errors.New("reset failed")}
+	runner := &Runner{
+		PrivateKey: privateKey,
+		Manager:    manager,
+	}
+	client := &enrollmentClient{response: &controlv1.EnrollResponse{EnrolledAtUnix: time.Now().Unix()}}
+	err = runner.Enroll(
+		context.Background(),
+		client,
+		make([]byte, identity.EnrollmentTokenBytes),
+	)
+	if err == nil || !strings.Contains(err.Error(), "disable previous sing-box configuration") {
+		t.Fatalf("Enroll() error = %v", err)
+	}
+}
+
+func TestDeployConfigurationMapsManagerResult(t *testing.T) {
+	t.Parallel()
+
+	config := []byte(`{"inbounds":[]}`)
+	digest := sha256.Sum256(config)
+	now := time.Now().UTC()
+	runner := &Runner{
+		Manager: &testConfigurationManager{
+			result: singbox.ApplyResult{
+				Status:       singbox.ApplyStatusApplied,
+				ConfigSHA256: digest,
+			},
+		},
+		Now: func() time.Time { return now },
+	}
+	report := runner.deployConfiguration(
+		context.Background(),
+		&controlv1.DeployConfigCommand{
+			DeploymentId:   "deployment-1",
+			RevisionId:     "revision-1",
+			ConfigSha256:   digest[:],
+			ConfigJson:     config,
+			TimeoutSeconds: 5,
+		},
+	)
+	if report.GetStatus() !=
+		controlv1.ConfigDeploymentStatus_CONFIG_DEPLOYMENT_STATUS_APPLIED {
+		t.Fatalf("deployment status = %s", report.GetStatus())
+	}
+	if report.GetDeploymentId() != "deployment-1" ||
+		report.GetRevisionId() != "revision-1" ||
+		string(report.GetConfigSha256()) != string(digest[:]) {
+		t.Fatalf("deployment report lost request identity: %+v", report)
+	}
+}
+
+func TestDeployConfigurationReportsInternalManagerFailure(t *testing.T) {
+	t.Parallel()
+
+	config := []byte(`{}`)
+	digest := sha256.Sum256(config)
+	runner := &Runner{
+		Manager: &testConfigurationManager{
+			err: errors.New("private internal failure"),
+		},
+	}
+	report := runner.deployConfiguration(
+		context.Background(),
+		&controlv1.DeployConfigCommand{
+			DeploymentId:   "deployment-2",
+			RevisionId:     "revision-2",
+			ConfigSha256:   digest[:],
+			ConfigJson:     config,
+			TimeoutSeconds: 5,
+		},
+	)
+	if report.GetStatus() !=
+		controlv1.ConfigDeploymentStatus_CONFIG_DEPLOYMENT_STATUS_INTERNAL_ERROR {
+		t.Fatalf("deployment status = %s", report.GetStatus())
+	}
+	if report.GetDiagnostic() !=
+		"agent could not complete the configuration deployment" {
+		t.Fatalf("deployment diagnostic leaked internals: %q", report.GetDiagnostic())
+	}
+}
+
+func TestRuntimeReportContainsOnlyRuntimeMetadata(t *testing.T) {
+	t.Parallel()
+
+	digest := sha256.Sum256([]byte(`{"password":"secret"}`))
+	observed := time.Now().UTC()
+	report := runtimeReport(singbox.RuntimeEvent{
+		Status:       singbox.RuntimeStatusRestartFailed,
+		ConfigSHA256: digest,
+		ObservedAt:   observed,
+		Diagnostic:   "managed sing-box could not be restarted",
+	})
+	if report.GetStatus() !=
+		controlv1.ConfigRuntimeStatus_CONFIG_RUNTIME_STATUS_RESTART_FAILED ||
+		report.GetObservedAtUnix() != observed.Unix() ||
+		string(report.GetConfigSha256()) != string(digest[:]) {
+		t.Fatalf("runtime report = %+v", report)
+	}
+	if report.GetDiagnostic() != "managed sing-box could not be restarted" {
+		t.Fatalf("runtime diagnostic = %q", report.GetDiagnostic())
+	}
+}
+
+func TestRuntimeReportMapsEveryManagerStatus(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		manager singbox.RuntimeStatus
+		wire    controlv1.ConfigRuntimeStatus
+	}{
+		{singbox.RuntimeStatusRunning, controlv1.ConfigRuntimeStatus_CONFIG_RUNTIME_STATUS_RUNNING},
+		{singbox.RuntimeStatusExited, controlv1.ConfigRuntimeStatus_CONFIG_RUNTIME_STATUS_EXITED},
+		{singbox.RuntimeStatusRestartFailed, controlv1.ConfigRuntimeStatus_CONFIG_RUNTIME_STATUS_RESTART_FAILED},
+		{singbox.RuntimeStatusValidationFailed, controlv1.ConfigRuntimeStatus_CONFIG_RUNTIME_STATUS_VALIDATION_FAILED},
+		{singbox.RuntimeStatusActivationFailed, controlv1.ConfigRuntimeStatus_CONFIG_RUNTIME_STATUS_ACTIVATION_FAILED},
+		{singbox.RuntimeStatusStopFailed, controlv1.ConfigRuntimeStatus_CONFIG_RUNTIME_STATUS_STOP_FAILED},
+		{singbox.RuntimeStatusStopped, controlv1.ConfigRuntimeStatus_CONFIG_RUNTIME_STATUS_STOPPED},
+	}
+	for _, test := range tests {
+		test := test
+		t.Run(string(test.manager), func(t *testing.T) {
+			t.Parallel()
+			report := runtimeReport(singbox.RuntimeEvent{
+				Status:     test.manager,
+				ObservedAt: time.Now().UTC(),
+			})
+			if report.GetStatus() != test.wire {
+				t.Fatalf(
+					"runtimeReport(%q) status = %s, want %s",
+					test.manager,
+					report.GetStatus(),
+					test.wire,
+				)
+			}
+			if report.GetStatus() ==
+				controlv1.ConfigRuntimeStatus_CONFIG_RUNTIME_STATUS_UNSPECIFIED {
+				t.Fatalf("runtimeReport(%q) produced unspecified status", test.manager)
+			}
+		})
+	}
+}
+
+// probeCommandServer is a minimal fake master: it runs the handshake, then
+// forwards command payloads from the test to the stream and agent frames
+// back to the test. Master sequence numbers are assigned on send.
+type probeCommandServer struct {
+	controlv1.UnimplementedAgentControlServiceServer
+
+	hello                 chan *controlv1.AgentHello
+	agentFrames           chan *controlv1.AgentFrame
+	commands              chan *controlv1.ProbeAddresses
+	trafficCommands       chan *controlv1.ManagedUserTrafficRequest
+	migrationCommands     chan *controlv1.MigrateMasterCommand
+	deploymentCommands    chan *controlv1.DeployConfigCommand
+	authorityCommands     chan *controlv1.ManagedUserAuthorityCommand
+	disconnectOnMigration bool
+}
+
+func (s *probeCommandServer) Connect(
+	stream controlv1.AgentControlService_ConnectServer,
+) error {
+	helloFrame, err := stream.Recv()
+	if err != nil {
+		return err
+	}
+	select {
+	case s.hello <- helloFrame.GetHello():
+	case <-stream.Context().Done():
+		return stream.Context().Err()
+	}
+	nonce := make([]byte, identity.ChallengeNonceBytes)
+	if _, err := rand.Read(nonce); err != nil {
+		return err
+	}
+	var masterSequence uint64 = 1
+	if err := stream.Send(&controlv1.MasterFrame{
+		Sequence: masterSequence,
+		Payload: &controlv1.MasterFrame_Challenge{
+			Challenge: &controlv1.AgentChallenge{
+				Nonce:         nonce,
+				ExpiresAtUnix: time.Now().Add(time.Minute).Unix(),
+			},
+		},
+	}); err != nil {
+		return err
+	}
+	if _, err := stream.Recv(); err != nil { // proof
+		return err
+	}
+	masterSequence++
+	if err := stream.Send(&controlv1.MasterFrame{
+		Sequence: masterSequence,
+		Payload: &controlv1.MasterFrame_AuthenticationResult{
+			AuthenticationResult: &controlv1.AuthenticationResult{
+				Authenticated: true,
+			},
+		},
+	}); err != nil {
+		return err
+	}
+
+	recvDone := make(chan error, 1)
+	go func() {
+		for {
+			frame, err := stream.Recv()
+			if err != nil {
+				recvDone <- err
+				return
+			}
+			select {
+			case s.agentFrames <- frame:
+				if s.disconnectOnMigration && frame.GetMasterMigrationReport() != nil {
+					recvDone <- errors.New("migration accepted")
+					return
+				}
+			case <-stream.Context().Done():
+				recvDone <- stream.Context().Err()
+				return
+			}
+		}
+	}()
+	for {
+		select {
+		case command := <-s.authorityCommands:
+			masterSequence++
+			if err := stream.Send(&controlv1.MasterFrame{
+				Sequence: masterSequence,
+				Payload:  &controlv1.MasterFrame_ManagedUserAuthority{ManagedUserAuthority: command},
+			}); err != nil {
+				return err
+			}
+		case command := <-s.deploymentCommands:
+			masterSequence++
+			if err := stream.Send(&controlv1.MasterFrame{
+				Sequence: masterSequence,
+				Payload:  &controlv1.MasterFrame_DeployConfig{DeployConfig: command},
+			}); err != nil {
+				return err
+			}
+		case command := <-s.commands:
+			masterSequence++
+			if err := stream.Send(&controlv1.MasterFrame{
+				Sequence: masterSequence,
+				Payload: &controlv1.MasterFrame_ProbeAddresses{
+					ProbeAddresses: command,
+				},
+			}); err != nil {
+				return err
+			}
+		case command := <-s.trafficCommands:
+			masterSequence++
+			if err := stream.Send(&controlv1.MasterFrame{
+				Sequence: masterSequence,
+				Payload: &controlv1.MasterFrame_ManagedUserTrafficRequest{
+					ManagedUserTrafficRequest: command,
+				},
+			}); err != nil {
+				return err
+			}
+		case command := <-s.migrationCommands:
+			masterSequence++
+			if err := stream.Send(&controlv1.MasterFrame{Sequence: masterSequence, Payload: &controlv1.MasterFrame_MigrateMaster{MigrateMaster: command}}); err != nil {
+				return err
+			}
+		case err := <-recvDone:
+			return err
+		case <-stream.Context().Done():
+			return stream.Context().Err()
+		}
+	}
+}
+
+type recordingMasterMigrator struct{ migrationID, address string }
+
+func (m *recordingMasterMigrator) StageMasterMigration(migrationID, address string) error {
+	m.migrationID, m.address = migrationID, address
+	return nil
+}
+
+func TestRunnerAdvertisesACMERelayOnlyWithConfigurationManager(t *testing.T) {
+	t.Parallel()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	listener := bufconn.Listen(1 << 20)
+	fake := &probeCommandServer{
+		hello: make(chan *controlv1.AgentHello, 1), agentFrames: make(chan *controlv1.AgentFrame, 8),
+	}
+	grpcServer := grpc.NewServer()
+	controlv1.RegisterAgentControlServiceServer(grpcServer, fake)
+	go func() { _ = grpcServer.Serve(listener) }()
+	defer grpcServer.Stop()
+	connection, err := grpc.NewClient(
+		"passthrough:///acme-relay-test",
+		grpc.WithContextDialer(func(context.Context, string) (net.Conn, error) { return listener.Dial() }),
+		grpc.WithTransportCredentials(insecure.NewCredentials()),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer connection.Close()
+	_, privateKey, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	runner := &Runner{
+		AgentVersion: "test", PrivateKey: privateKey,
+		Manager: &testConfigurationManager{}, ACMEHTTP01Relay: true,
+		HeartbeatPeriod: time.Hour, Prober: &ProbeScheduler{Interval: -1},
+	}
+	result := make(chan error, 1)
+	go func() { result <- runner.Run(ctx, controlv1.NewAgentControlServiceClient(connection)) }()
+	hello := <-fake.hello
+	if !slices.Contains(hello.GetCapabilities(), control.ACMEHTTP01RelayCapability) {
+		t.Fatalf("capabilities = %v", hello.GetCapabilities())
+	}
+	cancel()
+	<-result
+}
+
+func TestRunnerPersistsMasterMigrationBeforeReconnect(t *testing.T) {
+	t.Parallel()
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	listener := bufconn.Listen(1 << 20)
+	fake := &probeCommandServer{
+		hello: make(chan *controlv1.AgentHello, 1), agentFrames: make(chan *controlv1.AgentFrame, 8),
+		migrationCommands: make(chan *controlv1.MigrateMasterCommand), disconnectOnMigration: true,
+	}
+	grpcServer := grpc.NewServer()
+	controlv1.RegisterAgentControlServiceServer(grpcServer, fake)
+	go func() { _ = grpcServer.Serve(listener) }()
+	defer grpcServer.Stop()
+	connection, err := grpc.NewClient("passthrough:///migration-test",
+		grpc.WithContextDialer(func(context.Context, string) (net.Conn, error) { return listener.Dial() }),
+		grpc.WithTransportCredentials(insecure.NewCredentials()))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer connection.Close()
+	_, privateKey, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	migrator := &recordingMasterMigrator{}
+	runner := &Runner{AgentVersion: "test", PrivateKey: privateKey, MasterMigrator: migrator,
+		HeartbeatPeriod: time.Hour, MasterMigrationExitDelay: 100 * time.Millisecond,
+		Prober: &ProbeScheduler{Interval: -1}}
+	result := make(chan error, 1)
+	go func() { result <- runner.Run(ctx, controlv1.NewAgentControlServiceClient(connection)) }()
+	hello := <-fake.hello
+	if !slices.Contains(hello.GetCapabilities(), control.MasterMigrationCapability) {
+		t.Fatalf("capabilities = %v", hello.GetCapabilities())
+	}
+	fake.migrationCommands <- &controlv1.MigrateMasterCommand{MigrationId: "migration_test", MasterAddress: "new.example:443"}
+	for {
+		select {
+		case frame := <-fake.agentFrames:
+			if report := frame.GetMasterMigrationReport(); report != nil {
+				if !report.GetAccepted() || report.GetMigrationId() != "migration_test" {
+					t.Fatalf("report = %#v", report)
+				}
+				if migrator.migrationID != "migration_test" || migrator.address != "new.example:443" {
+					t.Fatalf("migrator = %#v", migrator)
+				}
+				if err := <-result; !errors.Is(err, ErrMasterMigrationRequested) {
+					t.Fatalf("runner = %v", err)
+				}
+				return
+			}
+		case <-ctx.Done():
+			t.Fatal("timed out waiting for migration report")
+		}
+	}
+}
+
+func TestRunnerAnswersAddressProbeCommand(t *testing.T) {
+	// Not parallel: the test swaps the process-wide reportedAddresses.
+	var hits atomic.Int32
+	echo := echoServer(t, "203.0.113.50", &hits)
+	previous := reportedAddresses
+	reportedAddresses = &AddressReporter{
+		Source:      interfaceSource("10.0.0.8"),
+		EndpointsV4: []string{echo.URL},
+	}
+	t.Cleanup(func() { reportedAddresses = previous })
+
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+
+	listener := bufconn.Listen(1 << 20)
+	fake := &probeCommandServer{
+		hello:       make(chan *controlv1.AgentHello, 1),
+		agentFrames: make(chan *controlv1.AgentFrame, 64),
+		commands:    make(chan *controlv1.ProbeAddresses),
+	}
+	grpcServer := grpc.NewServer()
+	controlv1.RegisterAgentControlServiceServer(grpcServer, fake)
+	go func() {
+		_ = grpcServer.Serve(listener)
+	}()
+	defer grpcServer.Stop()
+
+	connection, err := grpc.NewClient(
+		"passthrough:///theatropolis-test",
+		grpc.WithContextDialer(func(context.Context, string) (net.Conn, error) {
+			return listener.Dial()
+		}),
+		grpc.WithTransportCredentials(insecure.NewCredentials()),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer connection.Close()
+	client := controlv1.NewAgentControlServiceClient(connection)
+
+	_, privateKey, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	runner := &Runner{
+		AgentVersion:    "test",
+		PrivateKey:      privateKey,
+		HeartbeatPeriod: 10 * time.Millisecond, // interleave with probe reports
+		// Disable periodic probing: this test exercises the on-demand path
+		// only, and the private-only interface source would otherwise make
+		// the scheduler dial the real default echo endpoints.
+		Prober: &ProbeScheduler{Interval: -1},
+	}
+	runnerResult := make(chan error, 1)
+	go func() {
+		runnerResult <- runner.Run(ctx, client)
+	}()
+
+	var hello *controlv1.AgentHello
+	select {
+	case hello = <-fake.hello:
+	case <-ctx.Done():
+		t.Fatal("agent did not send its hello")
+	}
+	if !slices.Contains(hello.GetCapabilities(), control.CapabilityAddressProbe) {
+		t.Fatalf("hello capabilities %v lack %q", hello.GetCapabilities(), control.CapabilityAddressProbe)
+	}
+
+	// nextFrame returns the next post-auth agent frame, asserting the agent
+	// sequence is strictly monotonic even while heartbeats race the
+	// asynchronous probe report (run with -race to cover the data race).
+	var lastAgentSequence uint64 = 2 // hello=1, proof=2
+	nextFrame := func() *controlv1.AgentFrame {
+		t.Helper()
+		select {
+		case frame := <-fake.agentFrames:
+			if frame.GetSequence() <= lastAgentSequence {
+				t.Fatalf(
+					"agent sequence %d not monotonic after %d",
+					frame.GetSequence(),
+					lastAgentSequence,
+				)
+			}
+			lastAgentSequence = frame.GetSequence()
+			return frame
+		case <-ctx.Done():
+			t.Fatal("timed out waiting for an agent frame")
+			return nil
+		}
+	}
+	nextProbeReport := func() *controlv1.AddressProbeReport {
+		t.Helper()
+		for {
+			if report := nextFrame().GetAddressProbeReport(); report != nil {
+				return report
+			}
+		}
+	}
+
+	fake.commands <- &controlv1.ProbeAddresses{Family: "ipv4"}
+	report := nextProbeReport()
+	if report.GetFamily() != "ipv4" ||
+		report.GetAddress() != "203.0.113.50" ||
+		report.GetError() != "" {
+		t.Fatalf("probe report = %+v, want probed echo address", report)
+	}
+	if hits.Load() == 0 {
+		t.Fatal("echo endpoint was never queried")
+	}
+
+	fake.commands <- &controlv1.ProbeAddresses{Family: "ipx"}
+	report = nextProbeReport()
+	if report.GetFamily() != "ipx" ||
+		report.GetError() != "unsupported family" ||
+		report.GetAddress() != "" {
+		t.Fatalf("unsupported-family report = %+v", report)
+	}
+
+	cancel()
+	if err := <-runnerResult; !errors.Is(err, context.Canceled) {
+		t.Fatalf("runner.Run returned %v, want context.Canceled", err)
+	}
+}
+
+func TestRunnerAnswersManagedUserTrafficRequest(t *testing.T) {
+	t.Parallel()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+
+	listener := bufconn.Listen(1 << 20)
+	fake := &probeCommandServer{
+		hello:           make(chan *controlv1.AgentHello, 1),
+		agentFrames:     make(chan *controlv1.AgentFrame, 64),
+		trafficCommands: make(chan *controlv1.ManagedUserTrafficRequest),
+	}
+	grpcServer := grpc.NewServer()
+	controlv1.RegisterAgentControlServiceServer(grpcServer, fake)
+	go func() { _ = grpcServer.Serve(listener) }()
+	defer grpcServer.Stop()
+
+	connection, err := grpc.NewClient(
+		"passthrough:///theatropolis-traffic-test",
+		grpc.WithContextDialer(func(context.Context, string) (net.Conn, error) {
+			return listener.Dial()
+		}),
+		grpc.WithTransportCredentials(insecure.NewCredentials()),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer connection.Close()
+
+	_, privateKey, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	manager := &trafficConfigurationManager{testConfigurationManager: &testConfigurationManager{}}
+	runner := &Runner{
+		AgentVersion: "test", PrivateKey: privateKey, Manager: manager,
+		HeartbeatPeriod: time.Hour, Prober: &ProbeScheduler{Interval: -1},
+	}
+	runnerResult := make(chan error, 1)
+	go func() { runnerResult <- runner.Run(ctx, controlv1.NewAgentControlServiceClient(connection)) }()
+
+	var hello *controlv1.AgentHello
+	select {
+	case hello = <-fake.hello:
+	case <-ctx.Done():
+		t.Fatal("agent did not send its hello")
+	}
+	if !slices.Contains(hello.GetCapabilities(), control.ManagedUserTrafficRequestCapability) {
+		t.Fatalf("hello capabilities %v lack %q", hello.GetCapabilities(), control.ManagedUserTrafficRequestCapability)
+	}
+	if !slices.Contains(hello.GetCapabilities(), control.ManagedUserTrafficDeltaCapability) {
+		t.Fatalf("hello capabilities %v lack %q", hello.GetCapabilities(), control.ManagedUserTrafficDeltaCapability)
+	}
+
+	nextTrafficReport := func() *controlv1.ManagedUserTrafficReport {
+		t.Helper()
+		for {
+			select {
+			case frame := <-fake.agentFrames:
+				if report := frame.GetManagedUserTrafficReport(); report != nil {
+					return report
+				}
+			case <-ctx.Done():
+				t.Fatal("timed out waiting for managed-user traffic")
+				return nil
+			}
+		}
+	}
+	initial := nextTrafficReport()
+	if initial.GetRequestId() != "" || strings.TrimSpace(initial.GetEpoch()) == "" {
+		t.Fatalf("initial traffic report = %+v", initial)
+	}
+
+	fake.trafficCommands <- &controlv1.ManagedUserTrafficRequest{RequestId: "traffic-request-1"}
+	requested := nextTrafficReport()
+	if requested.GetRequestId() != "traffic-request-1" || strings.TrimSpace(requested.GetEpoch()) == "" ||
+		len(requested.GetUsers()) != 1 || requested.GetDiagnostic() != "" {
+		t.Fatalf("requested traffic report = %+v", requested)
+	}
+	if manager.calls.Load() < 2 {
+		t.Fatalf("traffic collection calls = %d, want at least 2", manager.calls.Load())
+	}
+
+	cancel()
+	if err := <-runnerResult; !errors.Is(err, context.Canceled) {
+		t.Fatalf("runner.Run returned %v, want context.Canceled", err)
+	}
+}
+
+// TestRunnerProbesPeriodicallyWithoutRoutableAddress wires the heartbeat
+// tick to the periodic scheduler: with no routable interface address the
+// agent probes on its own and reports the result without any master
+// command.
+func TestRunnerProbesPeriodicallyWithoutRoutableAddress(t *testing.T) {
+	// Not parallel: the test swaps the process-wide reportedAddresses.
+	var hits atomic.Int32
+	echo := echoServer(t, "203.0.113.50", &hits)
+	previous := reportedAddresses
+	reportedAddresses = &AddressReporter{
+		Source: interfaceSource("10.0.0.8"), // private only: v4 must be probed
+	}
+	t.Cleanup(func() { reportedAddresses = previous })
+
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+
+	listener := bufconn.Listen(1 << 20)
+	fake := &probeCommandServer{
+		hello:       make(chan *controlv1.AgentHello, 1),
+		agentFrames: make(chan *controlv1.AgentFrame, 64),
+		commands:    make(chan *controlv1.ProbeAddresses),
+	}
+	grpcServer := grpc.NewServer()
+	controlv1.RegisterAgentControlServiceServer(grpcServer, fake)
+	go func() {
+		_ = grpcServer.Serve(listener)
+	}()
+	defer grpcServer.Stop()
+
+	connection, err := grpc.NewClient(
+		"passthrough:///theatropolis-test",
+		grpc.WithContextDialer(func(context.Context, string) (net.Conn, error) {
+			return listener.Dial()
+		}),
+		grpc.WithTransportCredentials(insecure.NewCredentials()),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer connection.Close()
+	client := controlv1.NewAgentControlServiceClient(connection)
+
+	_, privateKey, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	runner := &Runner{
+		AgentVersion:    "test",
+		PrivateKey:      privateKey,
+		HeartbeatPeriod: 10 * time.Millisecond,
+		Prober: &ProbeScheduler{
+			EndpointsV4: []string{echo.URL},
+			// No v6 endpoints: the v6 refresh fails instantly instead of
+			// dialing the real default endpoints.
+			EndpointsV6: []string{},
+		},
+	}
+	runnerResult := make(chan error, 1)
+	go func() {
+		runnerResult <- runner.Run(ctx, client)
+	}()
+
+	select {
+	case <-fake.hello:
+	case <-ctx.Done():
+		t.Fatal("agent did not send its hello")
+	}
+
+	// No probe command is ever sent; the first heartbeat tick must trigger
+	// the periodic v4 probe and report its result.
+	for {
+		select {
+		case frame := <-fake.agentFrames:
+			report := frame.GetAddressProbeReport()
+			if report == nil {
+				continue
+			}
+			if report.GetFamily() != "ipv4" ||
+				report.GetAddress() != "203.0.113.50" ||
+				report.GetError() != "" {
+				t.Fatalf("periodic probe report = %+v, want the v4 echo address", report)
+			}
+			if hits.Load() == 0 {
+				t.Fatal("echo endpoint was never queried")
+			}
+			cancel()
+			if err := <-runnerResult; !errors.Is(err, context.Canceled) {
+				t.Fatalf("runner.Run returned %v, want context.Canceled", err)
+			}
+			return
+		case <-ctx.Done():
+			t.Fatal("no periodic probe report arrived")
+		}
+	}
+}
+
+func TestSanitizeProbeErrorCapsLength(t *testing.T) {
+	long := fmt.Sprintf("%0*d", maxProbeErrorBytes*2, 0)
+	if got := sanitizeProbeError(errors.New(long)); len(got) != maxProbeErrorBytes {
+		t.Fatalf("sanitizeProbeError length = %d, want %d", len(got), maxProbeErrorBytes)
+	}
+	if got := sanitizeProbeError(errors.New("short")); got != "short" {
+		t.Fatalf("sanitizeProbeError = %q, want unchanged", got)
+	}
+}

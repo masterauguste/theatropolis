@@ -1,0 +1,390 @@
+{{define "server.html"}}
+<!doctype html>
+<html lang="{{.Locale}}">
+{{template "document-head" .}}
+<body data-version-catalog-url="/servers/{{.Agent.ID}}/versions"{{if or (eq .ErrorField "subscription_domain_ipv4") (eq .ErrorField "subscription_domain_ipv6")}} data-initial-dialog="server-actions-dialog"{{else if eq .ErrorField "display_name"}} data-initial-dialog="server-rename-dialog"{{end}}{{if and .Agent.Deployment .Agent.Deployment.Pending}} data-deployment-refresh-url="{{.Agent.URL}}" data-deployment-status-url="{{.Agent.DeploymentStatusURL}}"{{end}}>
+  <a class="skip-link" href="#main">{{t "Skip to content"}}</a>
+  {{template "global-header" .}}
+  <main class="main main--wide" id="main">
+      <nav class="breadcrumbs" aria-label="{{t "Breadcrumb"}}">
+        <a href="/servers">{{t "Servers"}}</a>
+        <span aria-hidden="true">/</span>
+        <span aria-current="page">{{.Agent.Name}}</span>
+      </nav>
+
+      <header class="page-header">
+        <div>
+          <p class="eyebrow">{{t "Server management"}}</p>
+          <div class="proxy-node-page-header__title"><h1>{{.Agent.Name}}</h1><button class="button button--secondary button--icon-only" type="button" data-dialog-open="server-rename-dialog" aria-label="{{t "Rename Server"}}"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 20h4l11-11a2.8 2.8 0 0 0-4-4L4 16v4Z"/><path d="m13.5 6.5 4 4"/></svg></button></div>
+        </div>
+        <div class="page-header__actions">
+          <a class="button button--secondary button--icon" href="{{.Agent.URL}}" aria-label="{{t "Refresh server status"}}">
+            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M20 11a8 8 0 1 0-2.3 5.7M20 5v6h-6"/></svg>
+            {{t "Refresh"}}
+          </a>
+          <button class="button button--secondary button--icon-only" type="button" data-dialog-open="server-actions-dialog" aria-label="Open server and software actions">
+            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 15.5a3.5 3.5 0 1 0 0-7 3.5 3.5 0 0 0 0 7ZM19.4 15a1.7 1.7 0 0 0 .3 1.9l.1.1-2.8 2.8-.1-.1a1.7 1.7 0 0 0-1.9-.3 1.7 1.7 0 0 0-1 1.6v.2h-4V21a1.7 1.7 0 0 0-1-1.6 1.7 1.7 0 0 0-1.9.3l-.1.1L4.2 17l.1-.1a1.7 1.7 0 0 0 .3-1.9A1.7 1.7 0 0 0 3 14H2.8v-4H3a1.7 1.7 0 0 0 1.6-1 1.7 1.7 0 0 0-.3-1.9L4.2 7 7 4.2l.1.1a1.7 1.7 0 0 0 1.9.3A1.7 1.7 0 0 0 10 3V2.8h4V3a1.7 1.7 0 0 0 1 1.6 1.7 1.7 0 0 0 1.9-.3l.1-.1L19.8 7l-.1.1a1.7 1.7 0 0 0-.3 1.9 1.7 1.7 0 0 0 1.6 1h.2v4H21a1.7 1.7 0 0 0-1.6 1Z"/></svg>
+          </button>
+        </div>
+      </header>
+
+      {{if .Error}}
+      <div class="notice notice--error" id="server-page-error" role="alert">{{.Error}}</div>
+      {{end}}
+
+      <dialog class="modal resource-modal" id="server-rename-dialog" aria-labelledby="server-rename-title">
+        <div class="modal__surface">
+          <header class="modal__header"><div><p class="eyebrow">{{t "Server"}}</p><h2 id="server-rename-title">{{t "Rename Server"}}</h2></div><button class="button button--secondary button--icon-only" type="button" data-dialog-close aria-label="{{t "Close"}}">×</button></header>
+          <form novalidate action="/servers/{{.Agent.ID}}/rename" method="post">
+            <div class="modal__body stack"><input type="hidden" name="csrf_token" value="{{.CSRFToken}}"><label class="field"><span>{{t "Server Name"}}</span><input name="display_name" value="{{.AgentName}}" required data-display-name data-validate-live {{if eq .ErrorField "display_name"}}autofocus aria-invalid="true" aria-describedby="server-page-error"{{else}}aria-invalid="false"{{end}}></label><dl class="detail-list detail-list--compact"><div><dt>{{t "Server Record ID"}}</dt><dd><code>{{.Agent.ID}}</code></dd></div></dl></div>
+            <footer class="modal__footer"><button class="button button--secondary" type="button" data-dialog-close>{{t "Cancel"}}</button><button class="button button--primary" type="submit">{{t "Save Name"}}</button></footer>
+          </form>
+        </div>
+      </dialog>
+
+      <section class="server-summary" aria-label="{{t "Server"}} status">
+        <article class="summary-card">
+          <span class="summary-card__label">{{t "Enrollment"}}</span>
+          <span class="status status--{{.Agent.EnrollmentClass}}">
+            <span aria-hidden="true"></span>{{.Agent.EnrollmentLabel}}
+          </span>
+        </article>
+        <article class="summary-card">
+          <span class="summary-card__label">{{t "Control connection"}}</span>
+          <span class="status status--{{.Agent.ConnectionClass}}">
+            <span aria-hidden="true"></span>{{.Agent.ConnectionLabel}}
+          </span>
+          <small>{{.Agent.ConnectionDetail}}</small>
+        </article>
+        <article class="summary-card">
+          <span class="summary-card__label">{{t "Proxy Node readiness"}}</span>
+          {{if .Agent.ConfigurationEnabled}}
+          <strong class="summary-card__value summary-card__value--positive">{{t "Ready"}}</strong>
+          {{else}}
+          <strong class="summary-card__value">{{if .Agent.Online}}Upgrade required{{else}}{{t "Unavailable"}}{{end}}</strong>
+          <small>{{.Agent.ConfigurationHint}}</small>
+          {{end}}
+        </article>
+        <article class="summary-card">
+          <span class="summary-card__label">{{t "Agent version"}}</span>
+          {{if .Agent.AgentVersion}}
+          <strong class="summary-card__value">{{.Agent.AgentVersion}}</strong>
+          <small>{{.Agent.OperatingSystem}} / {{.Agent.Architecture}}</small>
+          {{else}}
+          <strong class="summary-card__value">{{t "Unknown"}}</strong>
+          {{end}}
+        </article>
+        <article class="summary-card">
+          <span class="summary-card__label">{{t "sing-box version"}}</span>
+          {{if .Agent.SingBoxVersion}}<strong class="summary-card__value">{{.Agent.SingBoxVersion}}</strong>{{else}}<strong class="summary-card__value">{{t "Unknown"}}</strong>{{end}}
+        </article>
+        {{if .Agent.ACMEHTTP01Relay}}
+        <article class="summary-card">
+          <span class="summary-card__label">{{t "ACME HTTP-01"}}</span>
+          <strong class="summary-card__value summary-card__value--positive">{{t "Local relay ready"}}</strong>
+          <small>{{t "Caddy owns public port 80 and relays Agent challenges internally."}}</small>
+        </article>
+        {{end}}
+      </section>
+
+      <section class="panel entrance-usage" aria-labelledby="entrance-usage-heading">
+        <div class="panel__header"><h2 id="entrance-usage-heading">{{t "Entrance Traffic"}}</h2></div>
+        <dl class="server-usage-grid">
+          <div><dt>{{t "Finite Quota Allocated"}}</dt><dd>{{.Agent.EntranceAllocated}}</dd></div>
+          <div><dt>{{t "Finite Quota Used"}}</dt><dd>{{.Agent.EntranceUsed}}</dd></div>
+          <div><dt>{{t "Unlimited Users"}}</dt><dd>{{.Agent.EntranceUnlimited}}</dd></div>
+        </dl>
+      </section>
+
+      <div>
+
+        <section class="panel" aria-labelledby="proxy-role-heading" data-agent-proxy-references>
+          <div class="panel__header">
+            <h2 id="proxy-role-heading">{{t "Proxy Node Assignments"}}</h2>
+            <a class="button button--primary" href="/proxy-nodes">{{t "Open Proxy Nodes"}}</a>
+          </div>
+          {{if .Agent.ProxyNodeReferences}}
+          <div class="membership-list">
+            {{range .Agent.ProxyNodeReferences}}
+            <a href="{{.URL}}" data-agent-proxy-reference>
+              <span>
+                <strong>{{.Name}}</strong>
+                <small>
+                  {{if .Desired}}{{t "Configured"}}: {{if .DesiredEntrance}}{{t "Entrance"}}{{end}}{{if and .DesiredEntrance .DesiredRelayHops}} · {{end}}{{if .DesiredRelayHops}}{{.DesiredRelayHopLabel}}{{end}}{{end}}
+                  {{if and .Desired .Applied}} · {{end}}
+                  {{if .Applied}}{{t "Applied"}}: {{if .AppliedEntrance}}{{t "Entrance"}}{{end}}{{if and .AppliedEntrance .AppliedRelayHops}} · {{end}}{{if .AppliedRelayHops}}{{.AppliedRelayHopLabel}}{{end}}{{end}}
+                </small>
+              </span>
+              {{if and .Applied (not .Desired)}}<span class="membership-status membership-status--pending">{{t "Pending Retirement"}}</span>{{else if and .Desired (not .Applied)}}<span class="membership-status membership-status--pending">{{t "Pending Apply"}}</span>{{else}}<span aria-hidden="true">→</span>{{end}}
+            </a>
+            {{end}}
+          </div>
+          {{else if .Agent.RetirementPending}}
+          <div class="panel__empty"><strong>{{t "Topology Retirement Pending"}}</strong><p>{{t "This Server still owns an applied managed configuration. Finish or retry the Proxy Node change before removing it."}}</p></div>
+          {{else}}
+          <div class="panel__empty"><p>{{t "This Server is not used by any Proxy Node."}}</p></div>
+          {{end}}
+        </section>
+
+        <dialog class="modal actions-modal" id="server-actions-dialog" aria-labelledby="server-actions-title">
+          <div class="modal__surface">
+            <header class="modal__header">
+              <div><p class="eyebrow">{{t "Operations"}}</p><h2 id="server-actions-title">{{t "Server and software actions"}}</h2></div>
+              <button class="button button--secondary button--icon-only" type="button" data-dialog-close aria-label="{{t "Close"}} server actions">×</button>
+            </header>
+            <div class="modal__body actions-list">
+              <details class="action-section" open>
+                <summary><span><strong>{{t "Subscription addresses"}}</strong><small>{{if or .Agent.SubscriptionDomainV4 .Agent.SubscriptionDomainV6}}{{t "Custom domains"}}{{else}}{{t "Automatic IP addresses"}}{{end}}</small></span></summary>
+                <div class="action-section__body">
+                  <form novalidate action="/servers/{{.Agent.ID}}/subscription-domains" method="post" class="stack stack--compact">
+                    <input type="hidden" name="csrf_token" value="{{.CSRFToken}}">
+                    <label class="field">
+                      <span>{{t "IPv4 domain"}} <span class="field__optional">{{t "Optional"}}</span></span>
+                      <input
+                        name="subscription_domain_ipv4"
+                        type="text"
+                        value="{{.Agent.SubscriptionDomainV4}}"
+                        placeholder="ipv4.proxy.example.com"
+                        autocomplete="off"
+                        autocapitalize="none"
+                        spellcheck="false"
+                        maxlength="253"
+                        {{if eq .ErrorField "subscription_domain_ipv4"}}autofocus aria-invalid="true" aria-describedby="server-page-error"{{else}}aria-invalid="false"{{end}}
+                      >
+                    </label>
+                    <label class="field">
+                      <span>{{t "IPv6 domain"}} <span class="field__optional">{{t "Optional"}}</span></span>
+                      <input
+                        name="subscription_domain_ipv6"
+                        type="text"
+                        value="{{.Agent.SubscriptionDomainV6}}"
+                        placeholder="ipv6.proxy.example.com"
+                        autocomplete="off"
+                        autocapitalize="none"
+                        spellcheck="false"
+                        maxlength="253"
+                        {{if eq .ErrorField "subscription_domain_ipv6"}}autofocus aria-invalid="true" aria-describedby="server-page-error"{{else}}aria-invalid="false"{{end}}
+                      >
+                    </label>
+                    <button class="button button--secondary button--full" type="submit" data-submit-button data-submit-label="Saving…">{{t "Save server settings"}}</button>
+                  </form>
+                </div>
+              </details>
+
+              <details class="action-section" open>
+                <summary><span><strong>{{t "sing-box runtime"}}</strong><small>Running {{if .Agent.SingBoxVersion}}{{.Agent.SingBoxVersion}}{{else}}not detected{{end}}</small></span></summary>
+                <div class="action-section__body">
+                  {{if .Agent.SingBoxUpdate}}
+                  <dl class="detail-list detail-list--compact">
+                    <div><dt>{{t "Update status"}}</dt><dd><span class="status status--{{.Agent.SingBoxUpdate.StatusClass}}"><span aria-hidden="true"></span>{{.Agent.SingBoxUpdate.StatusLabel}}</span></dd></div>
+                    <div><dt>{{t "Target"}}</dt><dd><code>{{.Agent.SingBoxUpdate.TargetVersion}}</code></dd></div>
+                    <div><dt>{{t "Reported running"}}</dt><dd><code>{{.Agent.SingBoxUpdate.RunningVersion}}</code></dd></div>
+                    <div><dt>{{t "Updated"}}</dt><dd>{{.Agent.SingBoxUpdate.UpdatedAt}}</dd></div>
+                  </dl>
+                  {{if .Agent.SingBoxUpdate.Diagnostic}}<div class="diagnostic"><strong>{{t "sing-box update diagnostic"}}</strong><pre>{{.Agent.SingBoxUpdate.Diagnostic}}</pre></div>{{end}}
+                  {{end}}
+                  <form novalidate action="/servers/{{.Agent.ID}}/sing-box-update" method="post" class="stack stack--compact">
+                    <input type="hidden" name="csrf_token" value="{{.CSRFToken}}">
+                    <label class="field">
+                      <span>{{t "sing-box release"}}</span>
+                      <select name="target_version" data-sing-box-version-select {{if not .Agent.SingBoxUpdateEnabled}}disabled{{end}} {{if eq .ErrorField "sing_box_target_version"}}aria-invalid="true"{{else}}aria-invalid="false"{{end}}>
+                        <option value="" disabled selected>{{t "loading available versions…"}}</option>
+                      </select>
+                      <small class="inline-loading" data-sing-box-catalog-loading><span class="loading-spinner loading-spinner--small" aria-hidden="true"></span><span>{{t "Loading releases…"}}</span></small>
+                      <small>{{.Agent.SingBoxUpdateHint}}</small>
+                      <small data-sing-box-catalog-warning hidden class="field-warning"></small>
+                      <small data-sing-box-catalog-info>{{t "Patched stable and release-candidate builds with live managed-user APIs are loaded from the dedicated public build repository. Any published managed build can be installed, including downgrades."}}</small>
+                    </label>
+                    <button class="button button--secondary button--full" type="submit" data-submit-button data-submit-label="{{t "Scheduling…"}}" {{if not .Agent.SingBoxUpdateEnabled}}disabled{{end}}>{{t "Install selected sing-box version"}}</button>
+                  </form>
+                </div>
+              </details>
+
+              <details class="action-section" open>
+                <summary><span><strong>{{t "Agent software"}}</strong><small>Running {{if .Agent.AgentVersion}}{{.Agent.AgentVersion}}{{else}}unknown version{{end}}</small></span></summary>
+                <div class="action-section__body">
+              {{if .Agent.Update}}
+              <dl class="detail-list detail-list--compact">
+                <div>
+                  <dt>{{t "Update status"}}</dt>
+                  <dd>
+                    <span class="status status--{{.Agent.Update.StatusClass}}">
+                      <span aria-hidden="true"></span>{{.Agent.Update.StatusLabel}}
+                    </span>
+                  </dd>
+                </div>
+                <div>
+                  <dt>{{t "Target"}}</dt>
+                  <dd><code>{{.Agent.Update.TargetVersion}}</code></dd>
+                </div>
+                <div>
+                  <dt>{{t "Reported running"}}</dt>
+                  <dd><code>{{.Agent.Update.RunningVersion}}</code></dd>
+                </div>
+                <div>
+                  <dt>{{t "Updated"}}</dt>
+                  <dd>{{.Agent.Update.UpdatedAt}}</dd>
+                </div>
+              </dl>
+              {{if .Agent.Update.Diagnostic}}
+              <div class="diagnostic">
+                <strong>{{t "Update diagnostic"}}</strong>
+                <pre>{{.Agent.Update.Diagnostic}}</pre>
+              </div>
+              {{end}}
+              {{end}}
+              <form novalidate action="/servers/{{.Agent.ID}}/agent-update" method="post" class="stack stack--compact">
+                <input type="hidden" name="csrf_token" value="{{.CSRFToken}}">
+                <input type="hidden" name="target_version" value="" data-latest-agent-version>
+                <dl class="detail-list detail-list--compact">
+                  <div><dt>{{t "Current version"}}</dt><dd><code>{{if .Agent.AgentVersion}}{{.Agent.AgentVersion}}{{else}}unknown{{end}}</code></dd></div>
+                  <div><dt>{{t "Latest available"}}</dt><dd class="inline-loading"><span class="loading-spinner loading-spinner--small" data-agent-catalog-loading aria-hidden="true"></span><code data-latest-agent-version-label>{{t "loading…"}}</code></dd></div>
+                </dl>
+                <small>{{.Agent.UpdateHint}}</small>
+                <small data-agent-catalog-warning hidden class="field-warning"></small>
+                <button
+                  class="button button--secondary button--full"
+                  type="submit"
+                  data-submit-button
+                  data-submit-label="Requesting…"
+                  {{if not .Agent.UpdateEnabled}}disabled{{end}}
+                >{{t "Update agent to latest"}}</button>
+              </form>
+                </div>
+              </details>
+
+              <details class="action-section">
+                <summary><span><strong>{{t "Connectivity mode"}}</strong><small>{{if .Agent.ReverseOnly}}{{t "CGNAT / Reverse-only"}}{{else}}{{t "Publicly reachable"}}{{end}}</small></span></summary>
+                <div class="action-section__body">
+                  <form class="stack stack--compact" action="/servers/{{.Agent.ID}}/connectivity" method="post" novalidate>
+                    <input type="hidden" name="csrf_token" value="{{.CSRFToken}}">
+                    <label class="field">
+                      <span>{{t "Connectivity mode"}}</span>
+                      <select name="reverse_only">
+                        <option value="0"{{if not .Agent.ReverseOnly}} selected{{end}}>{{t "Publicly reachable"}}</option>
+                        <option value="1"{{if .Agent.ReverseOnly}} selected{{end}}>{{t "CGNAT / Reverse-only"}}</option>
+                      </select>
+                      <small>{{t "Retire existing desired and applied Hops before changing connectivity mode."}}</small>
+                    </label>
+                    <button class="button button--secondary button--full" type="submit">{{t "Save Connectivity"}}</button>
+                  </form>
+                </div>
+              </details>
+              <details class="action-section">
+                <summary><span><strong>{{t "Latest deployment"}}</strong><small>{{if .Agent.Deployment}}{{.Agent.Deployment.StatusLabel}}{{else}}{{t "No deployment yet"}}{{end}}</small></span></summary>
+                <div class="action-section__body">
+            {{if .Agent.Deployment}}
+            <dl class="detail-list">
+              <div>
+                <dt>{{t "Status"}}</dt>
+                <dd>
+                  <span class="status status--{{.Agent.Deployment.StatusClass}}">
+                    <span aria-hidden="true"></span>{{.Agent.Deployment.StatusLabel}}
+                  </span>
+                </dd>
+              </div>
+              <div>
+                <dt>{{t "Revision"}}</dt>
+                <dd><code>{{.Agent.Deployment.RevisionID}}</code></dd>
+              </div>
+              <div>
+                <dt>SHA-256</dt>
+                <dd><code>{{.Agent.Deployment.Digest}}</code></dd>
+              </div>
+              <div>
+                <dt>{{t "Updated"}}</dt>
+                <dd>{{.Agent.Deployment.UpdatedAt}}</dd>
+              </div>
+            </dl>
+            {{if .Agent.Deployment.Diagnostic}}
+            <div class="diagnostic">
+              <strong>{{t "Agent diagnostic"}}</strong>
+              <pre>{{.Agent.Deployment.Diagnostic}}</pre>
+            </div>
+            {{end}}
+            {{else}}
+            <div class="panel__empty">
+              <p>{{t "No configuration has been sent to this agent yet."}}</p>
+            </div>
+            {{end}}
+                </div>
+              </details>
+
+              {{if .Agent.CanReplace}}
+              <details class="action-section">
+                <summary><span><strong>{{t "Replace Agent"}}</strong><small>{{t "Move this identity and its profile to another server"}}</small></span></summary>
+                <div class="action-section__body">
+                  <p>{{t "The current Agent remains authorized until the replacement uses its one-time token. At that moment the old connection is closed and this master immediately deploys the retained profile to the replacement."}}</p>
+                  <form novalidate action="/servers/{{.Agent.ID}}/replace" method="post" class="stack">
+                    <input type="hidden" name="csrf_token" value="{{.CSRFToken}}">
+                    <input type="hidden" name="agent_id" value="{{.Agent.ID}}">
+                    <label class="field">
+                      <span>{{t "Command lifetime"}}</span>
+                      <select name="ttl_seconds" required>
+                        <option value="900" selected>{{t "15 minutes · Recommended"}}</option>
+                        <option value="3600">{{t "1 hour"}}</option>
+                        <option value="86400">{{t "24 hours"}}</option>
+                      </select>
+                    </label>
+                    <button class="button button--secondary button--full" type="submit">{{t "Create replacement command"}}</button>
+                  </form>
+                </div>
+              </details>
+              {{end}}
+
+              <details class="action-section action-section--danger">
+                <summary><span><strong>{{t "Revoke access"}}</strong><small>{{if .Agent.RemovalBlocked}}{{t "Move Proxy Node Hops First"}}{{else}}{{t "Disconnect and invalidate this identity"}}{{end}}</small></span></summary>
+                <div class="action-section__body">
+              {{if .Agent.RemovalBlocked}}
+              {{if .Agent.ProxyNodeReferences}}
+              <p>{{t "This Server cannot be removed while Proxy Nodes use it. Move the affected Hops to another Server, or delete the branches or Proxy Nodes that use them first."}}</p>
+              <div class="membership-list">
+                {{range .Agent.ProxyNodeReferences}}<a href="{{.URL}}"><span><strong>{{.Name}}</strong><small>{{if .Desired}}{{t "Configured"}}{{end}}{{if and .Desired .Applied}} · {{end}}{{if .Applied}}{{t "Applied"}}{{end}}</small></span><span aria-hidden="true">→</span></a>{{end}}
+              </div>
+              {{else}}
+              <p>{{t "This Server still owns an applied managed configuration. Finish or retry the Proxy Node change before removing it."}}</p>
+              {{end}}
+              <a class="button button--secondary button--full" href="/proxy-nodes">{{t "Review Proxy Nodes"}}</a>
+              {{if .Agent.CanForceRemove}}
+              <p>{{t "Only when this machine is permanently gone: forget this Server without delivering a retirement profile. Remaining Proxy Node references turn into deleted-Server entries that you redirect or delete afterwards, and pending changes that wait for this Server finish locally. If the machine ever comes back, its Agent stays locked out and must be reinstalled."}}</p>
+              <form novalidate
+                action="/servers/{{.Agent.ID}}/revoke"
+                method="post"
+              >
+                <input type="hidden" name="csrf_token" value="{{.CSRFToken}}">
+                <input type="hidden" name="agent_id" value="{{.Agent.ID}}">
+                <input type="hidden" name="force" value="yes">
+                <label class="danger-confirm">
+                  <input type="checkbox" name="confirm_revoke" value="yes" required>
+                  <span>{{t "I understand the machine is permanently gone and its last configuration cannot be withdrawn remotely."}}</span>
+                </label>
+                <button class="button button--danger button--full" type="submit">{{t "Force remove offline Server"}}</button>
+              </form>
+              {{end}}
+              {{else}}
+              <p>{{t "This immediately closes an active control session and invalidates enrollment credentials. It does not uninstall the remote agent or stop its current sing-box process."}}</p>
+              <form novalidate
+                action="/servers/{{.Agent.ID}}/revoke"
+                method="post"
+              >
+                <input type="hidden" name="csrf_token" value="{{.CSRFToken}}">
+                <input type="hidden" name="agent_id" value="{{.Agent.ID}}">
+                <label class="danger-confirm">
+                  <input type="checkbox" name="confirm_revoke" value="yes" required>
+                  <span>{{t "I understand that this agent will need a new enrollment credential to reconnect."}}</span>
+                </label>
+                <button class="button button--danger button--full" type="submit">{{.Agent.RevokeLabel}}</button>
+              </form>
+              {{end}}
+                </div>
+              </details>
+            </div>
+            <footer class="modal__footer"><button class="button button--primary" type="button" data-dialog-close>{{t "Done"}}</button></footer>
+          </div>
+        </dialog>
+      </div>
+  </main>
+  <script src="/assets/app.js?v={{.AssetVersion}}" defer></script>
+</body>
+</html>
+{{end}}

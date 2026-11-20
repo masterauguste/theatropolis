@@ -1,0 +1,53 @@
+name: ci
+
+on:
+  push:
+    branches:
+      - "**"
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+      - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6
+        with:
+          go-version-file: go.mod
+          cache: true
+      - run: go mod verify
+      - run: go test -count=1 ./...
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: '22'
+      - run: node --test tests/webui-recovery.test.cjs tests/webui-reverse-wireguard.test.cjs
+      - run: go vet ./...
+      - run: sh -n install.sh
+      - run: sh -n uninstall.sh
+      - run: sh tests/installer-release-tag.sh
+      - run: sh tests/installer-master.sh
+      - run: sh tests/installer-agent-token.sh
+      - run: sh tests/installer-security.sh
+      - run: sh tests/uninstaller.sh
+      - run: shellcheck --shell=sh install.sh uninstall.sh tests/*.sh
+
+  linux-build:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        architecture:
+          - amd64
+          - arm64
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+      - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6
+        with:
+          go-version-file: go.mod
+          cache: true
+      - run: go build ./...
+        env:
+          GOOS: linux
+          GOARCH: ${{ matrix.architecture }}

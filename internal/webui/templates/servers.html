@@ -1,0 +1,178 @@
+{{define "servers-content"}}
+<section class="metric-grid" aria-label="{{t "Fleet summary"}}">
+  <article class="metric-card">
+    <div class="metric-card__top">
+      <span class="metric-card__label">{{t "Total servers"}}</span>
+      <span class="metric-card__icon" aria-hidden="true"><svg viewBox="0 0 20 20"><rect x="3" y="3.5" width="14" height="5" rx="1.4"/><rect x="3" y="11.5" width="14" height="5" rx="1.4"/><circle cx="6.2" cy="6" r=".8" fill="currentColor" stroke="none"/><circle cx="6.2" cy="14" r=".8" fill="currentColor" stroke="none"/></svg></span>
+    </div>
+    <strong>{{.Stats.Total}}</strong>
+    <span class="metric-card__hint">{{t "Known to this master"}}</span>
+  </article>
+  <article class="metric-card metric-card--positive">
+    <div class="metric-card__top">
+      <span class="metric-card__label">{{t "Online"}}</span>
+      <span class="metric-card__icon" aria-hidden="true"><svg viewBox="0 0 20 20"><path d="M3.5 10.5 7.5 14.5 16.5 5.5"/></svg></span>
+    </div>
+    <strong>{{.Stats.Online}}</strong>
+    <span class="metric-card__hint">{{t "Authenticated sessions"}}</span>
+  </article>
+  <article class="metric-card metric-card--pending">
+    <div class="metric-card__top">
+      <span class="metric-card__label">{{t "Pending"}}</span>
+      <span class="metric-card__icon" aria-hidden="true"><svg viewBox="0 0 20 20"><circle cx="10" cy="10" r="6.8"/><path d="M10 6.5V10l2.4 1.6"/></svg></span>
+    </div>
+    <strong>{{.Stats.Pending}}</strong>
+    <span class="metric-card__hint">{{t "Awaiting installation"}}</span>
+  </article>
+  <article class="metric-card metric-card--attention">
+    <div class="metric-card__top">
+      <span class="metric-card__label">{{t "Needs attention"}}</span>
+      <span class="metric-card__icon" aria-hidden="true"><svg viewBox="0 0 20 20"><path d="M10 3.5 17 16H3L10 3.5Z"/><path d="M10 8.2v3.3"/><circle cx="10" cy="13.8" r=".75" fill="currentColor" stroke="none"/></svg></span>
+    </div>
+    <strong>{{.Stats.Attention}}</strong>
+    <span class="metric-card__hint">{{t "Offline or expired"}}</span>
+  </article>
+</section>
+
+<section class="panel" aria-labelledby="fleet-heading">
+  <div class="panel__header">
+    <h2 id="fleet-heading">{{t "Servers"}}</h2>
+    <span class="panel__count">{{count .Stats.Total "total"}}</span>
+  </div>
+
+  {{if .Agents}}
+  <div class="table-wrap">
+    <table>
+      <thead>
+        <tr>
+          <th scope="col">{{t "Server"}}</th>
+          <th scope="col">{{t "Connection"}}</th>
+          <th scope="col">{{t "Agent version"}}</th>
+          <th scope="col">{{t "IP addresses"}}</th>
+        </tr>
+      </thead>
+      <tbody>
+        {{range .Agents}}
+        <tr>
+          <td data-label="{{t "Server"}}">
+            <strong><a class="server-link" href="{{.URL}}">{{.Name}}</a></strong>
+          </td>
+          <td data-label="{{t "Connection"}}">
+            <span class="status status--{{.ConnectionClass}}">
+              <span aria-hidden="true"></span>{{if eq .ConnectionClass "online"}}{{t "Established"}}{{else}}{{t "Not established"}}{{end}}
+            </span>
+          </td>
+          <td data-label="{{t "Agent version"}}">
+            {{if .AgentVersion}}<code class="server-version">{{.AgentVersion}}</code>{{else}}<span class="muted">—</span>{{end}}
+          </td>
+          <td data-label="{{t "IP addresses"}}">
+            {{if or .IPv4 .IPv6}}
+            {{if .IPv4}}<code class="pool-address-line">{{.IPv4}}</code>{{end}}
+            {{if .IPv6}}<code class="pool-address-line">{{.IPv6}}</code>{{end}}
+            {{else}}<span class="muted">—</span>{{end}}
+          </td>
+        </tr>
+        {{end}}
+      </tbody>
+    </table>
+  </div>
+  {{else}}
+  <div class="empty-state">
+    <h3>{{t "No servers enrolled yet"}}</h3>
+    <a class="button button--primary" href="/servers/new">{{t "Add your first server"}}</a>
+  </div>
+  {{end}}
+</section>
+{{end}}
+
+{{define "servers.html"}}
+<!doctype html>
+<html lang="{{.Locale}}">
+{{template "document-head" .}}
+<body data-version-catalog-url="/servers/versions">
+  <a class="skip-link" href="#main">{{t "Skip to content"}}</a>
+  {{template "global-header" .}}
+  <main class="main" id="main">
+      <header class="page-header">
+        <div>
+          <p class="eyebrow">{{t "Infrastructure"}}</p>
+          <h1>{{t "Servers"}}</h1>
+        </div>
+        <div class="page-header__actions">
+          <button class="button button--secondary button--icon" type="button" data-async-reload="servers-content" aria-label="{{t "Refresh server status"}}">
+            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M20 11a8 8 0 1 0-2.3 5.7M20 5v6h-6"/></svg>
+            {{t "Refresh"}}
+          </button>
+          <button class="button button--secondary" type="button" data-dialog-open="fleet-settings-dialog" aria-haspopup="dialog">{{t "Server settings"}}</button>
+          <a class="button button--primary" href="/servers/new">
+            <span aria-hidden="true">+</span>
+            {{t "Add server"}}
+          </a>
+        </div>
+      </header>
+
+      {{if .Notice}}
+      <div class="notice notice--success" role="status">{{.Notice}}</div>
+      {{end}}
+      {{if .Error}}
+      <div class="notice notice--error" role="alert">{{.Error}}</div>
+      {{end}}
+
+      <div id="servers-content" class="async-region" data-async-region data-async-url="/servers/content" data-async-loading-label="{{t "Loading servers…"}}" aria-live="polite" aria-busy="true">
+        <div class="loading-state" role="status">
+          <span class="loading-spinner" aria-hidden="true"></span>
+          <span>{{t "Loading servers…"}}</span>
+        </div>
+      </div>
+
+      <dialog class="modal fleet-settings-dialog" id="fleet-settings-dialog" aria-labelledby="fleet-settings-title">
+        <div class="modal__surface">
+          <header class="modal__header">
+            <div>
+              <p class="eyebrow">{{t "Fleet maintenance"}}</p>
+              <h2 id="fleet-settings-title">{{t "Server settings"}}</h2>
+            </div>
+            <button class="button button--secondary button--icon-only" type="button" data-dialog-close aria-label="{{t "Close server settings"}}">×</button>
+          </header>
+          <div class="modal__body fleet-settings-actions">
+            <section class="fleet-settings-action" aria-labelledby="fleet-agent-update-heading">
+              <div class="fleet-settings-action__copy">
+                <p class="eyebrow">Theatropolis</p>
+                <h3 id="fleet-agent-update-heading">{{t "Update Agent software"}}</h3>
+              </div>
+              <form novalidate action="/servers/agent-update-all" method="post">
+                <input type="hidden" name="csrf_token" value="{{.CSRFToken}}">
+                <button class="button button--secondary button--full" type="submit" data-submit-button data-submit-label="{{t "Queuing…"}}">{{t "Update all Agents"}}</button>
+              </form>
+            </section>
+
+            <section class="fleet-settings-action" aria-labelledby="fleet-sing-box-heading">
+              <div class="fleet-settings-action__copy">
+                <p class="eyebrow">{{t "Proxy runtime"}}</p>
+                <h3 id="fleet-sing-box-heading">{{t "Change sing-box version"}}</h3>
+              </div>
+              <form novalidate action="/servers/sing-box-update-all" method="post" class="stack stack--compact">
+                <input type="hidden" name="csrf_token" value="{{.CSRFToken}}">
+                <label class="field">
+                  <span>{{t "Target version"}}</span>
+                  <select name="target_version" data-sing-box-version-select data-fleet-sing-box-select required disabled>
+                    <option value="" disabled selected>{{t "loading available versions…"}}</option>
+                  </select>
+                  <small class="inline-loading" data-sing-box-catalog-loading><span class="loading-spinner loading-spinner--small" aria-hidden="true"></span><span>{{t "Loading signed releases…"}}</span></small>
+                  <small data-sing-box-catalog-warning hidden class="field-warning"></small>
+                  <small data-sing-box-catalog-info>{{t "Offline, incompatible, busy, and already-matching Agents are skipped."}}</small>
+                </label>
+                <button class="button button--primary button--full" type="submit" data-submit-button data-submit-label="{{t "Queuing…"}}" data-fleet-sing-box-submit disabled>{{t "Change sing-box version"}}</button>
+              </form>
+            </section>
+          </div>
+          <footer class="modal__footer">
+            <button class="button button--secondary" type="button" data-dialog-close>{{t "Close"}}</button>
+          </footer>
+        </div>
+      </dialog>
+  </main>
+  <script src="/assets/app.js?v={{.AssetVersion}}" defer></script>
+</body>
+</html>
+{{end}}

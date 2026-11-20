@@ -1,0 +1,67 @@
+{{define "document-head"}}
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="light">
+  <title>{{.Title}} · Theatropolis</title>
+  <link rel="icon" type="image/svg+xml" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Cdefs%3E%3ClinearGradient id='g' x1='0' y1='0' x2='1' y2='1'%3E%3Cstop offset='0%25' stop-color='%232e5ef7'/%3E%3Cstop offset='100%25' stop-color='%231b3cc4'/%3E%3C/linearGradient%3E%3C/defs%3E%3Crect width='32' height='32' rx='9' fill='url(%23g)'/%3E%3Cpath d='M9.5 16h4c3 0 3.2-6 7.5-6M13.5 16h1c3 0 2.7 6 6.5 6' fill='none' stroke='%23fff' stroke-width='2.1' stroke-linecap='round'/%3E%3Ccircle cx='8.5' cy='16' r='2.6' fill='%23fff'/%3E%3Ccircle cx='22.5' cy='10' r='2.2' fill='%2393c5fd'/%3E%3Ccircle cx='22.5' cy='22' r='2.2' fill='%235eead4'/%3E%3C/svg%3E">
+  <link rel="stylesheet" href="/assets/app.css?v={{.AssetVersion}}">
+  <script src="/assets/i18n.js?v={{.AssetVersion}}" defer></script>
+  <script src="/assets/dropdown.js?v={{.AssetVersion}}" defer></script>
+</head>
+{{end}}
+
+{{define "membership-plan-fields"}}
+<div class="membership-plan-fields">
+  <label class="field"><span>{{t "Monthly traffic quota"}}</span><select name="quota_mode" required><option value="unlimited"{{if eq .QuotaMode "unlimited"}} selected{{end}}>{{t "Unlimited"}}</option><option value="limited"{{if eq .QuotaMode "limited"}} selected{{end}}>{{t "Set a monthly quota"}}</option></select></label>
+  <label class="field"><span>{{t "Quota (GiB)"}}</span><input type="number" name="monthly_quota_gib" min="1" max="1000000" step="1" value="{{.QuotaGiB}}" placeholder="100"></label>
+  <label class="field"><span>{{t "Subscription expiration"}}</span><select name="expiration_mode" required><option value="none"{{if eq .ExpirationMode "none"}} selected{{end}}>{{t "No expiration"}}</option><option value="finite"{{if eq .ExpirationMode "finite"}} selected{{end}}>{{t "Expire after a duration"}}</option></select></label>
+  <div class="subscription-duration-fields"><label class="field"><span>{{t "Duration"}}</span><input type="number" name="subscription_value" min="1" max="52560000" step="1" value="{{.SubscriptionValue}}"></label><label class="field"><span>{{t "Unit"}}</span><select name="subscription_unit"><option value="minutes"{{if eq .SubscriptionUnit "minutes"}} selected{{end}}>{{t "Minutes"}}</option><option value="hours"{{if eq .SubscriptionUnit "hours"}} selected{{end}}>{{t "Hours"}}</option><option value="days"{{if eq .SubscriptionUnit "days"}} selected{{end}}>{{t "Days"}}</option><option value="months"{{if eq .SubscriptionUnit "months"}} selected{{end}}>{{t "Calendar months"}}</option></select></label></div>
+</div>
+{{end}}
+
+{{define "daily-usage-table"}}
+{{if .}}
+<div class="table-wrap daily-usage-table">
+  <table>
+    <thead><tr><th>{{t "Date"}}</th><th>{{t "Total"}}</th><th>{{t "Nodes"}}</th></tr></thead>
+    <tbody>{{range .}}<tr><td data-label="{{t "Date"}}"><time datetime="{{.Date.Format "2006-01-02"}}">{{.DateLabel}}</time></td><td data-label="{{t "Total"}}"><strong>{{.TotalLabel}}</strong></td><td data-label="{{t "Nodes"}}"><div class="daily-usage-nodes">{{range .Nodes}}<span><span>{{.Name}}</span><strong>{{.UsageLabel}}</strong></span>{{end}}</div></td></tr>{{end}}</tbody>
+  </table>
+</div>
+{{else}}
+<div class="panel__empty"><strong>{{t "No traffic recorded in the last 30 days."}}</strong></div>
+{{end}}
+{{end}}
+
+{{define "brand"}}
+<a class="brand" href="/servers" aria-label="{{t "Theatropolis servers"}}">
+  <span class="brand__mark" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><path d="M7.5 12h3.2c2.8 0 3-5.2 6.3-5.2M10.7 12h.8c2.6 0 2.5 5.2 5.5 5.2"/><circle cx="5.5" cy="12" r="2.2" fill="currentColor" stroke="none"/><circle cx="18.5" cy="6.8" r="2" fill="#93c5fd" stroke="none"/><circle cx="18.5" cy="17.2" r="2" fill="#5eead4" stroke="none"/></svg></span>
+  <span class="brand__text"><strong>Theatropolis</strong></span>
+</a>
+{{end}}
+
+{{define "global-header"}}
+<header class="global-header">
+  <div class="global-header__inner">
+    {{template "brand" .}}
+    <nav class="global-nav" aria-label="{{t "Primary navigation"}}">
+      <a href="/servers"{{if eq .ActiveNav "servers"}} class="is-active" aria-current="page"{{end}}><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="4" width="18" height="6" rx="1.8"/><rect x="3" y="14" width="18" height="6" rx="1.8"/><circle cx="7" cy="7" r="1" fill="currentColor" stroke="none"/><circle cx="7" cy="17" r="1" fill="currentColor" stroke="none"/><path d="M11 7h6M11 17h6"/></svg><span>{{t "Servers"}}</span></a>
+      <a href="/proxy-nodes"{{if eq .ActiveNav "proxy-nodes"}} class="is-active" aria-current="page"{{end}}><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="5" cy="12" r="2.2"/><circle cx="19" cy="6.5" r="2.2"/><circle cx="19" cy="17.5" r="2.2"/><path d="M7.2 12h3.3c2.5 0 2.5-5.5 6.3-5.5M10.5 12c2.5 0 2.5 5.5 6.3 5.5"/></svg><span>{{t "Proxy Nodes"}}</span></a>
+      <a href="/users"{{if eq .ActiveNav "users"}} class="is-active" aria-current="page"{{end}}><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="9.5" cy="8" r="3.2"/><path d="M3.5 19a6 6 0 0 1 12 0"/><circle cx="17" cy="9" r="2.3"/><path d="M16.5 14.5a4.5 4.5 0 0 1 4 4.5"/></svg><span>{{t "Users"}}</span></a>
+      <a href="/subscriptions"{{if eq .ActiveNav "subscriptions"}} class="is-active" aria-current="page"{{end}}><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m12 3 9 4.8-9 4.8-9-4.8L12 3Z"/><path d="m3 12.2 9 4.8 9-4.8"/><path d="m3 16.5 9 4.8 9-4.8"/></svg><span>{{t "Subscriptions"}}</span></a>
+      <a href="/settings"{{if eq .ActiveNav "settings"}} class="is-active" aria-current="page"{{end}}><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 7h10M18 7h2M4 12h4M12 12h8M4 17h12M20 17h0"/><circle cx="16" cy="7" r="2"/><circle cx="10" cy="12" r="2"/><circle cx="18" cy="17" r="2"/></svg><span>{{t "Settings"}}</span></a>
+    </nav>
+    <div class="global-header__footer">
+      {{if eq .Locale "zh-CN"}}
+      <a class="language-switch" href="/language/en" hreflang="en" lang="en" data-language-option="en">English</a>
+      {{else}}
+      <a class="language-switch" href="/language/zh-CN" hreflang="zh-CN" lang="zh-CN" data-language-option="zh-CN">中文</a>
+      {{end}}
+      <form novalidate action="/logout" method="post">
+        <input type="hidden" name="csrf_token" value="{{.CSRFToken}}">
+        <button class="button button--secondary button--small" type="submit">{{t "Sign out"}}</button>
+      </form>
+    </div>
+  </div>
+</header>
+{{end}}

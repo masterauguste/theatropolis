@@ -1,0 +1,390 @@
+syntax = "proto3";
+
+package theatropolis.control.v1;
+
+option go_package = "github.com/masterauguste/theatropolis/api/gen/theatropolis/control/v1;controlv1";
+
+service AgentControlService {
+  // Enroll binds a single-use enrollment token to an agent-generated
+  // Ed25519 public key. The private key never leaves the agent.
+  rpc Enroll(EnrollRequest) returns (EnrollResponse);
+
+  // Connect is an agent-initiated, long-lived control channel. The agent
+  // proves possession of its private key before receiving any commands.
+  rpc Connect(stream AgentFrame) returns (stream MasterFrame);
+}
+
+message EnrollRequest {
+  reserved 1;
+  reserved "agent_id";
+  bytes enrollment_token = 2;
+  bytes public_key = 3;
+}
+
+message EnrollResponse {
+  reserved 1;
+  reserved "agent_id";
+  int64 enrolled_at_unix = 2;
+}
+
+message AgentFrame {
+  uint64 sequence = 1;
+
+  oneof payload {
+    AgentHello hello = 10;
+    AgentProof proof = 11;
+    AgentHeartbeat heartbeat = 12;
+    ConfigValidationReport config_validation_report = 13;
+    ConfigDeploymentReport config_deployment_report = 14;
+    ConfigRuntimeReport config_runtime_report = 15;
+    AgentUpdateReport agent_update_report = 16;
+    SingBoxUpdateReport sing_box_update_report = 17;
+    AddressProbeReport address_probe_report = 18;
+    ManagedUserTrafficReport managed_user_traffic_report = 19;
+    ManagedUserAuthorityReport managed_user_authority_report = 20;
+    MasterMigrationReport master_migration_report = 21;
+    LinkLatencyReport link_latency_report = 22;
+    LinkLatencyProbeReport link_latency_probe_report = 23;
+    ReverseTunnelProbeReport reverse_tunnel_probe_report = 24;
+  }
+}
+
+message MasterFrame {
+  uint64 sequence = 1;
+
+  oneof payload {
+    AgentChallenge challenge = 10;
+    AuthenticationResult authentication_result = 11;
+    ValidateConfigCommand validate_config = 12;
+    DeployConfigCommand deploy_config = 13;
+    AgentUpdateCommand update_agent = 14;
+    SingBoxUpdateCommand update_sing_box = 15;
+    ProbeAddresses probe_addresses = 16;
+    ManagedUserAuthorityCommand managed_user_authority = 17;
+    ManagedUserTrafficAck managed_user_traffic_ack = 18;
+    ManagedUserTrafficRequest managed_user_traffic_request = 19;
+    MigrateMasterCommand migrate_master = 20;
+    LinkLatencyProbeCommand link_latency_probe = 21;
+    ReverseTunnelProbeCommand reverse_tunnel_probe = 22;
+  }
+}
+
+// Probe only the Agent's active generated reverse Links, never caller-supplied
+// network destinations. The topology digest binds readiness to the activated
+// transport while allowing independent entrance-user authority synchronization.
+message ReverseTunnelProbeCommand {
+  string request_id = 1;
+  bytes topology_sha256 = 2;
+}
+
+message ReverseTunnelProbeReport {
+  string request_id = 1;
+  bool ready = 2;
+}
+
+message MigrateMasterCommand {
+  string migration_id = 1;
+  string master_address = 2;
+}
+
+message MasterMigrationReport {
+  string migration_id = 1;
+  bool accepted = 2;
+  string error_code = 3;
+}
+
+message AgentHello {
+  reserved 1;
+  reserved "agent_id";
+  uint32 protocol_version = 2;
+  string agent_version = 3;
+  string operating_system = 4;
+  string architecture = 5;
+  repeated string capabilities = 6;
+  string sing_box_version = 7;
+  // Global-unicast interface addresses observed on the agent host, as plain
+  // IP strings (both families mixed; the master splits them by parsing).
+  repeated string reported_addresses = 8;
+  // The master resolves this enrolled key to its private server record. It is
+  // not a user-facing identifier and possession is proven by the challenge.
+  bytes public_key = 9;
+}
+
+message AgentChallenge {
+  bytes nonce = 1;
+  int64 expires_at_unix = 2;
+}
+
+message AgentProof {
+  bytes signature = 1;
+}
+
+message AuthenticationResult {
+  bool authenticated = 1;
+  string error_code = 2;
+  // Capabilities explicitly enabled by this Master for the authenticated
+  // session. An Agent must not send optional autonomous reports unless the
+  // corresponding capability is echoed here, which keeps rolling upgrades
+  // compatible with older Masters.
+  repeated string capabilities = 3;
+}
+
+message AgentHeartbeat {
+  int64 observed_at_unix = 1;
+  string active_revision_id = 2;
+  string sing_box_version = 3;
+  // Current global-unicast interface addresses, same encoding as in
+  // AgentHello; refreshed on every heartbeat.
+  repeated string reported_addresses = 4;
+}
+
+message ValidateConfigCommand {
+  string deployment_id = 1;
+  string revision_id = 2;
+  bytes config_sha256 = 3;
+  bytes config_json = 4;
+  uint32 timeout_seconds = 5;
+}
+
+enum ConfigValidationStatus {
+  CONFIG_VALIDATION_STATUS_UNSPECIFIED = 0;
+  CONFIG_VALIDATION_STATUS_VALID = 1;
+  CONFIG_VALIDATION_STATUS_INVALID = 2;
+  CONFIG_VALIDATION_STATUS_INTERNAL_ERROR = 3;
+}
+
+message ConfigValidationReport {
+  string deployment_id = 1;
+  string revision_id = 2;
+  bytes config_sha256 = 3;
+  ConfigValidationStatus status = 4;
+  string diagnostic = 5;
+  int64 checked_at_unix = 6;
+  uint64 duration_milliseconds = 7;
+}
+
+message DeployConfigCommand {
+  string deployment_id = 1;
+  string revision_id = 2;
+  bytes config_sha256 = 3;
+  bytes config_json = 4;
+  uint32 timeout_seconds = 5;
+}
+
+enum ConfigDeploymentStatus {
+  CONFIG_DEPLOYMENT_STATUS_UNSPECIFIED = 0;
+  CONFIG_DEPLOYMENT_STATUS_APPLIED = 1;
+  CONFIG_DEPLOYMENT_STATUS_VALIDATION_FAILED = 2;
+  CONFIG_DEPLOYMENT_STATUS_ACTIVATION_FAILED = 3;
+  CONFIG_DEPLOYMENT_STATUS_INTERNAL_ERROR = 4;
+}
+
+message ConfigDeploymentReport {
+  string deployment_id = 1;
+  string revision_id = 2;
+  bytes config_sha256 = 3;
+  ConfigDeploymentStatus status = 4;
+  string diagnostic = 5;
+  int64 completed_at_unix = 6;
+  uint64 duration_milliseconds = 7;
+}
+
+enum ConfigRuntimeStatus {
+  CONFIG_RUNTIME_STATUS_UNSPECIFIED = 0;
+  CONFIG_RUNTIME_STATUS_RUNNING = 1;
+  CONFIG_RUNTIME_STATUS_EXITED = 2;
+  CONFIG_RUNTIME_STATUS_RESTART_FAILED = 3;
+  CONFIG_RUNTIME_STATUS_VALIDATION_FAILED = 4;
+  CONFIG_RUNTIME_STATUS_ACTIVATION_FAILED = 5;
+  CONFIG_RUNTIME_STATUS_STOPPED = 6;
+  CONFIG_RUNTIME_STATUS_STOP_FAILED = 7;
+}
+
+message ConfigRuntimeReport {
+  bytes config_sha256 = 1;
+  ConfigRuntimeStatus status = 2;
+  string diagnostic = 3;
+  int64 observed_at_unix = 4;
+}
+
+message AgentUpdateCommand {
+  string request_id = 1;
+  string target_version = 2;
+}
+
+enum AgentUpdateStatus {
+  AGENT_UPDATE_STATUS_UNSPECIFIED = 0;
+  AGENT_UPDATE_STATUS_SCHEDULED = 1;
+  AGENT_UPDATE_STATUS_APPLIED = 2;
+  AGENT_UPDATE_STATUS_FAILED = 3;
+  AGENT_UPDATE_STATUS_REJECTED = 4;
+}
+
+message AgentUpdateReport {
+  string request_id = 1;
+  string target_version = 2;
+  string running_version = 3;
+  AgentUpdateStatus status = 4;
+  string diagnostic = 5;
+  int64 observed_at_unix = 6;
+}
+
+message SingBoxUpdateCommand {
+  string request_id = 1;
+  string target_version = 2;
+}
+
+enum SingBoxUpdateStatus {
+  SING_BOX_UPDATE_STATUS_UNSPECIFIED = 0;
+  SING_BOX_UPDATE_STATUS_SCHEDULED = 1;
+  SING_BOX_UPDATE_STATUS_APPLIED = 2;
+  SING_BOX_UPDATE_STATUS_FAILED = 3;
+  SING_BOX_UPDATE_STATUS_REJECTED = 4;
+}
+
+message SingBoxUpdateReport {
+  string request_id = 1;
+  string target_version = 2;
+  string running_version = 3;
+  SingBoxUpdateStatus status = 4;
+  string diagnostic = 5;
+  int64 observed_at_unix = 6;
+}
+
+message ProbeAddresses {
+  // Address family to probe: exactly "ipv4" or "ipv6".
+  string family = 1;
+}
+
+message AddressProbeReport {
+  // Echoes the requested family (even when it was unsupported).
+  string family = 1;
+  // Probed public address as a plain IP string; empty on failure.
+  string address = 2;
+  // Failure reason; empty on success.
+  string error = 3;
+}
+
+enum LinkLatencyStatus {
+  LINK_LATENCY_STATUS_UNSPECIFIED = 0;
+  LINK_LATENCY_STATUS_REACHABLE = 1;
+  LINK_LATENCY_STATUS_UNREACHABLE = 2;
+  LINK_LATENCY_STATUS_REFUSED = 3;
+}
+
+enum LinkLatencyProbeType {
+  LINK_LATENCY_PROBE_TYPE_UNSPECIFIED = 0;
+  LINK_LATENCY_PROBE_TYPE_TCP = 1;
+  LINK_LATENCY_PROBE_TYPE_QUIC = 2;
+}
+
+// LinkLatencyReport is advisory physical-path telemetry. TCP relays use a
+// connect probe and Hysteria2 uses a QUIC handshake. It carries no destination
+// address or credential; the authenticated Agent identity and generated
+// outbound tags are enough for the Master to bind it to applied topology.
+message LinkLatencyReport {
+  int64 observed_at_unix = 1;
+  repeated LinkLatencySample samples = 2;
+}
+
+message LinkLatencySample {
+  // Retained for compatibility with the first monitor implementation.
+  string outbound_tag = 1;
+  LinkLatencyStatus status = 2;
+  uint64 duration_milliseconds = 3;
+  // Stable hash of transport plus physical destination IP. Multiple logical
+  // Links to the same path share one sample and one history series.
+  string target_id = 4;
+  repeated string outbound_tags = 5;
+  LinkLatencyProbeType probe_type = 6;
+}
+
+message LinkLatencyProbeCommand {
+  string request_id = 1;
+  string address = 2;
+  uint32 port = 3;
+  LinkLatencyProbeType probe_type = 4;
+  string server_name = 5;
+  string obfs_type = 6;
+  string obfs_secret = 7;
+}
+
+message LinkLatencyProbeReport {
+  string request_id = 1;
+  LinkLatencyStatus status = 2;
+  uint64 duration_milliseconds = 3;
+}
+
+message ManagedUserTrafficReport {
+  // Reset-delta Agents generate a fresh identifier for every destructive-read
+  // batch. Legacy cumulative Agents use their stable ledger epoch.
+  string epoch = 1;
+  int64 observed_at_unix = 2;
+  repeated ManagedUserTraffic users = 3;
+  // Echoes an on-demand master request. An empty request ID denotes a
+  // periodic Agent push.
+  string request_id = 4;
+  // A bounded, non-sensitive collection failure. Failure reports carry no
+  // epoch or users and let the master retry without dropping the stream.
+  string diagnostic = 5;
+}
+
+message ManagedUserTraffic {
+  // SSM API path identifying the physical inbound listener.
+  string inbound_path = 1;
+  string username = 2;
+  uint64 uplink_bytes = 3;
+  uint64 downlink_bytes = 4;
+}
+
+// Legacy-only acknowledgement for cumulative-ledger Agents. Reset-delta
+// Agents keep no local accounting state and ignore this frame.
+message ManagedUserTrafficAck {
+  string epoch = 1;
+  repeated ManagedUserTraffic users = 2;
+}
+
+// ManagedUserTrafficRequest asks an authenticated Agent to atomically read and
+// clear its current traffic interval instead of waiting for the next push.
+message ManagedUserTrafficRequest {
+  string request_id = 1;
+}
+
+// ManagedUserAuthorityCommand is independent from topology deployment. Each
+// variant contains the full membership authority for one possible topology
+// shape, allowing revocations to remain authoritative during fleet rollback.
+message ManagedUserAuthorityCommand {
+  string request_id = 1;
+  uint64 user_revision = 2;
+  repeated ManagedUserAuthorityVariant variants = 3;
+}
+
+message ManagedUserAuthorityVariant {
+  bytes topology_sha256 = 1;
+  repeated ManagedUserAuthorityEndpoint endpoints = 2;
+}
+
+message ManagedUserAuthorityEndpoint {
+  string inbound_path = 1;
+  repeated ManagedUserAuthorityUser users = 2;
+}
+
+message ManagedUserAuthorityUser {
+  string username = 1;
+  string password = 2;
+}
+
+enum ManagedUserAuthorityStatus {
+  MANAGED_USER_AUTHORITY_STATUS_UNSPECIFIED = 0;
+  MANAGED_USER_AUTHORITY_STATUS_APPLIED = 1;
+  MANAGED_USER_AUTHORITY_STATUS_INVALID = 2;
+  MANAGED_USER_AUTHORITY_STATUS_INTERNAL_ERROR = 3;
+}
+
+message ManagedUserAuthorityReport {
+  string request_id = 1;
+  uint64 user_revision = 2;
+  ManagedUserAuthorityStatus status = 3;
+  string diagnostic = 4;
+  int64 completed_at_unix = 5;
+}
