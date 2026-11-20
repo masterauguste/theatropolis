@@ -1,6 +1,6 @@
 {
   "profile": "product-admin",
-  "sourceRoots": ["internal/webui/templates", "internal/webui/assets"],
+  "sourceRoots": ["web/src", "internal/webui"],
   "canonicalMap": "UX-CONTRACT.md",
   "requiredCapabilities": [
     "Table Selection",
@@ -16,8 +16,8 @@
     "Date": "native"
   },
   "commands": {
-    "test": "go test ./internal/webui ./internal/subscription ./internal/proxynode",
-    "build": "go build ./..."
+    "test": "npm --prefix web test && go test ./internal/webui ./internal/subscription ./internal/proxynode",
+    "build": "npm --prefix web run build && go build ./..."
   },
   "requiredCommands": ["test", "build"]
 }

@@ -4014,5 +4014,133 @@
   "Copies the main PROXY group (all available proxies, Direct, and Reject). You can edit or delete it later.": {
     "en": "Copies the main PROXY group (all available proxies, Direct, and Reject). You can edit or delete it later.",
     "zh-CN": "默认复制主 PROXY 组（包含所有可用代理、直连和拒绝），创建后可随时编辑或删除。"
+  },
+  "Account setup failed.": {
+    "en": "Account setup failed.",
+    "zh-CN": "账户设置失败。"
+  },
+  "Could not create Proxy Node.": {
+    "en": "Could not create Proxy Node.",
+    "zh-CN": "无法创建代理节点。"
+  },
+  "Could not create server enrollment.": {
+    "en": "Could not create server enrollment.",
+    "zh-CN": "无法创建服务器注册命令。"
+  },
+  "Could not create user.": {
+    "en": "Could not create user.",
+    "zh-CN": "无法创建用户。"
+  },
+  "Could not delete pool entry.": {
+    "en": "Could not delete pool entry.",
+    "zh-CN": "无法删除出站池条目。"
+  },
+  "Could not delete proxy group.": {
+    "en": "Could not delete proxy group.",
+    "zh-CN": "无法删除策略组。"
+  },
+  "Could not delete rule.": {
+    "en": "Could not delete rule.",
+    "zh-CN": "无法删除规则。"
+  },
+  "Could not rename server.": {
+    "en": "Could not rename server.",
+    "zh-CN": "无法重命名服务器。"
+  },
+  "Could not save address overrides.": {
+    "en": "Could not save address overrides.",
+    "zh-CN": "无法保存地址覆盖。"
+  },
+  "Could not save final policy.": {
+    "en": "Could not save final policy.",
+    "zh-CN": "无法保存最终策略。"
+  },
+  "Could not save pool entry.": {
+    "en": "Could not save pool entry.",
+    "zh-CN": "无法保存出站池条目。"
+  },
+  "Could not save proxy group.": {
+    "en": "Could not save proxy group.",
+    "zh-CN": "无法保存策略组。"
+  },
+  "Could not save rule.": {
+    "en": "Could not save rule.",
+    "zh-CN": "无法保存规则。"
+  },
+  "Could not update rule.": {
+    "en": "Could not update rule.",
+    "zh-CN": "无法更新规则。"
+  },
+  "Cutover failed.": {
+    "en": "Cutover failed.",
+    "zh-CN": "切换主控端失败。"
+  },
+  "Dismiss": {
+    "en": "Dismiss",
+    "zh-CN": "关闭"
+  },
+  "Export failed.": {
+    "en": "Export failed.",
+    "zh-CN": "导出失败。"
+  },
+  "Latency history unavailable": {
+    "en": "Latency history unavailable",
+    "zh-CN": "暂无延迟历史数据"
+  },
+  "Link latency": {
+    "en": "Link latency",
+    "zh-CN": "链路延迟"
+  },
+  "Master update failed.": {
+    "en": "Master update failed.",
+    "zh-CN": "主控端更新失败。"
+  },
+  "One value per line": {
+    "en": "One value per line",
+    "zh-CN": "每行输入一个值"
+  },
+  "One value per line or comma-separated": {
+    "en": "One value per line or comma-separated",
+    "zh-CN": "每行一个值或用逗号分隔"
+  },
+  "Open server and software actions": {
+    "en": "Open server and software actions",
+    "zh-CN": "打开服务器与软件操作"
+  },
+  "Request failed.": {
+    "en": "Request failed.",
+    "zh-CN": "请求失败。"
+  },
+  "Requesting…": {
+    "en": "Requesting…",
+    "zh-CN": "正在请求…"
+  },
+  "Restarting Master…": {
+    "en": "Restarting Master…",
+    "zh-CN": "正在重启主控端…"
+  },
+  "Restore failed.": {
+    "en": "Restore failed.",
+    "zh-CN": "恢复失败。"
+  },
+  "Search Nodes, protocols, or Agents": {
+    "en": "Search Nodes, protocols, or Agents",
+    "zh-CN": "搜索节点、协议或服务器"
+  },
+  "Sign in failed.": {
+    "en": "Sign in failed.",
+    "zh-CN": "登录失败。"
+  },
+  "Signing in…": {
+    "en": "Signing in…",
+    "zh-CN": "正在登录…"
+  },
+  "Time range": {
+    "en": "Time range",
+    "zh-CN": "时间范围"
+  },
+  "Unable to load sing-box versions.": {
+    "en": "Unable to load sing-box versions.",
+    "zh-CN": "无法加载 sing-box 版本列表。"
   }
 }

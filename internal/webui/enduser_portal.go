@@ -192,6 +192,11 @@ func (h *Handler) endUserClaimLink(response http.ResponseWriter, request *http.R
 	}
 	token := request.PathValue("token")
 	if !h.endUserAccess.InvitationValid(token) {
+		if wantsSPAShell(request) {
+			http.SetCookie(response, DeleteEndUserClaimCookie())
+			h.serveSPAIndexStatus(response, http.StatusGone)
+			return
+		}
 		h.render(response, http.StatusGone, "portal-claim.html", pageData{
 			Title: "Set Up Account", Error: "This invitation is invalid or has expired.",
 			EndUserLogin: &endUserLoginView{Unavailable: true, ReturnTo: "/claim"},
@@ -415,6 +420,10 @@ func (h *Handler) requireEndUserAuthentication(response http.ResponseWriter, req
 		target := "/portal/login"
 		if h.endUserAccess != nil && h.endUserAccess.Unified() {
 			target = "/login"
+		}
+		if wantsJSON(request) {
+			writeUnauthorizedJSON(response, target)
+			return EndUserSession{}, false
 		}
 		http.Redirect(response, request, target, http.StatusSeeOther)
 		return EndUserSession{}, false

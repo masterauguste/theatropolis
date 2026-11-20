@@ -26,7 +26,8 @@ the surrounding surfaces stay flat, quiet, and precise.
 
 ## Canonical tokens
 
-`internal/webui/assets/app.css` is the runtime owner. Its `:root` block maps
+`web/src/styles/app.css` is the runtime owner (compiled by Vite into embedded
+`internal/webui/dist/assets/`). Its `:root` block maps
 these names to the legacy-compatible CSS variables consumed by all screens.
 
 | Role | Value | Runtime mapping |

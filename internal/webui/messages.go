@@ -53,25 +53,6 @@ func (h *Handler) sessionCSRF(response http.ResponseWriter, request *http.Reques
 	_ = json.NewEncoder(response).Encode(map[string]string{"csrf_token": session.CSRFToken})
 }
 
-func (h *Handler) messageScript() http.HandlerFunc {
-	catalog, err := json.Marshal(messages)
-	if err != nil {
-		panic(err)
-	}
-	script, err := webFiles.ReadFile("assets/i18n.js")
-	if err != nil {
-		panic(err)
-	}
-	content := append([]byte("window.theatropolisMessages = "), catalog...)
-	content = append(content, ';', '\n')
-	content = append(content, script...)
-	return func(response http.ResponseWriter, _ *http.Request) {
-		response.Header().Set("Content-Type", "text/javascript; charset=utf-8")
-		response.Header().Set("Cache-Control", "public, max-age=300")
-		_, _ = response.Write(content)
-	}
-}
-
 func writeUserError(response http.ResponseWriter, detail string, status int) {
 	locale := response.Header().Get("Content-Language")
 	response.Header().Set("Cache-Control", "no-store")

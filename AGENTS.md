@@ -28,21 +28,23 @@ save a full re-exploration of the codebase.
 - `THEATROPOLIS_TEST_SUBSCRIPTION_SING_BOX=/path/to/sing-box go test
   ./internal/subscription` checks exported group profiles with the real engine.
 
-## UX recovery and localization update
+## Single-Page Application (SPA) frontend
 
-- `internal/webui/messages.json` now owns both English and Simplified Chinese
-  copy for templates and JavaScript. Templates use explicit `{{t "message"}}`
-  calls; `messages.go` serves that same catalog to `assets/i18n.js`. Runtime
-  HTML substring translation and the retired `config-editor.js` are removed.
-- `app.js` owns draft-safe background refresh, ordinary POST form recovery and
-  duplicate-submit prevention, plus migration download completion. Keep drafts
-  in document memory only. Master detection of older saved/pending topology
-  compares persisted desired/applied revisions, without requiring an in-memory
-  deployment job. Never claim recovery of unsent browser input.
-- Enhanced form requests identify themselves with `X-Theatropolis-Form: 1`.
-  Enrollment mutations return a 204 with `X-Theatropolis-Redirect` so browser
-  navigation alone consumes the session-bound, one-time installation command;
-  native forms retain their 303 redirect. Never fetch that result before navigation.
+- The web UI is a client-only React 18 + TypeScript + Vite 6 SPA under `web/`.
+  `npm --prefix web run build` emits static hashed bundles into
+  `internal/webui/dist/` (gitignored except `.gitkeep`), which Go embeds via
+  `//go:embed all:dist messages.json`. There is zero Node.js or React runtime on
+  the server; Go serves the static shell (`Accept: text/html`) and JSON views
+  (`Accept: application/json` / `X-Theatropolis-SPA: 1`) directly.
+- `internal/webui/messages.json` owns both English and Simplified Chinese copy
+  and is served via `GET /api/messages` and `GET /language/{locale}`.
+- Draft-safe form handling, CSRF refresh, duplicate-submit prevention, and
+  unmount-safe `beforeunload` dirty tracking live in `web/src/context/AppContext.tsx`
+  and `web/src/api/client.ts`. Keep drafts in document memory only.
+- Browser navigation to `/servers/enrollment-result?id=...` serves the SPA shell
+  without consuming the one-time installation command; the SPA then fetches the
+  JSON payload once via `X-Theatropolis-SPA: 1` (and `X-Theatropolis-Form: 1`
+  still returns `204` + `X-Theatropolis-Redirect`).
 - Global Users search management names/login usernames with URL-based filters
   and 50-row pagination. New custom Rule Set writes are rejected, but persisted
   legacy rules remain visible and active until explicitly converted or removed.
@@ -50,9 +52,8 @@ save a full re-exploration of the codebase.
   and reserve those names when deriving collision-free node names. Protocol
   type fields retain their lowercase schema spelling. Surge domain-regex
   omissions are explained on the universal policy page.
-- Run `node --test tests/webui-recovery.test.cjs` alongside Go tests. It covers
-  draft-preserving refresh, session expiry, failed writes, duplicate submission,
-  and preservation of a second form's draft.
+- Run `npm --prefix web run build` before Go builds/tests and `npm --prefix web test`
+  alongside Go tests.
 
 ## What this is
 
@@ -91,8 +92,8 @@ long-lived bidirectional stream to the master, and run/supervise sing-box.
   `THEATROPOLIS_TEST_WIREGUARD_SING_BOX=/path/to/sing-box go test
   ./internal/proxynode -run TestReverseWireGuardRealEngine` exercises real TCP
   and UDP transport without root or OS interfaces.
-  Run `node --test tests/webui-recovery.test.cjs tests/webui-reverse-wireguard.test.cjs`
-  for draft recovery and parent-owned CGNAT listener selection.
+  Run `npm --prefix web test` for SPA client, form recovery, and parent-owned
+  CGNAT listener selection unit tests.
 
 - `docs/proxy-node-manager-design.md` — implemented product model and
   old-format cutover/reinstallation policy for the Proxy Node manager.
@@ -179,11 +180,13 @@ declared in `go.mod`; run CI-parity verification on Linux. Native checks on othe
 hosts and Linux cross-builds are useful but do not replace Linux runtime tests.
 
 ```sh
+npm --prefix web ci
+npm --prefix web run build
+npm --prefix web test
 go mod verify
 go build ./...
 go test -count=1 ./...
 go vet ./...
-node --test tests/webui-recovery.test.cjs tests/webui-reverse-wireguard.test.cjs
 sh -n install.sh uninstall.sh
 shellcheck install.sh uninstall.sh tests/*.sh
 ```

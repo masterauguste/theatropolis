@@ -468,18 +468,9 @@ func TestWebUINegotiatesPersistsAndHonorsLanguagePreference(t *testing.T) {
 	if response.Code != http.StatusOK {
 		t.Fatalf("English login status = %d, body = %s", response.Code, response.Body.String())
 	}
-	body := response.Body.String()
-	for _, expected := range []string{
-		`<html lang="en">`,
-		`<title>Sign in · Theatropolis</title>`,
-		"Operator access",
-		"Sign in to continue",
-		`href="/language/zh-CN"`,
-		`lang="zh-CN" data-language-option="zh-CN">中文</a>`,
-	} {
-		if !strings.Contains(body, expected) {
-			t.Errorf("English login omitted %q", expected)
-		}
+	env := decodeSPA(t, response)
+	if env.Locale != localeEnglish || env.View != "login" || env.Data.Title != "Sign in" {
+		t.Errorf("English login envelope = %+v", env)
 	}
 	if got := response.Header().Get("Content-Language"); got != localeEnglish {
 		t.Errorf("English Content-Language = %q", got)
@@ -503,9 +494,9 @@ func TestWebUINegotiatesPersistsAndHonorsLanguagePreference(t *testing.T) {
 	request.Header.Set("Accept-Language", "zh-CN")
 	response = httptest.NewRecorder()
 	fixture.handler.ServeHTTP(response, request)
-	if body := response.Body.String(); !strings.Contains(body, `<html lang="en">`) ||
-		!strings.Contains(body, ">Servers<") || strings.Contains(body, ">服务器<") {
-		t.Fatalf("English preference did not override browser language: %s", body)
+	env = decodeSPA(t, response)
+	if env.Locale != localeEnglish || env.Data.Title != "Servers" {
+		t.Fatalf("English preference did not override browser language: %+v", env)
 	}
 	for _, header := range []string{"fr-FR, de;q=0.8", "zh-CN;q=0, en;q=0.7", "zh-CN;q=bogus"} {
 		request = fixture.requestWithoutLocale(http.MethodGet, "/login", "")
@@ -518,7 +509,12 @@ func TestWebUINegotiatesPersistsAndHonorsLanguagePreference(t *testing.T) {
 		assertLanguagePreferenceCookie(t, response, localeEnglish, fixture.now)
 	}
 
-	request = fixture.requestWithoutLocale(http.MethodGet, "/assets/app.css", "")
+	// Verify static SPA assets do not set language cookies.
+	entries, err := webFiles.ReadDir("dist/assets")
+	if err != nil || len(entries) == 0 {
+		t.Fatalf("read dist/assets: %v (len=%d)", err, len(entries))
+	}
+	request = fixture.requestWithoutLocale(http.MethodGet, "/assets/"+entries[0].Name(), "")
 	request.Header.Set("Accept-Language", "zh-CN")
 	response = httptest.NewRecorder()
 	fixture.handler.ServeHTTP(response, request)
@@ -583,33 +579,28 @@ func TestSimplifiedChineseCoversPrimaryWebUIRoutes(t *testing.T) {
 	t.Parallel()
 
 	fixture := newWebFixture(t)
-	for _, test := range []struct {
+	for _, tc := range []struct {
 		path string
-		want []string
+		view string
 	}{
-		{path: "/servers", want: []string{"服务器管理", "服务器设置", "添加服务器"}},
-		{path: "/servers/content", want: []string{"服务器概览", "服务器总数", "需要处理"}},
-		{path: "/servers/new", want: []string{"安全注册", "服务器身份", "注册有效期"}},
-		{path: "/proxy-nodes", want: []string{"代理服务", "代理节点", "路由拓扑"}},
-		{path: "/users", want: []string{"用户管理", "用户列表", "创建用户"}},
-		{path: "/subscriptions", want: []string{"配置订阅", "通用导出策略", "FINAL（未匹配规则）", "添加规则"}},
-		{path: "/settings", want: []string{"系统设置", "主控端", "流量统计错误"}},
+		{path: "/servers", view: "servers"},
+		{path: "/servers/content", view: "servers-content"},
+		{path: "/servers/new", view: "new-server"},
+		{path: "/proxy-nodes", view: "proxy-nodes"},
+		{path: "/users", view: "users"},
+		{path: "/subscriptions", view: "subscription-policy"},
+		{path: "/settings", view: "settings"},
 	} {
-		request := fixture.authenticatedRequestWithLocale(http.MethodGet, test.path, "", localeSimplifiedChinese)
+		request := fixture.authenticatedRequestWithLocale(http.MethodGet, tc.path, "", localeSimplifiedChinese)
 		response := httptest.NewRecorder()
 		fixture.handler.ServeHTTP(response, request)
 		if response.Code != http.StatusOK {
-			t.Errorf("GET %s in Chinese = %d, body = %s", test.path, response.Code, response.Body.String())
+			t.Errorf("GET %s in Chinese = %d, body = %s", tc.path, response.Code, response.Body.String())
 			continue
 		}
-		body := response.Body.String()
-		if !strings.Contains(body, `<html lang="zh-CN">`) && test.path != "/servers/content" {
-			t.Errorf("GET %s omitted Chinese document language", test.path)
-		}
-		for _, expected := range test.want {
-			if !strings.Contains(body, expected) {
-				t.Errorf("GET %s omitted Chinese text %q", test.path, expected)
-			}
+		env := decodeSPA(t, response)
+		if env.Locale != localeSimplifiedChinese || env.View != tc.view {
+			t.Errorf("GET %s in Chinese = locale=%q view=%q, want zh-CN/%s", tc.path, env.Locale, env.View, tc.view)
 		}
 	}
 }
@@ -695,25 +686,9 @@ func TestUsernamePasswordLoginFormIsAccessibleAndDoesNotReflectSecrets(t *testin
 	if response.Code != http.StatusOK {
 		t.Fatalf("GET /login status = %d, want %d", response.Code, http.StatusOK)
 	}
-	body := response.Body.String()
-	for _, expected := range []string{
-		`name="username"`,
-		`autocomplete="username"`,
-		`autocapitalize="none"`,
-		`spellcheck="false"`,
-		`pattern="[a-z0-9][a-z0-9._-]{0,63}"`,
-		`name="password"`,
-		`autocomplete="current-password"`,
-		`maxlength="512"`,
-		`aria-label="Show password"`,
-		`data-secret-label="password"`,
-	} {
-		if !strings.Contains(body, expected) {
-			t.Errorf("login form does not contain %q", expected)
-		}
-	}
-	if strings.Contains(body, `name="access_key"`) {
-		t.Fatal("username/password login page exposed the legacy access-key form")
+	env := decodeSPA(t, response)
+	if env.View != "login" || env.Data.LegacyLogin {
+		t.Fatalf("unexpected login envelope: %+v", env)
 	}
 
 	untrustedUsername := `operator"><script>alert(1)</script>`
@@ -732,19 +707,15 @@ func TestUsernamePasswordLoginFormIsAccessibleAndDoesNotReflectSecrets(t *testin
 			http.StatusUnauthorized,
 		)
 	}
-	body = response.Body.String()
-	if !strings.Contains(body, "The username or password was not accepted.") {
+	env = decodeSPA(t, response)
+	if !strings.Contains(env.Error, "The username or password was not accepted.") {
 		t.Fatal("invalid login did not return the generic credential error")
 	}
-	if strings.Contains(body, untrustedUsername) ||
-		!strings.Contains(body, "&lt;script&gt;") {
-		t.Fatal("invalid login did not safely preserve the submitted username")
+	if env.Data.Username != untrustedUsername {
+		t.Fatalf("invalid login did not preserve submitted username: %q", env.Data.Username)
 	}
-	if strings.Contains(body, submittedPassword) {
+	if strings.Contains(response.Body.String(), submittedPassword) {
 		t.Fatal("invalid login reflected the submitted password")
-	}
-	if count := strings.Count(body, `aria-invalid="true"`); count != 2 {
-		t.Fatalf("invalid login marked %d fields invalid, want 2", count)
 	}
 }
 
@@ -856,20 +827,9 @@ func TestLegacyAccessKeyLoginRemainsAvailableDuringMigration(t *testing.T) {
 	if response.Code != http.StatusOK {
 		t.Fatalf("legacy GET /login status = %d, want %d", response.Code, http.StatusOK)
 	}
-	body := response.Body.String()
-	for _, expected := range []string{
-		"Legacy sign-in",
-		`name="access_key"`,
-		`data-secret-label="access key"`,
-		`aria-label="Show access key"`,
-	} {
-		if !strings.Contains(body, expected) {
-			t.Errorf("legacy login form does not contain %q", expected)
-		}
-	}
-	if strings.Contains(body, `name="username"`) ||
-		strings.Contains(body, `name="password"`) {
-		t.Fatal("legacy login page exposed username/password fields")
+	env := decodeSPA(t, response)
+	if env.View != "login" || !env.Data.LegacyLogin {
+		t.Fatalf("legacy login envelope = %+v", env)
 	}
 
 	form := url.Values{
@@ -1113,21 +1073,9 @@ func TestServersPageUsesRealEnrollmentAndConnectionState(t *testing.T) {
 	request := fixture.authenticatedRequest(http.MethodGet, "/servers", "")
 	response := httptest.NewRecorder()
 	fixture.handler.ServeHTTP(response, request)
-	if response.Code != http.StatusOK ||
-		!strings.Contains(response.Body.String(), `data-async-url="/servers/content"`) ||
-		!strings.Contains(response.Body.String(), `data-version-catalog-url="/servers/versions"`) ||
-		!strings.Contains(response.Body.String(), `data-dialog-open="fleet-settings-dialog"`) ||
-		!strings.Contains(response.Body.String(), `id="fleet-settings-dialog"`) ||
-		!strings.Contains(response.Body.String(), `action="/servers/agent-update-all"`) ||
-		!strings.Contains(response.Body.String(), `action="/servers/sing-box-update-all"`) ||
-		!strings.Contains(response.Body.String(), "Loading servers…") {
-		t.Fatalf("GET /servers did not render the loading shell: %d %s", response.Code, response.Body.String())
-	}
-	if strings.Contains(response.Body.String(), "fleet-runtime-panel") {
-		t.Fatal("GET /servers still rendered sing-box management as a page-level panel")
-	}
-	if strings.Contains(response.Body.String(), "edge-online") {
-		t.Fatal("GET /servers blocked on and embedded fleet data instead of rendering its shell")
+	env := decodeSPA(t, response)
+	if response.Code != http.StatusOK || env.View != "servers" || len(env.Data.Agents) != 0 {
+		t.Fatalf("GET /servers did not return the lightweight shell: %d %+v", response.Code, env)
 	}
 
 	request = fixture.authenticatedRequest(http.MethodGet, "/servers/content", "")
@@ -1136,18 +1084,28 @@ func TestServersPageUsesRealEnrollmentAndConnectionState(t *testing.T) {
 	if response.Code != http.StatusOK {
 		t.Fatalf("GET /servers/content status = %d, body = %s", response.Code, response.Body.String())
 	}
+	env = decodeSPA(t, response)
+	if env.Data.Stats.Total != 4 || len(env.Data.Agents) != 4 {
+		t.Fatalf("servers content stats = %+v len=%d", env.Data.Stats, len(env.Data.Agents))
+	}
+	var sawOnline, sawOffline bool
+	for _, agent := range env.Data.Agents {
+		if agent.ConnectionClass == "online" {
+			sawOnline = true
+		} else {
+			sawOffline = true
+		}
+	}
+	if !sawOnline || !sawOffline {
+		t.Fatalf("servers agents missing online/offline mix: %+v", env.Data.Agents)
+	}
 	body := response.Body.String()
 	for _, expected := range []string{
-		`<h2 id="fleet-heading">Servers</h2>`,
 		"edge-pending",
 		"edge-expired",
 		"edge-online",
 		"edge-offline",
-		"Established",
-		"Not established",
-		"Agent version",
 		"v0.0.9",
-		"4 total",
 	} {
 		if !strings.Contains(body, expected) {
 			t.Errorf("servers page does not contain %q", expected)
@@ -1155,17 +1113,6 @@ func TestServersPageUsesRealEnrollmentAndConnectionState(t *testing.T) {
 	}
 	if strings.Contains(body, "fake") || strings.Contains(body, "TOKEN") {
 		t.Fatal("servers page contains placeholder data")
-	}
-	for _, unexpected := range []string{
-		"Singers",
-		"Troupe summary",
-		"server-name__avatar",
-		"Agent-managed server",
-		`data-label="Actions"`,
-	} {
-		if strings.Contains(body, unexpected) {
-			t.Errorf("servers page still contains %q", unexpected)
-		}
 	}
 	if response.Header().Get("Cache-Control") != "no-store" {
 		t.Fatalf("servers Cache-Control = %q", response.Header().Get("Cache-Control"))
@@ -1182,11 +1129,11 @@ func TestServerDetailHidesManagedSingBoxPatchSuffix(t *testing.T) {
 	request := fixture.authenticatedRequest(http.MethodGet, "/servers/edge-managed-version/manage", "")
 	response := httptest.NewRecorder()
 	fixture.handler.ServeHTTP(response, request)
-	body := response.Body.String()
-	if response.Code != http.StatusOK || !strings.Contains(body, "v1.14.0-rc.2") {
-		t.Fatalf("server detail omitted simplified sing-box version: %d %q", response.Code, body)
+	env := decodeSPA(t, response)
+	if response.Code != http.StatusOK || env.Data.Agent == nil || env.Data.Agent.SingBoxVersion != "v1.14.0-rc.2" {
+		t.Fatalf("server detail omitted simplified sing-box version: %d %+v", response.Code, env.Data.Agent)
 	}
-	if strings.Contains(body, "v1.14.0-rc.2.theatropolis.2") {
+	if strings.Contains(response.Body.String(), "v1.14.0-rc.2.theatropolis.2") {
 		t.Fatal("servers content exposed the managed sing-box patch suffix")
 	}
 
@@ -1198,11 +1145,9 @@ func TestServerDetailHidesManagedSingBoxPatchSuffix(t *testing.T) {
 	)
 	response = httptest.NewRecorder()
 	fixture.handler.ServeHTTP(response, request)
-	body = response.Body.String()
-	for _, expected := range []string{"Agent 版本", "sing-box 版本"} {
-		if response.Code != http.StatusOK || !strings.Contains(body, expected) {
-			t.Errorf("Chinese servers content omitted %q: %d %q", expected, response.Code, body)
-		}
+	env = decodeSPA(t, response)
+	if response.Code != http.StatusOK || env.Locale != localeSimplifiedChinese || env.Data.Agent.SingBoxVersion != "v1.14.0-rc.2" {
+		t.Errorf("Chinese server detail = %d locale=%q agent=%+v", response.Code, env.Locale, env.Data.Agent)
 	}
 }
 
@@ -1229,36 +1174,15 @@ func TestAuthenticatedHeaderLinksServersAndSettings(t *testing.T) {
 
 	fixture := newWebFixture(t)
 	request := fixture.authenticatedRequest(http.MethodGet, "/servers", "")
+	request.Header.Set("Accept", "text/html")
 	response := httptest.NewRecorder()
 	fixture.handler.ServeHTTP(response, request)
 	if response.Code != http.StatusOK {
 		t.Fatalf("GET /servers status = %d, body = %s", response.Code, response.Body.String())
 	}
-
 	body := response.Body.String()
-	for _, unexpected := range []string{
-		"Master endpoint",
-		"endpoint-card",
-		testPublicURL,
-	} {
-		if strings.Contains(body, unexpected) {
-			t.Errorf("authenticated header contains %q", unexpected)
-		}
-	}
-	for _, expected := range []string{
-		`class="global-header"`,
-		`href="/servers"`,
-		`href="/proxy-nodes"`,
-		`href="/users"`,
-		`href="/settings"`,
-		`action="/logout"`,
-	} {
-		if !strings.Contains(body, expected) {
-			t.Errorf("authenticated header does not contain %q", expected)
-		}
-	}
-	if strings.Contains(body, `class="sidebar"`) {
-		t.Fatal("authenticated page still renders the removed sidebar")
+	if !strings.Contains(body, `<div id="root"></div>`) || strings.Contains(body, testPublicURL) {
+		t.Fatalf("unexpected SPA HTML shell: %s", body)
 	}
 }
 
@@ -1271,50 +1195,9 @@ func TestSettingsPageOwnsMasterSoftwareManagement(t *testing.T) {
 	if response.Code != http.StatusOK {
 		t.Fatalf("GET /settings status = %d, body = %s", response.Code, response.Body.String())
 	}
-	body := response.Body.String()
-	for _, expected := range []string{
-		"Global settings",
-		"Master software",
-		`action="/master-update"`,
-		`data-master-latest-label`,
-		`data-agent-catalog-loading`,
-		`data-master-version-refresh`,
-		`data-version-catalog-url="/settings/versions"`,
-		`href="/settings" class="is-active"`,
-		`data-dialog-open="master-migration-menu"`,
-		`id="master-migration-source"`,
-		`id="master-migration-destination"`,
-		"Move From This Master",
-		"Receive Migration",
-		`action="/settings/migration/export"`,
-		`action="/settings/migration/restore"`,
-		`action="/settings/migration/cutover"`,
-		`data-dialog-open="administrator-proxy-access-confirm"`,
-		`role="switch" aria-checked="false"`,
-		`action="/settings/administrator-proxy-access"`,
-	} {
-		if !strings.Contains(body, expected) {
-			t.Errorf("settings page does not contain %q", expected)
-		}
-	}
-	for _, removed := range []string{`aria-labelledby="migration-heading"`, `id="master-migration-dialog"`, "1. Export", "2. Restore", "3. Switch Online Servers"} {
-		if strings.Contains(body, removed) {
-			t.Errorf("settings page still contains obsolete migration UI %q", removed)
-		}
-	}
-	sourceStart := strings.Index(body, `id="master-migration-source"`)
-	destinationStart := strings.Index(body, `id="master-migration-destination"`)
-	accountingStart := strings.Index(body, `aria-labelledby="accounting-errors-heading"`)
-	if sourceStart < 0 || destinationStart <= sourceStart || accountingStart <= destinationStart {
-		t.Fatalf("migration dialogs are not rendered as separate ordered surfaces")
-	}
-	sourceDialog := body[sourceStart:destinationStart]
-	destinationDialog := body[destinationStart:accountingStart]
-	if !strings.Contains(sourceDialog, `action="/settings/migration/export"`) || !strings.Contains(sourceDialog, `action="/settings/migration/cutover"`) || strings.Contains(sourceDialog, `action="/settings/migration/restore"`) {
-		t.Errorf("source migration dialog does not exclusively own export and cutover")
-	}
-	if !strings.Contains(destinationDialog, `action="/settings/migration/restore"`) || strings.Contains(destinationDialog, `action="/settings/migration/export"`) || strings.Contains(destinationDialog, `action="/settings/migration/cutover"`) {
-		t.Errorf("destination migration dialog does not exclusively own restore")
+	env := decodeSPA(t, response)
+	if env.View != "settings" || env.Data.ActiveNav != "settings" || env.Data.MasterVersion == "" || env.Data.AdministratorProxyAccessEnabled {
+		t.Fatalf("unexpected settings envelope: %+v", env)
 	}
 }
 
@@ -1333,8 +1216,9 @@ func TestSettingsToggleControlsAdministratorProxyAccess(t *testing.T) {
 	request := fixture.authenticatedRequest(http.MethodGet, "/subscriptions", "")
 	response := httptest.NewRecorder()
 	fixture.handler.ServeHTTP(response, request)
-	if response.Code != http.StatusOK || strings.Contains(response.Body.String(), `href="/subscriptions/admin"`) {
-		t.Fatalf("disabled administrator subscription link = %d %q", response.Code, response.Body.String())
+	env := decodeSPA(t, response)
+	if response.Code != http.StatusOK || env.Data.AdministratorProxyAccessEnabled {
+		t.Fatalf("disabled administrator subscription state = %d %+v", response.Code, env.Data.AdministratorProxyAccessEnabled)
 	}
 	request = fixture.authenticatedRequest(http.MethodGet, "/subscriptions/admin", "")
 	response = httptest.NewRecorder()
@@ -1348,9 +1232,9 @@ func TestSettingsToggleControlsAdministratorProxyAccess(t *testing.T) {
 	}.Encode())
 	response = httptest.NewRecorder()
 	fixture.handler.ServeHTTP(response, request)
-	if response.Code != http.StatusOK || !strings.Contains(response.Body.String(), "Administrator proxy access enabled.") ||
-		!strings.Contains(response.Body.String(), `role="switch" aria-checked="true"`) {
-		t.Fatalf("enable administrator access = %d %q", response.Code, response.Body.String())
+	env = decodeSPA(t, response)
+	if response.Code != http.StatusOK || env.Notice != "Administrator proxy access enabled." || !env.Data.AdministratorProxyAccessEnabled {
+		t.Fatalf("enable administrator access = %d %+v", response.Code, env)
 	}
 	state := fixture.proxyNodes.Snapshot()
 	current, _ := fixture.proxyNodes.ProxyNode(node.ID)
@@ -1364,9 +1248,9 @@ func TestSettingsToggleControlsAdministratorProxyAccess(t *testing.T) {
 	}.Encode())
 	response = httptest.NewRecorder()
 	fixture.handler.ServeHTTP(response, request)
-	if response.Code != http.StatusOK || !strings.Contains(response.Body.String(), "Administrator proxy access disabled.") ||
-		!strings.Contains(response.Body.String(), `role="switch" aria-checked="false"`) {
-		t.Fatalf("disable administrator access = %d %q", response.Code, response.Body.String())
+	env = decodeSPA(t, response)
+	if response.Code != http.StatusOK || env.Notice != "Administrator proxy access disabled." || env.Data.AdministratorProxyAccessEnabled {
+		t.Fatalf("disable administrator access = %d %+v", response.Code, env)
 	}
 	state = fixture.proxyNodes.Snapshot()
 	current, _ = fixture.proxyNodes.ProxyNode(node.ID)
@@ -1513,20 +1397,14 @@ func TestSettingsPageShowsAccountingFailureHistory(t *testing.T) {
 	if response.Code != http.StatusOK {
 		t.Fatalf("GET /settings status = %d, body = %s", response.Code, response.Body.String())
 	}
-	body := response.Body.String()
-	for _, expected := range []string{
-		"Accounting errors",
-		"2 recorded",
-		"Entrance sample collection failed",
-		"Master could not persist usage",
-		`href="/servers/edge-online/manage"`,
-	} {
-		if !strings.Contains(body, expected) {
-			t.Errorf("settings accounting history does not contain %q", expected)
-		}
+	env := decodeSPA(t, response)
+	if env.Data.AccountingFailureTotal != 2 || len(env.Data.AccountingFailures) != 2 {
+		t.Fatalf("settings accounting failures = total:%d len:%d", env.Data.AccountingFailureTotal, len(env.Data.AccountingFailures))
 	}
-	if strings.Index(body, "Master could not persist usage") > strings.Index(body, "Entrance sample collection failed") {
-		t.Fatal("settings accounting history is not newest-first")
+	if env.Data.AccountingFailures[0].AgentID != "edge-online" ||
+		!strings.Contains(env.Data.AccountingFailures[0].Reason, "Master could not persist usage") ||
+		!strings.Contains(env.Data.AccountingFailures[1].Reason, "Entrance sample collection failed") {
+		t.Fatalf("settings accounting failures not newest-first: %+v", env.Data.AccountingFailures)
 	}
 }
 
@@ -1594,9 +1472,10 @@ func TestAdminAndPortalShowDailyUserTraffic(t *testing.T) {
 	request := fixture.authenticatedRequest(http.MethodGet, "/users/"+url.PathEscape(user.ID), "")
 	response := httptest.NewRecorder()
 	fixture.handler.ServeHTTP(response, request)
-	if response.Code != http.StatusOK || !strings.Contains(response.Body.String(), "Daily Traffic") ||
-		!strings.Contains(response.Body.String(), "5.00 MiB") || !strings.Contains(response.Body.String(), "Cinema") {
-		t.Fatalf("admin daily traffic = %d %q", response.Code, response.Body.String())
+	env := decodeSPA(t, response)
+	if response.Code != http.StatusOK || env.Data.EndUser == nil || len(env.Data.EndUser.DailyUsage) != 1 ||
+		env.Data.EndUser.DailyUsage[0].TotalLabel != "5.00 MiB" || !strings.Contains(response.Body.String(), "Cinema") {
+		t.Fatalf("admin daily traffic = %d %+v", response.Code, env.Data.EndUser)
 	}
 
 	invitation, _, err := fixture.endUsers.IssueInvitation(user.ID, defaultUserInviteLifetime)
@@ -1611,21 +1490,22 @@ func TestAdminAndPortalShowDailyUserTraffic(t *testing.T) {
 	request.AddCookie(NewEndUserSessionCookie(portalSession.Token, portalSession.ExpiresAt))
 	response = httptest.NewRecorder()
 	fixture.handler.ServeHTTP(response, request)
-	if response.Code != http.StatusOK || !strings.Contains(response.Body.String(), "Daily Traffic") ||
-		!strings.Contains(response.Body.String(), "5.00 MiB") || !strings.Contains(response.Body.String(), "Cinema") {
-		t.Fatalf("portal daily traffic = %d %q", response.Code, response.Body.String())
+	env = decodeSPA(t, response)
+	if response.Code != http.StatusOK || env.Data.EndUserPortal == nil || len(env.Data.EndUserPortal.DailyUsage) != 1 ||
+		env.Data.EndUserPortal.DailyUsage[0].TotalLabel != "5.00 MiB" || !strings.Contains(response.Body.String(), "Cinema") {
+		t.Fatalf("portal daily traffic = %d %+v", response.Code, env.Data.EndUserPortal)
 	}
 
 	request = fixture.requestWithLocale(http.MethodGet, "/portal", "", localeSimplifiedChinese)
 	request.AddCookie(NewEndUserSessionCookie(portalSession.Token, portalSession.ExpiresAt))
 	response = httptest.NewRecorder()
 	fixture.handler.ServeHTTP(response, request)
-	localizedBody := response.Body.String()
-	if response.Code != http.StatusOK ||
-		!regexp.MustCompile(`<time datetime="[^"]+" data-local-datetime>\d{4}年\d{1,2}月\d{1,2}日 \d{2}:\d{2}</time>`).MatchString(localizedBody) ||
-		strings.Contains(localizedBody, "（UTC+8）") ||
-		strings.Contains(localizedBody, "到期时间：") {
-		t.Fatalf("localized portal dates = %d %q", response.Code, localizedBody)
+	env = decodeSPA(t, response)
+	if response.Code != http.StatusOK || env.Data.EndUserPortal == nil || len(env.Data.EndUserPortal.Nodes) != 1 ||
+		!regexp.MustCompile(`^\d{4}年\d{1,2}月\d{1,2}日 \d{2}:\d{2}$`).MatchString(env.Data.EndUserPortal.Nodes[0].ResetLabel) ||
+		strings.Contains(response.Body.String(), "（UTC+8）") ||
+		strings.Contains(response.Body.String(), "到期时间：") {
+		t.Fatalf("localized portal dates = %d %+v", response.Code, env.Data.EndUserPortal)
 	}
 }
 
@@ -1657,7 +1537,7 @@ func TestEndUserPortalDoesNotPresentDesiredOnlyNodeAsAvailable(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	render := func(locale string) string {
+	render := func(locale string) spaEnvelope {
 		request := fixture.requestWithLocale(http.MethodGet, "/portal", "", locale)
 		request.AddCookie(NewEndUserSessionCookie(portalSession.Token, portalSession.ExpiresAt))
 		response := httptest.NewRecorder()
@@ -1665,25 +1545,20 @@ func TestEndUserPortalDoesNotPresentDesiredOnlyNodeAsAvailable(t *testing.T) {
 		if response.Code != http.StatusOK {
 			t.Fatalf("GET portal with desired-only Node = %d %q", response.Code, response.Body.String())
 		}
-		return response.Body.String()
+		return decodeSPA(t, response)
 	}
-	body := render(localeEnglish)
-	for _, expected := range []string{
-		"Draft Cinema", `membership-status--pending">Pending Apply`, "Entrance is not available until topology is applied.",
-	} {
-		if !strings.Contains(body, expected) {
-			t.Errorf("pending portal Node does not contain %q", expected)
-		}
+	en := render(localeEnglish)
+	if en.Data.EndUserPortal == nil || len(en.Data.EndUserPortal.Nodes) != 1 {
+		t.Fatalf("unexpected pending portal payload: %+v", en.Data.EndUserPortal)
 	}
-	if strings.Contains(body, "AnyTLS · edge-draft") || strings.Contains(body, `membership-status--active">Active`) {
-		t.Fatal("desired-only portal Node was presented as an available running entrance")
+	pendingNode := en.Data.EndUserPortal.Nodes[0]
+	if pendingNode.Name != "Draft Cinema" || !pendingNode.PendingApply || pendingNode.StatusClass != "pending" || pendingNode.StatusLabel != "Pending Apply" {
+		t.Fatalf("desired-only portal Node = %+v", pendingNode)
 	}
 
-	chinese := render(localeSimplifiedChinese)
-	for _, expected := range []string{"等待应用", "拓扑应用前，入口暂不可用。"} {
-		if !strings.Contains(chinese, expected) {
-			t.Errorf("Chinese pending portal Node does not contain %q", expected)
-		}
+	zh := render(localeSimplifiedChinese)
+	if zh.Data.EndUserPortal.Nodes[0].StatusLabel != "等待应用" || !zh.Data.EndUserPortal.Nodes[0].PendingApply {
+		t.Fatalf("Chinese pending portal Node = %+v", zh.Data.EndUserPortal.Nodes[0])
 	}
 }
 
@@ -1707,37 +1582,18 @@ func TestServerManagementPageShowsProxyNodeRoleAndRevocationControls(t *testing.
 			response.Body.String(),
 		)
 	}
-	body := response.Body.String()
-	for _, expected := range []string{
-		"Server management",
-		"edge-online",
-		"Proxy Node Assignments",
-		"Open Proxy Nodes",
-		`action="/servers/edge-online/revoke"`,
-		`action="/servers/edge-online/replace"`,
-		"Create replacement command",
-		`name="confirm_revoke"`,
-		"Revoke access",
-		"does not uninstall the remote agent",
-	} {
-		if !strings.Contains(body, expected) {
-			t.Errorf("server management page does not contain %q", expected)
-		}
+	env := decodeSPA(t, response)
+	if env.View != "server" || env.Data.Agent == nil || env.Data.Agent.ID != "edge-online" {
+		t.Fatalf("server management view = %q agent = %+v", env.View, env.Data.Agent)
 	}
-	if strings.Contains(body, testPublicURL) {
-		t.Fatal("server management page exposed the master endpoint")
+	if env.Data.Agent.URL != "/servers/edge-online/manage" {
+		t.Fatalf("server manage URL = %q", env.Data.Agent.URL)
 	}
-	if strings.Contains(body, "Master software") || strings.Contains(body, `action="/master-update"`) {
-		t.Fatal("server management page still contains global master controls")
+	if env.Data.MasterUpdateEnabled {
+		t.Fatal("server management page still exposes global master update controls")
 	}
-	for _, removed := range []string{
-		"Validate and deploy",
-		`action="/servers/edge-online/configuration"`,
-		`name="scope_type"`,
-	} {
-		if strings.Contains(body, removed) {
-			t.Errorf("server management page still contains verbose routing label %q", removed)
-		}
+	if strings.Contains(response.Body.String(), "/servers/edge-online/configuration") {
+		t.Fatal("server management page still contains retired configuration endpoint")
 	}
 
 	request = fixture.authenticatedRequest(
@@ -1783,9 +1639,13 @@ func TestReplaceServerCreatesTokenWithoutRevokingCurrentKey(t *testing.T) {
 	if response.Code != http.StatusOK {
 		t.Fatalf("replacement result status = %d", response.Code)
 	}
-	match := regexp.MustCompile(`--token &#39;([A-Za-z0-9_-]{43})&#39;`).FindStringSubmatch(response.Body.String())
+	env := decodeSPA(t, response)
+	if env.Data.Created == nil {
+		t.Fatal("replacement result did not contain Created payload")
+	}
+	match := regexp.MustCompile(`--token '([A-Za-z0-9_-]{43})'`).FindStringSubmatch(env.Data.Created.InstallCommand)
 	if len(match) != 2 {
-		t.Fatal("replacement result did not contain a token")
+		t.Fatalf("replacement result did not contain a token: %q", env.Data.Created.InstallCommand)
 	}
 	stillCurrent, err := fixture.registry.PublicKey(context.Background(), "edge-replacement")
 	if err != nil || !bytes.Equal(stillCurrent, currentKey) {
@@ -1920,61 +1780,38 @@ func TestProxyNodePagesUseLinkOwnedRulesAndMembershipCredentials(t *testing.T) {
 	if response.Code != http.StatusOK {
 		t.Fatalf("GET Proxy Node tree = %d %q", response.Code, response.Body.String())
 	}
+	env := decodeSPA(t, response)
+	if env.View != "proxy-node" || env.Data.ProxyNode == nil {
+		t.Fatalf("GET Proxy Node detail view = %q proxyNode = %+v", env.View, env.Data.ProxyNode)
+	}
+	nodeView := env.Data.ProxyNode
+	if nodeView.Tree == nil || nodeView.TerminalCount != 3 || !nodeView.Tree.ShowFallback || nodeView.Tree.Final != "reject" {
+		t.Fatalf("Proxy Node tree = %+v terminalCount=%d", nodeView.Tree, nodeView.TerminalCount)
+	}
+	if len(nodeView.Tree.Branches) != 2 || nodeView.Tree.Branches[0].RuleID != firstRule.ID || nodeView.Tree.Branches[1].RuleID != secondRule.ID {
+		t.Fatalf("Proxy Node branches = %+v", nodeView.Tree.Branches)
+	}
+	if nodeView.Tree.Branches[0].RuleLabel != "Domain suffix" || nodeView.Tree.Branches[0].RuleValues != "example.net" {
+		t.Fatalf("first branch = %+v", nodeView.Tree.Branches[0])
+	}
+	if nodeView.Tree.Branches[1].RuleLabel != "Protocol" || nodeView.Tree.Branches[1].RuleValues != "bittorrent" {
+		t.Fatalf("second branch = %+v", nodeView.Tree.Branches[1])
+	}
+	if nodeView.Tree.Branches[0].Latency.Label != "42 ms" || nodeView.Tree.Branches[0].Latency.ProbeType != "tcp" {
+		t.Fatalf("first branch latency = %+v", nodeView.Tree.Branches[0].Latency)
+	}
+	if len(nodeView.Tree.Children) != 2 {
+		t.Fatalf("Proxy Node links = %+v", nodeView.Tree.Children)
+	}
+	if nodeView.Tree.Children[0].Protocol != "SS2022" || nodeView.Tree.Children[0].Listener != "[::]:8443" {
+		t.Fatalf("first link = %+v", nodeView.Tree.Children[0])
+	}
+	if nodeView.Tree.Children[0].Child == nil || nodeView.Tree.Children[0].Child.ID != child.ID {
+		t.Fatalf("first link child = %+v", nodeView.Tree.Children[0].Child)
+	}
 	body := response.Body.String()
-	for _, expected := range []string{
-		"Left-to-right relay tree", `data-proxy-inspector-open="rule-` + firstRule.ID + `"`, `data-proxy-inspector-open="rule-` + secondRule.ID + `"`,
-		"Terminal on edge-online", `proxy-map__node--reject`, `data-dialog-open="proxy-entrance-dialog"`, `id="proxy-entrance-dialog"`,
-		`action="/proxy-nodes/` + node.ID + `/entrance"`, "Listener and protocol",
-		"Move Hop", "Create Branch", `class="proxy-inspector__editor-card-body"`, `data-dialog-open="proxy-add-link-` + node.Entrance.HopID + `"`, "ALL — fallback",
-		"Fallback", "Route ALL", `data-proxy-match-default="none"`,
-		"Relay Branch", "Duplicate Branch", "Edit Relay", "Save Relay", "Replace Destination",
-		"To keep the subtree, move the child Hop instead.",
-		`action="` + proxyLinkURL(node.ID, link.ID) + `/destination"`,
-		`data-proxy-rule-branch="` + firstRule.ID + `"`,
-		`data-proxy-rule-set`, `data-rule-set-kind`,
-		`data-reorder-url="/proxy-nodes/` + node.ID + `/hops/` + node.Entrance.HopID + `/rules/reorder"`, "Delete branch",
-		`<option value="shadowsocks"`, `<option value="anytls"`, `<option value="hysteria2"`,
-		"example.net", "Address family", "Multiplex", "[::]:8443",
-		"TCP latency", `class="proxy-map__link proxy-map__link--with-latency`, `data-link-latency="` + link.ID + `"`, "42 ms",
-		"Live TCP Probe", "Link Monitor", `data-dialog-open="proxy-link-monitor-` + link.ID + `"`, `id="proxy-link-monitor-` + link.ID + `"`,
-		`data-history-url="` + proxyLinkURL(node.ID, link.ID) + `/latency-history"`, `data-option-detail="42 ms · TCP"`,
-	} {
-		if !strings.Contains(body, expected) {
-			t.Errorf("Proxy Node tree does not contain %q", expected)
-		}
-	}
-	editDialogStart := strings.Index(body, `id="proxy-edit-link-`+link.ID+`"`)
-	if editDialogStart < 0 {
-		t.Fatal("Proxy Node tree omitted the relay editor")
-	}
-	editDialogEnd := strings.Index(body[editDialogStart:], "</dialog>")
-	if editDialogEnd < 0 {
-		t.Fatal("Proxy Node relay editor is not a complete dialog")
-	}
-	if strings.Contains(body[editDialogStart:editDialogStart+editDialogEnd], "data-link-monitor") {
-		t.Error("Proxy Node relay editor still contains Link history")
-	}
-	for _, removed := range []string{"Every configured path reaches an exit", `class="proxy-map__health"`, "Deploy fleet", `name="scope"`, `name="scope_type"`, `name="scope_value"`, `name="auth_user"`, `proxy-map__node--direct`, "Terminal on edge-exit", `id="proxy-hop-manager"`, `data-proxy-hop-manage`, `data-proxy-hop-manager-view`, "Ordered child Links", "Mux padding", "TCP Brutal", "Private branch credential and auth_user", "Branch settings", "<dt>Isolation</dt>"} {
-		if strings.Contains(body, removed) {
-			t.Errorf("Proxy Node tree contains removed control or Direct terminal marker %q", removed)
-		}
-	}
-	ruleInspectorStart := strings.Index(body, `data-proxy-inspector-view="rule-`+firstRule.ID+`"`)
-	if ruleInspectorStart < 0 {
-		t.Fatal("Proxy Node tree omitted the first Rule inspector")
-	}
-	ruleInspectorEnd := strings.Index(body[ruleInspectorStart:], "</section>")
-	if ruleInspectorEnd < 0 {
-		t.Fatal("Proxy Node Rule inspector has no closing section")
-	}
-	ruleInspector := body[ruleInspectorStart : ruleInspectorStart+ruleInspectorEnd]
-	for _, expected := range []string{
-		`data-dialog-open="proxy-edit-link-` + link.ID + `"`,
-		`data-dialog-open="proxy-replace-link-` + link.ID + `"`,
-	} {
-		if !strings.Contains(ruleInspector, expected) {
-			t.Errorf("Rule inspector does not expose Link action %q", expected)
-		}
+	if strings.Contains(body, `/rule-sets`) {
+		t.Error("Proxy Node tree still exposes custom Rule Set management")
 	}
 	request = fixture.authenticatedRequestWithLocale(
 		http.MethodGet,
@@ -1984,14 +1821,9 @@ func TestProxyNodePagesUseLinkOwnedRulesAndMembershipCredentials(t *testing.T) {
 	)
 	response = httptest.NewRecorder()
 	fixture.handler.ServeHTTP(response, request)
-	chineseBody := response.Body.String()
-	for _, expected := range []string{"编辑中继", "替换目标", "替换目标会删除", "如需保留子树", "1 个配置"} {
-		if response.Code != http.StatusOK || !strings.Contains(chineseBody, expected) {
-			t.Errorf("Chinese Link editor omitted %q: %d %q", expected, response.Code, chineseBody)
-		}
-	}
-	if strings.Contains(body, `/rule-sets`) || strings.Contains(body, `>Rule Sets<`) {
-		t.Error("Proxy Node tree still exposes custom Rule Set management")
+	zhEnv := decodeSPA(t, response)
+	if response.Code != http.StatusOK || zhEnv.Locale != localeSimplifiedChinese || zhEnv.Data.ProxyNode == nil {
+		t.Fatalf("Chinese Proxy Node detail = %d %+v", response.Code, zhEnv)
 	}
 	request = fixture.authenticatedRequest(http.MethodGet, "/proxy-nodes/"+url.PathEscape(node.ID)+"/rule-sets", "")
 	response = httptest.NewRecorder()
@@ -1999,60 +1831,11 @@ func TestProxyNodePagesUseLinkOwnedRulesAndMembershipCredentials(t *testing.T) {
 	if response.Code != http.StatusNotFound {
 		t.Fatalf("removed custom Rule Set route = %d, want 404", response.Code)
 	}
-	if strings.Contains(body, `data-proxy-inspector-view="hop-`+node.Entrance.HopID+`"`) {
-		t.Error("entrance still uses the shared Hop inspector")
-	}
-	if strings.Contains(body, `/deploy"`) || !strings.Contains(body, `data-topology-workflow`) {
-		t.Error("Proxy Node tree still exposes a manual topology Save workflow")
-	}
 	request = fixture.authenticatedRequest(http.MethodGet, "/proxy-nodes/"+url.PathEscape(node.ID)+"/latencies", "")
 	response = httptest.NewRecorder()
 	fixture.handler.ServeHTTP(response, request)
 	if response.Code != http.StatusOK || response.Header().Get("Cache-Control") != "no-store" || !strings.Contains(response.Body.String(), `"label":"42 ms"`) {
 		t.Fatalf("Link latency endpoint = %d %q", response.Code, response.Body.String())
-	}
-	childAgentAction := `action="/proxy-nodes/` + node.ID + `/hops/` + child.ID + `" method="post"`
-	if !strings.Contains(body, childAgentAction) {
-		t.Errorf("child Hop inspector does not expose safe Hop movement: %q", childAgentAction)
-	}
-	linkBranch := strings.Index(body, `data-proxy-inspector-open="rule-`+firstRule.ID+`"`)
-	fallbackBranch := strings.Index(body, `data-proxy-inspector-open="terminal-`+node.Entrance.HopID+`-fallback"`)
-	if linkBranch < 0 || fallbackBranch < 0 || fallbackBranch < linkBranch {
-		t.Errorf("fallback branch is not rendered after the Link branch: link=%d fallback=%d", linkBranch, fallbackBranch)
-	}
-	linkButtonStart := strings.LastIndex(body[:linkBranch], "<button")
-	linkButtonEnd := strings.Index(body[linkBranch:], "</button>")
-	if linkButtonStart < 0 || linkButtonEnd < 0 {
-		t.Fatal("Proxy Node tree omitted the Link button")
-	}
-	linkButtonEnd += linkBranch
-	linkButtonOpenEnd := strings.Index(body[linkButtonStart:linkButtonEnd], ">")
-	if linkButtonOpenEnd < 0 {
-		t.Fatal("Proxy Node Link button has no closing angle bracket")
-	}
-	linkButtonInner := strings.TrimSpace(body[linkButtonStart+linkButtonOpenEnd+1 : linkButtonEnd])
-	if !strings.Contains(linkButtonInner, "Domain suffix") || !strings.Contains(linkButtonInner, "example.net") {
-		t.Errorf("tree Link button content = %q, want the first match rule", linkButtonInner)
-	}
-	if strings.Contains(linkButtonInner, "SS2022") {
-		t.Errorf("tree Link button content = %q, should not show protocol", linkButtonInner)
-	}
-	for _, rule := range []proxynode.Rule{firstRule, secondRule} {
-		if !strings.Contains(body, `data-proxy-inspector-view="rule-`+rule.ID+`"`) {
-			t.Errorf("tree omitted the inspector for Rule %q", rule.ID)
-		}
-		if !strings.Contains(body, `/rules/`+rule.ID+`" method="post"`) {
-			t.Errorf("tree omitted the update form for Rule %q", rule.ID)
-		}
-	}
-	if !strings.Contains(body, `<span class="panel__count">3 exits</span>`) {
-		t.Error("tree exit count did not include both visible rule branches")
-	}
-	if !strings.Contains(body, "Protocol</b><span>bittorrent") {
-		t.Error("tree omitted the second match-rule branch")
-	}
-	if !strings.Contains(body, "<dt>Protocol</dt><dd>SS2022</dd>") {
-		t.Error("Link inspector did not use the abbreviated SS2022 label")
 	}
 
 	form := url.Values{
@@ -2189,7 +1972,7 @@ func TestProxyNodePagesUseLinkOwnedRulesAndMembershipCredentials(t *testing.T) {
 		t.Fatalf("GET user page = %d %q", response.Code, response.Body.String())
 	}
 	body = response.Body.String()
-	if !strings.Contains(body, proxynode.AuthenticatedUserLabel(membership.ID)) || !strings.Contains(body, "anytls://") || !strings.Contains(body, "203.0.113.42:443") || !strings.Contains(body, "Revoke access") {
+	if !strings.Contains(body, proxynode.AuthenticatedUserLabel(membership.ID)) || !strings.Contains(body, "anytls://") || !strings.Contains(body, "203.0.113.42:443") {
 		t.Fatalf("user page omitted membership identity or import URI: %q", body)
 	}
 
@@ -2309,39 +2092,34 @@ func TestProxyNodePageDistinguishesPendingEntranceAndRelayOutages(t *testing.T) 
 		t.Fatal(err)
 	}
 
-	render := func(locale string) string {
+	render := func(locale string) spaEnvelope {
 		request := fixture.authenticatedRequestWithLocale(http.MethodGet, proxyNodeURL(node.ID), "", locale)
 		response := httptest.NewRecorder()
 		fixture.handler.ServeHTTP(response, request)
 		if response.Code != http.StatusOK {
 			t.Fatalf("GET pending Proxy Node = %d %q", response.Code, response.Body.String())
 		}
-		return response.Body.String()
+		return decodeSPA(t, response)
 	}
-	body := render(localeEnglish)
-	for _, expected := range []string{
-		`data-proxy-node-status`, "Topology Pending", "Saved changes are not yet active.",
-		"Entrance Offline", "Old Entrance (Current topology)", "Switchboard",
-		"Relay Offline", "New Relay", "Switchboard (Current topology)",
-		`proxy-map__node-status--entrance`, `proxy-map__node-status--relay`,
-		`data-proxy-hop-offline>Entrance Offline`, `data-proxy-hop-offline>Relay Offline`,
-		`<strong>New Relay</strong>`,
-	} {
-		if !strings.Contains(body, expected) {
-			t.Errorf("pending Proxy Node page does not contain %q", expected)
-		}
+	env := render(localeEnglish)
+	op := env.Data.ProxyNode.OperationalStatus
+	if !op.TopologyPending {
+		t.Fatalf("expected TopologyPending = true, got %+v", op)
 	}
-	if strings.Contains(body, `<strong>Old Entrance</strong>`) {
-		t.Fatal("last-applied entrance was rendered as a ghost Hop")
+	if len(op.EntranceOffline) != 2 || len(op.RelayOffline) != 2 {
+		t.Fatalf("offline entrance/relay = %+v", op)
+	}
+	if !env.Data.ProxyNode.Tree.Offline || env.Data.ProxyNode.Tree.Name != "Switchboard" {
+		t.Fatalf("entrance tree node = %+v", env.Data.ProxyNode.Tree)
+	}
+	if len(env.Data.ProxyNode.Tree.Branches) != 1 || env.Data.ProxyNode.Tree.Branches[0].Child == nil ||
+		!env.Data.ProxyNode.Tree.Branches[0].Child.Offline || env.Data.ProxyNode.Tree.Branches[0].Child.Name != "New Relay" {
+		t.Fatalf("child tree node = %+v", env.Data.ProxyNode.Tree.Branches)
 	}
 
 	chinese := render(localeSimplifiedChinese)
-	for _, expected := range []string{
-		"拓扑等待应用", "变更已保存，但尚未生效。", "入口失联", "中继失联", "当前运行拓扑",
-	} {
-		if !strings.Contains(chinese, expected) {
-			t.Errorf("Chinese pending Proxy Node page does not contain %q", expected)
-		}
+	if chinese.Locale != localeSimplifiedChinese || !chinese.Data.ProxyNode.OperationalStatus.TopologyPending {
+		t.Fatalf("Chinese pending Proxy Node = %+v", chinese)
 	}
 
 	fixture.controller.sessions["edge-switch"] = true
@@ -2356,9 +2134,10 @@ func TestProxyNodePageDistinguishesPendingEntranceAndRelayOutages(t *testing.T) 
 	if _, err := fixture.proxyNodes.AddMembership(node.ID, user.ID); err != nil {
 		t.Fatal(err)
 	}
-	body = render(localeEnglish)
-	if strings.Contains(body, `data-proxy-node-status`) || strings.Contains(body, `data-proxy-hop-offline`) {
-		t.Fatal("applied healthy topology retained pending or offline status")
+	env = render(localeEnglish)
+	op = env.Data.ProxyNode.OperationalStatus
+	if op.TopologyPending || len(op.EntranceOffline) != 0 || len(op.RelayOffline) != 0 || env.Data.ProxyNode.Tree.Offline {
+		t.Fatalf("applied healthy topology retained pending or offline status: %+v", op)
 	}
 }
 
@@ -2401,30 +2180,27 @@ func TestProxyNodePendingStatusSurvivesWithoutCurrentDeploymentAndIsNodeScoped(t
 	request := fixture.authenticatedRequest(http.MethodGet, "/proxy-nodes", "")
 	response := httptest.NewRecorder()
 	fixture.handler.ServeHTTP(response, request)
-	if response.Code != http.StatusOK || !strings.Contains(response.Body.String(), "Topology Pending") ||
-		!strings.Contains(response.Body.String(), "notice--warning") ||
-		!strings.Contains(response.Body.String(), `data-topology-pending="true"`) ||
-		strings.Contains(response.Body.String(), `data-topology-locked="true"`) {
-		t.Fatalf("durable pending list status = %d %q", response.Code, response.Body.String())
+	env := decodeSPA(t, response)
+	if response.Code != http.StatusOK || env.Data.ProxyDeployment == nil || env.Data.ProxyDeployment.Status != "pending" || env.Data.ProxyDeployment.Active {
+		t.Fatalf("durable pending list status = %d %+v", response.Code, env.Data.ProxyDeployment)
 	}
 
 	request = fixture.authenticatedRequest(http.MethodGet, proxyNodeURL(appliedNode.ID), "")
 	response = httptest.NewRecorder()
 	fixture.handler.ServeHTTP(response, request)
-	body := response.Body.String()
-	if response.Code != http.StatusOK || !strings.Contains(body, `data-status-url="/proxy-nodes/deployment-status" hidden`) ||
-		strings.Contains(body, `data-proxy-node-status`) || strings.Contains(body, `data-topology-pending="true"`) {
-		t.Fatalf("clean Node inherited another Node's pending status: %d %q", response.Code, body)
+	env = decodeSPA(t, response)
+	if response.Code != http.StatusOK || env.Data.ProxyNode == nil || env.Data.ProxyNode.OperationalStatus.TopologyPending {
+		t.Fatalf("clean Node inherited another Node's pending status: %d %+v", response.Code, env.Data.ProxyNode)
 	}
 
 	request = fixture.authenticatedRequest(http.MethodGet, proxyNodeURL(pendingNode.ID), "")
 	response = httptest.NewRecorder()
 	fixture.handler.ServeHTTP(response, request)
-	body = response.Body.String()
-	if response.Code != http.StatusOK || strings.Count(body, "Topology Pending") != 1 ||
-		!strings.Contains(body, "Entrance Offline") || !strings.Contains(body, `data-topology-pending="true"`) ||
-		strings.Contains(body, `data-topology-locked="true"`) {
-		t.Fatalf("pending Node status = %d %q", response.Code, body)
+	env = decodeSPA(t, response)
+	if response.Code != http.StatusOK || env.Data.ProxyNode == nil || !env.Data.ProxyNode.OperationalStatus.TopologyPending ||
+		len(env.Data.ProxyNode.OperationalStatus.EntranceOffline) != 1 || env.Data.ProxyDeployment == nil ||
+		env.Data.ProxyDeployment.Status != "pending" || env.Data.ProxyDeployment.Active {
+		t.Fatalf("pending Node status = %d %+v %+v", response.Code, env.Data.ProxyNode, env.Data.ProxyDeployment)
 	}
 }
 
@@ -2472,8 +2248,9 @@ func TestTerminalDeploymentJobCannotHideNewerPendingTopology(t *testing.T) {
 	request := fixture.authenticatedRequest(http.MethodGet, "/proxy-nodes", "")
 	response := httptest.NewRecorder()
 	fixture.handler.ServeHTTP(response, request)
-	if response.Code != http.StatusOK || !strings.Contains(response.Body.String(), "Topology Pending") || strings.Contains(response.Body.String(), "Topology change: Applied") {
-		t.Fatalf("newer pending topology was hidden by terminal refresh job: %d %q", response.Code, response.Body.String())
+	env := decodeSPA(t, response)
+	if response.Code != http.StatusOK || env.Data.ProxyDeployment == nil || env.Data.ProxyDeployment.Status != "pending" {
+		t.Fatalf("newer pending topology was hidden by terminal refresh job: %d %+v", response.Code, env.Data.ProxyDeployment)
 	}
 }
 
@@ -2517,11 +2294,10 @@ func TestCurrentTopologyFailureIsNotHiddenByGenericPendingState(t *testing.T) {
 	request = fixture.authenticatedRequest(http.MethodGet, "/proxy-nodes", "")
 	response = httptest.NewRecorder()
 	fixture.handler.ServeHTTP(response, request)
-	body := response.Body.String()
-	if response.Code != http.StatusOK || !strings.Contains(body, "Topology change: Failed") ||
-		!strings.Contains(body, "Agent rejected the candidate") || !strings.Contains(body, "notice--error") ||
-		strings.Contains(body, `data-topology-pending="true"`) {
-		t.Fatalf("failed topology page = %d %q", response.Code, body)
+	env := decodeSPA(t, response)
+	if response.Code != http.StatusOK || env.Data.ProxyDeployment == nil || env.Data.ProxyDeployment.Status != "failed" ||
+		!strings.Contains(env.Data.ProxyDeployment.Error, "Agent rejected the candidate") {
+		t.Fatalf("failed topology page = %d %+v", response.Code, env.Data.ProxyDeployment)
 	}
 }
 
@@ -2569,11 +2345,10 @@ func TestFailedAppliedRefreshDoesNotMaskNewerPendingTopology(t *testing.T) {
 	request := fixture.authenticatedRequest(http.MethodGet, "/proxy-nodes", "")
 	response := httptest.NewRecorder()
 	fixture.handler.ServeHTTP(response, request)
-	body := response.Body.String()
-	if response.Code != http.StatusOK || !strings.Contains(body, "Topology Pending") ||
-		!strings.Contains(body, `data-topology-pending="true"`) || strings.Contains(body, "refresh rejected") ||
-		strings.Contains(body, "Topology change: Failed") {
-		t.Fatalf("pending topology after failed refresh = %d %q", response.Code, body)
+	env := decodeSPA(t, response)
+	if response.Code != http.StatusOK || env.Data.ProxyDeployment == nil || env.Data.ProxyDeployment.Status != "pending" ||
+		strings.Contains(env.Data.ProxyDeployment.Error, "refresh rejected") {
+		t.Fatalf("pending topology after failed refresh = %d %+v", response.Code, env.Data.ProxyDeployment)
 	}
 }
 
@@ -2597,38 +2372,32 @@ func TestProxyNodeListKeepsAppliedOnlyNodeAsReadOnlyPendingRemoval(t *testing.T)
 		t.Fatal(err)
 	}
 
-	render := func(locale string) string {
+	render := func(locale string) spaEnvelope {
 		request := fixture.authenticatedRequestWithLocale(http.MethodGet, "/proxy-nodes", "", locale)
 		response := httptest.NewRecorder()
 		fixture.handler.ServeHTTP(response, request)
 		if response.Code != http.StatusOK {
 			t.Fatalf("GET applied-only Proxy Node list = %d %q", response.Code, response.Body.String())
 		}
-		return response.Body.String()
+		return decodeSPA(t, response)
 	}
-	body := render(localeEnglish)
-	for _, expected := range []string{
-		`data-proxy-node-pending-removal`, "Legacy Runtime", "Pending Removal", "Old configuration is still running.",
-	} {
-		if !strings.Contains(body, expected) {
-			t.Errorf("applied-only Proxy Node card does not contain %q", expected)
-		}
-	}
-	if strings.Contains(body, `href="`+proxyNodeURL(node.ID)+`"`) {
-		t.Fatal("applied-only Proxy Node card linked to the editable topology page")
+	env := render(localeEnglish)
+	if len(env.Data.ProxyNodes) != 1 || env.Data.ProxyNodes[0].Name != "Legacy Runtime" ||
+		!env.Data.ProxyNodes[0].PendingRemoval || env.Data.ProxyNodes[0].URL != "" {
+		t.Fatalf("applied-only Proxy Node list = %+v", env.Data.ProxyNodes)
 	}
 	request := fixture.authenticatedRequest(http.MethodGet, "/servers/edge-offline/manage", "")
 	response := httptest.NewRecorder()
 	fixture.handler.ServeHTTP(response, request)
-	if response.Code != http.StatusOK || strings.Contains(response.Body.String(), `href="`+proxyNodeURL(node.ID)+`"`) {
-		t.Fatalf("applied-only server assignment linked to missing editor: %d %q", response.Code, response.Body.String())
+	serverEnv := decodeSPA(t, response)
+	if response.Code != http.StatusOK || serverEnv.Data.Agent == nil ||
+		len(serverEnv.Data.Agent.ProxyNodeReferences) != 1 || serverEnv.Data.Agent.ProxyNodeReferences[0].URL == proxyNodeURL(node.ID) {
+		t.Fatalf("applied-only server assignment linked to missing editor: %d %+v", response.Code, serverEnv.Data.Agent)
 	}
 
 	chinese := render(localeSimplifiedChinese)
-	for _, expected := range []string{"等待删除", "旧配置仍在运行。"} {
-		if !strings.Contains(chinese, expected) {
-			t.Errorf("Chinese applied-only Proxy Node card does not contain %q", expected)
-		}
+	if chinese.Locale != localeSimplifiedChinese || len(chinese.Data.ProxyNodes) != 1 || !chinese.Data.ProxyNodes[0].PendingRemoval {
+		t.Fatalf("Chinese applied-only Proxy Node list = %+v", chinese)
 	}
 }
 
@@ -2676,16 +2445,26 @@ func TestProxyNodeListShowsHighestSeverityOutageBadge(t *testing.T) {
 	request := fixture.authenticatedRequest(http.MethodGet, "/proxy-nodes", "")
 	response := httptest.NewRecorder()
 	fixture.handler.ServeHTTP(response, request)
-	body := response.Body.String()
-	if response.Code != http.StatusOK || strings.Count(body, ">Entrance Offline</span>") != 1 || strings.Count(body, ">Relay Offline</span>") != 1 {
-		t.Fatalf("Proxy Node overview outage badges = %d %q", response.Code, body)
+	env := decodeSPA(t, response)
+	var entranceOffline, relayOffline int
+	for _, item := range env.Data.ProxyNodes {
+		if item.EntranceOffline {
+			entranceOffline++
+		}
+		if item.RelayOffline {
+			relayOffline++
+		}
+	}
+	if response.Code != http.StatusOK || entranceOffline != 1 || relayOffline != 1 {
+		t.Fatalf("Proxy Node overview outage badges = %d %+v", response.Code, env.Data.ProxyNodes)
 	}
 
 	request = fixture.authenticatedRequestWithLocale(http.MethodGet, "/proxy-nodes", "", localeSimplifiedChinese)
 	response = httptest.NewRecorder()
 	fixture.handler.ServeHTTP(response, request)
-	if response.Code != http.StatusOK || !strings.Contains(response.Body.String(), "入口失联") || !strings.Contains(response.Body.String(), "中继失联") {
-		t.Fatalf("localized Proxy Node overview outage badges = %d %q", response.Code, response.Body.String())
+	zhEnv := decodeSPA(t, response)
+	if response.Code != http.StatusOK || zhEnv.Locale != localeSimplifiedChinese || len(zhEnv.Data.ProxyNodes) != 2 {
+		t.Fatalf("localized Proxy Node overview outage badges = %d %+v", response.Code, zhEnv)
 	}
 }
 
@@ -2725,35 +2504,35 @@ func TestProxyNodeDistinguishesDeletedAgentReferencesFromOfflineServers(t *testi
 	request := fixture.authenticatedRequest(http.MethodGet, proxyNodeURL(node.ID), "")
 	response := httptest.NewRecorder()
 	fixture.handler.ServeHTTP(response, request)
-	body := response.Body.String()
-	for _, expected := range []string{
-		"Entrance Server Deleted", "Relay Server Deleted", "data-proxy-hop-deleted",
-		`<option value="" selected disabled>edge-deleted-entrance — deleted</option>`,
-		"Choose another server to remove this stale reference.",
-	} {
-		if response.Code != http.StatusOK || !strings.Contains(body, expected) {
-			t.Errorf("deleted Agent detail status=%d does not contain %q", response.Code, expected)
-		}
+	env := decodeSPA(t, response)
+	op := env.Data.ProxyNode.OperationalStatus
+	if response.Code != http.StatusOK || len(op.EntranceDeleted) != 1 || len(op.RelayDeleted) != 1 ||
+		len(op.EntranceOffline) != 0 || len(op.RelayOffline) != 0 {
+		t.Fatalf("deleted Agent detail status=%d op=%+v", response.Code, op)
 	}
-	if strings.Contains(body, "edge-deleted-entrance — offline") || strings.Contains(body, "edge-deleted-relay — offline") {
-		t.Fatal("deleted Agent reference was mislabeled as offline")
+	if !env.Data.ProxyNode.Tree.Deleted || env.Data.ProxyNode.Tree.Offline {
+		t.Fatalf("deleted entrance hop = %+v", env.Data.ProxyNode.Tree)
+	}
+	if len(env.Data.ProxyNode.Tree.Branches) != 1 || env.Data.ProxyNode.Tree.Branches[0].Child == nil ||
+		!env.Data.ProxyNode.Tree.Branches[0].Child.Deleted || env.Data.ProxyNode.Tree.Branches[0].Child.Offline {
+		t.Fatalf("deleted relay hop = %+v", env.Data.ProxyNode.Tree.Branches)
 	}
 
 	request = fixture.authenticatedRequestWithLocale(http.MethodGet, proxyNodeURL(node.ID), "", localeSimplifiedChinese)
 	response = httptest.NewRecorder()
 	fixture.handler.ServeHTTP(response, request)
-	for _, expected := range []string{"入口服务器已删除", "中继服务器已删除", "主控端无法再远程清理原服务器"} {
-		if response.Code != http.StatusOK || !strings.Contains(response.Body.String(), expected) {
-			t.Errorf("localized deleted Agent detail status=%d does not contain %q", response.Code, expected)
-		}
+	zhEnv := decodeSPA(t, response)
+	if response.Code != http.StatusOK || zhEnv.Locale != localeSimplifiedChinese || len(zhEnv.Data.ProxyNode.OperationalStatus.EntranceDeleted) != 1 {
+		t.Fatalf("localized deleted Agent detail status=%d %+v", response.Code, zhEnv)
 	}
 
 	request = fixture.authenticatedRequest(http.MethodGet, "/proxy-nodes", "")
 	response = httptest.NewRecorder()
 	fixture.handler.ServeHTTP(response, request)
-	if response.Code != http.StatusOK || !strings.Contains(response.Body.String(), "Entrance Server Deleted") ||
-		strings.Contains(response.Body.String(), ">Entrance Offline</span>") {
-		t.Fatalf("Proxy Node overview did not prioritize deleted entrance: %d %q", response.Code, response.Body.String())
+	listEnv := decodeSPA(t, response)
+	if response.Code != http.StatusOK || len(listEnv.Data.ProxyNodes) != 1 ||
+		!listEnv.Data.ProxyNodes[0].EntranceDeleted || listEnv.Data.ProxyNodes[0].EntranceOffline {
+		t.Fatalf("Proxy Node overview did not prioritize deleted entrance: %d %+v", response.Code, listEnv.Data.ProxyNodes)
 	}
 }
 
@@ -2842,17 +2621,17 @@ func TestProxyTreeHidesDirectOnlyOnLeafHops(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	render := func() string {
+	render := func() spaEnvelope {
 		request := fixture.authenticatedRequest(http.MethodGet, proxyNodeURL(node.ID), "")
 		response := httptest.NewRecorder()
 		fixture.handler.ServeHTTP(response, request)
 		if response.Code != http.StatusOK {
 			t.Fatalf("GET Proxy Node tree = %d %q", response.Code, response.Body.String())
 		}
-		return response.Body.String()
+		return decodeSPA(t, response)
 	}
-	if body := render(); strings.Contains(body, `proxy-map__node--direct`) {
-		t.Fatal("leaf Hop rendered a redundant Direct terminal node")
+	if env := render(); env.Data.ProxyNode.Tree.Final != "direct" || len(env.Data.ProxyNode.Tree.Branches) != 0 {
+		t.Fatalf("leaf Hop tree = %+v", env.Data.ProxyNode.Tree)
 	}
 
 	link, _, err := fixture.proxyNodes.AddLink(node.ID, proxynode.AddLinkInput{
@@ -2871,12 +2650,13 @@ func TestProxyTreeHidesDirectOnlyOnLeafHops(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
-	body := render()
-	if got := strings.Count(body, `proxy-map__node--direct`); got != 1 {
-		t.Fatalf("branched Hop rendered %d Direct terminal nodes, want 1", got)
+	env := render()
+	if !env.Data.ProxyNode.Tree.ShowFallback || env.Data.ProxyNode.Tree.Final != "direct" {
+		t.Fatalf("branched Hop fallback = %+v", env.Data.ProxyNode.Tree)
 	}
-	if got := strings.Count(body, `proxy-map__node--reject`); got != 1 {
-		t.Fatalf("Reject leaf rendered %d terminal nodes, want 1", got)
+	if len(env.Data.ProxyNode.Tree.Branches) != 1 || env.Data.ProxyNode.Tree.Branches[0].Child == nil ||
+		!env.Data.ProxyNode.Tree.Branches[0].Child.ShowFallback || env.Data.ProxyNode.Tree.Branches[0].Child.Fallback.TargetKind != "reject" {
+		t.Fatalf("Reject leaf fallback = %+v", env.Data.ProxyNode.Tree.Branches[0].Child)
 	}
 }
 
@@ -2961,8 +2741,9 @@ func TestProxyNodeTopologyMutationAppliesImmediately(t *testing.T) {
 	request = fixture.authenticatedRequest(http.MethodGet, proxyNodeURL(node.ID), "")
 	response = httptest.NewRecorder()
 	fixture.handler.ServeHTTP(response, request)
-	if body := response.Body.String(); strings.Contains(body, `/deploy"`) || !strings.Contains(body, `data-topology-workflow`) {
-		t.Fatalf("immediate topology UI still exposes manual deployment: %q", body)
+	env := decodeSPA(t, response)
+	if env.Data.ProxyNode == nil || env.Data.ProxyNode.Name != "Cinema-Live" {
+		t.Fatalf("immediate topology UI = %+v", env.Data.ProxyNode)
 	}
 
 	fixture.controller.autoApply = false
@@ -2986,8 +2767,9 @@ func TestProxyNodeTopologyMutationAppliesImmediately(t *testing.T) {
 	request = fixture.authenticatedRequest(http.MethodGet, proxyNodeURL(node.ID), "")
 	response = httptest.NewRecorder()
 	fixture.handler.ServeHTTP(response, request)
-	if !strings.Contains(response.Body.String(), `data-topology-locked="true"`) {
-		t.Fatal("active topology transaction did not lock topology controls")
+	env = decodeSPA(t, response)
+	if env.Data.ProxyDeployment == nil || !env.Data.ProxyDeployment.Active {
+		t.Fatalf("active topology transaction did not lock topology controls: %+v", env.Data.ProxyDeployment)
 	}
 	deadline = time.Now().Add(2 * time.Second)
 	for {
@@ -3087,18 +2869,10 @@ func TestUserSettingsOwnProxyNodeAccessAssignments(t *testing.T) {
 	request := fixture.authenticatedRequest(http.MethodGet, "/users/"+url.PathEscape(user.ID), "")
 	response := httptest.NewRecorder()
 	fixture.handler.ServeHTTP(response, request)
-	body := response.Body.String()
-	if response.Code != http.StatusOK ||
-		!strings.Contains(body, `data-dialog-open="grant-user-proxy-access"`) ||
-		!strings.Contains(body, `<strong>Add Node</strong>`) ||
-		!strings.Contains(body, `data-node-role-form`) ||
-		!strings.Contains(body, `data-node-role-search`) ||
-		!strings.Contains(body, `name="proxy_id"`) ||
-		!strings.Contains(body, `name="proxy_id" value="`+node.ID+`"`) ||
-		!strings.Contains(body, `name="proxy_id" value="`+archive.ID+`"`) ||
-		!strings.Contains(body, `<h2>Node roles</h2>`) ||
-		strings.Contains(body, `action="/users/`+user.ID+`/deploy"`) {
-		t.Fatalf("user settings omitted Proxy Node grant control: %d %q", response.Code, response.Body.String())
+	env := decodeSPA(t, response)
+	if response.Code != http.StatusOK || env.Data.EndUser == nil || len(env.Data.EndUser.AvailableAccess) != 2 ||
+		len(env.Data.EndUser.AssignedAccess) != 0 {
+		t.Fatalf("user settings omitted Proxy Node grant options: %d %+v", response.Code, env.Data.EndUser)
 	}
 
 	request = fixture.authenticatedMutationRequest(http.MethodPost, "/users/"+url.PathEscape(user.ID)+"/access", url.Values{
@@ -3121,14 +2895,12 @@ func TestUserSettingsOwnProxyNodeAccessAssignments(t *testing.T) {
 	request = fixture.authenticatedRequest(http.MethodGet, "/users/"+url.PathEscape(user.ID), "")
 	response = httptest.NewRecorder()
 	fixture.handler.ServeHTTP(response, request)
-	body = response.Body.String()
-	if response.Code != http.StatusOK ||
-		!strings.Contains(body, `class="node-role-chip node-role-chip--`) ||
-		!strings.Contains(body, `data-dialog-open="user-proxy-access-`+node.ID+`"`) ||
-		!strings.Contains(body, grantedLabel) ||
-		!strings.Contains(body, `data-search-name="Archive AnyTLS edge-online"`) ||
-		strings.Contains(body, `data-search-name="Cinema AnyTLS edge-online"`) {
-		t.Fatalf("user settings did not separate assigned tags from searchable options: %d %q", response.Code, body)
+	env = decodeSPA(t, response)
+	if response.Code != http.StatusOK || env.Data.EndUser == nil ||
+		len(env.Data.EndUser.AssignedAccess) != 1 || env.Data.EndUser.AssignedAccess[0].ProxyID != node.ID ||
+		env.Data.EndUser.AssignedAccess[0].AuthUser != grantedLabel ||
+		len(env.Data.EndUser.AvailableAccess) != 1 || env.Data.EndUser.AvailableAccess[0].ProxyID != archive.ID {
+		t.Fatalf("user settings did not separate assigned tags from available options: %d %+v", response.Code, env.Data.EndUser)
 	}
 
 	deadline := time.Now().Add(3 * time.Second)
@@ -3149,27 +2921,32 @@ func TestUserSettingsOwnProxyNodeAccessAssignments(t *testing.T) {
 	request = fixture.authenticatedRequest(http.MethodGet, proxyNodeURL(node.ID), "")
 	response = httptest.NewRecorder()
 	fixture.handler.ServeHTTP(response, request)
-	if response.Code != http.StatusOK || !strings.Contains(response.Body.String(), `data-dialog-open="proxy-node-users"`) ||
-		!strings.Contains(response.Body.String(), `id="proxy-node-users"`) ||
-		!strings.Contains(response.Body.String(), `data-dialog-open="grant-proxy-node-user"`) ||
-		!strings.Contains(response.Body.String(), `id="grant-proxy-node-user"`) ||
-		!strings.Contains(response.Body.String(), "No users available.") ||
-		!strings.Contains(response.Body.String(), `data-proxy-user-search-count>2 users</span>`) ||
-		!strings.Contains(response.Body.String(), "Administrator") ||
-		!strings.Contains(response.Body.String(), "Protected") ||
+	env = decodeSPA(t, response)
+	if response.Code != http.StatusOK || env.Data.ProxyNode == nil ||
+		len(env.Data.ProxyNode.UserAccess) != 2 || len(env.Data.ProxyNode.AvailableUsers) != 0 ||
 		!strings.Contains(response.Body.String(), "100.00 GiB / month") {
-		t.Fatalf("Proxy Node map omitted the user dialog: %d %q", response.Code, response.Body.String())
+		t.Fatalf("Proxy Node map omitted the user roster: %d %+v", response.Code, env.Data.ProxyNode)
+	}
+	var sawAdmin bool
+	for _, access := range env.Data.ProxyNode.UserAccess {
+		if access.System {
+			sawAdmin = true
+		}
+	}
+	if !sawAdmin {
+		t.Fatalf("Proxy Node user roster missing protected Administrator: %+v", env.Data.ProxyNode.UserAccess)
 	}
 	request = fixture.authenticatedRequestWithLocale(http.MethodGet, proxyNodeURL(node.ID), "", localeSimplifiedChinese)
 	response = httptest.NewRecorder()
 	fixture.handler.ServeHTTP(response, request)
+	zhEnv := decodeSPA(t, response)
 	chineseBody := response.Body.String()
-	for _, expected := range []string{"Cinema · 用户权限", "已授权用户", "搜索用户", "清除用户搜索", `data-proxy-user-search-count>2 位用户</span>`, "管理员", "受保护", "正常", "已用 0 B", "每月 100.00 GiB"} {
-		if response.Code != http.StatusOK || !strings.Contains(chineseBody, expected) {
+	for _, expected := range []string{"管理员", "正常", `"UsageLabel":"0 B"`, "每月 100.00 GiB"} {
+		if response.Code != http.StatusOK || zhEnv.Locale != localeSimplifiedChinese || !strings.Contains(chineseBody, expected) {
 			t.Errorf("Chinese Proxy Node user roster omitted %q: %d %q", expected, response.Code, chineseBody)
 		}
 	}
-	for _, unwanted := range []string{"Cinema access", "已授权 1 位用户", ">活动<", "0 B used", "GiB / month"} {
+	for _, unwanted := range []string{"0 B used", "GiB / month"} {
 		if strings.Contains(chineseBody, unwanted) {
 			t.Errorf("Chinese Proxy Node user roster contains stale wording %q", unwanted)
 		}
@@ -3217,15 +2994,10 @@ func TestUserSettingsOwnProxyNodeAccessAssignments(t *testing.T) {
 	request = fixture.authenticatedRequest(http.MethodGet, "/users/"+url.PathEscape(user.ID), "")
 	response = httptest.NewRecorder()
 	fixture.handler.ServeHTTP(response, request)
-	body = response.Body.String()
-	if response.Code != http.StatusOK ||
-		!strings.Contains(body, `data-dialog-open="grant-user-proxy-access"`) ||
-		!strings.Contains(body, `<strong>Add Node</strong>`) ||
-		!strings.Contains(body, `id="grant-user-proxy-access"`) ||
-		!strings.Contains(body, `<small>0 available</small>`) ||
-		!strings.Contains(body, "No Nodes available.") ||
-		strings.Contains(body, "All Nodes assigned") {
-		t.Fatalf("fully assigned user hid the add-role entry: %d %q", response.Code, body)
+	env = decodeSPA(t, response)
+	if response.Code != http.StatusOK || env.Data.EndUser == nil ||
+		len(env.Data.EndUser.AssignedAccess) != 2 || len(env.Data.EndUser.AvailableAccess) != 0 {
+		t.Fatalf("fully assigned user detail = %d %+v", response.Code, env.Data.EndUser)
 	}
 }
 
@@ -3270,10 +3042,9 @@ func TestUserSubscriptionLinksExportActiveNodesAndOrderedRules(t *testing.T) {
 	request := fixture.authenticatedRequest(http.MethodGet, proxyNodeURL(node.ID), "")
 	response := httptest.NewRecorder()
 	fixture.handler.ServeHTTP(response, request)
-	if response.Code != http.StatusOK || !strings.Contains(response.Body.String(), `data-dialog-open="proxy-node-subscription-addresses"`) ||
-		!strings.Contains(response.Body.String(), `action="/proxy-nodes/`+node.ID+`/subscription-addresses"`) ||
-		!strings.Contains(response.Body.String(), `<option value="ipv4" selected>IPv4 Only</option>`) {
-		t.Fatalf("Proxy Node subscription address controls = %d %q", response.Code, response.Body.String())
+	env := decodeSPA(t, response)
+	if response.Code != http.StatusOK || env.Data.ProxyNode == nil || env.Data.ProxyNode.SubscriptionAddressMode != "ipv4" {
+		t.Fatalf("Proxy Node subscription address mode = %d %+v", response.Code, env.Data.ProxyNode)
 	}
 
 	request = fixture.authenticatedMutationRequest(http.MethodPost, "/users/"+user.ID+"/subscription/token", url.Values{
@@ -3291,10 +3062,11 @@ func TestUserSubscriptionLinksExportActiveNodesAndOrderedRules(t *testing.T) {
 	request = fixture.authenticatedRequest(http.MethodGet, userSubscriptionNodesURL(user.ID), "")
 	response = httptest.NewRecorder()
 	fixture.handler.ServeHTTP(response, request)
-	if response.Code != http.StatusOK || !strings.Contains(response.Body.String(), "Subscription links") ||
-		!strings.Contains(response.Body.String(), "/subscriptions/"+updatedUser.Subscription.Token+"/clash") ||
-		!strings.Contains(response.Body.String(), "Cinema") {
-		t.Fatalf("subscription Nodes page = %d %q", response.Code, response.Body.String())
+	env = decodeSPA(t, response)
+	if response.Code != http.StatusOK || env.Data.UserSubscription == nil ||
+		!strings.HasSuffix(env.Data.UserSubscription.ClashURL, "/subscriptions/"+updatedUser.Subscription.Token+"/clash") ||
+		len(env.Data.UserSubscription.Nodes) != 1 || env.Data.UserSubscription.Nodes[0].Name != "Cinema" {
+		t.Fatalf("subscription Nodes page = %d %+v", response.Code, env.Data.UserSubscription)
 	}
 
 	request = fixture.authenticatedMutationRequest(http.MethodPost, "/subscriptions/rules", url.Values{
@@ -3309,16 +3081,12 @@ func TestUserSubscriptionLinksExportActiveNodesAndOrderedRules(t *testing.T) {
 	request = fixture.authenticatedRequest(http.MethodGet, "/subscriptions", "")
 	response = httptest.NewRecorder()
 	fixture.handler.ServeHTTP(response, request)
-	if response.Code != http.StatusOK || !strings.Contains(response.Body.String(), "Domain suffix") ||
-		!strings.Contains(response.Body.String(), "example.com") || !strings.Contains(response.Body.String(), `<option value="geosite">Geosite</option>`) ||
-		!strings.Contains(response.Body.String(), `data-subscription-rule-set-field`) ||
-		!strings.Contains(response.Body.String(), `data-subscription-rule-set`) ||
-		!strings.Contains(response.Body.String(), `data-subscription-rule-card`) ||
-		!strings.Contains(response.Body.String(), `data-reorder-url="/subscriptions/rules/reorder"`) ||
-		!strings.Contains(response.Body.String(), `FINAL (Unmatched Rules)`) ||
-		!strings.Contains(response.Body.String(), `data-subscription-no-resolve`) ||
-		!strings.Contains(response.Body.String(), `/assets/subscription-rules.js`) || strings.Contains(response.Body.String(), "Rule providers") {
-		t.Fatalf("subscription Rules page = %d %q", response.Code, response.Body.String())
+	env = decodeSPA(t, response)
+	if response.Code != http.StatusOK || env.Data.SubscriptionPolicy == nil ||
+		len(env.Data.SubscriptionPolicy.Rules) != 1 ||
+		env.Data.SubscriptionPolicy.Rules[0].MatchLabel != "Domain suffix" ||
+		env.Data.SubscriptionPolicy.Rules[0].Values != "example.com" {
+		t.Fatalf("subscription Rules page = %d %+v", response.Code, env.Data.SubscriptionPolicy)
 	}
 
 	for format, expected := range map[string]string{"clash": "DOMAIN-SUFFIX,example.com,DIRECT", "surge": "[Proxy Group]", "sing-box": `"tag": "PROXY"`} {
@@ -3375,9 +3143,10 @@ func TestUserSubscriptionLinksExportActiveNodesAndOrderedRules(t *testing.T) {
 	request = fixture.authenticatedRequest(http.MethodGet, userSubscriptionNodesURL(user.ID), "")
 	response = httptest.NewRecorder()
 	fixture.handler.ServeHTTP(response, request)
-	if response.Code != http.StatusOK || !strings.Contains(response.Body.String(), "Unavailable") ||
-		strings.Contains(response.Body.String(), `<span class="status-pill status-pill--active">Included</span>`) {
-		t.Fatalf("missing selected family status = %d %q", response.Code, response.Body.String())
+	env = decodeSPA(t, response)
+	if response.Code != http.StatusOK || env.Data.UserSubscription == nil ||
+		len(env.Data.UserSubscription.Nodes) != 1 || env.Data.UserSubscription.Nodes[0].Status != "Unavailable" {
+		t.Fatalf("missing selected family status = %d %+v", response.Code, env.Data.UserSubscription)
 	}
 
 	request = fixture.authenticatedMutationRequest(http.MethodPost, "/users/"+user.ID+"/subscription/revoke", url.Values{
@@ -3427,12 +3196,11 @@ func TestAdministratorSubscriptionIsAutomaticAndProtected(t *testing.T) {
 	request := fixture.authenticatedRequest(http.MethodGet, "/subscriptions/admin", "")
 	response := httptest.NewRecorder()
 	fixture.handler.ServeHTTP(response, request)
-	body := response.Body.String()
-	if response.Code != http.StatusOK || !strings.Contains(body, "My Subscription") ||
-		!strings.Contains(body, "Cinema") || !strings.Contains(body, "/subscriptions/") ||
-		strings.Contains(body, `data-dialog-open="reset-user-subscription"`) ||
-		strings.Contains(body, `data-dialog-open="revoke-user-subscription"`) {
-		t.Fatalf("administrator subscription page = %d %q", response.Code, body)
+	env := decodeSPA(t, response)
+	if response.Code != http.StatusOK || env.Data.UserSubscription == nil || !env.Data.UserSubscription.System ||
+		!env.Data.UserSubscription.Enabled || len(env.Data.UserSubscription.Nodes) != 1 ||
+		env.Data.UserSubscription.Nodes[0].Name != "Cinema" || !strings.Contains(env.Data.UserSubscription.ClashURL, "/subscriptions/") {
+		t.Fatalf("administrator subscription page = %d %+v", response.Code, env.Data.UserSubscription)
 	}
 
 	administrator, exists := fixture.proxyNodes.User(proxynode.SystemAdministratorUserID)
@@ -3449,23 +3217,19 @@ func TestAdministratorSubscriptionIsAutomaticAndProtected(t *testing.T) {
 	request = fixture.authenticatedRequest(http.MethodGet, proxyNodeURL(node.ID), "")
 	response = httptest.NewRecorder()
 	fixture.handler.ServeHTTP(response, request)
-	body = response.Body.String()
-	if response.Code != http.StatusOK || !strings.Contains(body, "Administrator") ||
-		!strings.Contains(body, "Protected") ||
-		!strings.Contains(body, `href="/subscriptions/admin"`) ||
-		!strings.Contains(body, `href="/users">Add user</a>`) ||
-		strings.Contains(body, "/users/"+proxynode.SystemAdministratorUserID+"/plan") ||
-		strings.Contains(body, "/users/"+proxynode.SystemAdministratorUserID+"/remove") {
-		t.Fatalf("protected administrator roster = %d %q", response.Code, body)
+	env = decodeSPA(t, response)
+	if response.Code != http.StatusOK || env.Data.ProxyNode == nil || len(env.Data.ProxyNode.UserAccess) != 1 ||
+		!env.Data.ProxyNode.UserAccess[0].System || env.Data.ProxyNode.UserAccess[0].URL != "/subscriptions/admin" {
+		t.Fatalf("protected administrator roster = %d %+v", response.Code, env.Data.ProxyNode)
 	}
 
 	request = fixture.authenticatedRequest(http.MethodGet, "/users", "")
 	response = httptest.NewRecorder()
 	fixture.handler.ServeHTTP(response, request)
-	body = response.Body.String()
-	if response.Code != http.StatusOK || strings.Contains(body, proxynode.SystemAdministratorUserID) ||
-		strings.Contains(body, ">Administrator<") || !strings.Contains(body, `data-display-name`) {
-		t.Fatalf("global users exposed system administrator = %d %q", response.Code, response.Body.String())
+	env = decodeSPA(t, response)
+	if response.Code != http.StatusOK || len(env.Data.EndUsers) != 0 ||
+		strings.Contains(response.Body.String(), proxynode.SystemAdministratorUserID) {
+		t.Fatalf("global users exposed system administrator = %d %+v", response.Code, env.Data.EndUsers)
 	}
 	request = fixture.authenticatedRequest(http.MethodGet, "/users/"+proxynode.SystemAdministratorUserID, "")
 	response = httptest.NewRecorder()
@@ -3502,11 +3266,11 @@ func TestServerPageShowsFiniteEntranceUsageAndUnlimitedUserCount(t *testing.T) {
 	request := fixture.authenticatedRequest(http.MethodGet, "/servers/edge-online/manage", "")
 	response := httptest.NewRecorder()
 	fixture.handler.ServeHTTP(response, request)
-	body := response.Body.String()
-	for _, expected := range []string{"Entrance Traffic", "Finite Quota Allocated", "100 B", "Finite Quota Used", "0 B", "Unlimited Users", ">1</dd>"} {
-		if response.Code != http.StatusOK || !strings.Contains(body, expected) {
-			t.Errorf("server entrance usage omitted %q: %d %q", expected, response.Code, body)
-		}
+	env := decodeSPA(t, response)
+	if response.Code != http.StatusOK || env.Data.Agent == nil ||
+		env.Data.Agent.EntranceAllocated != "100 B" || env.Data.Agent.EntranceUsed != "0 B" ||
+		env.Data.Agent.EntranceUnlimited != 1 {
+		t.Fatalf("server entrance usage = %d %+v", response.Code, env.Data.Agent)
 	}
 }
 
@@ -3565,22 +3329,17 @@ func TestUserCredentialResetScopes(t *testing.T) {
 	request := fixture.authenticatedRequest(http.MethodGet, proxyNodeURL(first.ID), "")
 	response := httptest.NewRecorder()
 	fixture.handler.ServeHTTP(response, request)
-	if response.Code != http.StatusOK ||
-		!strings.Contains(response.Body.String(), `data-dialog-open="reset-proxy-node-user-credential-`+alice.ID+`"`) ||
-		!strings.Contains(response.Body.String(), `name="confirm_reset" value="yes"`) ||
-		!strings.Contains(response.Body.String(), "Other Node credentials and subscription links will not change") {
-		t.Fatalf("Proxy Node credential reset UI = %d %q", response.Code, response.Body.String())
+	env := decodeSPA(t, response)
+	if response.Code != http.StatusOK || env.Data.ProxyNode == nil || len(env.Data.ProxyNode.UserAccess) != 2 {
+		t.Fatalf("Proxy Node credential reset UI = %d %+v", response.Code, env.Data.ProxyNode)
 	}
 
 	request = fixture.authenticatedRequest(http.MethodGet, "/users/"+url.PathEscape(alice.ID), "")
 	response = httptest.NewRecorder()
 	fixture.handler.ServeHTTP(response, request)
-	if response.Code != http.StatusOK ||
-		!strings.Contains(response.Body.String(), `data-dialog-open="reset-user-credentials"`) ||
-		!strings.Contains(response.Body.String(), `data-dialog-open="confirm-membership-credential-reset-`+first.ID+`"`) ||
-		!strings.Contains(response.Body.String(), `action="/users/`+alice.ID+`/credentials/reset"`) ||
-		!strings.Contains(response.Body.String(), "The subscription link will not change") {
-		t.Fatalf("global credential reset UI = %d %q", response.Code, response.Body.String())
+	env = decodeSPA(t, response)
+	if response.Code != http.StatusOK || env.Data.EndUser == nil || len(env.Data.EndUser.AssignedAccess) != 2 {
+		t.Fatalf("global credential reset UI = %d %+v", response.Code, env.Data.EndUser)
 	}
 
 	firstBefore := credential(first.ID, alice.ID)
@@ -3621,11 +3380,9 @@ func TestUserCredentialResetScopes(t *testing.T) {
 	request = fixture.authenticatedRequest(http.MethodGet, userSubscriptionNodesURL(alice.ID), "")
 	response = httptest.NewRecorder()
 	fixture.handler.ServeHTTP(response, request)
-	if response.Code != http.StatusOK ||
-		!strings.Contains(response.Body.String(), `data-dialog-open="reset-user-subscription"`) ||
-		!strings.Contains(response.Body.String(), `action="/users/`+alice.ID+`/subscription/reset"`) ||
-		!strings.Contains(response.Body.String(), "every Proxy Node credential") {
-		t.Fatalf("subscription reset UI = %d %q", response.Code, response.Body.String())
+	env = decodeSPA(t, response)
+	if response.Code != http.StatusOK || env.Data.UserSubscription == nil || !env.Data.UserSubscription.Enabled || env.Data.UserSubscription.System {
+		t.Fatalf("subscription reset UI = %d %+v", response.Code, env.Data.UserSubscription)
 	}
 	request = fixture.authenticatedMutationRequest(http.MethodPost, "/users/"+url.PathEscape(alice.ID)+"/subscription/reset", url.Values{
 		"csrf_token": {fixture.session.CSRFToken}, "confirm_reset": {"yes"},
@@ -3667,29 +3424,28 @@ func TestMembershipMaintenanceActions(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := fixture.proxyNodes.CreateUser("Bob"); err != nil {
+	bob, err := fixture.proxyNodes.CreateUser("Bob")
+	if err != nil {
 		t.Fatal(err)
 	}
 
 	request := fixture.authenticatedRequest(http.MethodGet, "/users/"+url.PathEscape(user.ID), "")
 	response := httptest.NewRecorder()
 	fixture.handler.ServeHTTP(response, request)
-	body := response.Body.String()
-	for _, expected := range []string{"Minutes", "Hours", "Days", "Calendar months", "Reset traffic", "Reset credential", "Extend subscription", `data-display-name`} {
-		if response.Code != http.StatusOK || !strings.Contains(body, expected) {
-			t.Fatalf("user maintenance UI omitted %q: %d %q", expected, response.Code, body)
-		}
+	env := decodeSPA(t, response)
+	if response.Code != http.StatusOK || env.Data.EndUser == nil || len(env.Data.EndUser.AssignedAccess) != 1 ||
+		!env.Data.EndUser.AssignedAccess[0].Plan.CanExtend {
+		t.Fatalf("user maintenance UI = %d %+v", response.Code, env.Data.EndUser)
 	}
 	request = fixture.authenticatedRequest(http.MethodGet, proxyNodeUsersURL(node.ID), "")
 	response = httptest.NewRecorder()
 	fixture.handler.ServeHTTP(response, request)
-	if response.Code != http.StatusOK || !strings.Contains(response.Body.String(), `data-dialog-open="compensate-proxy-node-users"`) ||
-		!strings.Contains(response.Body.String(), `data-dialog-open="grant-proxy-node-user"`) ||
-		!strings.Contains(response.Body.String(), "Outage started (UTC&#43;8)") ||
-		!strings.Contains(response.Body.String(), "Affected subscriptions") ||
-		!strings.Contains(response.Body.String(), `data-started-at="`) ||
-		!strings.Contains(response.Body.String(), `name="membership_ids" value="`+membership.ID+`"`) {
-		t.Fatalf("Proxy Node compensation UI = %d %q", response.Code, response.Body.String())
+	env = decodeSPA(t, response)
+	if response.Code != http.StatusOK || env.Data.ProxyNode == nil ||
+		env.Data.ProxyNode.FiniteMemberCount != 1 || env.Data.ProxyNode.CompensationStart == "" ||
+		len(env.Data.ProxyNode.UserAccess) != 1 || env.Data.ProxyNode.UserAccess[0].MembershipID != membership.ID ||
+		env.Data.ProxyNode.UserAccess[0].SubscriptionStartedAt == "" {
+		t.Fatalf("Proxy Node compensation UI = %d %+v", response.Code, env.Data.ProxyNode)
 	}
 
 	request = fixture.authenticatedMutationRequest(http.MethodPost,
@@ -3739,6 +3495,32 @@ func TestMembershipMaintenanceActions(t *testing.T) {
 	if response.Code != http.StatusSeeOther || response.Header().Get("Location") != proxyNodeUsersURL(node.ID) ||
 		!updated.Memberships[0].SubscriptionEndsAfter.Equal(beforeCompensation.Add(24*time.Hour)) {
 		t.Fatalf("bulk compensation = %d membership=%#v", response.Code, updated.Memberships[0])
+	}
+
+	bobMembership, err := fixture.proxyNodes.AddMembershipWithPlan(node.ID, bob.ID, proxynode.MembershipPlan{
+		MonthlyQuotaBytes: 10 << 30, SubscriptionValue: 30, SubscriptionUnit: proxynode.SubscriptionMinutes,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	beforeMultiAlice := updated.Memberships[0].SubscriptionEndsAfter
+	beforeMultiBob := bobMembership.SubscriptionEndsAfter
+	request = fixture.authenticatedMutationRequest(http.MethodPost,
+		"/proxy-nodes/"+url.PathEscape(node.ID)+"/users/compensate",
+		url.Values{
+			"csrf_token":         {fixture.session.CSRFToken},
+			"outage_started_at":  {fixture.now.Add(-3 * time.Hour).In(proxynode.BillingLocation()).Format("2006-01-02T15:04")},
+			"outage_ended_at":    {fixture.now.Add(-2 * time.Hour).In(proxynode.BillingLocation()).Format("2006-01-02T15:04")},
+			"compensation_value": {"2"}, "compensation_unit": {"hours"},
+			"membership_ids": {membership.ID, bobMembership.ID},
+		}.Encode())
+	response = httptest.NewRecorder()
+	fixture.handler.ServeHTTP(response, request)
+	updated, _ = fixture.proxyNodes.ProxyNode(node.ID)
+	if response.Code != http.StatusSeeOther ||
+		!updated.Memberships[0].SubscriptionEndsAfter.Equal(beforeMultiAlice.Add(2*time.Hour)) ||
+		!updated.Memberships[1].SubscriptionEndsAfter.Equal(beforeMultiBob.Add(2*time.Hour)) {
+		t.Fatalf("multi-user bulk compensation = %d memberships=%#v", response.Code, updated.Memberships)
 	}
 
 	oldSecret := updated.Memberships[0].Credential.Secret
@@ -3896,16 +3678,12 @@ func TestProxyNodeCanCreateAndManageConditionalBlockRule(t *testing.T) {
 	if response.Code != http.StatusOK {
 		t.Fatalf("GET Proxy Node = %d %q", response.Code, response.Body.String())
 	}
-	body := response.Body.String()
-	for _, expected := range []string{"Hop", "Reject", "Unmatched Traffic", `id="proxy-entrance-dialog"`} {
-		if !strings.Contains(body, expected) {
-			t.Errorf("Proxy Node editor does not contain %q", expected)
-		}
-	}
-	for _, removed := range []string{"Send to a child Hop", "BLOCK · reject traffic here", "Create BLOCK rule", "ALL creates"} {
-		if strings.Contains(body, removed) {
-			t.Errorf("Proxy Node editor still contains redundant copy %q", removed)
-		}
+	env := decodeSPA(t, response)
+	if env.Data.ProxyNode == nil || env.Data.ProxyNode.Tree == nil ||
+		len(env.Data.ProxyNode.Tree.BlockRules) != 1 ||
+		len(env.Data.ProxyNode.Tree.Branches) != 1 || !env.Data.ProxyNode.Tree.Branches[0].Block ||
+		!env.Data.ProxyNode.Tree.ShowFallback {
+		t.Fatalf("Proxy Node BLOCK rule view = %+v", env.Data.ProxyNode)
 	}
 
 	ruleID := updated.BlockBranches[0].Rule.ID
@@ -3942,25 +3720,9 @@ func TestCreateProxyNodeMakesTerminalExitExplicitAndReturnsToRelayMap(t *testing
 	if response.Code != http.StatusOK {
 		t.Fatalf("GET new Proxy Node = %d %q", response.Code, response.Body.String())
 	}
-	body := response.Body.String()
-	for _, expected := range []string{
-		`name="terminal"`, "Unmatched traffic", "Create Proxy Node",
-		"TLS Certificate Domain/IP", `data-tls-server-name`, `data-display-name`,
-		`data-literal-ip`, `data-proxy-listen-port`, `data-validate-live`,
-		`<input type="hidden" name="certificate_path"`,
-		`<input type="hidden" name="key_path"`,
-	} {
-		if !strings.Contains(body, expected) {
-			t.Errorf("new Proxy Node page does not contain %q", expected)
-		}
-	}
-	for _, removed := range []string{
-		`name="root_name"`, "Entrance Hop name", "Domain or certificate identity",
-		`<option value="files"`, ">Existing files<", ">Certificate path<", ">Private-key path<",
-	} {
-		if strings.Contains(body, removed) {
-			t.Errorf("new Proxy Node page still contains %q", removed)
-		}
+	env := decodeSPA(t, response)
+	if env.View != "proxy-node-new" || len(env.Data.AgentOptions) < 2 {
+		t.Fatalf("new Proxy Node view = %q agents = %+v", env.View, env.Data.AgentOptions)
 	}
 
 	request = fixture.authenticatedRequestWithLocale(http.MethodGet, "/proxy-nodes/new", "", localeSimplifiedChinese)
@@ -3969,14 +3731,9 @@ func TestCreateProxyNodeMakesTerminalExitExplicitAndReturnsToRelayMap(t *testing
 	if response.Code != http.StatusOK {
 		t.Fatalf("GET Chinese new Proxy Node = %d %q", response.Code, response.Body.String())
 	}
-	chineseBody := response.Body.String()
-	if !strings.Contains(chineseBody, "TLS 证书域名/IP") {
-		t.Errorf("Chinese new Proxy Node page omitted the TLS certificate domain/IP label: %q", chineseBody)
-	}
-	for _, removed := range []string{"域名或证书标识", "现有文件", ">证书路径<", ">私钥路径<"} {
-		if strings.Contains(chineseBody, removed) {
-			t.Errorf("Chinese new Proxy Node page still contains %q", removed)
-		}
+	zhEnv := decodeSPA(t, response)
+	if zhEnv.Locale != localeSimplifiedChinese || zhEnv.View != "proxy-node-new" {
+		t.Fatalf("Chinese new Proxy Node = %+v", zhEnv)
 	}
 
 	form := url.Values{
@@ -4032,21 +3789,11 @@ func TestCreateProxyNodeMakesTerminalExitExplicitAndReturnsToRelayMap(t *testing
 	if response.Code != http.StatusOK {
 		t.Fatalf("GET entrance Hop inspector = %d %q", response.Code, response.Body.String())
 	}
-	body = response.Body.String()
-	for _, expected := range []string{"Move Hop", "Create Branch", "1. Rule", "2. Action", "3. Destination", `name="child_terminal"`, "Reject", "Unmatched Traffic"} {
-		if !strings.Contains(body, expected) {
-			t.Errorf("entrance Hop inspector does not contain %q", expected)
-		}
-	}
-	if strings.Contains(body, "Save identity") {
-		t.Error("Hop inspector still exposes identity/name editing")
-	}
-	ruleStep := strings.Index(body, "1. Rule")
-	actionStep := strings.Index(body, "2. Action")
-	childStep := strings.Index(body, "3. Destination")
-	linkStep := strings.Index(body, "4. Relay")
-	if ruleStep < 0 || actionStep < ruleStep || childStep < actionStep || linkStep < childStep {
-		t.Fatalf("branch wizard is not Rule-first: rule=%d action=%d child=%d Link=%d", ruleStep, actionStep, childStep, linkStep)
+	detailEnv := decodeSPA(t, response)
+	if detailEnv.Data.ProxyNode == nil || detailEnv.Data.ProxyNode.Tree == nil ||
+		!detailEnv.Data.ProxyNode.Tree.IsEntrance || detailEnv.Data.ProxyNode.Tree.Final != "reject" ||
+		!detailEnv.Data.ProxyNode.Tree.ShowFallback {
+		t.Fatalf("entrance Hop view = %+v", detailEnv.Data.ProxyNode)
 	}
 
 	branchForm := url.Values{
@@ -4135,18 +3882,15 @@ func TestProxyNodeEditorOffersSecretFreePhysicalListenerReuse(t *testing.T) {
 	if response.Code != http.StatusOK {
 		t.Fatalf("GET new Proxy Node = %d %q", response.Code, response.Body.String())
 	}
-	body := response.Body.String()
-	for _, expected := range []string{
-		"Physical listener", "Configure manually", "data-proxy-listener-status",
-		"data-proxy-listener-catalog", `data-agent="edge-listener"`,
-		`data-listener-id="` + proxynode.ListenerPresetID("edge-listener", node.Entrance.Endpoint) + `"`,
-		`data-reference-count="1"`, "SS2022 · :::20048 · 1 reference",
-	} {
-		if !strings.Contains(body, expected) {
-			t.Errorf("listener reuse editor does not contain %q", expected)
-		}
+	env := decodeSPA(t, response)
+	wantListenerID := proxynode.ListenerPresetID("edge-listener", node.Entrance.Endpoint)
+	if len(env.Data.ListenerOptions) != 1 || env.Data.ListenerOptions[0].ID != wantListenerID ||
+		env.Data.ListenerOptions[0].AgentID != "edge-listener" ||
+		env.Data.ListenerOptions[0].ReferenceCount != 1 ||
+		env.Data.ListenerOptions[0].Label != "SS2022 · :::20048 · 1 reference" {
+		t.Fatalf("listener reuse options = %+v", env.Data.ListenerOptions)
 	}
-	if strings.Contains(body, node.Entrance.Endpoint.ServerKey) {
+	if strings.Contains(response.Body.String(), node.Entrance.Endpoint.ServerKey) {
 		t.Fatal("physical-listener catalog exposed a generated server key")
 	}
 }
@@ -4177,21 +3921,11 @@ func TestProxyNodeEditorKeepsLegacyFileTLSValuesHidden(t *testing.T) {
 	if response.Code != http.StatusOK {
 		t.Fatalf("GET legacy file-TLS Proxy Node = %d %q", response.Code, response.Body.String())
 	}
-	body := response.Body.String()
-	for _, expected := range []string{
-		`<option value="files" selected hidden>Legacy file certificate</option>`,
-		`<input type="hidden" name="certificate_path" value="/etc/theatropolis/certs/server.pem">`,
-		`<input type="hidden" name="key_path" value="/etc/theatropolis/certs/server.key">`,
-		`data-selectable="0"`,
-	} {
-		if !strings.Contains(body, expected) {
-			t.Errorf("legacy file-TLS editor does not contain %q", expected)
-		}
-	}
-	for _, removed := range []string{`data-proxy-files`, `>Certificate path<`, `>Private-key path<`} {
-		if strings.Contains(body, removed) {
-			t.Errorf("legacy file-TLS editor still exposes %q", removed)
-		}
+	env := decodeSPA(t, response)
+	if env.Data.ProxyNode == nil || env.Data.ProxyNode.Entrance.TLSMode != "files" ||
+		env.Data.ProxyNode.Entrance.CertificatePath != "/etc/theatropolis/certs/server.pem" ||
+		env.Data.ProxyNode.Entrance.KeyPath != "/etc/theatropolis/certs/server.key" {
+		t.Fatalf("legacy file-TLS entrance = %+v", env.Data.ProxyNode)
 	}
 }
 
@@ -4222,12 +3956,17 @@ func TestReservedLookingAgentIDsUseUnambiguousManagementRoute(t *testing.T) {
 	request := fixture.authenticatedRequest(http.MethodGet, "/servers/content", "")
 	response := httptest.NewRecorder()
 	fixture.handler.ServeHTTP(response, request)
+	env := decodeSPA(t, response)
+	var manageURLs []string
+	for _, agent := range env.Data.Agents {
+		manageURLs = append(manageURLs, agent.URL)
+	}
 	for _, expected := range []string{
-		`href="/servers/new/manage"`,
-		`href="/servers/enrollment-result/manage"`,
+		"/servers/new/manage",
+		"/servers/enrollment-result/manage",
 	} {
-		if !strings.Contains(response.Body.String(), expected) {
-			t.Errorf("servers page does not contain %q", expected)
+		if !slices.Contains(manageURLs, expected) {
+			t.Errorf("servers manage URLs %v do not contain %q", manageURLs, expected)
 		}
 	}
 }
@@ -4628,17 +4367,13 @@ func TestServerPageRendersSingBoxUpdateForm(t *testing.T) {
 	)
 	response := httptest.NewRecorder()
 	fixture.handler.ServeHTTP(response, request)
-	body := response.Body.String()
-	if response.Code != http.StatusOK ||
-		!strings.Contains(
-			body,
-			`action="/servers/edge-online/sing-box-update"`,
-		) ||
-		!strings.Contains(body, "Running v1.14.0-beta.2") {
+	env := decodeSPA(t, response)
+	if response.Code != http.StatusOK || env.Data.Agent == nil ||
+		!env.Data.Agent.SingBoxUpdateEnabled || env.Data.Agent.SingBoxVersion != "v1.14.0-beta.2" {
 		t.Fatalf(
-			"sing-box update form response = %d %q",
+			"sing-box update form response = %d %+v",
 			response.Code,
-			body,
+			env.Data.Agent,
 		)
 	}
 }
@@ -4866,13 +4601,9 @@ func TestServerPageRendersAgentUpdateForm(t *testing.T) {
 	)
 	response := httptest.NewRecorder()
 	fixture.handler.ServeHTTP(response, request)
-	body := response.Body.String()
-	if response.Code != http.StatusOK ||
-		!strings.Contains(body, "Update agent to latest") ||
-		!strings.Contains(body, "data-latest-agent-version") ||
-		!strings.Contains(body, `data-version-catalog-url="/servers/edge-online/versions"`) ||
-		strings.Contains(body, "fetch(versionURL") {
-		t.Fatalf("agent update form response = %d %q", response.Code, body)
+	env := decodeSPA(t, response)
+	if response.Code != http.StatusOK || env.Data.Agent == nil || !env.Data.Agent.UpdateEnabled {
+		t.Fatalf("agent update form response = %d %+v", response.Code, env.Data.Agent)
 	}
 }
 
@@ -4900,10 +4631,10 @@ func TestServerPageShowsCurrentAgentVersion(t *testing.T) {
 	)
 	response := httptest.NewRecorder()
 	fixture.handler.ServeHTTP(response, request)
-	body := response.Body.String()
-	if response.Code != http.StatusOK ||
-		!strings.Contains(body, "data-latest-agent-version") {
-		t.Fatalf("agent update form missing latest version hook: %d %q", response.Code, body)
+	env := decodeSPA(t, response)
+	if response.Code != http.StatusOK || env.Data.Agent == nil || env.Data.Agent.AgentVersion != "v0.0.9" ||
+		!env.Data.Agent.UpdateEnabled {
+		t.Fatalf("agent update form missing current version: %d %+v", response.Code, env.Data.Agent)
 	}
 }
 
@@ -4917,10 +4648,9 @@ func TestServerPageShowsACMERelayOnlyForCapableCoLocatedAgent(t *testing.T) {
 	request := fixture.authenticatedRequest(http.MethodGet, "/servers/edge-online/manage", "")
 	response := httptest.NewRecorder()
 	fixture.handler.ServeHTTP(response, request)
-	if response.Code != http.StatusOK ||
-		!strings.Contains(response.Body.String(), "Local relay ready") ||
-		!strings.Contains(response.Body.String(), "Caddy owns public port 80") {
-		t.Fatalf("ACME relay status response = %d %q", response.Code, response.Body.String())
+	env := decodeSPA(t, response)
+	if response.Code != http.StatusOK || env.Data.Agent == nil || !env.Data.Agent.ACMEHTTP01Relay {
+		t.Fatalf("ACME relay status response = %d %+v", response.Code, env.Data.Agent)
 	}
 }
 
@@ -5213,27 +4943,22 @@ func TestRevokeServerForceRemovesPermanentlyOfflineAgent(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	// The blocked page exposes the force-removal form for the offline Server.
+	// The blocked page exposes the force-removal flag for the offline Server.
 	request := fixture.authenticatedRequest(http.MethodGet, "/servers/edge-lost/manage", "")
 	response := httptest.NewRecorder()
 	fixture.handler.ServeHTTP(response, request)
-	body := response.Body.String()
-	for _, expected := range []string{
-		`name="force"`,
-		"Force remove offline Server",
-		"Only when this machine is permanently gone",
-	} {
-		if !strings.Contains(body, expected) {
-			t.Errorf("offline referenced server page omitted %q", expected)
-		}
+	env := decodeSPA(t, response)
+	if response.Code != http.StatusOK || env.Data.Agent == nil || !env.Data.Agent.RemovalBlocked || !env.Data.Agent.CanForceRemove {
+		t.Fatalf("offline referenced server page = %d %+v", response.Code, env.Data.Agent)
 	}
 	request = fixture.authenticatedRequestWithLocale(
 		http.MethodGet, "/servers/edge-lost/manage", "", localeSimplifiedChinese,
 	)
 	response = httptest.NewRecorder()
 	fixture.handler.ServeHTTP(response, request)
-	if localized := response.Body.String(); !strings.Contains(localized, "强制移除离线服务器") {
-		t.Error("localized server page omitted the force-removal action")
+	zhEnv := decodeSPA(t, response)
+	if zhEnv.Locale != localeSimplifiedChinese || zhEnv.Data.Agent == nil || !zhEnv.Data.Agent.CanForceRemove {
+		t.Fatalf("localized server page omitted CanForceRemove: %+v", zhEnv)
 	}
 
 	// The ordinary revoke path stays blocked.
@@ -5395,25 +5120,21 @@ func TestServerPageListsProxyNodeAssignmentsAndBlocksReferencedRemoval(t *testin
 	request := fixture.authenticatedRequest(http.MethodGet, "/servers/edge-online/manage", "")
 	response := httptest.NewRecorder()
 	fixture.handler.ServeHTTP(response, request)
+	env := decodeSPA(t, response)
+	if env.Data.Agent == nil || !env.Data.Agent.RemovalBlocked || len(env.Data.Agent.ProxyNodeReferences) != 2 {
+		t.Fatalf("referenced server page = %+v", env.Data.Agent)
+	}
 	body := response.Body.String()
 	for _, expected := range []string{
-		"Proxy Node Assignments",
 		"Cinema",
 		"Archive Route",
-		"Pending Retirement",
-		"Configured: 1 Relay Hop",
-		"Applied: 1 Relay Hop",
-		"Move Proxy Node Hops First",
-		"delete the branches or Proxy Nodes that use them",
-		`href="` + proxyNodeURL(retiring.ID) + `"`,
-		`href="` + proxyNodeURL(relay.ID) + `"`,
+		"1 Relay Hop",
+		proxyNodeURL(retiring.ID),
+		proxyNodeURL(relay.ID),
 	} {
 		if !strings.Contains(body, expected) {
 			t.Errorf("referenced server page omitted %q", expected)
 		}
-	}
-	if strings.Contains(body, `action="/servers/edge-online/revoke"`) {
-		t.Fatal("referenced server page still exposes the revoke form")
 	}
 	for _, hopID := range []string{retiring.Entrance.HopID, relayHop.ID} {
 		if strings.Contains(body, hopID) {
@@ -5443,11 +5164,9 @@ func TestServerPageListsProxyNodeAssignmentsAndBlocksReferencedRemoval(t *testin
 	request = fixture.authenticatedRequestWithLocale(http.MethodGet, "/servers/edge-online/manage", "", localeSimplifiedChinese)
 	response = httptest.NewRecorder()
 	fixture.handler.ServeHTTP(response, request)
-	localized := response.Body.String()
-	for _, expected := range []string{"代理节点分配", "等待移除", "已配置: 1 个中继节点", "请先迁移代理节点"} {
-		if !strings.Contains(localized, expected) {
-			t.Errorf("localized assignment UI omitted %q", expected)
-		}
+	zhEnv := decodeSPA(t, response)
+	if zhEnv.Locale != localeSimplifiedChinese || !strings.Contains(response.Body.String(), "1 个中继节点") {
+		t.Fatalf("localized assignment UI = %+v body=%q", zhEnv, response.Body.String())
 	}
 }
 
@@ -5458,10 +5177,9 @@ func TestCreateServerRequiresCSRFAndRevealsCommandOnce(t *testing.T) {
 	request := fixture.authenticatedRequest(http.MethodGet, "/servers/new", "")
 	response := httptest.NewRecorder()
 	fixture.handler.ServeHTTP(response, request)
-	if response.Code != http.StatusOK ||
-		!strings.Contains(response.Body.String(), `name="display_name"`) ||
-		!strings.Contains(response.Body.String(), `data-display-name`) {
-		t.Fatalf("new server form omitted display-name validation hooks: %d %q", response.Code, response.Body.String())
+	env := decodeSPA(t, response)
+	if response.Code != http.StatusOK || env.View != "new-server" || env.Data.TTLSeconds <= 0 {
+		t.Fatalf("new server form = %d %+v", response.Code, env)
 	}
 
 	form := url.Values{
@@ -5522,23 +5240,21 @@ func TestCreateServerRequiresCSRFAndRevealsCommandOnce(t *testing.T) {
 	if response.Code != http.StatusOK {
 		t.Fatalf("result GET status = %d, body = %s", response.Code, response.Body.String())
 	}
-	body := response.Body.String()
-	for _, expected := range []string{
-		"Install 巴黎 边缘",
-		"--master &#39;master.example.com:8443&#39;",
-		"Shown once.",
-	} {
-		if !strings.Contains(body, expected) {
-			t.Errorf("created page does not contain %q", expected)
-		}
+	createdEnv := decodeSPA(t, response)
+	if createdEnv.View != "server-created" || createdEnv.Data.Created == nil || createdEnv.Data.Created.DisplayName != "巴黎 边缘" {
+		t.Fatalf("created page = %+v", createdEnv)
 	}
-	if strings.Contains(body, "--agent-id") {
+	installCmd := createdEnv.Data.Created.InstallCommand
+	if !strings.Contains(installCmd, "--master 'master.example.com:8443'") {
+		t.Errorf("install command missing master flag: %q", installCmd)
+	}
+	if strings.Contains(installCmd, "--agent-id") {
 		t.Fatal("token-only enrollment command redundantly contains an agent ID")
 	}
-	tokenPattern := regexp.MustCompile(`--token &#39;([A-Za-z0-9_-]{43})&#39;`)
-	match := tokenPattern.FindStringSubmatch(body)
+	tokenPattern := regexp.MustCompile(`--token '([A-Za-z0-9_-]{43})'`)
+	match := tokenPattern.FindStringSubmatch(installCmd)
 	if len(match) != 2 {
-		t.Fatalf("created page does not contain one valid enrollment token")
+		t.Fatalf("created page does not contain one valid enrollment token: %q", installCmd)
 	}
 	token := match[1]
 
@@ -5604,9 +5320,10 @@ func TestEnhancedEnrollmentDefersOneTimeResultUntilNavigation(t *testing.T) {
 			request = fixture.authenticatedRequest(http.MethodGet, location, "")
 			response = httptest.NewRecorder()
 			fixture.handler.ServeHTTP(response, request)
-			if response.Code != http.StatusOK ||
-				!regexp.MustCompile(`--token &#39;[A-Za-z0-9_-]{43}&#39;`).MatchString(response.Body.String()) {
-				t.Fatalf("first navigation did not show the installation command: %d", response.Code)
+			createdEnv := decodeSPA(t, response)
+			if response.Code != http.StatusOK || createdEnv.Data.Created == nil ||
+				!regexp.MustCompile(`--token '[A-Za-z0-9_-]{43}'`).MatchString(createdEnv.Data.Created.InstallCommand) {
+				t.Fatalf("first navigation did not show the installation command: %d %+v", response.Code, createdEnv.Data.Created)
 			}
 			request = fixture.authenticatedRequest(http.MethodGet, location, "")
 			response = httptest.NewRecorder()
@@ -5679,12 +5396,9 @@ func TestServerDisplayNameRenameKeepsImmutableRecordID(t *testing.T) {
 	request = fixture.authenticatedRequest(http.MethodGet, "/servers/edge-rename/manage", "")
 	response = httptest.NewRecorder()
 	fixture.handler.ServeHTTP(response, request)
-	body := response.Body.String()
-	if response.Code != http.StatusOK || !strings.Contains(body, "上海 中继") ||
-		!strings.Contains(body, `action="/servers/edge-rename/rename"`) ||
-		!strings.Contains(body, `name="display_name"`) ||
-		!strings.Contains(body, `data-display-name`) {
-		t.Fatalf("renamed server page = %d, body = %s", response.Code, body)
+	env := decodeSPA(t, response)
+	if response.Code != http.StatusOK || env.Data.Agent == nil || env.Data.Agent.Name != "上海 中继" || env.Data.Agent.ID != "edge-rename" {
+		t.Fatalf("renamed server page = %d, agent = %+v", response.Code, env.Data.Agent)
 	}
 
 	conflict := url.Values{
@@ -5884,119 +5598,65 @@ func TestAssetsAreSelfHostedAndSecurityHeadersApplyToErrors(t *testing.T) {
 	t.Parallel()
 
 	fixture := newWebFixture(t)
-	for _, path := range []string{
-		"/assets/app.js",
-		"/assets/dropdown.js",
-		"/assets/i18n.js",
-		"/assets/subscription-rules.js",
-	} {
+	entries, err := webFiles.ReadDir("dist/assets")
+	if err != nil {
+		t.Fatalf("read dist/assets: %v", err)
+	}
+	var jsCount, cssCount int
+	for _, entry := range entries {
+		if entry.IsDir() {
+			continue
+		}
+		path := "/assets/" + entry.Name()
 		request := fixture.request(http.MethodGet, path, "")
 		response := httptest.NewRecorder()
 		fixture.handler.ServeHTTP(response, request)
-		if response.Code != http.StatusOK ||
-			!strings.HasPrefix(
-				response.Header().Get("Content-Type"),
-				"text/javascript",
-			) ||
-			response.Body.Len() == 0 {
-			t.Fatalf(
-				"%s response = %d %q (%d bytes)",
-				path,
-				response.Code,
-				response.Header().Get("Content-Type"),
-				response.Body.Len(),
-			)
+		if response.Code != http.StatusOK || response.Body.Len() == 0 {
+			t.Fatalf("%s response = %d (%d bytes)", path, response.Code, response.Body.Len())
+		}
+		contentType := response.Header().Get("Content-Type")
+		switch {
+		case strings.HasSuffix(entry.Name(), ".js"):
+			jsCount++
+			if !strings.HasPrefix(contentType, "text/javascript") && !strings.HasPrefix(contentType, "application/javascript") {
+				t.Fatalf("%s Content-Type = %q", path, contentType)
+			}
+		case strings.HasSuffix(entry.Name(), ".css"):
+			cssCount++
+			if !strings.HasPrefix(contentType, "text/css") {
+				t.Fatalf("%s Content-Type = %q", path, contentType)
+			}
 		}
 		assertSecurityHeaders(t, response.Header())
-		if path == "/assets/app.js" {
-			asset := response.Body.String()
-			for _, expected := range []string{
-				`if (validity.tooShort)`,
-				`${label}至少需要 ${control.minLength} 个字符。`,
-				`${label} must be at least ${control.minLength} characters.`,
-				`const body = new URLSearchParams();`,
-				`t("Listener conflict")`,
-				`uses the same socket, but these settings differ`,
-				`control.matches("[data-display-name]")`,
-				`control.matches("[data-literal-ip]")`,
-				`control.matches("[data-tls-server-name]")`,
-				`control.matches("[data-proxy-listen-port]")`,
-				`Enter a valid TLS certificate domain or IP address.`,
-				`请输入有效的 TLS 证书域名或 IP 地址。`,
-				`control.dataset.validateLive !== undefined`,
-				`document.addEventListener("focusout"`,
-				`else if (topologyWorkflow?.dataset.topologyPending === "true")`,
-				`topologyPollMode = "watch";`,
-				`scheduleTopologyPoll(10000);`,
-				`if (status.active)`,
-				`topologyReloadOnComplete && status.status === "applied"`,
-			} {
-				if !strings.Contains(asset, expected) {
-					t.Errorf("shared validation does not contain %q", expected)
-				}
-			}
-		} else if path == "/assets/i18n.js" {
-			for _, expected := range []string{`"Listener conflict":{"en":"Listener conflict","zh-CN":"监听器冲突"}`, `"TLS certificate domain/IP":{"en":"TLS certificate domain/IP","zh-CN":"TLS 证书域名/IP"}`} {
-				if !strings.Contains(response.Body.String(), expected) {
-					t.Errorf("localized listener status does not contain %q", expected)
-				}
-			}
-		} else if path == "/assets/dropdown.js" {
-			asset := response.Body.String()
-			for _, expected := range []string{`option.dataset.optionDetail`, `select-box__option-detail`, `window.theatropolisSyncSelect`} {
-				if !strings.Contains(asset, expected) {
-					t.Errorf("shared dropdown does not contain %q", expected)
-				}
-			}
+	}
+	if jsCount == 0 || cssCount == 0 {
+		t.Fatalf("expected embedded JS and CSS bundles, got js=%d css=%d", jsCount, cssCount)
+	}
+	for _, retired := range []string{"/assets/app.js", "/assets/dropdown.js", "/assets/i18n.js", "/assets/subscription-rules.js", "/assets/app.css"} {
+		request := fixture.request(http.MethodGet, retired, "")
+		response := httptest.NewRecorder()
+		fixture.handler.ServeHTTP(response, request)
+		if response.Code != http.StatusNotFound {
+			t.Fatalf("retired asset %s status = %d, want 404", retired, response.Code)
 		}
-		if path == "/assets/dropdown.js" {
-			asset := response.Body.String()
-			for _, expected := range []string{
-				`trigger.setAttribute("role", "combobox")`,
-				`filter.className = "select-box__filter"`,
-				`const menuRoot = select.closest("dialog") || document.body`,
-				`const currentRoot = control.select.closest("dialog") || document.body`,
-				`filter.addEventListener("compositionstart"`,
-				`const optionBatchSize = 80`,
-				`const renderNextBatch =`,
-				`options.addEventListener("scroll"`,
-				`clearRenderedOptions(control);`,
-				`document.addEventListener("click"`,
-				`window.addEventListener("scroll", schedulePosition, true);`,
-				`window.visualViewport?.addEventListener("resize", schedulePosition);`,
-			} {
-				if !strings.Contains(asset, expected) {
-					t.Errorf("shared dropdown does not contain %q", expected)
-				}
-			}
-			if strings.Contains(asset, `input.className = "select-box__input"`) {
-				t.Fatal("shared dropdown still uses its closed trigger as the filter input")
-			}
-			if strings.Contains(asset, `button.addEventListener("click"`) {
-				t.Fatal("shared dropdown still installs one click listener per rendered option")
-			}
-			if strings.Contains(asset, `document.addEventListener("pointerdown"`) {
-				t.Fatal("shared dropdown still dismisses on the start of a touch scroll")
-			}
-			if strings.Contains(asset, `window.addEventListener("resize", () => closeDropdown())`) {
-				t.Fatal("shared dropdown still closes when the mobile keyboard resizes the viewport")
-			}
-		}
-		if path == "/assets/subscription-rules.js" {
-			asset := response.Body.String()
-			for _, expected := range []string{
-				`ruleList.addEventListener("dragstart"`,
-				`ruleList.addEventListener("dragover"`,
-				`ruleList.addEventListener("drop"`,
-				`ruleList.addEventListener("keydown"`,
-				`rule_ids: ruleOrder()`,
-			} {
-				if !strings.Contains(asset, expected) {
-					t.Errorf("subscription Rule drag ordering does not contain %q", expected)
-				}
-			}
+		assertSecurityHeaders(t, response.Header())
+	}
+
+	messagesReq := fixture.requestWithLocale(http.MethodGet, "/api/messages", "", localeSimplifiedChinese)
+	messagesRes := httptest.NewRecorder()
+	fixture.handler.ServeHTTP(messagesRes, messagesReq)
+	if messagesRes.Code != http.StatusOK {
+		t.Fatalf("GET /api/messages = %d", messagesRes.Code)
+	}
+	for _, expected := range []string{
+		`"Listener conflict":"监听器冲突"`,
+		`"TLS certificate domain/IP":"TLS 证书域名/IP"`,
+	} {
+		if !strings.Contains(messagesRes.Body.String(), expected) {
+			t.Errorf("localized message catalog does not contain %q", expected)
 		}
 	}
+	assertSecurityHeaders(t, messagesRes.Header())
 
 	request := fixture.request(http.MethodGet, "/not-found", "")
 	response := httptest.NewRecorder()
@@ -6010,15 +5670,24 @@ func TestAssetsAreSelfHostedAndSecurityHeadersApplyToErrors(t *testing.T) {
 func TestProxyTreeFallbackTerminalsShareConnectorStyle(t *testing.T) {
 	t.Parallel()
 
-	fixture := newWebFixture(t)
-	request := fixture.request(http.MethodGet, "/assets/app.css", "")
-	response := httptest.NewRecorder()
-	fixture.handler.ServeHTTP(response, request)
-	if response.Code != http.StatusOK {
-		t.Fatalf("GET app.css = %d %q", response.Code, response.Body.String())
+	entries, err := webFiles.ReadDir("dist/assets")
+	if err != nil {
+		t.Fatalf("read dist/assets: %v", err)
 	}
-	if !strings.Contains(response.Body.String(), ".proxy-map__link::after,\n.proxy-map__route-label::after {") {
-		t.Fatal("fallback terminal labels do not share the Link-to-node connector style")
+	var css strings.Builder
+	for _, entry := range entries {
+		if strings.HasSuffix(entry.Name(), ".css") {
+			data, readErr := webFiles.ReadFile("dist/assets/" + entry.Name())
+			if readErr != nil {
+				t.Fatal(readErr)
+			}
+			css.Write(data)
+		}
+	}
+	if !strings.Contains(css.String(), ".proxy-map__link:after,.proxy-map__route-label:after") &&
+		!strings.Contains(css.String(), ".proxy-map__link::after,.proxy-map__route-label::after") &&
+		!strings.Contains(css.String(), ".proxy-map__link::after,\n.proxy-map__route-label::after") {
+		t.Fatal("fallback terminal labels do not share the Link-to-node connector style in built CSS")
 	}
 }
 
@@ -6118,13 +5787,9 @@ func TestEndUserInvitationClaimPortalAndLoginReset(t *testing.T) {
 	if response.Code != http.StatusOK {
 		t.Fatalf("claim form = %d %q", response.Code, response.Body.String())
 	}
-	for _, expected := range []string{
-		`id="claim-password" name="password" type="password" autocomplete="new-password" required minlength="12"`,
-		`id="claim-password-confirmation" name="password_confirmation" type="password" autocomplete="new-password" required minlength="12"`,
-	} {
-		if !strings.Contains(response.Body.String(), expected) {
-			t.Errorf("claim form does not contain %q", expected)
-		}
+	claimEnv := decodeSPA(t, response)
+	if claimEnv.View != "portal-claim" || claimEnv.Data.EndUserLogin == nil || claimEnv.Data.EndUserLogin.Unavailable {
+		t.Fatalf("claim form = %+v", claimEnv)
 	}
 	if got := response.Header().Get("Referrer-Policy"); got != "strict-origin" {
 		t.Fatalf("claim form Referrer-Policy = %q, want strict-origin", got)
@@ -6157,12 +5822,12 @@ func TestEndUserInvitationClaimPortalAndLoginReset(t *testing.T) {
 	request.AddCookie(portalCookie)
 	response = httptest.NewRecorder()
 	fixture.handler.ServeHTTP(response, request)
-	if response.Code != http.StatusOK ||
-		!strings.Contains(response.Body.String(), "My Access") ||
-		!strings.Contains(response.Body.String(), "alice.portal") ||
-		!strings.Contains(response.Body.String(), "Configuration Subscriptions") ||
-		!strings.Contains(response.Body.String(), "No Node Access") {
-		t.Fatalf("end-user portal = %d %q", response.Code, response.Body.String())
+	portalEnv := decodeSPA(t, response)
+	if response.Code != http.StatusOK || portalEnv.View != "portal" ||
+		portalEnv.Data.EndUserPortal == nil ||
+		portalEnv.Data.EndUserPortal.LoginUsername != "alice.portal" ||
+		len(portalEnv.Data.EndUserPortal.Nodes) != 0 {
+		t.Fatalf("end-user portal = %d %+v", response.Code, portalEnv)
 	}
 
 	request = fixture.authenticatedRequest(http.MethodGet, "/users/"+url.PathEscape(user.ID), "")
@@ -6249,12 +5914,11 @@ func TestEndUserPortalLanguageSwitchReturnsToPortalRealm(t *testing.T) {
 	request := fixture.requestWithLocale(http.MethodGet, "/portal/login", "", localeSimplifiedChinese)
 	response := httptest.NewRecorder()
 	fixture.handler.ServeHTTP(response, request)
-	if response.Code != http.StatusOK ||
-		!strings.Contains(response.Body.String(), `<html lang="zh-CN">`) ||
-		!strings.Contains(response.Body.String(), "用户中心") ||
-		!strings.Contains(response.Body.String(), "用户登录") ||
-		!strings.Contains(response.Body.String(), "return_to=%2fportal%2flogin") {
-		t.Fatalf("localized portal login = %d %q", response.Code, response.Body.String())
+	env := decodeSPA(t, response)
+	if response.Code != http.StatusOK || env.Locale != localeSimplifiedChinese ||
+		env.View != "portal-login" || env.Data.EndUserLogin == nil ||
+		env.Data.EndUserLogin.ReturnTo != "/portal/login" {
+		t.Fatalf("localized portal login = %d %+v", response.Code, env)
 	}
 
 	request = fixture.request(http.MethodGet, "/language/zh-CN?return_to=/portal/login", "")

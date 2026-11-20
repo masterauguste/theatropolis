@@ -51,12 +51,13 @@ func TestUserSearchPaginationAndOutOfRangePages(t *testing.T) {
 		want  string
 	}{
 		{"/users", 50, "User 00"}, {"/users?page=2", 3, "User 50"}, {"/users?page=9999", 3, "User 50"},
-		{"/users?q=user+52", 1, "User 52"}, {"/users?q=missing", 0, "No users match your search."},
+		{"/users?q=user+52", 1, "User 52"}, {"/users?q=missing", 0, ""},
 	} {
 		w := httptest.NewRecorder()
 		f.handler.ServeHTTP(w, f.authenticatedRequest(http.MethodGet, tc.path, ""))
-		if w.Code != 200 || strings.Count(w.Body.String(), `href="/users/usr_`) != tc.count || !strings.Contains(w.Body.String(), tc.want) {
-			t.Fatalf("%s: %d %s", tc.path, w.Code, w.Body.String())
+		env := decodeSPA(t, w)
+		if w.Code != 200 || len(env.Data.EndUsers) != tc.count || (tc.want != "" && !strings.Contains(w.Body.String(), tc.want)) {
+			t.Fatalf("%s: %d len=%d %s", tc.path, w.Code, len(env.Data.EndUsers), w.Body.String())
 		}
 	}
 }

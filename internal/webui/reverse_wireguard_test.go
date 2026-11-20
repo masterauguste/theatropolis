@@ -1,11 +1,9 @@
 package webui
 
 import (
-	"html"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
-	"strings"
 	"testing"
 
 	"github.com/masterauguste/theatropolis/internal/proxynode"
@@ -30,13 +28,15 @@ func TestCGNATEnrollmentAndConnectivityControls(t *testing.T) {
 	}
 	response = httptest.NewRecorder()
 	fixture.handler.ServeHTTP(response, fixture.authenticatedMutationRequest(http.MethodPost, "/servers", form.Encode()))
-	if response.Code != http.StatusConflict || !strings.Contains(response.Body.String(), `<option value="1" selected>`) {
-		t.Fatalf("failed enrollment lost connectivity selection: %d", response.Code)
+	env := decodeSPA(t, response)
+	if response.Code != http.StatusConflict || !env.Data.ReverseOnly {
+		t.Fatalf("failed enrollment lost connectivity selection: %d %+v", response.Code, env.Data.ReverseOnly)
 	}
 	response = httptest.NewRecorder()
 	fixture.handler.ServeHTTP(response, fixture.authenticatedRequest(http.MethodGet, "/servers/"+id+"/manage", ""))
-	if response.Code != http.StatusOK || !strings.Contains(response.Body.String(), `name="reverse_only"`) {
-		t.Fatalf("connectivity control: %d", response.Code)
+	env = decodeSPA(t, response)
+	if response.Code != http.StatusOK || env.Data.Agent == nil || !env.Data.Agent.ReverseOnly {
+		t.Fatalf("connectivity control: %d %+v", response.Code, env.Data.Agent)
 	}
 	form = url.Values{"csrf_token": {fixture.session.CSRFToken}, "reverse_only": {"0"}}
 	response = httptest.NewRecorder()
@@ -50,8 +50,11 @@ func TestCGNATEnrollmentAndConnectivityControls(t *testing.T) {
 	enrollAgent(t, fixture.registry, "edge-online")
 	response = httptest.NewRecorder()
 	fixture.handler.ServeHTTP(response, fixture.authenticatedRequest(http.MethodGet, "/proxy-nodes/new", ""))
-	if strings.Contains(response.Body.String(), `<option value="edge-online"`) {
-		t.Fatal("CGNAT entrance offered")
+	env = decodeSPA(t, response)
+	for _, opt := range env.Data.AgentOptions {
+		if opt.ID == "edge-online" {
+			t.Fatal("CGNAT entrance offered")
+		}
 	}
 }
 
@@ -76,10 +79,13 @@ func TestReverseBranchEditorUsesParentAndOnlyReverseProtocol(t *testing.T) {
 	if response.Code != http.StatusOK {
 		t.Fatalf("tree: %d %s", response.Code, response.Body.String())
 	}
-	for _, expected := range []string{`data-parent-agent="edge-online"`, `data-reverse-only="1"`, `value="reverse_wireguard" selected`, `Reverse WireGuard + SOCKS5`} {
-		if !strings.Contains(html.UnescapeString(response.Body.String()), expected) {
-			t.Errorf("missing editor control %q", expected)
-		}
+	env := decodeSPA(t, response)
+	if env.Data.ProxyNode == nil || env.Data.ProxyNode.Tree == nil || len(env.Data.ProxyNode.Tree.Children) != 1 {
+		t.Fatalf("unexpected tree: %+v", env.Data.ProxyNode)
+	}
+	link := env.Data.ProxyNode.Tree.Children[0]
+	if link.Endpoint.ParentAgentID != "edge-online" || link.Endpoint.Protocol != "reverse_wireguard" || !link.Endpoint.AllowReverse {
+		t.Fatalf("unexpected reverse link endpoint: %+v", link.Endpoint)
 	}
 	// A permanently removed reverse-only Server remains a visible disabled
 	// current Hop selection, so the operator can redirect or delete its branch.
@@ -88,7 +94,15 @@ func TestReverseBranchEditorUsesParentAndOnlyReverseProtocol(t *testing.T) {
 	}
 	response = httptest.NewRecorder()
 	fixture.handler.ServeHTTP(response, fixture.authenticatedRequest(http.MethodGet, proxyNodeURL(node.ID), ""))
-	if !strings.Contains(response.Body.String(), `<option value="" selected disabled>edge-offline`) {
-		t.Fatal("deleted CGNAT current Hop disappeared from its selector")
+	env = decodeSPA(t, response)
+	child := env.Data.ProxyNode.Tree.Children[0].Child
+	foundDeleted := false
+	for _, opt := range child.AgentOptions {
+		if opt.ID == "edge-offline" && opt.Selected && opt.Deleted {
+			foundDeleted = true
+		}
+	}
+	if !foundDeleted {
+		t.Fatalf("deleted CGNAT current Hop disappeared from its selector: %+v", child.AgentOptions)
 	}
 }

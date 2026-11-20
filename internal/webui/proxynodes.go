@@ -1476,11 +1476,32 @@ func (h *Handler) extendProxyNodeUserSubscription(response http.ResponseWriter, 
 }
 
 func (h *Handler) compensateProxyNodeSubscriptions(response http.ResponseWriter, request *http.Request) {
-	_, form, ok := h.authorizeProxyMutation(
-		response, request,
-		"outage_started_at", "outage_ended_at", "compensation_value", "compensation_unit", "membership_ids",
-	)
+	if h.proxyNodes == nil {
+		writeUserError(response, "Proxy Node manager is unavailable", http.StatusServiceUnavailable)
+		return
+	}
+	token, ok := h.sessionToken(request)
 	if !ok {
+		h.redirectToLogin(response, request)
+		return
+	}
+	if h.rejectInvalidMutationOrigin(response, request) {
+		return
+	}
+	form, err := readExactFormMulti(
+		response, request, maxProxyFormBytes, "membership_ids",
+		"csrf_token", "outage_started_at", "outage_ended_at", "compensation_value", "compensation_unit",
+	)
+	if err != nil {
+		writeUserError(response, "request form is invalid", http.StatusBadRequest)
+		return
+	}
+	if !h.authorizeCSRF(response, token, form.Get("csrf_token")) {
+		writeUserError(response, "request was not authorized", http.StatusForbidden)
+		return
+	}
+	if _, err := h.access.Authenticate(token); err != nil {
+		h.redirectToLogin(response, request)
 		return
 	}
 	startedAt, err := parseBillingDateTimeLocal(form.Get("outage_started_at"))

@@ -1,7 +1,6 @@
 package webui
 
 import (
-	"bytes"
 	"context"
 	"crypto/rand"
 	"crypto/sha256"
@@ -11,7 +10,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"html/template"
 	"io"
 	"log/slog"
 	"mime"
@@ -48,7 +46,7 @@ const (
 )
 
 var (
-	//go:embed assets/* templates/* messages.json
+	//go:embed all:dist messages.json
 	webFiles embed.FS
 
 	domainLabelPattern          = regexp.MustCompile(`\A[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?\z`)
@@ -169,7 +167,6 @@ type Handler struct {
 	ruleSetGlobalLimiter *fixedWindowLimiter
 	subscriptionCache    *renderedSubscriptionCache
 	publicCacheOnce      sync.Once
-	templates            map[string]*template.Template
 	mux                  *http.ServeMux
 
 	enrollmentMu            sync.Mutex
@@ -416,10 +413,6 @@ func New(options Options) (http.Handler, error) {
 	if err != nil {
 		return nil, err
 	}
-	templates, err := parseLocalizedTemplates()
-	if err != nil {
-		return nil, fmt.Errorf("parse web UI templates: %w", err)
-	}
 	logger := options.Logger
 	if logger == nil {
 		logger = slog.Default()
@@ -477,7 +470,6 @@ func New(options Options) (http.Handler, error) {
 		ruleSetLimiter:       newFixedWindowLimiter(publicRuleSetRequestsPerMinute, time.Minute),
 		ruleSetGlobalLimiter: newFixedWindowLimiter(publicRuleSetGlobalPerMinute, time.Minute),
 		subscriptionCache:    newRenderedSubscriptionCache(),
-		templates:            templates,
 		mux:                  http.NewServeMux(),
 		results:              make(map[string]enrollmentResult),
 		userInviteResults:    make(map[[sha256.Size]byte]map[string]endUserInvitationView),
@@ -491,29 +483,21 @@ func New(options Options) (http.Handler, error) {
 
 func (h *Handler) routes() {
 	h.mux.HandleFunc("GET /healthz", h.health)
-	h.mux.HandleFunc("GET /assets/app.css", h.asset("assets/app.css", "text/css; charset=utf-8"))
-	h.mux.HandleFunc("GET /assets/i18n.js", h.messageScript())
-	h.mux.HandleFunc("GET /assets/app.js", h.asset("assets/app.js", "text/javascript; charset=utf-8"))
-	h.mux.HandleFunc(
-		"GET /assets/dropdown.js",
-		h.asset("assets/dropdown.js", "text/javascript; charset=utf-8"),
-	)
-	h.mux.HandleFunc(
-		"GET /assets/subscription-rules.js",
-		h.asset("assets/subscription-rules.js", "text/javascript; charset=utf-8"),
-	)
-	h.mux.HandleFunc("GET /login", h.loginPage)
+	h.mux.HandleFunc("GET /assets/{path...}", h.serveSPAAssets)
+	h.mux.HandleFunc("GET /api/messages", h.apiMessages)
+	h.mux.HandleFunc("GET /api/session", h.apiSession)
+	h.mux.HandleFunc("GET /login", h.spaPublicPage(h.loginPage))
 	h.mux.HandleFunc("GET /session/csrf", h.sessionCSRF)
 	h.mux.HandleFunc("GET /language/{locale}", h.changeLanguage)
 	h.mux.HandleFunc("POST /login", h.login)
 	h.mux.HandleFunc("POST /logout", h.logout)
-	h.mux.HandleFunc("GET /servers", h.serversPage)
-	h.mux.HandleFunc("GET /proxy-nodes", h.proxyNodesPage)
-	h.mux.HandleFunc("GET /proxy-nodes/new", h.newProxyNodePage)
+	h.mux.HandleFunc("GET /servers", h.spaPage(h.serversPage))
+	h.mux.HandleFunc("GET /proxy-nodes", h.spaPage(h.proxyNodesPage))
+	h.mux.HandleFunc("GET /proxy-nodes/new", h.spaPage(h.newProxyNodePage))
 	h.mux.HandleFunc("POST /proxy-nodes", h.createProxyNode)
 	h.mux.HandleFunc("POST /proxy-nodes/deploy", h.deployProxyNodes)
 	h.mux.HandleFunc("GET /proxy-nodes/deployment-status", h.proxyDeploymentStatus)
-	h.mux.HandleFunc("GET /proxy-nodes/{proxy_id}/manage", h.proxyNodePage)
+	h.mux.HandleFunc("GET /proxy-nodes/{proxy_id}/manage", h.spaPage(h.proxyNodePage))
 	h.mux.HandleFunc("GET /proxy-nodes/{proxy_id}/latencies", h.proxyNodeLatencies)
 	h.mux.HandleFunc("GET /proxy-nodes/{proxy_id}/links/{link_id}/latency-history", h.proxyLinkLatencyHistory)
 	h.mux.HandleFunc("POST /proxy-nodes/{proxy_id}/hops/{hop_id}/latency-probe", h.proxyHopLatencyProbe)
@@ -551,9 +535,9 @@ func (h *Handler) routes() {
 	h.mux.HandleFunc("POST /proxy-nodes/{proxy_id}/links/{link_id}/fallback", h.updateProxyLinkFallback)
 	h.mux.HandleFunc("POST /proxy-nodes/{proxy_id}/links/{link_id}/move", h.moveProxyLink)
 	h.mux.HandleFunc("POST /proxy-nodes/{proxy_id}/hops/{hop_id}/final", h.updateProxyFinal)
-	h.mux.HandleFunc("GET /users", h.endUsersPage)
+	h.mux.HandleFunc("GET /users", h.spaPage(h.endUsersPage))
 	h.mux.HandleFunc("POST /users", h.createEndUser)
-	h.mux.HandleFunc("GET /users/{user_id}", h.endUserPage)
+	h.mux.HandleFunc("GET /users/{user_id}", h.spaPage(h.endUserPage))
 	h.mux.HandleFunc("POST /users/{user_id}/access", h.addUserProxyAccess)
 	h.mux.HandleFunc("POST /users/{user_id}/access/remove", h.removeUserProxyAccess)
 	h.mux.HandleFunc("POST /users/{user_id}/access/update", h.updateUserProxyAccess)
@@ -562,13 +546,13 @@ func (h *Handler) routes() {
 	h.mux.HandleFunc("POST /users/{user_id}/delete", h.deleteEndUser)
 	h.mux.HandleFunc("POST /users/{user_id}/login/invitation", h.issueEndUserInvitation)
 	h.mux.HandleFunc("GET /users/{user_id}/subscription", h.userSubscriptionRoot)
-	h.mux.HandleFunc("GET /users/{user_id}/subscription/nodes", h.userSubscriptionNodesPage)
+	h.mux.HandleFunc("GET /users/{user_id}/subscription/nodes", h.spaPage(h.userSubscriptionNodesPage))
 	h.mux.HandleFunc("GET /users/{user_id}/subscription/rules", h.userSubscriptionRulesPage)
 	h.mux.HandleFunc("POST /users/{user_id}/subscription/token", h.rotateUserSubscriptionToken)
 	h.mux.HandleFunc("POST /users/{user_id}/subscription/reset", h.resetUserSubscription)
 	h.mux.HandleFunc("POST /users/{user_id}/subscription/revoke", h.revokeUserSubscriptionToken)
-	h.mux.HandleFunc("GET /subscriptions", h.subscriptionPolicyPage)
-	h.mux.HandleFunc("GET /subscriptions/admin", h.administratorSubscriptionPage)
+	h.mux.HandleFunc("GET /subscriptions", h.spaPage(h.subscriptionPolicyPage))
+	h.mux.HandleFunc("GET /subscriptions/admin", h.spaPage(h.administratorSubscriptionPage))
 	h.mux.HandleFunc("GET /subscriptions/rule-set-options", h.subscriptionRuleSetOptions)
 	h.mux.HandleFunc("POST /subscriptions/default", h.updateSubscriptionDefault)
 	h.mux.HandleFunc("POST /subscriptions/groups", h.saveSubscriptionGroup)
@@ -582,19 +566,19 @@ func (h *Handler) routes() {
 	h.mux.HandleFunc("POST /subscriptions/rules/reorder", h.reorderSubscriptionRules)
 	h.mux.HandleFunc("GET /subscription-rule-sets/{kind}/{name}", h.publicSurgeRuleSet)
 	h.mux.HandleFunc("GET /subscriptions/{token}/{format}", h.publicUserSubscription)
-	h.mux.HandleFunc("GET /portal/login", h.endUserLoginPage)
+	h.mux.HandleFunc("GET /portal/login", h.spaPublicPage(h.endUserLoginPage))
 	h.mux.HandleFunc("POST /portal/login", h.endUserLogin)
 	h.mux.HandleFunc("POST /portal/logout", h.endUserLogout)
 	h.mux.HandleFunc("GET /claim/{token}", h.endUserClaimLink)
-	h.mux.HandleFunc("GET /claim", h.endUserClaimPage)
+	h.mux.HandleFunc("GET /claim", h.spaPublicPage(h.endUserClaimPage))
 	h.mux.HandleFunc("POST /claim", h.endUserClaim)
-	h.mux.HandleFunc("GET /portal", h.endUserPortal)
+	h.mux.HandleFunc("GET /portal", h.spaPortalPage(h.endUserPortal))
 	h.mux.HandleFunc("GET /servers/content", h.serversContent)
-	h.mux.HandleFunc("GET /pool", h.poolPage)
+	h.mux.HandleFunc("GET /pool", h.spaPage(h.poolPage))
 	h.mux.HandleFunc("GET /pool/content", h.poolContent)
 	h.mux.HandleFunc("POST /pool", h.upsertPoolEntry)
 	h.mux.HandleFunc("POST /pool/delete", h.deletePoolEntry)
-	h.mux.HandleFunc("GET /settings", h.settingsPage)
+	h.mux.HandleFunc("GET /settings", h.spaPage(h.settingsPage))
 	h.mux.HandleFunc("GET /settings/versions", h.masterVersions)
 	h.mux.HandleFunc("GET /settings/update-status", h.masterUpdateStatus)
 	h.mux.HandleFunc("POST /settings/migration/export", h.exportMasterMigration)
@@ -602,13 +586,13 @@ func (h *Handler) routes() {
 	h.mux.HandleFunc("POST /settings/migration/cutover", h.cutoverMasterMigration)
 	h.mux.HandleFunc("POST /settings/accounting-errors/clear", h.clearAccountingErrors)
 	h.mux.HandleFunc("POST /settings/administrator-proxy-access", h.updateAdministratorProxyAccess)
-	h.mux.HandleFunc("GET /servers/new", h.newServerPage)
-	h.mux.HandleFunc("GET /servers/enrollment-result", h.enrollmentResultPage)
+	h.mux.HandleFunc("GET /servers/new", h.spaPage(h.newServerPage))
+	h.mux.HandleFunc("GET /servers/enrollment-result", h.spaPage(h.enrollmentResultPage))
 	h.mux.HandleFunc(
 		"GET /servers/{agent_id}/deployment-status",
 		h.deploymentStatus,
 	)
-	h.mux.HandleFunc("GET /servers/{agent_id}/manage", h.serverPage)
+	h.mux.HandleFunc("GET /servers/{agent_id}/manage", h.spaPage(h.serverPage))
 	h.mux.HandleFunc("GET /servers/versions", h.fleetVersions)
 	h.mux.HandleFunc(
 		"GET /servers/{agent_id}/versions",
@@ -661,6 +645,9 @@ func (h *Handler) ServeHTTP(response http.ResponseWriter, request *http.Request)
 			cookie:         h.languagePreferenceCookie(locale),
 		}
 	}
+	if request.Header.Get("X-Theatropolis-SPA") == "1" {
+		response = &spaRedirectResponseWriter{ResponseWriter: response}
+	}
 	h.mux.ServeHTTP(response, request)
 }
 
@@ -691,7 +678,8 @@ func (w *languagePreferenceResponseWriter) Write(body []byte) (int, error) {
 }
 
 func (w *languagePreferenceResponseWriter) persistForHTML() {
-	if strings.HasPrefix(strings.ToLower(w.Header().Get("Content-Type")), "text/html") &&
+	contentType := strings.ToLower(w.Header().Get("Content-Type"))
+	if (strings.HasPrefix(contentType, "text/html") || strings.HasPrefix(contentType, "application/json")) &&
 		!responseHasCookie(w.Header(), languageCookieName) {
 		http.SetCookie(w.ResponseWriter, w.cookie)
 	}
@@ -712,29 +700,23 @@ func (h *Handler) root(response http.ResponseWriter, request *http.Request) {
 		http.NotFound(response, request)
 		return
 	}
-	if _, ok := h.authenticate(response, request); !ok {
-		http.Redirect(response, request, "/login", http.StatusSeeOther)
+	if _, ok := h.authenticate(response, request); ok {
+		http.Redirect(response, request, "/servers", http.StatusSeeOther)
 		return
 	}
-	http.Redirect(response, request, "/servers", http.StatusSeeOther)
+	if h.endUserAccess != nil && h.endUserAccess.Unified() {
+		if _, ok := h.authenticateEndUser(request); ok {
+			http.Redirect(response, request, "/portal", http.StatusSeeOther)
+			return
+		}
+	}
+	http.Redirect(response, request, "/login", http.StatusSeeOther)
 }
 
 func (h *Handler) health(response http.ResponseWriter, _ *http.Request) {
 	response.Header().Set("Content-Type", "application/json")
 	response.Header().Set("Cache-Control", "no-store")
 	_, _ = io.WriteString(response, `{"status":"ok"}`+"\n")
-}
-
-func (h *Handler) asset(path, contentType string) http.HandlerFunc {
-	content, err := webFiles.ReadFile(path)
-	if err != nil {
-		panic(fmt.Sprintf("read embedded web asset %q: %v", path, err))
-	}
-	return func(response http.ResponseWriter, _ *http.Request) {
-		response.Header().Set("Content-Type", contentType)
-		response.Header().Set("Cache-Control", "public, max-age=300")
-		_, _ = response.Write(content)
-	}
 }
 
 func (h *Handler) loginPage(response http.ResponseWriter, request *http.Request) {
@@ -3097,7 +3079,7 @@ func shellQuote(value string) string {
 func (h *Handler) render(
 	response http.ResponseWriter,
 	status int,
-	templateName string,
+	viewName string,
 	data pageData,
 ) {
 	locale := normalizeLocale(response.Header().Get("Content-Language"))
@@ -3105,31 +3087,33 @@ func (h *Handler) render(
 	data.AssetVersion = h.assetVersion
 	data.PublicURL = h.publicURL
 	data.MasterAddress = h.masterAddress
-	var rendered bytes.Buffer
-	templates := h.templates[locale]
-	if templates == nil {
-		templates = h.templates[localeEnglish]
-	}
 	localizePageData(locale, &data)
-	if err := templates.ExecuteTemplate(&rendered, templateName, data); err != nil {
-		h.logger.Error("render web UI", "template", templateName, "error", err)
+	envelope := spaEnvelope{
+		View:       normalizeViewName(viewName),
+		Status:     status,
+		Locale:     locale,
+		Error:      data.Error,
+		ErrorField: data.ErrorField,
+		Notice:     data.Notice,
+		Data:       data,
+	}
+	encoded, err := json.Marshal(envelope)
+	if err != nil {
+		h.logger.Error("encode web UI response", "view", viewName, "error", err)
 		writeUserError(response, "interface could not be rendered", http.StatusInternalServerError)
 		return
 	}
-	response.Header().Set("Content-Type", "text/html; charset=utf-8")
+	response.Header().Set("Content-Type", "application/json; charset=utf-8")
 	response.Header().Set("Cache-Control", "no-store")
-	// Some mutations return a result page (rather than a redirect), including
-	// fleet updates and staged migration. Enhanced forms must never GET the
-	// POST-only action URL to show that result.
-	switch templateName {
+	switch viewName {
 	case "settings.html", "master-restoring.html":
 		response.Header().Set("Content-Location", "/settings")
 	case "servers.html":
 		response.Header().Set("Content-Location", "/servers")
 	}
 	response.WriteHeader(status)
-	if _, err := response.Write(rendered.Bytes()); err != nil {
-		h.logger.Warn("write web UI response", "template", templateName, "error", err)
+	if _, err := response.Write(encoded); err != nil {
+		h.logger.Warn("write web UI response", "view", viewName, "error", err)
 	}
 }
 
@@ -3212,6 +3196,10 @@ func loginClientIdentity(request *http.Request) string {
 func (h *Handler) redirectToLogin(response http.ResponseWriter, request *http.Request) {
 	if _, ok := h.sessionToken(request); ok {
 		http.SetCookie(response, DeleteSessionCookie())
+	}
+	if wantsJSON(request) {
+		writeUnauthorizedJSON(response, "/login")
+		return
 	}
 	http.Redirect(response, request, "/login", http.StatusSeeOther)
 }
@@ -3335,6 +3323,33 @@ func readExactForm(
 	for _, field := range fields {
 		value, exists := values[field]
 		if !exists || len(value) != 1 {
+			return nil, errors.New("form is missing a field or contains duplicates")
+		}
+	}
+	return values, nil
+}
+
+func readExactFormMulti(
+	response http.ResponseWriter,
+	request *http.Request,
+	maxBytes int64,
+	multiField string,
+	singleFields ...string,
+) (url.Values, error) {
+	values, err := readFormValues(response, request, maxBytes)
+	if err != nil {
+		return nil, err
+	}
+	if len(values) != len(singleFields)+1 {
+		return nil, errors.New("form contains unexpected fields")
+	}
+	multiValues, exists := values[multiField]
+	if !exists || len(multiValues) == 0 {
+		return nil, errors.New("form is missing a field or contains duplicates")
+	}
+	for _, field := range singleFields {
+		value, ok := values[field]
+		if !ok || len(value) != 1 {
 			return nil, errors.New("form is missing a field or contains duplicates")
 		}
 	}

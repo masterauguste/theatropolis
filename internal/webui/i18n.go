@@ -1,8 +1,8 @@
 package webui
 
 import (
+	"encoding/json"
 	"fmt"
-	"html/template"
 	"net"
 	"net/http"
 	"net/url"
@@ -19,39 +19,6 @@ const (
 	languageCookieName      = "theatropolis_language"
 	languageCookieLifetime  = 365 * 24 * time.Hour
 )
-
-func parseLocalizedTemplates() (map[string]*template.Template, error) {
-	paths, err := webFiles.ReadDir("templates")
-	if err != nil {
-		return nil, fmt.Errorf("read web UI templates: %w", err)
-	}
-	result := make(map[string]*template.Template, 2)
-	for _, locale := range []string{localeEnglish, localeSimplifiedChinese} {
-		activeLocale := locale
-		set := template.New("webui").Funcs(template.FuncMap{
-			"t": func(key string) string { return messageText(activeLocale, key) },
-			"count": func(count int, kind string) string {
-				return localizedCount(activeLocale, count, kind)
-			},
-		})
-		for _, entry := range paths {
-			if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".html") {
-				continue
-			}
-			path := "templates/" + entry.Name()
-			content, readErr := webFiles.ReadFile(path)
-			if readErr != nil {
-				return nil, fmt.Errorf("read web UI template %q: %w", path, readErr)
-			}
-			source := string(content)
-			if _, parseErr := set.New(entry.Name()).Parse(source); parseErr != nil {
-				return nil, fmt.Errorf("parse %s web UI template %q: %w", locale, path, parseErr)
-			}
-		}
-		result[locale] = set
-	}
-	return result, nil
-}
 
 func localizedCount(locale string, count int, kind string) string {
 	if normalizeLocale(locale) == localeSimplifiedChinese {
@@ -167,6 +134,23 @@ func (h *Handler) changeLanguage(response http.ResponseWriter, request *http.Req
 		return
 	}
 	http.SetCookie(response, h.languagePreferenceCookie(locale))
+	if wantsJSON(request) {
+		catalog := make(map[string]string, len(messages))
+		for key, value := range messages {
+			if locale == localeSimplifiedChinese {
+				catalog[key] = value.Chinese
+			} else {
+				catalog[key] = value.English
+			}
+		}
+		response.Header().Set("Content-Type", "application/json; charset=utf-8")
+		response.Header().Set("Cache-Control", "no-store")
+		_ = json.NewEncoder(response).Encode(map[string]any{
+			"locale":   locale,
+			"messages": catalog,
+		})
+		return
+	}
 	target := "/servers"
 	if _, ok := h.sessionToken(request); !ok {
 		target = "/login"

@@ -207,10 +207,11 @@ func TestServerSubscriptionDomainSettings(t *testing.T) {
 	)
 	response = httptest.NewRecorder()
 	fixture.handler.ServeHTTP(response, request)
-	if response.Code != http.StatusOK ||
-		!strings.Contains(response.Body.String(), `value="v4.edge.example"`) ||
-		!strings.Contains(response.Body.String(), `value="v6.edge.example"`) {
-		t.Fatalf("server settings page = %d, body = %s", response.Code, response.Body.String())
+	env := decodeSPA(t, response)
+	if response.Code != http.StatusOK || env.Data.Agent == nil ||
+		env.Data.Agent.SubscriptionDomainV4 != "v4.edge.example" ||
+		env.Data.Agent.SubscriptionDomainV6 != "v6.edge.example" {
+		t.Fatalf("server settings page = %d, agent = %+v", response.Code, env.Data.Agent)
 	}
 
 	invalidForm := url.Values{
@@ -225,11 +226,10 @@ func TestServerSubscriptionDomainSettings(t *testing.T) {
 	)
 	response = httptest.NewRecorder()
 	fixture.handler.ServeHTTP(response, request)
-	if response.Code != http.StatusBadRequest ||
-		!strings.Contains(response.Body.String(), `value="https://v6.edge.example"`) ||
-		!strings.Contains(response.Body.String(), `aria-describedby="server-page-error"`) ||
-		!strings.Contains(response.Body.String(), `data-initial-dialog="server-actions-dialog"`) {
-		t.Fatalf("invalid subscription domain page = %d, body = %s", response.Code, response.Body.String())
+	env = decodeSPA(t, response)
+	if response.Code != http.StatusBadRequest || env.Error == "" || env.Data.Agent == nil ||
+		env.Data.Agent.SubscriptionDomainV6 != "https://v6.edge.example" {
+		t.Fatalf("invalid subscription domain page = %d, env = %+v", response.Code, env)
 	}
 	if ipv4, ipv6 := fixture.controller.poolRegistry.SubscriptionDomains("edge-settings"); ipv4 != "v4.edge.example" || ipv6 != "v6.edge.example" {
 		t.Fatalf("invalid submission changed SubscriptionDomains() to %q, %q", ipv4, ipv6)
@@ -247,21 +247,9 @@ func TestPoolPageCRUD(t *testing.T) {
 	if response.Code != http.StatusOK {
 		t.Fatalf("GET /pool status = %d, body = %s", response.Code, response.Body.String())
 	}
-	for _, expected := range []string{
-		"Fleet outbound pool",
-		`data-async-url="/pool/content"`,
-		"Loading fleet outbounds…",
-		`action="/pool"`,
-		`name="outbound_json"`,
-		`name="remark"`,
-		"No manual entries yet.",
-	} {
-		if !strings.Contains(response.Body.String(), expected) {
-			t.Errorf("pool page does not contain %q", expected)
-		}
-	}
-	if strings.Contains(response.Body.String(), `href="/pool" class="is-active"`) {
-		t.Fatal("legacy pool page is still present in primary navigation")
+	env := decodeSPA(t, response)
+	if env.View != "pool" || env.Data.Pool == nil || len(env.Data.Pool.Manual) != 0 {
+		t.Fatalf("unexpected GET /pool payload: %+v", env.Data.Pool)
 	}
 	if fixture.controller.deploymentListCalls != 0 {
 		t.Fatalf(
@@ -343,10 +331,10 @@ func TestPoolPageCRUD(t *testing.T) {
 	if response.Code != http.StatusBadRequest {
 		t.Fatalf("bad-name pool upsert status = %d, want 400", response.Code)
 	}
-	body := response.Body.String()
-	if !strings.Contains(body, "Use a valid entry name") ||
-		!strings.Contains(body, `value="bad name!"`) {
-		t.Fatalf("bad-name pool upsert did not re-render the error: %s", body)
+	env = decodeSPA(t, response)
+	if !strings.Contains(env.Error, "Use a valid entry name") ||
+		env.Data.PoolFormName != "bad name!" {
+		t.Fatalf("bad-name pool upsert did not re-render the error: %+v", env)
 	}
 
 	badJSON := url.Values{
@@ -371,14 +359,13 @@ func TestPoolPageCRUD(t *testing.T) {
 		t.Fatalf("failed upserts triggered propagation: %d calls", fixture.controller.propagateCalls)
 	}
 
-	// The saved entry is listed with a delete form.
+	// The saved entry is listed in the JSON response.
 	request = fixture.authenticatedRequest(http.MethodGet, "/pool", "")
 	response = httptest.NewRecorder()
 	fixture.handler.ServeHTTP(response, request)
-	for _, expected := range []string{"manual/backup", `action="/pool/delete"`, `name="confirm_delete"`} {
-		if !strings.Contains(response.Body.String(), expected) {
-			t.Errorf("pool page list does not contain %q", expected)
-		}
+	env = decodeSPA(t, response)
+	if env.Data.Pool == nil || len(env.Data.Pool.Manual) != 1 || env.Data.Pool.Manual[0].Name != "backup" {
+		t.Fatalf("unexpected pool page manual list: %+v", env.Data.Pool)
 	}
 
 	// Delete requires the explicit confirmation.
@@ -456,24 +443,20 @@ func TestServerAddressOverride(t *testing.T) {
 	if response.Code != http.StatusOK {
 		t.Fatalf("GET /servers/content status = %d, body = %s", response.Code, response.Body.String())
 	}
+	env := decodeSPA(t, response)
 	body := response.Body.String()
-	for _, expected := range []string{
-		`<code class="pool-address-line">192.0.2.9</code>`,
-		`<code class="pool-address-line">2001:db8::9</code>`,
-		`Established`,
-		`Not established`,
-	} {
-		if !strings.Contains(body, expected) {
-			t.Errorf("servers page does not contain %q", expected)
+	var sawOfflineAddrs bool
+	for _, agent := range env.Data.Agents {
+		if agent.ID == "edge-offline" && agent.IPv4 == "192.0.2.9" && agent.IPv6 == "2001:db8::9" {
+			sawOfflineAddrs = true
 		}
 	}
+	if !sawOfflineAddrs {
+		t.Errorf("servers page did not include edge-offline addresses: %+v", env.Data.Agents)
+	}
 	for _, unexpected := range []string{
-		`name="override_ipv4"`,
-		`name="override_ipv6"`,
 		"Connected from:",
 		"Last known address:",
-		"IPv4 <code>",
-		"IPv6 <code>",
 		"(reported)",
 	} {
 		if strings.Contains(body, unexpected) {
@@ -489,13 +472,15 @@ func TestServerAddressOverride(t *testing.T) {
 	if response.Code != http.StatusOK {
 		t.Fatalf("GET /pool/content status = %d, body = %s", response.Code, response.Body.String())
 	}
+	poolEnv := decodeSPA(t, response)
+	if poolEnv.Data.Pool == nil || len(poolEnv.Data.Pool.Inbounds) != 2 {
+		t.Fatalf("pool content inbounds = %+v", poolEnv.Data.Pool)
+	}
 	for _, expected := range []string{
-		`action="/servers/edge-online/address"`,
-		`action="/servers/edge-offline/address"`,
-		`name="override_ipv4"`,
-		`name="override_ipv6"`,
-		`<code>192.0.2.9</code>`,
-		`<code>2001:db8::9</code>`,
+		"/servers/edge-online/address",
+		"/servers/edge-offline/address",
+		"192.0.2.9",
+		"2001:db8::9",
 	} {
 		if !strings.Contains(response.Body.String(), expected) {
 			t.Errorf("pool page does not contain %q", expected)
@@ -610,17 +595,30 @@ func TestServerAddressOverride(t *testing.T) {
 	request = fixture.authenticatedRequest(http.MethodGet, "/servers/content", "")
 	response = httptest.NewRecorder()
 	fixture.handler.ServeHTTP(response, request)
-	if !strings.Contains(response.Body.String(), `<code class="pool-address-line">198.51.100.9</code>`) ||
-		!strings.Contains(response.Body.String(), `<code class="pool-address-line">2001:db8::99</code>`) {
-		t.Errorf("servers page does not reflect the override: %s", response.Body.String())
+	env = decodeSPA(t, response)
+	var sawOverride bool
+	for _, agent := range env.Data.Agents {
+		if agent.ID == "edge-online" && agent.IPv4 == "198.51.100.9" && agent.IPv6 == "2001:db8::99" {
+			sawOverride = true
+		}
+	}
+	if !sawOverride {
+		t.Errorf("servers page does not reflect the override: %+v", env.Data.Agents)
 	}
 	request = fixture.authenticatedRequest(http.MethodGet, "/pool/content", "")
 	response = httptest.NewRecorder()
 	fixture.handler.ServeHTTP(response, request)
-	if !strings.Contains(response.Body.String(), `value="198.51.100.9"`) ||
-		!strings.Contains(response.Body.String(), `value="2001:db8::99"`) ||
-		strings.Contains(response.Body.String(), "(override)") {
-		t.Errorf("pool page does not reflect the override: %s", response.Body.String())
+	poolEnv = decodeSPA(t, response)
+	var sawPoolOverride bool
+	if poolEnv.Data.Pool != nil {
+		for _, inbound := range poolEnv.Data.Pool.Inbounds {
+			if inbound.AgentID == "edge-online" && inbound.OverrideV4 == "198.51.100.9" && inbound.OverrideV6 == "2001:db8::99" {
+				sawPoolOverride = true
+			}
+		}
+	}
+	if !sawPoolOverride || strings.Contains(response.Body.String(), "(override)") {
+		t.Errorf("pool page does not reflect the override: %+v", poolEnv.Data.Pool)
 	}
 
 	// An empty submission clears both overrides.
@@ -683,21 +681,14 @@ func TestServerPageRoutesThroughProxyNodeManager(t *testing.T) {
 	if response.Code != http.StatusOK {
 		t.Fatalf("GET server management status = %d, body = %s", response.Code, response.Body.String())
 	}
-	body := response.Body.String()
-	for _, expected := range []string{
-		"Proxy Node Assignments",
-		`href="/proxy-nodes"`,
-	} {
-		if !strings.Contains(body, expected) {
-			t.Errorf("server management page does not contain %q", expected)
-		}
+	env := decodeSPA(t, response)
+	if env.View != "server" || env.Data.Agent == nil || env.Data.Agent.ID != "edge-online" {
+		t.Fatalf("server management view = %q agent = %+v", env.View, env.Data.Agent)
 	}
+	body := response.Body.String()
 	for _, removed := range []string{
-		`id="outbound-manager-dialog"`,
-		`data-outbound-card`,
-		`data-add-outbound`,
-		`data-route-field="scope_type"`,
-		`action="/servers/edge-online/configuration"`,
+		`outbound-manager-dialog`,
+		`/servers/edge-online/configuration`,
 	} {
 		if strings.Contains(body, removed) {
 			t.Errorf("server management page still contains %q", removed)
@@ -755,16 +746,19 @@ func TestPoolPageAddressFamilies(t *testing.T) {
 	if response.Code != http.StatusOK {
 		t.Fatalf("GET /pool/content status = %d, body = %s", response.Code, response.Body.String())
 	}
-	body := response.Body.String()
-	for _, expected := range []string{
-		"<small>IPv4</small><code>203.0.113.7</code>",
-		"<small>IPv6</small><span class=\"muted\">—</span>",
-		"<small>IPv4</small><span class=\"muted\">—</span>",
-	} {
-		if !strings.Contains(body, expected) {
-			t.Errorf("pool page table does not contain %q", expected)
-		}
+	env := decodeSPA(t, response)
+	if env.Data.Pool == nil || len(env.Data.Pool.Inbounds) != 2 {
+		t.Fatalf("unexpected pool inbounds: %+v", env.Data.Pool)
 	}
+	byAgent := map[string]poolInboundView{}
+	for _, in := range env.Data.Pool.Inbounds {
+		byAgent[in.AgentID] = in
+	}
+	if byAgent["edge-source"].IPv4 != "203.0.113.7" || byAgent["edge-source"].IPv6 != "" ||
+		byAgent["edge-quiet"].IPv4 != "" || byAgent["edge-quiet"].IPv6 != "" {
+		t.Fatalf("unexpected pool address families: %+v", byAgent)
+	}
+	body := response.Body.String()
 	if strings.Contains(body, "(reported)") || strings.Contains(body, "(probed)") ||
 		strings.Contains(body, "(observed)") || strings.Contains(body, "(override)") {
 		t.Error("pool page exposes internal address source labels")
@@ -793,29 +787,15 @@ func TestPoolPageCollapsesUsersButRoutingOptionsRetainThem(t *testing.T) {
 	if response.Code != http.StatusOK {
 		t.Fatalf("GET /pool/content status = %d, body = %s", response.Code, response.Body.String())
 	}
-	body := response.Body.String()
-	if got := strings.Count(body, `class="pool-summary-card"`); got != 1 {
-		t.Fatalf("pool summary count = %d, want one inbound summary", got)
+	env := decodeSPA(t, response)
+	if env.Data.Pool == nil || len(env.Data.Pool.Inbounds) != 1 {
+		t.Fatalf("pool summary count = %d, want one inbound summary", len(env.Data.Pool.Inbounds))
 	}
-	for _, expected := range []string{
-		"edge-source",
-		"shared-in",
-		"alice",
-		"bob",
-		`data-pool-ref="agent/edge-source/shared-in/alice"`,
-		`data-pool-ref="agent/edge-source/shared-in/bob"`,
-	} {
-		if !strings.Contains(body, expected) {
-			t.Errorf("pool page does not contain %q", expected)
-		}
-	}
-	for _, visibleRef := range []string{
-		`<code>agent/edge-source/shared-in/alice</code>`,
-		`<code>agent/edge-source/shared-in/bob</code>`,
-	} {
-		if strings.Contains(body, visibleRef) {
-			t.Errorf("pool page visibly exposes internal routing ref %q", visibleRef)
-		}
+	inbound := env.Data.Pool.Inbounds[0]
+	if inbound.AgentID != "edge-source" || inbound.Tag != "shared-in" || len(inbound.Users) != 2 ||
+		inbound.Users[0].Ref != "agent/edge-source/shared-in/alice" ||
+		inbound.Users[1].Ref != "agent/edge-source/shared-in/bob" {
+		t.Fatalf("unexpected pool inbound summary: %+v", inbound)
 	}
 
 	request = fixture.authenticatedRequest(

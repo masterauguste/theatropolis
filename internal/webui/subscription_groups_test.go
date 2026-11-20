@@ -101,10 +101,9 @@ func TestSubscriptionGroupFormsAndTargetChanges(t *testing.T) {
 		if w.Code != http.StatusOK {
 			t.Fatalf("page = %d: %s", w.Code, w.Body.String())
 		}
-		for _, expected := range []string{"Streaming", "data-subscription-group-form", "data-subscription-member-picker", "data-subscription-rule-search", "value=\"" + target + "\""} {
-			if !strings.Contains(w.Body.String(), expected) {
-				t.Errorf("page missing %q", expected)
-			}
+		env := decodeSPA(t, w)
+		if env.View != "subscription-policy" || env.Data.SubscriptionPolicy == nil || len(env.Data.SubscriptionPolicy.Groups) != 1 || env.Data.SubscriptionPolicy.Groups[0].Name != "Streaming" || env.Data.SubscriptionPolicy.DefaultAction != target {
+			t.Errorf("unexpected subscription policy (%s): %+v", locale, env.Data.SubscriptionPolicy)
 		}
 	}
 	form.Set("name", "Renamed")
@@ -206,14 +205,18 @@ func TestAddAndEditSubscriptionRuleCanCreateCopyOfProxyGroup(t *testing.T) {
 	if len(policy.Groups) != 2 || policy.Rules[0].Action != proxynode.SubscriptionAction("group:"+policy.Groups[1].ID) {
 		t.Fatalf("rule edit did not create and assign new group: %+v", policy)
 	}
-	// Verify rendered UI includes localized new-group controls in both locales.
+	// Verify JSON policy view includes both created groups in both locales.
 	for _, locale := range []string{"en", "zh-CN"} {
 		w := httptest.NewRecorder()
 		f.handler.ServeHTTP(w, f.authenticatedRequestWithLocale(http.MethodGet, "/subscriptions", "", locale))
 		if w.Code != http.StatusOK {
 			t.Fatalf("GET /subscriptions (%s) = %d", locale, w.Code)
 		}
-		for _, want := range []string{`value="new_group"`, `data-subscription-new-group-field`, `name="new_group_name"`, "Netflix", "OpenAI"} {
+		env := decodeSPA(t, w)
+		if env.Data.SubscriptionPolicy == nil || len(env.Data.SubscriptionPolicy.Groups) != 2 {
+			t.Fatalf("GET /subscriptions (%s) groups = %+v", locale, env.Data.SubscriptionPolicy)
+		}
+		for _, want := range []string{"Netflix", "OpenAI"} {
 			if !strings.Contains(w.Body.String(), want) {
 				t.Errorf("GET /subscriptions (%s) missing %q", locale, want)
 			}
