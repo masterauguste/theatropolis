@@ -4238,5 +4238,29 @@
   "Select at least one option for the proxy group.": {
     "en": "Select at least one option for the proxy group.",
     "zh-CN": "请至少为策略组选择一个选项。"
+  },
+  "Active options": {
+    "en": "Active options",
+    "zh-CN": "已启用选项"
+  },
+  "Inactive options": {
+    "en": "Inactive options",
+    "zh-CN": "未启用选项"
+  },
+  "Default": {
+    "en": "Default",
+    "zh-CN": "默认"
+  },
+  "Drag options here to enable": {
+    "en": "Drag options here to enable",
+    "zh-CN": "将选项拖放到此处以启用"
+  },
+  "Drag options here to disable": {
+    "en": "Drag options here to disable",
+    "zh-CN": "将选项拖放到此处以停用"
+  },
+  "Drag options between Active and Inactive, or drag within Active to reorder. The first active option is selected by default. All available nodes expands to every proxy each user has access to.": {
+    "en": "Drag options between Active and Inactive, or drag within Active to reorder. The first active option is selected by default. All available nodes expands to every proxy each user has access to.",
+    "zh-CN": "在已启用和未启用之间拖放选项，或在已启用列表内拖动排序。排在第一位的已启用选项将作为默认选择。“全部可用节点”会展开为每位用户有权限访问的所有代理。"
   }
 }

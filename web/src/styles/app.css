@@ -4807,25 +4807,147 @@ dialog.fleet-settings-dialog { width: min(100% - 2rem, 780px); }
   background: var(--surface-sunken);
 }
 
-.subscription-member-list { max-height: 18rem; overflow: auto; margin-block: 0.6rem; display: grid; gap: 0.3rem; }
-.subscription-member {
+.subscription-member-zones {
+  display: grid;
+  gap: 0.85rem;
+  margin-top: 0.45rem;
+}
+
+.subscription-member-zone {
+  padding: 0.7rem;
+  border: 1px solid var(--ink-200);
+  border-radius: var(--radius-md);
+  background: var(--surface);
+  transition: border-color var(--ease), background-color var(--ease), box-shadow var(--ease);
+}
+
+.subscription-member-zone--inactive {
+  background: color-mix(in srgb, var(--surface-sunken) 70%, var(--surface));
+}
+
+.subscription-member-zone.is-drop-target {
+  border-color: var(--accent-600);
+  background: color-mix(in srgb, var(--accent-050) 65%, var(--surface));
+  box-shadow: 0 0 0 3px rgb(37 84 232 / 12%);
+}
+
+.subscription-member-zone__header {
   display: flex;
   align-items: center;
   justify-content: space-between;
   gap: 0.5rem;
-  padding: 0.52rem 0.65rem;
-  border: 1px solid transparent;
+  margin-bottom: 0.55rem;
+}
+
+.subscription-member-zone__header strong {
+  font-size: 0.82rem;
+  font-weight: 680;
+  color: var(--ink-700);
+}
+
+.subscription-member-zone__empty {
+  padding: 0.9rem 0.75rem;
+  border: 1.5px dashed var(--ink-200);
+  border-radius: var(--radius-sm);
+  text-align: center;
+  color: var(--ink-400);
+  font-size: 0.82rem;
+}
+
+.subscription-member-list { max-height: 15rem; overflow: auto; display: grid; gap: 0.35rem; }
+.subscription-member {
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+  padding: 0.56rem 0.7rem;
+  border: 1px solid var(--ink-200);
   border-radius: var(--radius-sm);
   background: var(--surface);
+  transition: border-color var(--ease), background-color var(--ease), box-shadow var(--ease), opacity var(--ease);
+}
+.subscription-member--draggable {
+  cursor: grab;
+  user-select: none;
+}
+.subscription-member--draggable:hover {
+  border-color: var(--ink-300);
+  box-shadow: var(--shadow-xs);
+}
+.subscription-member--draggable:active {
+  cursor: grabbing;
 }
 .subscription-member.is-selected {
   background: var(--accent-050);
-  border-color: color-mix(in srgb, var(--accent-600) 24%, transparent);
+  border-color: color-mix(in srgb, var(--accent-600) 28%, transparent);
 }
-.subscription-member label { display: flex; align-items: center; gap: 0.6rem; flex: 1; min-width: 0; cursor: pointer; }
-.subscription-member label span { overflow-wrap: anywhere; font-weight: 580; }
-.subscription-member small { display: block; color: var(--ink-500); font-size: 0.74rem; }
-.subscription-member > div { display: flex; flex-shrink: 0; gap: 0.25rem; }
+.subscription-member.is-selected:hover {
+  border-color: color-mix(in srgb, var(--accent-600) 50%, transparent);
+}
+.subscription-member.is-inactive {
+  background: var(--surface);
+  border-color: var(--ink-200);
+  color: var(--ink-600);
+}
+.subscription-member.is-dragging {
+  opacity: 0.45;
+  border-style: dashed;
+  border-color: var(--accent-600);
+}
+.subscription-member__grip {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: 0 0 auto;
+  color: var(--ink-400);
+}
+.subscription-member__grip svg {
+  width: 1.05rem;
+  height: 1.05rem;
+  fill: currentColor;
+}
+.subscription-member__order {
+  display: grid;
+  min-width: 1.45rem;
+  height: 1.45rem;
+  padding: 0 0.3rem;
+  flex: 0 0 auto;
+  place-items: center;
+  border-radius: 6px;
+  background: color-mix(in srgb, var(--accent-600) 12%, var(--surface));
+  color: var(--accent-800);
+  font-size: 0.74rem;
+  font-weight: 700;
+}
+.subscription-member__copy {
+  flex: 1;
+  min-width: 0;
+}
+.subscription-member__copy span {
+  display: block;
+  overflow-wrap: anywhere;
+  font-weight: 580;
+}
+.subscription-member__copy small {
+  display: block;
+  color: var(--ink-500);
+  font-size: 0.74rem;
+}
+.subscription-member__default {
+  flex: 0 0 auto;
+  padding: 0.16rem 0.5rem;
+  border-radius: 999px;
+  background: var(--accent-100);
+  color: var(--accent-800);
+  font-size: 0.72rem;
+  font-weight: 680;
+}
+.subscription-member-drop-line {
+  height: 2px;
+  border-radius: 999px;
+  background: var(--accent-600);
+  margin: 0.05rem 0.25rem;
+  pointer-events: none;
+}
 
 .subscription-rule-toolbar {
   display: flex;

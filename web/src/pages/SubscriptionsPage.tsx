@@ -40,8 +40,11 @@ interface GroupModalProps {
 const GroupEditorModal: React.FC<GroupModalProps> = ({ open, group, isNew, onClose, onSaved }) => {
   const { t, submitMutation } = useApp();
   const [name, setName] = useState("");
-  const [orderedChoices, setOrderedChoices] = useState<(SubscriptionTargetOption & { checked: boolean })[]>([]);
+  const [activeChoices, setActiveChoices] = useState<SubscriptionTargetOption[]>([]);
+  const [inactiveChoices, setInactiveChoices] = useState<SubscriptionTargetOption[]>([]);
   const [memberSearch, setMemberSearch] = useState("");
+  const [draggingValue, setDraggingValue] = useState<string | null>(null);
+  const [dropPreview, setDropPreview] = useState<{ zone: "active" | "inactive"; index: number } | null>(null);
   const [dirty, setDirty] = useState(false);
   const [error, setError] = useState("");
   const [saving, setSaving] = useState(false);
@@ -49,37 +52,81 @@ const GroupEditorModal: React.FC<GroupModalProps> = ({ open, group, isNew, onClo
   useEffect(() => {
     if (!open || !group) return;
     setName(group.Name || "");
-    setOrderedChoices((group.Choices || []).map((c) => ({ ...c, checked: c.Selected })));
+    const all = group.Choices || [];
+    setActiveChoices(all.filter((c) => c.Selected));
+    setInactiveChoices(all.filter((c) => !c.Selected));
     setMemberSearch("");
+    setDraggingValue(null);
+    setDropPreview(null);
     setDirty(false);
     setError("");
   }, [open, group]);
 
   useDirtyForm("sub-group-modal", open && dirty && !saving);
 
-  const selectedChoices = useMemo(() => orderedChoices.filter((c) => c.checked), [orderedChoices]);
+  const commitDrop = useCallback(
+    (dragVal: string, targetZone: "active" | "inactive", targetIndex: number) => {
+      const sourceZone = activeChoices.some((c) => c.Value === dragVal)
+        ? "active"
+        : inactiveChoices.some((c) => c.Value === dragVal)
+          ? "inactive"
+          : null;
+      if (!sourceZone) return;
+      const sourceList = sourceZone === "active" ? activeChoices : inactiveChoices;
+      const sourceIdx = sourceList.findIndex((c) => c.Value === dragVal);
+      if (sourceIdx < 0) return;
+      const item = sourceList[sourceIdx];
 
-  const toggleMember = (val: string) => {
-    setDirty(true);
-    setOrderedChoices((prev) => {
-      const toggled = prev.map((item) => (item.Value === val ? { ...item, checked: !item.checked } : item));
-      return [...toggled.filter((i) => i.checked), ...toggled.filter((i) => !i.checked)];
-    });
-  };
+      let adjustedIndex = targetIndex;
+      if (sourceZone === targetZone && sourceIdx < targetIndex) {
+        adjustedIndex -= 1;
+      }
 
-  const moveMember = (val: string, delta: -1 | 1) => {
-    setDirty(true);
-    setOrderedChoices((prev) => {
-      const selected = prev.filter((i) => i.checked);
-      const unselected = prev.filter((i) => !i.checked);
-      const idx = selected.findIndex((i) => i.Value === val);
-      const nextIdx = idx + delta;
-      if (idx < 0 || nextIdx < 0 || nextIdx >= selected.length) return prev;
-      const copy = [...selected];
+      const nextActive = activeChoices.filter((c) => c.Value !== dragVal);
+      const nextInactive = inactiveChoices.filter((c) => c.Value !== dragVal);
+
+      if (targetZone === "active") {
+        const clamped = Math.max(0, Math.min(adjustedIndex, nextActive.length));
+        nextActive.splice(clamped, 0, item);
+      } else {
+        const clamped = Math.max(0, Math.min(adjustedIndex, nextInactive.length));
+        nextInactive.splice(clamped, 0, item);
+      }
+
+      const activeSame =
+        nextActive.length === activeChoices.length &&
+        nextActive.every((c, i) => c.Value === activeChoices[i].Value);
+      const inactiveSame =
+        nextInactive.length === inactiveChoices.length &&
+        nextInactive.every((c, i) => c.Value === inactiveChoices[i].Value);
+      if (activeSame && inactiveSame) return;
+
+      setActiveChoices(nextActive);
+      setInactiveChoices(nextInactive);
+      setDirty(true);
+    },
+    [activeChoices, inactiveChoices],
+  );
+
+  const handleCardKeyDown = (zone: "active" | "inactive", val: string, e: React.KeyboardEvent) => {
+    if (zone === "active" && (e.key === "ArrowUp" || e.key === "ArrowDown")) {
+      e.preventDefault();
+      const idx = activeChoices.findIndex((c) => c.Value === val);
+      const nextIdx = idx + (e.key === "ArrowUp" ? -1 : 1);
+      if (idx < 0 || nextIdx < 0 || nextIdx >= activeChoices.length) return;
+      const copy = [...activeChoices];
       const [moved] = copy.splice(idx, 1);
       copy.splice(nextIdx, 0, moved);
-      return [...copy, ...unselected];
-    });
+      setActiveChoices(copy);
+      setDirty(true);
+    } else if (e.key === " " || e.key === "Enter") {
+      e.preventDefault();
+      if (zone === "active") {
+        commitDrop(val, "inactive", 0);
+      } else {
+        commitDrop(val, "active", activeChoices.length);
+      }
+    }
   };
 
   const handleSubmit = async (e: React.FormEvent) => {
@@ -92,7 +139,7 @@ const GroupEditorModal: React.FC<GroupModalProps> = ({ open, group, isNew, onClo
       await submitMutation(action, {
         name: name.trim(),
         type: "select",
-        members: selectedChoices.map((c) => c.Value).join("\n"),
+        members: activeChoices.map((c) => c.Value).join("\n"),
       });
       setDirty(false);
       onClose();
@@ -104,7 +151,56 @@ const GroupEditorModal: React.FC<GroupModalProps> = ({ open, group, isNew, onClo
     }
   };
 
+  const totalCount = activeChoices.length + inactiveChoices.length;
   const query = memberSearch.trim().toLocaleLowerCase();
+
+  const matchesQuery = (choice: SubscriptionTargetOption) => {
+    if (!query) return true;
+    const label = choice.Builtin ? t(choice.Label) : choice.Label;
+    const kind = t(choice.Kind);
+    return `${label} ${kind}`.toLocaleLowerCase().includes(query);
+  };
+
+  const gripIcon = (
+    <span className="subscription-member__grip" aria-hidden="true">
+      <svg viewBox="0 0 20 20">
+        <circle cx="7" cy="5" r="1.2" />
+        <circle cx="13" cy="5" r="1.2" />
+        <circle cx="7" cy="10" r="1.2" />
+        <circle cx="13" cy="10" r="1.2" />
+        <circle cx="7" cy="15" r="1.2" />
+        <circle cx="13" cy="15" r="1.2" />
+      </svg>
+    </span>
+  );
+
+  const startDrag = (val: string, e: React.DragEvent) => {
+    setDraggingValue(val);
+    setDropPreview(null);
+    e.dataTransfer.effectAllowed = "move";
+    e.dataTransfer.setData("text/plain", val);
+  };
+
+  const finishDrag = () => {
+    setDraggingValue(null);
+    setDropPreview(null);
+  };
+
+  const updateDropPreview = (zone: "active" | "inactive", index: number) => {
+    setDropPreview((prev) => (prev && prev.zone === zone && prev.index === index ? prev : { zone, index }));
+  };
+
+  const handleDropOn = (zone: "active" | "inactive", fallbackIndex: number, e: React.DragEvent) => {
+    e.preventDefault();
+    e.stopPropagation();
+    const dragVal = draggingValue || e.dataTransfer.getData("text/plain");
+    const targetIndex = dropPreview && dropPreview.zone === zone ? dropPreview.index : fallbackIndex;
+    if (dragVal) {
+      commitDrop(dragVal, zone, targetIndex);
+    }
+    setDraggingValue(null);
+    setDropPreview(null);
+  };
 
   return (
     <Modal
@@ -135,12 +231,12 @@ const GroupEditorModal: React.FC<GroupModalProps> = ({ open, group, isNew, onClo
           </label>
 
           <p className="form-help">
-            {t("Choose and order the options shown in this group. The first option is selected by default. All available nodes expands to every proxy each user has access to.")}
+            {t("Drag options between Active and Inactive, or drag within Active to reorder. The first active option is selected by default. All available nodes expands to every proxy each user has access to.")}
           </p>
 
           <fieldset className="subscription-member-picker">
             <legend>{t("Policy options")}</legend>
-            {orderedChoices.length > 8 && (
+            {totalCount > 8 && (
               <label className="field">
                 <span className="sr-only">{t("Search members")}</span>
                 <input
@@ -151,52 +247,130 @@ const GroupEditorModal: React.FC<GroupModalProps> = ({ open, group, isNew, onClo
                 />
               </label>
             )}
-            <div className="subscription-member-list">
-              {orderedChoices.map((choice) => {
-                const label = choice.Builtin ? t(choice.Label) : choice.Label;
-                const kind = t(choice.Kind);
-                if (query && !`${label} ${kind}`.toLocaleLowerCase().includes(query)) return null;
-                const selIdx = selectedChoices.findIndex((s) => s.Value === choice.Value);
-                return (
-                  <div key={choice.Value} className={`subscription-member ${choice.checked ? "is-selected" : ""}`}>
-                    <label>
-                      <input
-                        type="checkbox"
-                        checked={choice.checked}
-                        onChange={() => toggleMember(choice.Value)}
-                      />
-                      <span>
-                        {label}
-                        <small>{kind}</small>
-                      </span>
-                    </label>
-                    <div>
-                      <button
-                        type="button"
-                        className="button button--secondary button--icon-only"
-                        aria-label={t("Move up")}
-                        disabled={selIdx <= 0}
-                        onClick={() => moveMember(choice.Value, -1)}
-                      >
-                        ↑
-                      </button>
-                      <button
-                        type="button"
-                        className="button button--secondary button--icon-only"
-                        aria-label={t("Move down")}
-                        disabled={selIdx < 0 || selIdx === selectedChoices.length - 1}
-                        onClick={() => moveMember(choice.Value, 1)}
-                      >
-                        ↓
-                      </button>
-                    </div>
-                  </div>
-                );
-              })}
+
+            <div className="subscription-member-zones">
+              <div
+                className={`subscription-member-zone subscription-member-zone--active ${dropPreview?.zone === "active" ? "is-drop-target" : ""}`}
+                onDragOver={(e) => {
+                  e.preventDefault();
+                  e.dataTransfer.dropEffect = "move";
+                  updateDropPreview("active", activeChoices.length);
+                }}
+                onDrop={(e) => handleDropOn("active", activeChoices.length, e)}
+              >
+                <div className="subscription-member-zone__header">
+                  <strong>{t("Active options")}</strong>
+                  <span className="panel__count">{activeChoices.length}</span>
+                </div>
+                <div className="subscription-member-list">
+                  {activeChoices.length === 0 ? (
+                    <div className="subscription-member-zone__empty">{t("Drag options here to enable")}</div>
+                  ) : (
+                    <>
+                      {activeChoices.map((choice, idx) => {
+                        if (!matchesQuery(choice)) return null;
+                        const label = choice.Builtin ? t(choice.Label) : choice.Label;
+                        const kind = t(choice.Kind);
+                        const showBefore = dropPreview?.zone === "active" && dropPreview.index === idx;
+                        return (
+                          <React.Fragment key={choice.Value}>
+                            {showBefore && <div className="subscription-member-drop-line" aria-hidden="true" />}
+                            <div
+                              draggable
+                              tabIndex={0}
+                              className={`subscription-member subscription-member--draggable is-selected ${draggingValue === choice.Value ? "is-dragging" : ""}`}
+                              onDragStart={(e) => startDrag(choice.Value, e)}
+                              onDragOver={(e) => {
+                                e.preventDefault();
+                                e.stopPropagation();
+                                e.dataTransfer.dropEffect = "move";
+                                const rect = e.currentTarget.getBoundingClientRect();
+                                const placeAfter = e.clientY > rect.top + rect.height / 2;
+                                updateDropPreview("active", placeAfter ? idx + 1 : idx);
+                              }}
+                              onDrop={(e) => handleDropOn("active", idx, e)}
+                              onDragEnd={finishDrag}
+                              onKeyDown={(e) => handleCardKeyDown("active", choice.Value, e)}
+                            >
+                              {gripIcon}
+                              <span className="subscription-member__order">{idx + 1}</span>
+                              <div className="subscription-member__copy">
+                                <span>{label}</span>
+                                <small>{kind}</small>
+                              </div>
+                              {idx === 0 && <span className="subscription-member__default">{t("Default")}</span>}
+                            </div>
+                          </React.Fragment>
+                        );
+                      })}
+                      {dropPreview?.zone === "active" && dropPreview.index === activeChoices.length && (
+                        <div className="subscription-member-drop-line" aria-hidden="true" />
+                      )}
+                    </>
+                  )}
+                </div>
+              </div>
+
+              <div
+                className={`subscription-member-zone subscription-member-zone--inactive ${dropPreview?.zone === "inactive" ? "is-drop-target" : ""}`}
+                onDragOver={(e) => {
+                  e.preventDefault();
+                  e.dataTransfer.dropEffect = "move";
+                  updateDropPreview("inactive", inactiveChoices.length);
+                }}
+                onDrop={(e) => handleDropOn("inactive", inactiveChoices.length, e)}
+              >
+                <div className="subscription-member-zone__header">
+                  <strong>{t("Inactive options")}</strong>
+                  <span className="panel__count">{inactiveChoices.length}</span>
+                </div>
+                <div className="subscription-member-list">
+                  {inactiveChoices.length === 0 ? (
+                    <div className="subscription-member-zone__empty">{t("Drag options here to disable")}</div>
+                  ) : (
+                    <>
+                      {inactiveChoices.map((choice, idx) => {
+                        if (!matchesQuery(choice)) return null;
+                        const label = choice.Builtin ? t(choice.Label) : choice.Label;
+                        const kind = t(choice.Kind);
+                        const showBefore = dropPreview?.zone === "inactive" && dropPreview.index === idx;
+                        return (
+                          <React.Fragment key={choice.Value}>
+                            {showBefore && <div className="subscription-member-drop-line" aria-hidden="true" />}
+                            <div
+                              draggable
+                              tabIndex={0}
+                              className={`subscription-member subscription-member--draggable is-inactive ${draggingValue === choice.Value ? "is-dragging" : ""}`}
+                              onDragStart={(e) => startDrag(choice.Value, e)}
+                              onDragOver={(e) => {
+                                e.preventDefault();
+                                e.stopPropagation();
+                                e.dataTransfer.dropEffect = "move";
+                                const rect = e.currentTarget.getBoundingClientRect();
+                                const placeAfter = e.clientY > rect.top + rect.height / 2;
+                                updateDropPreview("inactive", placeAfter ? idx + 1 : idx);
+                              }}
+                              onDrop={(e) => handleDropOn("inactive", idx, e)}
+                              onDragEnd={finishDrag}
+                              onKeyDown={(e) => handleCardKeyDown("inactive", choice.Value, e)}
+                            >
+                              {gripIcon}
+                              <div className="subscription-member__copy">
+                                <span>{label}</span>
+                                <small>{kind}</small>
+                              </div>
+                            </div>
+                          </React.Fragment>
+                        );
+                      })}
+                      {dropPreview?.zone === "inactive" && dropPreview.index === inactiveChoices.length && (
+                        <div className="subscription-member-drop-line" aria-hidden="true" />
+                      )}
+                    </>
+                  )}
+                </div>
+              </div>
             </div>
-            <small role="status">
-              {t("{count} options selected").replace("{count}", String(selectedChoices.length))}
-            </small>
           </fieldset>
         </div>
 
