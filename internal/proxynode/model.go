@@ -98,9 +98,10 @@ func IsSystemAdministrator(user User) bool {
 type SubscriptionAction string
 
 const (
-	SubscriptionProxy  SubscriptionAction = "proxy"
-	SubscriptionDirect SubscriptionAction = "direct"
-	SubscriptionReject SubscriptionAction = "reject"
+	SubscriptionProxy    SubscriptionAction = "proxy"
+	SubscriptionDirect   SubscriptionAction = "direct"
+	SubscriptionReject   SubscriptionAction = "reject"
+	SubscriptionAllNodes SubscriptionAction = "all_nodes"
 )
 
 type SubscriptionAddressMode string

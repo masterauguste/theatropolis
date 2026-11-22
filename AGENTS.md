@@ -11,12 +11,17 @@ save a full re-exploration of the codebase.
   Renames retain references. Group deletion atomically substitutes an explicitly
   chosen replacement in rules, FINAL, and parent groups; validation rejects
   cycles, missing groups, duplicate/reserved names, and unsafe name punctuation.
-- `/subscriptions` owns group cards, searchable ordered member pickers, inline
-  Rule policy forms, rule search/reordering, and FINAL. PROXY remains the built-in
-  all-eligible-Nodes selector. Custom groups can automatically include future
-  Nodes or use explicit ordered members and nested groups. Manual groups default
-  to the first available member. A family-neutral Node expands to both families
-  in a group and chooses the first available family as a direct rule target.
+- `/subscriptions` owns the global subscription template: manual (`select`)
+  group cards, ordered policy option pickers (`PROXY` clearly means follow the
+  user's current `PROXY` selection, and `all_nodes` / "All available nodes" is
+  a single toggleable, reorderable placeholder that expands in-place per user
+  to every eligible Node that account can access, alongside `Direct`, `Reject`,
+  and other custom groups), inline Rule policy forms, rule search/reordering,
+  and FINAL. PROXY remains the built-in main selector. `url-test` group
+  creation/editing is currently disabled on `/subscriptions`, and global admin
+  endpoints reject individual `node:` targets so global policies stay valid
+  across users with different Node access. Manual groups default to the first
+  available member.
 - Exports intersect group members with each user's eligible applied Nodes.
   Missing Node targets reject; empty custom groups become REJECT-only selectors.
   Never expand eligibility from a policy reference. Generated Node names reserve

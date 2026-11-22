@@ -40,10 +40,6 @@ interface GroupModalProps {
 const GroupEditorModal: React.FC<GroupModalProps> = ({ open, group, isNew, onClose, onSaved }) => {
   const { t, submitMutation } = useApp();
   const [name, setName] = useState("");
-  const [type, setType] = useState("select");
-  const [interval, setInterval] = useState("300");
-  const [tolerance, setTolerance] = useState("50");
-  const [allNodes, setAllNodes] = useState("yes");
   const [orderedChoices, setOrderedChoices] = useState<(SubscriptionTargetOption & { checked: boolean })[]>([]);
   const [memberSearch, setMemberSearch] = useState("");
   const [dirty, setDirty] = useState(false);
@@ -53,10 +49,6 @@ const GroupEditorModal: React.FC<GroupModalProps> = ({ open, group, isNew, onClo
   useEffect(() => {
     if (!open || !group) return;
     setName(group.Name || "");
-    setType(group.Type || "select");
-    setInterval(String(group.Interval || 300));
-    setTolerance(String(group.Tolerance || 50));
-    setAllNodes(group.AllNodes ? "yes" : "no");
     setOrderedChoices((group.Choices || []).map((c) => ({ ...c, checked: c.Selected })));
     setMemberSearch("");
     setDirty(false);
@@ -99,10 +91,7 @@ const GroupEditorModal: React.FC<GroupModalProps> = ({ open, group, isNew, onClo
       const action = isNew ? "/subscriptions/groups" : `/subscriptions/groups/${encodeURIComponent(group.ID)}`;
       await submitMutation(action, {
         name: name.trim(),
-        type,
-        interval,
-        tolerance,
-        all_nodes: allNodes,
+        type: "select",
         members: selectedChoices.map((c) => c.Value).join("\n"),
       });
       setDirty(false);
@@ -144,85 +133,24 @@ const GroupEditorModal: React.FC<GroupModalProps> = ({ open, group, isNew, onClo
               }}
             />
           </label>
-          <label className="field">
-            <span>{t("Selection mode")}</span>
-            <SelectBox
-              searchable={false}
-              value={type}
-              onChange={(v) => {
-                setType(v);
-                setDirty(true);
-              }}
-              options={[
-                { value: "select", label: t("Manual selection") },
-                { value: "url-test", label: t("Automatic latency test") },
-              ]}
-            />
-          </label>
 
-          {type === "url-test" && (
-            <div className="subscription-group-test-options">
-              <label className="field">
-                <span>{t("Test interval (seconds)")}</span>
-                <input
-                  type="number"
-                  min={30}
-                  max={86400}
-                  value={interval}
-                  required
-                  onChange={(e) => {
-                    setInterval(e.target.value);
-                    setDirty(true);
-                  }}
-                />
-              </label>
-              <label className="field">
-                <span>{t("Switch tolerance (ms)")}</span>
-                <input
-                  type="number"
-                  min={1}
-                  max={10000}
-                  value={tolerance}
-                  required
-                  onChange={(e) => {
-                    setTolerance(e.target.value);
-                    setDirty(true);
-                  }}
-                />
-              </label>
-            </div>
-          )}
-
-          <label className="field">
-            <span>{t("Automatically include new proxies")}</span>
-            <SelectBox
-              searchable={false}
-              value={allNodes}
-              onChange={(v) => {
-                setAllNodes(v);
-                setDirty(true);
-              }}
-              options={[
-                { value: "yes", label: t("All available proxies") },
-                { value: "no", label: t("Only selected members") },
-              ]}
-            />
-          </label>
           <p className="form-help">
-            {t("Selected members come first. In manual groups, the first available member is the initial choice. A Node without a family includes both addresses.")}
+            {t("Choose and order the options shown in this group. The first option is selected by default. All available nodes expands to every proxy each user has access to.")}
           </p>
 
           <fieldset className="subscription-member-picker">
-            <legend>{t("Select proxies and groups")}</legend>
-            <label className="field">
-              <span className="sr-only">{t("Search members")}</span>
-              <input
-                type="search"
-                value={memberSearch}
-                onChange={(e) => setMemberSearch(e.target.value)}
-                placeholder={t("Search members")}
-              />
-            </label>
+            <legend>{t("Policy options")}</legend>
+            {orderedChoices.length > 8 && (
+              <label className="field">
+                <span className="sr-only">{t("Search members")}</span>
+                <input
+                  type="search"
+                  value={memberSearch}
+                  onChange={(e) => setMemberSearch(e.target.value)}
+                  placeholder={t("Search members")}
+                />
+              </label>
+            )}
             <div className="subscription-member-list">
               {orderedChoices.map((choice) => {
                 const label = choice.Builtin ? t(choice.Label) : choice.Label;
@@ -267,7 +195,7 @@ const GroupEditorModal: React.FC<GroupModalProps> = ({ open, group, isNew, onClo
               })}
             </div>
             <small role="status">
-              {t("{count} members selected").replace("{count}", String(selectedChoices.length))}
+              {t("{count} options selected").replace("{count}", String(selectedChoices.length))}
             </small>
           </fieldset>
         </div>
@@ -423,7 +351,7 @@ const RuleEditorModal: React.FC<RuleModalProps> = ({ open, rule, targets, onClos
   ];
 
   const routeOptions = [
-    { value: "new_group", label: t("Create new proxy group"), detail: t("Copy of PROXY") },
+    { value: "new_group", label: t("Create new proxy group"), detail: t("PROXY, user's proxies, Direct, Reject") },
     ...(targets.Options || []).map((opt) => ({
       value: opt.Value,
       label: opt.Builtin ? t(opt.Label) : opt.Label,
@@ -548,7 +476,7 @@ const RuleEditorModal: React.FC<RuleModalProps> = ({ open, rule, targets, onClos
                 }}
               />
               <small>
-                {t("Copies the main PROXY group (all available proxies, Direct, and Reject). You can edit or delete it later.")}
+                {t("Creates a manual group with PROXY (follows the user's current PROXY selection), every proxy each user has access to, Direct, and Reject. You can edit or delete it later.")}
               </small>
             </label>
           )}
@@ -740,7 +668,7 @@ export const SubscriptionsPage: React.FC = () => {
                 <div>
                   <h2>{t("Proxy groups")}</h2>
                   <p className="form-help">
-                    {t("Organize proxies once, then choose a group or individual proxy for any rule.")}
+                    {t("Define global policy groups for all users. Choose and order PROXY, All available nodes, Direct, Reject, or other groups.")}
                   </p>
                 </div>
                 <button
@@ -758,8 +686,8 @@ export const SubscriptionsPage: React.FC = () => {
                     <strong>PROXY</strong>
                     <span className="protocol-badge">{t("Built-in")}</span>
                   </div>
-                  <p>{t("All available proxies")}</p>
-                  <small>{t("Includes each user's available proxies, Direct, and Reject.")}</small>
+                  <p>{t("Main proxy selector")}</p>
+                  <small>{t("Includes every proxy each user has access to, plus Direct and Reject.")}</small>
                 </article>
 
                 {groups.map((group) => (
@@ -771,7 +699,6 @@ export const SubscriptionsPage: React.FC = () => {
                       </span>
                     </div>
                     <div className="subscription-group-members">
-                      {group.AllNodes && <span>{t("All available proxies")}</span>}
                       {(group.Choices || [])
                         .filter((c) => c.Selected)
                         .map((c) => (
@@ -804,7 +731,7 @@ export const SubscriptionsPage: React.FC = () => {
                 ))}
               </div>
               <p className="form-help subscription-policy-help">
-                {t("Each user only receives proxies they can access. Unavailable proxy targets and empty custom groups reject traffic.")}
+                {t("All available nodes expands per user to only the proxies that account has access to.")}
               </p>
             </section>
 

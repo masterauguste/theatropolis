@@ -131,7 +131,7 @@ func TestSubscriptionGroupValidation(t *testing.T) {
 	if _, err := s.SaveSubscriptionGroup(group); err == nil {
 		t.Fatal("accepted duplicate name")
 	}
-	for _, target := range []SubscriptionAction{"group:sgp_012345678901234567890123", "node:bogus", "node:pn_012345678901234567890123:bogus", "resolved:unsafe"} {
+	for _, target := range []SubscriptionAction{"group:sgp_012345678901234567890123", "node:bogus", "node:pn_012345678901234567890123:bogus", "resolved:unsafe", SubscriptionAllNodes} {
 		if err := s.SetSubscriptionDefault(target); err == nil {
 			t.Errorf("accepted invalid target %q", target)
 		}
@@ -158,7 +158,7 @@ func TestSubscriptionRuleWithNewProxyCopyGroupIsAtomic(t *testing.T) {
 	if group.Name != "Streaming" || group.Type != "select" || !group.AllNodes {
 		t.Fatalf("unexpected group defaults: %+v", group)
 	}
-	wantMembers := []SubscriptionAction{SubscriptionProxy, SubscriptionDirect, SubscriptionReject}
+	wantMembers := []SubscriptionAction{SubscriptionProxy, SubscriptionAllNodes, SubscriptionDirect, SubscriptionReject}
 	if !reflect.DeepEqual(group.Members, wantMembers) {
 		t.Fatalf("group members = %v, want %v", group.Members, wantMembers)
 	}

@@ -93,3 +93,63 @@ func TestGroupsAndSpecificTargetsAcrossExports(t *testing.T) {
 		}
 	}
 }
+
+func TestAllNodesGroupPlacesUserProxiesBetweenProxyAndDirectReject(t *testing.T) {
+	profile := normalizeProfile(Profile{
+		Nodes: []Node{
+			{ID: "n1", Family: "IPv4", Name: "Tokyo", Protocol: proxynode.ProtocolAnyTLS, Server: "203.0.113.1", Port: 443, Password: "secret"},
+			{ID: "n2", Family: "IPv4", Name: "Frankfurt", Protocol: proxynode.ProtocolAnyTLS, Server: "203.0.113.2", Port: 443, Password: "secret"},
+		},
+		Groups: []proxynode.SubscriptionGroup{
+			{
+				ID:       "sgp_netflix",
+				Name:     "Netflix",
+				Type:     "select",
+				AllNodes: true,
+				Members:  []proxynode.SubscriptionAction{proxynode.SubscriptionProxy, proxynode.SubscriptionAllNodes, proxynode.SubscriptionDirect, proxynode.SubscriptionReject},
+			},
+			{
+				ID:       "sgp_nodesfirst",
+				Name:     "NodesFirst",
+				Type:     "select",
+				AllNodes: true,
+				Members:  []proxynode.SubscriptionAction{proxynode.SubscriptionAllNodes, proxynode.SubscriptionProxy, proxynode.SubscriptionDirect, proxynode.SubscriptionReject},
+			},
+			{
+				ID:       "sgp_adblock",
+				Name:     "AdBlock",
+				Type:     "select",
+				AllNodes: false,
+				Members:  []proxynode.SubscriptionAction{proxynode.SubscriptionReject, proxynode.SubscriptionDirect},
+			},
+			{
+				ID:       "sgp_apple",
+				Name:     "Apple",
+				Type:     "select",
+				AllNodes: true,
+				Members:  []proxynode.SubscriptionAction{proxynode.SubscriptionDirect, proxynode.SubscriptionReject},
+			},
+			{
+				ID:       "sgp_auto",
+				Name:     "Auto",
+				Type:     "url-test",
+				AllNodes: true,
+				Interval: 300, Tolerance: 50,
+			},
+		},
+	})
+	groups := profileGroups(profile)
+	want := map[string][]string{
+		"PROXY":      {"Tokyo", "Frankfurt", "DIRECT", "REJECT"},
+		"Netflix":    {"PROXY", "Tokyo", "Frankfurt", "DIRECT", "REJECT"},
+		"NodesFirst": {"Tokyo", "Frankfurt", "PROXY", "DIRECT", "REJECT"},
+		"AdBlock":    {"REJECT", "DIRECT"},
+		"Apple":      {"DIRECT", "Tokyo", "Frankfurt", "REJECT"},
+		"Auto":       {"Tokyo", "Frankfurt"},
+	}
+	for _, group := range groups {
+		if expected, ok := want[group.Name]; ok && !reflect.DeepEqual(group.Members, expected) {
+			t.Errorf("group %q members = %v, want %v", group.Name, group.Members, expected)
+		}
+	}
+}

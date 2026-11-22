@@ -3,7 +3,6 @@ package webui
 import (
 	"net/http"
 	"slices"
-	"strconv"
 	"strings"
 
 	"github.com/masterauguste/theatropolis/internal/proxynode"
@@ -25,34 +24,27 @@ type subscriptionGroupView struct {
 	Replacement                     subscriptionTargetPicker
 }
 
-func populateSubscriptionTargets(view *subscriptionPolicyView, policy proxynode.SubscriptionPolicy, nodes []proxynode.ProxyNode) {
+func isGlobalSubscriptionTarget(action proxynode.SubscriptionAction) bool {
+	return !strings.HasPrefix(string(action), "node:")
+}
+
+func populateSubscriptionTargets(view *subscriptionPolicyView, policy proxynode.SubscriptionPolicy, _ []proxynode.ProxyNode) {
 	options := []subscriptionTargetOption{
-		{Value: "proxy", Label: "PROXY · All available proxies", Kind: "Built-in", Builtin: true},
+		{Value: "proxy", Label: "PROXY", Kind: "Follow PROXY selection", Builtin: true},
 		{Value: "direct", Label: "Direct", Kind: "Built-in", Builtin: true},
 		{Value: "reject", Label: "Reject", Kind: "Built-in", Builtin: true},
 	}
 	for _, group := range policy.Groups {
 		options = append(options, subscriptionTargetOption{Value: "group:" + group.ID, Label: group.Name, Kind: "Proxy group"})
 	}
-	nodes = slices.Clone(nodes)
-	slices.SortFunc(nodes, func(a, b proxynode.ProxyNode) int {
-		return strings.Compare(strings.ToLower(a.Name), strings.ToLower(b.Name))
-	})
-	for _, node := range nodes {
-		for _, family := range []string{"", "ipv4", "ipv6"} {
-			value, label := "node:"+node.ID, node.Name
-			if family != "" {
-				value += ":" + family
-				label += " · " + strings.ToUpper(family[:2]) + family[2:]
-			}
-			options = append(options, subscriptionTargetOption{Value: value, Label: label, Kind: "Proxy Node"})
-		}
-	}
-	// Retain unavailable references so opening and saving an editor cannot
-	// silently replace a deleted Node with the first available target.
+	// Retain legacy/unavailable references so opening an editor cannot
+	// silently replace a persisted target before the administrator chooses one.
 	ensure := func(action proxynode.SubscriptionAction) {
 		value := string(action)
-		if value != "" && !slices.ContainsFunc(options, func(o subscriptionTargetOption) bool { return o.Value == value }) {
+		if value == "" || action == proxynode.SubscriptionAllNodes {
+			return
+		}
+		if !slices.ContainsFunc(options, func(o subscriptionTargetOption) bool { return o.Value == value }) {
 			options = append(options, subscriptionTargetOption{Value: value, Label: "Unavailable Node", Kind: "Unavailable", Builtin: true})
 		}
 	}
@@ -65,6 +57,13 @@ func populateSubscriptionTargets(view *subscriptionPolicyView, policy proxynode.
 			ensure(member)
 		}
 	}
+	groupOptions := make([]subscriptionTargetOption, 0, len(options)+1)
+	groupOptions = append(groupOptions,
+		options[0],
+		subscriptionTargetOption{Value: string(proxynode.SubscriptionAllNodes), Label: "All available nodes", Kind: "Each user's accessible proxies", Builtin: true},
+	)
+	groupOptions = append(groupOptions, options[1:]...)
+
 	picker := func(action string, exclude string) subscriptionTargetPicker {
 		p := subscriptionTargetPicker{Action: action}
 		for _, option := range options {
@@ -87,23 +86,36 @@ func populateSubscriptionTargets(view *subscriptionPolicyView, policy proxynode.
 			v.Tolerance = 50
 		}
 		ref := "group:" + group.ID
-		var members []string
+		members := make([]string, 0, len(group.Members)+1)
 		for _, member := range group.Members {
 			members = append(members, string(member))
+		}
+		// Backwards compatibility: older groups stored AllNodes=true without
+		// an explicit "all_nodes" entry in Members. Project it at its effective
+		// export position so the admin can reorder or remove it cleanly.
+		if group.AllNodes && !slices.Contains(members, string(proxynode.SubscriptionAllNodes)) {
+			splitAt := len(members)
+			for splitAt > 0 && (members[splitAt-1] == string(proxynode.SubscriptionDirect) || members[splitAt-1] == string(proxynode.SubscriptionReject)) {
+				splitAt--
+			}
+			if splitAt == 0 && len(members) > 0 {
+				splitAt = 1
+			}
+			members = slices.Insert(members, splitAt, string(proxynode.SubscriptionAllNodes))
 		}
 		v.Members = strings.Join(members, "\n")
 		// Selected choices come first in their saved order; the picker supports
 		// moving them without changing the default selection on a simple rename.
 		for _, member := range members {
-			for _, option := range options {
+			for _, option := range groupOptions {
 				if option.Value == member {
 					option.Selected = true
 					v.Choices = append(v.Choices, option)
 				}
 			}
 		}
-		for _, option := range options {
-			if option.Value != ref && !slices.Contains(members, option.Value) {
+		for _, option := range groupOptions {
+			if option.Value != ref && !slices.Contains(members, option.Value) && !strings.HasPrefix(option.Value, "node:") {
 				v.Choices = append(v.Choices, option)
 			}
 		}
@@ -128,23 +140,48 @@ func populateSubscriptionTargets(view *subscriptionPolicyView, policy proxynode.
 	for _, group := range policy.Groups {
 		view.Groups = append(view.Groups, makeGroup(group))
 	}
-	view.NewGroup = makeGroup(proxynode.SubscriptionGroup{Type: "select", AllNodes: true})
+	view.NewGroup = makeGroup(proxynode.SubscriptionGroup{
+		Type:     "select",
+		AllNodes: true,
+		Members: []proxynode.SubscriptionAction{
+			proxynode.SubscriptionProxy,
+			proxynode.SubscriptionAllNodes,
+			proxynode.SubscriptionDirect,
+			proxynode.SubscriptionReject,
+		},
+	})
 }
 
 func (h *Handler) saveSubscriptionGroup(response http.ResponseWriter, request *http.Request) {
-	_, form, ok := h.authorizeProxyMutation(response, request, "name", "type", "all_nodes", "members", "interval", "tolerance")
+	_, form, ok := h.authorizeProxyMutationWithOptional(response, request, []string{"name", "members"}, "type", "all_nodes", "interval", "tolerance")
 	if !ok {
 		return
 	}
-	interval, err1 := strconv.Atoi(form.Get("interval"))
-	tolerance, err2 := strconv.Atoi(form.Get("tolerance"))
-	if err1 != nil || err2 != nil || form.Get("all_nodes") != "yes" && form.Get("all_nodes") != "no" {
-		writeUserError(response, "Invalid proxy group settings.", http.StatusBadRequest)
+	groupType := strings.TrimSpace(form.Get("type"))
+	if groupType == "" {
+		groupType = "select"
+	}
+	if groupType != "select" {
+		writeUserError(response, "Automatic latency test groups are currently disabled.", http.StatusBadRequest)
 		return
 	}
-	group := proxynode.SubscriptionGroup{ID: request.PathValue("group_id"), Name: form.Get("name"), Type: form.Get("type"), AllNodes: form.Get("all_nodes") == "yes", Interval: interval, Tolerance: tolerance}
+	group := proxynode.SubscriptionGroup{
+		ID:   request.PathValue("group_id"),
+		Name: form.Get("name"),
+		Type: "select",
+	}
 	for _, member := range splitProxyValues(form.Get("members")) {
-		group.Members = append(group.Members, proxynode.SubscriptionAction(member))
+		action := proxynode.SubscriptionAction(member)
+		if !isGlobalSubscriptionTarget(action) {
+			writeUserError(response, "Individual Proxy Nodes cannot be selected in the global subscription template.", http.StatusBadRequest)
+			return
+		}
+		group.Members = append(group.Members, action)
+	}
+	group.AllNodes = slices.Contains(group.Members, proxynode.SubscriptionAllNodes)
+	if len(group.Members) == 0 {
+		writeUserError(response, "Select at least one option for the proxy group.", http.StatusBadRequest)
+		return
 	}
 	if _, err := h.proxyNodes.SaveSubscriptionGroup(group); err != nil {
 		handleProxyMutationError(response, err)
@@ -158,7 +195,12 @@ func (h *Handler) deleteSubscriptionGroup(response http.ResponseWriter, request 
 	if !ok {
 		return
 	}
-	if err := h.proxyNodes.DeleteSubscriptionGroup(request.PathValue("group_id"), proxynode.SubscriptionAction(form.Get("replacement"))); err != nil {
+	replacement := proxynode.SubscriptionAction(form.Get("replacement"))
+	if !isGlobalSubscriptionTarget(replacement) {
+		writeUserError(response, "Individual Proxy Nodes cannot be targeted in the global subscription template.", http.StatusBadRequest)
+		return
+	}
+	if err := h.proxyNodes.DeleteSubscriptionGroup(request.PathValue("group_id"), replacement); err != nil {
 		handleProxyMutationError(response, err)
 		return
 	}
@@ -170,7 +212,12 @@ func (h *Handler) updateSubscriptionRuleAction(response http.ResponseWriter, req
 	if !ok {
 		return
 	}
-	if err := h.proxyNodes.SetSubscriptionRuleAction(request.PathValue("rule_id"), proxynode.SubscriptionAction(form.Get("action"))); err != nil {
+	action := proxynode.SubscriptionAction(form.Get("action"))
+	if !isGlobalSubscriptionTarget(action) {
+		writeUserError(response, "Individual Proxy Nodes cannot be targeted in the global subscription template.", http.StatusBadRequest)
+		return
+	}
+	if err := h.proxyNodes.SetSubscriptionRuleAction(request.PathValue("rule_id"), action); err != nil {
 		handleProxyMutationError(response, err)
 		return
 	}

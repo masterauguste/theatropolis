@@ -4142,5 +4142,101 @@
   "Unable to load sing-box versions.": {
     "en": "Unable to load sing-box versions.",
     "zh-CN": "无法加载 sing-box 版本列表。"
+  },
+  "PROXY": {
+    "en": "PROXY",
+    "zh-CN": "PROXY"
+  },
+  "Follow PROXY selection": {
+    "en": "Follow PROXY selection",
+    "zh-CN": "跟随 PROXY 选择"
+  },
+  "Additional policy options": {
+    "en": "Additional policy options",
+    "zh-CN": "附加策略选项"
+  },
+  "{count} options selected": {
+    "en": "{count} options selected",
+    "zh-CN": "已选择 {count} 个选项"
+  },
+  "Automatically tests latency across every proxy each user has access to.": {
+    "en": "Automatically tests latency across every proxy each user has access to.",
+    "zh-CN": "自动对每位用户有权限访问的所有代理进行延迟测速。"
+  },
+  "Every proxy each user has access to is automatically included. Optionally add PROXY (follows the user's current PROXY selection), Direct, Reject, or other groups below. The first option is selected by default.": {
+    "en": "Every proxy each user has access to is automatically included. Optionally add PROXY (follows the user's current PROXY selection), Direct, Reject, or other groups below. The first option is selected by default.",
+    "zh-CN": "每位用户有权限访问的所有代理均会自动包含在内。可在下方选择性添加 PROXY（跟随用户当前在 PROXY 中选择的节点）、直连、拒绝或其他策略组。排在第一位的选项将作为默认选择。"
+  },
+  "PROXY, user's proxies, Direct, Reject": {
+    "en": "PROXY, user's proxies, Direct, Reject",
+    "zh-CN": "PROXY、用户可用代理、直连、拒绝"
+  },
+  "Creates a manual group with PROXY (follows the user's current PROXY selection), every proxy each user has access to, Direct, and Reject. You can edit or delete it later.": {
+    "en": "Creates a manual group with PROXY (follows the user's current PROXY selection), every proxy each user has access to, Direct, and Reject. You can edit or delete it later.",
+    "zh-CN": "创建一个手动选择组，包含 PROXY（跟随用户当前在 PROXY 中选择的节点）、每位用户有权限访问的所有代理、直连与拒绝。后续可随时编辑或删除。"
+  },
+  "Define global policy groups for all users. Each group automatically includes every proxy that a user has access to.": {
+    "en": "Define global policy groups for all users. Each group automatically includes every proxy that a user has access to.",
+    "zh-CN": "为所有用户定义全局策略组模板。每个策略组都会自动包含该用户有权限访问的全部代理。"
+  },
+  "Main proxy selector": {
+    "en": "Main proxy selector",
+    "zh-CN": "主代理选择组"
+  },
+  "Includes every proxy each user has access to, plus Direct and Reject.": {
+    "en": "Includes every proxy each user has access to, plus Direct and Reject.",
+    "zh-CN": "包含每位用户有权限访问的所有代理，以及直连和拒绝。"
+  },
+  "Each user's proxies": {
+    "en": "Each user's proxies",
+    "zh-CN": "用户可用代理"
+  },
+  "Each user's subscription automatically populates every group with only the proxies that account has access to.": {
+    "en": "Each user's subscription automatically populates every group with only the proxies that account has access to.",
+    "zh-CN": "每位用户的订阅都会自动按该账号实际拥有的代理权限填充所有策略组。"
+  },
+  "Global proxy groups always include every proxy a user has access to.": {
+    "en": "Global proxy groups always include every proxy a user has access to.",
+    "zh-CN": "全局代理组始终包含用户有权限访问的所有代理。"
+  },
+  "Individual Proxy Nodes cannot be selected in the global subscription template.": {
+    "en": "Individual Proxy Nodes cannot be selected in the global subscription template.",
+    "zh-CN": "不能在全局订阅模板中选择单个代理节点。"
+  },
+  "Individual Proxy Nodes cannot be targeted in the global subscription template.": {
+    "en": "Individual Proxy Nodes cannot be targeted in the global subscription template.",
+    "zh-CN": "不能在全局订阅模板中指定单个代理节点作为路由目标。"
+  },
+  "All available nodes": {
+    "en": "All available nodes",
+    "zh-CN": "全部可用节点"
+  },
+  "Each user's accessible proxies": {
+    "en": "Each user's accessible proxies",
+    "zh-CN": "每位用户有权限访问的全部代理"
+  },
+  "Policy options": {
+    "en": "Policy options",
+    "zh-CN": "策略选项"
+  },
+  "Choose and order the options shown in this group. The first option is selected by default. All available nodes expands to every proxy each user has access to.": {
+    "en": "Choose and order the options shown in this group. The first option is selected by default. All available nodes expands to every proxy each user has access to.",
+    "zh-CN": "选择并排列该策略组中的选项，排在第一位的选项将作为默认选择。“全部可用节点”会展开为每位用户有权限访问的所有代理。"
+  },
+  "Define global policy groups for all users. Choose and order PROXY, All available nodes, Direct, Reject, or other groups.": {
+    "en": "Define global policy groups for all users. Choose and order PROXY, All available nodes, Direct, Reject, or other groups.",
+    "zh-CN": "为所有用户定义全局策略组模板。可自由选择并排列 PROXY、全部可用节点、直连、拒绝或其他策略组。"
+  },
+  "All available nodes expands per user to only the proxies that account has access to.": {
+    "en": "All available nodes expands per user to only the proxies that account has access to.",
+    "zh-CN": "“全部可用节点”会按账号实际权限展开为该用户可访问的代理。"
+  },
+  "Automatic latency test groups are currently disabled.": {
+    "en": "Automatic latency test groups are currently disabled.",
+    "zh-CN": "自动延迟测速组当前已禁用。"
+  },
+  "Select at least one option for the proxy group.": {
+    "en": "Select at least one option for the proxy group.",
+    "zh-CN": "请至少为策略组选择一个选项。"
   }
 }

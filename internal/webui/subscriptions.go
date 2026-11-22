@@ -192,7 +192,12 @@ func (h *Handler) updateSubscriptionDefault(response http.ResponseWriter, reques
 	if !ok {
 		return
 	}
-	if err := h.proxyNodes.SetSubscriptionDefault(proxynode.SubscriptionAction(form.Get("action"))); err != nil {
+	action := proxynode.SubscriptionAction(form.Get("action"))
+	if !isGlobalSubscriptionTarget(action) {
+		writeUserError(response, "Individual Proxy Nodes cannot be targeted in the global subscription template.", http.StatusBadRequest)
+		return
+	}
+	if err := h.proxyNodes.SetSubscriptionDefault(action); err != nil {
 		handleProxyMutationError(response, err)
 		return
 	}
@@ -209,9 +214,16 @@ func (h *Handler) addSubscriptionRule(response http.ResponseWriter, request *htt
 			handleProxyMutationError(response, err)
 			return
 		}
-	} else if _, err := h.proxyNodes.AddSubscriptionRule(subscriptionRuleInput(form)); err != nil {
-		handleProxyMutationError(response, err)
-		return
+	} else {
+		input := subscriptionRuleInput(form)
+		if !isGlobalSubscriptionTarget(input.Action) {
+			writeUserError(response, "Individual Proxy Nodes cannot be targeted in the global subscription template.", http.StatusBadRequest)
+			return
+		}
+		if _, err := h.proxyNodes.AddSubscriptionRule(input); err != nil {
+			handleProxyMutationError(response, err)
+			return
+		}
 	}
 	http.Redirect(response, request, "/subscriptions", http.StatusSeeOther)
 }
@@ -226,9 +238,16 @@ func (h *Handler) updateSubscriptionRule(response http.ResponseWriter, request *
 			handleProxyMutationError(response, err)
 			return
 		}
-	} else if err := h.proxyNodes.UpdateSubscriptionRule(request.PathValue("rule_id"), subscriptionRuleInput(form)); err != nil {
-		handleProxyMutationError(response, err)
-		return
+	} else {
+		input := subscriptionRuleInput(form)
+		if !isGlobalSubscriptionTarget(input.Action) {
+			writeUserError(response, "Individual Proxy Nodes cannot be targeted in the global subscription template.", http.StatusBadRequest)
+			return
+		}
+		if err := h.proxyNodes.UpdateSubscriptionRule(request.PathValue("rule_id"), input); err != nil {
+			handleProxyMutationError(response, err)
+			return
+		}
 	}
 	http.Redirect(response, request, "/subscriptions", http.StatusSeeOther)
 }

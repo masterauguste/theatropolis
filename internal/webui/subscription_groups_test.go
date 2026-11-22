@@ -85,7 +85,7 @@ func TestSubscriptionGroupFormsAndTargetChanges(t *testing.T) {
 			t.Fatalf("%s = %d: %s", path, w.Code, w.Body.String())
 		}
 	}
-	form := url.Values{"name": {"Streaming"}, "type": {"url-test"}, "all_nodes": {"yes"}, "members": {""}, "interval": {"300"}, "tolerance": {"50"}}
+	form := url.Values{"name": {"Streaming"}, "type": {"select"}, "members": {"proxy\nall_nodes\ndirect\nreject"}}
 	post("/subscriptions/groups", form, http.StatusSeeOther)
 	group := f.proxyNodes.SubscriptionPolicy().Groups[0]
 	target := "group:" + group.ID
@@ -221,5 +221,78 @@ func TestAddAndEditSubscriptionRuleCanCreateCopyOfProxyGroup(t *testing.T) {
 				t.Errorf("GET /subscriptions (%s) missing %q", locale, want)
 			}
 		}
+	}
+}
+
+func TestGlobalSubscriptionEditorOmitsIndividualNodesAndRejectsNodeTargets(t *testing.T) {
+	f := newWebFixture(t)
+	node, err := f.proxyNodes.CreateProxyNode(proxynode.CreateProxyNodeInput{
+		Name: "Tokyo", RootAgent: "edge-online",
+		Entrance: proxynode.Endpoint{Protocol: proxynode.ProtocolAnyTLS, ListenPort: 4443, TLS: proxynode.TLSConfig{Mode: proxynode.TLSModeSelfSigned, ServerName: "proxy.example"}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	w := httptest.NewRecorder()
+	f.handler.ServeHTTP(w, f.authenticatedRequest(http.MethodGet, "/subscriptions", ""))
+	if w.Code != http.StatusOK {
+		t.Fatalf("GET /subscriptions = %d", w.Code)
+	}
+	env := decodeSPA(t, w)
+	policy := env.Data.SubscriptionPolicy
+	if policy == nil {
+		t.Fatal("missing SubscriptionPolicy")
+	}
+	foundProxy := false
+	for _, opt := range policy.NewRuleTargets.Options {
+		if strings.HasPrefix(opt.Value, "node:") || opt.Value == "all_nodes" {
+			t.Fatalf("global rule targets exposed non-policy target: %+v", opt)
+		}
+		if opt.Value == "proxy" {
+			foundProxy = true
+			if opt.Label != "PROXY" || opt.Kind != "Follow PROXY selection" {
+				t.Fatalf("unexpected proxy target label/kind: %+v", opt)
+			}
+		}
+	}
+	if !foundProxy {
+		t.Fatal("missing proxy target option")
+	}
+	foundAllNodes := false
+	for _, choice := range policy.NewGroup.Choices {
+		if strings.HasPrefix(choice.Value, "node:") {
+			t.Fatalf("global group choices exposed individual node: %+v", choice)
+		}
+		if choice.Value == "all_nodes" && choice.Selected {
+			foundAllNodes = true
+		}
+	}
+	if !foundAllNodes {
+		t.Fatal("missing selected All available nodes choice in NewGroup")
+	}
+
+	post := func(path string, values url.Values, status int) {
+		t.Helper()
+		values.Set("csrf_token", f.session.CSRFToken)
+		r := f.authenticatedMutationRequest(http.MethodPost, path, values.Encode())
+		rec := httptest.NewRecorder()
+		f.handler.ServeHTTP(rec, r)
+		if rec.Code != status {
+			t.Fatalf("%s = %d (want %d): %s", path, rec.Code, status, rec.Body.String())
+		}
+	}
+	nodeRef := "node:" + node.ID
+	// url-test groups are disabled; empty members and individual node targets are rejected.
+	post("/subscriptions/groups", url.Values{"name": {"Auto"}, "type": {"url-test"}, "members": {"all_nodes"}}, http.StatusBadRequest)
+	post("/subscriptions/groups", url.Values{"name": {"Empty"}, "type": {"select"}, "members": {""}}, http.StatusBadRequest)
+	post("/subscriptions/groups", url.Values{"name": {"Custom"}, "type": {"select"}, "members": {nodeRef}}, http.StatusBadRequest)
+	post("/subscriptions/rules", url.Values{"match": {"domain"}, "values": {"example.com"}, "action": {nodeRef}}, http.StatusBadRequest)
+	post("/subscriptions/default", url.Values{"action": {nodeRef}}, http.StatusBadRequest)
+
+	// Reordering / omitting All available nodes works cleanly (e.g., AdBlock with Reject -> Direct).
+	post("/subscriptions/groups", url.Values{"name": {"AdBlock"}, "type": {"select"}, "members": {"reject\ndirect"}}, http.StatusSeeOther)
+	saved := f.proxyNodes.SubscriptionPolicy().Groups
+	if len(saved) != 1 || saved[0].Name != "AdBlock" || saved[0].AllNodes || len(saved[0].Members) != 2 || saved[0].Members[0] != proxynode.SubscriptionReject {
+		t.Fatalf("unexpected saved AdBlock group: %+v", saved)
 	}
 }

@@ -26,12 +26,23 @@ export const Modal: React.FC<ModalProps> = ({
 }) => {
   const { t } = useApp();
   const dialogRef = useRef<HTMLDialogElement>(null);
+  const closeButtonRef = useRef<HTMLButtonElement>(null);
 
   useEffect(() => {
     const dialog = dialogRef.current;
     if (!dialog) return;
     if (open && !dialog.open) {
+      const previouslyFocused = document.activeElement;
+      const focusedInsideBeforeShow =
+        previouslyFocused instanceof HTMLElement &&
+        dialog.contains(previouslyFocused) &&
+        previouslyFocused !== closeButtonRef.current;
       dialog.showModal();
+      if (focusedInsideBeforeShow) {
+        previouslyFocused.focus({ preventScroll: true });
+      } else if (document.activeElement === closeButtonRef.current) {
+        dialog.focus({ preventScroll: true });
+      }
     } else if (!open && dialog.open) {
       dialog.close();
     }
@@ -51,6 +62,7 @@ export const Modal: React.FC<ModalProps> = ({
   return (
     <dialog
       ref={dialogRef}
+      tabIndex={-1}
       className={`modal ${className}`.trim()}
       onCancel={(event) => {
         event.preventDefault();
@@ -65,6 +77,7 @@ export const Modal: React.FC<ModalProps> = ({
           </div>
           {!hideClose && (
             <button
+              ref={closeButtonRef}
               type="button"
               className="button button--secondary button--icon-only"
               aria-label={t("Close")}

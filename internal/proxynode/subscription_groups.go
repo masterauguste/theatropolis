@@ -30,7 +30,7 @@ func validateSubscriptionGroups(policy SubscriptionPolicy) error {
 		}
 		seen := make(map[SubscriptionAction]bool)
 		for _, member := range group.Members {
-			if !validSubscriptionAction(member) || seen[member] {
+			if !(member == SubscriptionAllNodes || validSubscriptionAction(member)) || seen[member] {
 				return fmt.Errorf("%w: invalid or duplicate group member", ErrInvalidState)
 			}
 			seen[member] = true
@@ -95,6 +95,9 @@ func (s *Store) SaveSubscriptionGroup(group SubscriptionGroup) (SubscriptionGrou
 	}
 	group.Name = strings.TrimSpace(group.Name)
 	group.Members = slices.Clone(group.Members)
+	if slices.Contains(group.Members, SubscriptionAllNodes) {
+		group.AllNodes = true
+	}
 	if group.Type == "select" {
 		group.Interval, group.Tolerance = 0, 0
 	}
@@ -175,7 +178,7 @@ func newProxyCopyGroup(name string) (SubscriptionGroup, error) {
 		Name:     strings.TrimSpace(name),
 		Type:     "select",
 		AllNodes: true,
-		Members:  []SubscriptionAction{SubscriptionProxy, SubscriptionDirect, SubscriptionReject},
+		Members:  []SubscriptionAction{SubscriptionProxy, SubscriptionAllNodes, SubscriptionDirect, SubscriptionReject},
 	}, nil
 }
 

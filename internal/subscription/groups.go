@@ -68,10 +68,14 @@ func profileGroups(profile Profile) []exportGroup {
 				}
 			}
 		}
-		for _, member := range group.Members {
+		addMember := func(member proxynode.SubscriptionAction) {
+			if member == proxynode.SubscriptionAllNodes {
+				add(all...)
+				return
+			}
 			if strings.HasPrefix(string(member), "node:") {
 				add(nodeTargets(profile, member)...)
-				continue
+				return
 			}
 			for _, dependency := range profile.Groups {
 				if string(member) == "group:"+dependency.ID {
@@ -80,8 +84,32 @@ func profileGroups(profile Profile) []exportGroup {
 			}
 			add(actionName(resolvedAction(profile, member)))
 		}
-		if group.AllNodes {
-			add(all...)
+		hasExplicitAllNodes := slices.Contains(group.Members, proxynode.SubscriptionAllNodes)
+		if hasExplicitAllNodes {
+			for _, member := range group.Members {
+				addMember(member)
+			}
+		} else {
+			splitAt := len(group.Members)
+			if group.AllNodes {
+				for splitAt > 0 && (group.Members[splitAt-1] == proxynode.SubscriptionDirect || group.Members[splitAt-1] == proxynode.SubscriptionReject) {
+					splitAt--
+				}
+				// If every explicit member is DIRECT/REJECT, keep the first one
+				// ahead of the user's proxy nodes so the manual default is preserved.
+				if splitAt == 0 && len(group.Members) > 0 {
+					splitAt = 1
+				}
+			}
+			for _, member := range group.Members[:splitAt] {
+				addMember(member)
+			}
+			if group.AllNodes {
+				add(all...)
+			}
+			for _, member := range group.Members[splitAt:] {
+				addMember(member)
+			}
 		}
 		kind := group.Type
 		if len(members) == 0 {

@@ -3512,6 +3512,7 @@ dialog.modal:has(> .modal__surface--compact) {
   width: min(100% - 2rem, 480px);
 }
 
+dialog.modal:focus,
 dialog.modal:focus-visible { outline: none; }
 
 dialog.modal::backdrop {
