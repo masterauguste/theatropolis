@@ -12,7 +12,7 @@ import { usePageData } from "../hooks/usePageData";
 export const ServersPage: React.FC = () => {
   const { t, countLabel, submitMutation } = useApp();
   const { data: shellData } = usePageData("/servers");
-  const { data: contentData, loading, error, reload } = usePageData("/servers/content");
+  const { data: contentData, loading, refreshing, error, reload } = usePageData("/servers/content");
 
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [notice, setNotice] = useState("");
@@ -100,6 +100,7 @@ export const ServersPage: React.FC = () => {
             type="button"
             className="button button--secondary button--icon"
             aria-label={t("Refresh server status")}
+            disabled={refreshing}
             onClick={() => void reload()}
           >
             <svg viewBox="0 0 24 24" aria-hidden="true">

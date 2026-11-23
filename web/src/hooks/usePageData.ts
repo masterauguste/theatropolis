@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { ApiError, fetchPage } from "../api/client";
 import type { PageData, SpaEnvelope } from "../api/types";
@@ -8,9 +8,15 @@ export interface UsePageResult {
   envelope: SpaEnvelope | null;
   data: PageData | null;
   loading: boolean;
+  refreshing: boolean;
   error: string;
   reload: () => Promise<void>;
   setData: React.Dispatch<React.SetStateAction<PageData | null>>;
+}
+
+function pathnameOf(url: string): string {
+  const queryIdx = url.indexOf("?");
+  return queryIdx >= 0 ? url.slice(0, queryIdx) : url;
 }
 
 export function usePageData(url: string, options?: { skip?: boolean }): UsePageResult {
@@ -19,26 +25,47 @@ export function usePageData(url: string, options?: { skip?: boolean }): UsePageR
   const [envelope, setEnvelope] = useState<SpaEnvelope | null>(null);
   const [data, setData] = useState<PageData | null>(null);
   const [loading, setLoading] = useState(!options?.skip);
+  const [refreshing, setRefreshing] = useState(false);
   const [error, setError] = useState("");
-  const [reloadTick, setReloadTick] = useState(0);
 
-  const reload = useCallback(async () => {
-    setReloadTick((v) => v + 1);
-  }, []);
+  const mountedRef = useRef(true);
+  const seqRef = useRef(0);
+  const controllerRef = useRef<AbortController | null>(null);
+  const hasDataRef = useRef(false);
+  const lastPathnameRef = useRef("");
 
   useEffect(() => {
-    if (options?.skip) return;
-    const controller = new AbortController();
-    let active = true;
-    setLoading(true);
-    setError("");
-    fetchPage(url, controller.signal)
-      .then((res) => {
-        if (!active) return;
+    mountedRef.current = true;
+    return () => {
+      mountedRef.current = false;
+      controllerRef.current?.abort();
+    };
+  }, []);
+
+  const performFetch = useCallback(
+    async (blocking: boolean) => {
+      if (options?.skip) return;
+      controllerRef.current?.abort();
+      const controller = new AbortController();
+      controllerRef.current = controller;
+      const seq = ++seqRef.current;
+
+      if (blocking) {
+        setLoading(true);
+      } else {
+        setRefreshing(true);
+      }
+      setError("");
+
+      try {
+        const res = await fetchPage(url, controller.signal);
+        if (!mountedRef.current || seq !== seqRef.current) return;
         if (res.redirect) {
           navigate(res.redirect, { replace: true });
           return;
         }
+        hasDataRef.current = true;
+        lastPathnameRef.current = pathnameOf(url);
         setEnvelope(res);
         setData(res.data);
         if (res.data?.CSRFToken) {
@@ -47,9 +74,10 @@ export function usePageData(url: string, options?: { skip?: boolean }): UsePageR
         if (res.data?.Title) {
           document.title = `${t(res.data.Title)} · Theatropolis`;
         }
-      })
-      .catch((err) => {
-        if (!active || (err instanceof DOMException && err.name === "AbortError")) return;
+      } catch (err) {
+        if (!mountedRef.current || seq !== seqRef.current || (err instanceof DOMException && err.name === "AbortError")) {
+          return;
+        }
         if (err instanceof ApiError && (err.status === 401 || err.unauthorized)) {
           handleUnauthorized(err.redirect || "/login");
           if (!hasUnsavedChanges()) {
@@ -58,21 +86,41 @@ export function usePageData(url: string, options?: { skip?: boolean }): UsePageR
           return;
         }
         if (err instanceof ApiError && err.envelope) {
+          hasDataRef.current = true;
+          lastPathnameRef.current = pathnameOf(url);
           setEnvelope(err.envelope);
           setData(err.envelope.data);
           setError(err.message);
           return;
         }
-        setError(err instanceof Error ? err.message : t("Request failed."));
-      })
-      .finally(() => {
-        if (active) setLoading(false);
-      });
-    return () => {
-      active = false;
-      controller.abort();
-    };
-  }, [url, localeVersion, reloadTick, options?.skip, navigate, updateCSRFToken, handleUnauthorized, hasUnsavedChanges, t]);
+        if (blocking || !hasDataRef.current) {
+          setError(err instanceof Error ? err.message : t("Request failed."));
+        }
+      } finally {
+        if (mountedRef.current && seq === seqRef.current) {
+          setLoading(false);
+          setRefreshing(false);
+        }
+      }
+    },
+    [url, options?.skip, navigate, updateCSRFToken, handleUnauthorized, hasUnsavedChanges, t],
+  );
 
-  return { envelope, data, loading, error, reload, setData };
+  const reload = useCallback(async () => {
+    await performFetch(!hasDataRef.current);
+  }, [performFetch]);
+
+  useEffect(() => {
+    if (options?.skip) return;
+    const nextPathname = pathnameOf(url);
+    const samePathname = hasDataRef.current && lastPathnameRef.current === nextPathname;
+    if (!samePathname) {
+      hasDataRef.current = false;
+      setData(null);
+      setEnvelope(null);
+    }
+    void performFetch(!samePathname);
+  }, [url, localeVersion, options?.skip, performFetch]);
+
+  return { envelope, data, loading, refreshing, error, reload, setData };
 }

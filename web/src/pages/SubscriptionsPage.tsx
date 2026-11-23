@@ -13,6 +13,13 @@ import { Modal } from "../components/Modal";
 import { SelectBox } from "../components/SelectBox";
 import { useApp, useDirtyForm } from "../context/AppContext";
 import { usePageData } from "../hooks/usePageData";
+import {
+  computeDropIndex,
+  isNoOpSameListDrop,
+  moveBetweenLists,
+  reorderList,
+  type DragDirection,
+} from "../utils/dragSort";
 
 function suggestGroupName(raw: string): string {
   const first =
@@ -37,14 +44,32 @@ interface GroupModalProps {
   onSaved: () => Promise<void>;
 }
 
+interface GroupDragState {
+  value: string;
+  sourceZone: "active" | "inactive";
+  sourceIdx: number;
+  label: string;
+  kind: string;
+  x: number;
+  y: number;
+  offsetX: number;
+  offsetY: number;
+  width: number;
+  targetZone: "active" | "inactive";
+  targetIdx: number;
+}
+
 const GroupEditorModal: React.FC<GroupModalProps> = ({ open, group, isNew, onClose, onSaved }) => {
   const { t, submitMutation } = useApp();
   const [name, setName] = useState("");
   const [activeChoices, setActiveChoices] = useState<SubscriptionTargetOption[]>([]);
   const [inactiveChoices, setInactiveChoices] = useState<SubscriptionTargetOption[]>([]);
   const [memberSearch, setMemberSearch] = useState("");
-  const [draggingValue, setDraggingValue] = useState<string | null>(null);
-  const [dropPreview, setDropPreview] = useState<{ zone: "active" | "inactive"; index: number } | null>(null);
+  const [dragState, setDragState] = useState<GroupDragState | null>(null);
+  const activeZoneRef = useRef<HTMLDivElement>(null);
+  const inactiveZoneRef = useRef<HTMLDivElement>(null);
+  const activeListRef = useRef<HTMLDivElement>(null);
+  const inactiveListRef = useRef<HTMLDivElement>(null);
   const [dirty, setDirty] = useState(false);
   const [error, setError] = useState("");
   const [saving, setSaving] = useState(false);
@@ -56,77 +81,145 @@ const GroupEditorModal: React.FC<GroupModalProps> = ({ open, group, isNew, onClo
     setActiveChoices(all.filter((c) => c.Selected));
     setInactiveChoices(all.filter((c) => !c.Selected));
     setMemberSearch("");
-    setDraggingValue(null);
-    setDropPreview(null);
+    setDragState(null);
     setDirty(false);
     setError("");
   }, [open, group]);
 
   useDirtyForm("sub-group-modal", open && dirty && !saving);
 
-  const commitDrop = useCallback(
-    (dragVal: string, targetZone: "active" | "inactive", targetIndex: number) => {
-      const sourceZone = activeChoices.some((c) => c.Value === dragVal)
-        ? "active"
-        : inactiveChoices.some((c) => c.Value === dragVal)
-          ? "inactive"
-          : null;
-      if (!sourceZone) return;
-      const sourceList = sourceZone === "active" ? activeChoices : inactiveChoices;
-      const sourceIdx = sourceList.findIndex((c) => c.Value === dragVal);
-      if (sourceIdx < 0) return;
-      const item = sourceList[sourceIdx];
-
-      let adjustedIndex = targetIndex;
-      if (sourceZone === targetZone && sourceIdx < targetIndex) {
-        adjustedIndex -= 1;
-      }
-
-      const nextActive = activeChoices.filter((c) => c.Value !== dragVal);
-      const nextInactive = inactiveChoices.filter((c) => c.Value !== dragVal);
-
-      if (targetZone === "active") {
-        const clamped = Math.max(0, Math.min(adjustedIndex, nextActive.length));
-        nextActive.splice(clamped, 0, item);
-      } else {
-        const clamped = Math.max(0, Math.min(adjustedIndex, nextInactive.length));
-        nextInactive.splice(clamped, 0, item);
-      }
-
-      const activeSame =
-        nextActive.length === activeChoices.length &&
-        nextActive.every((c, i) => c.Value === activeChoices[i].Value);
-      const inactiveSame =
-        nextInactive.length === inactiveChoices.length &&
-        nextInactive.every((c, i) => c.Value === inactiveChoices[i].Value);
-      if (activeSame && inactiveSame) return;
-
-      setActiveChoices(nextActive);
-      setInactiveChoices(nextInactive);
+  const commitMove = useCallback(
+    (sourceZone: "active" | "inactive", sourceIdx: number, targetZone: "active" | "inactive", targetIdx: number) => {
+      const res = moveBetweenLists(activeChoices, inactiveChoices, sourceZone, sourceIdx, targetZone, targetIdx);
+      if (!res.changed) return;
+      setActiveChoices(res.active);
+      setInactiveChoices(res.inactive);
       setDirty(true);
     },
     [activeChoices, inactiveChoices],
   );
 
-  const handleCardKeyDown = (zone: "active" | "inactive", val: string, e: React.KeyboardEvent) => {
+  const handleCardKeyDown = (zone: "active" | "inactive", idx: number, e: React.KeyboardEvent) => {
     if (zone === "active" && (e.key === "ArrowUp" || e.key === "ArrowDown")) {
       e.preventDefault();
-      const idx = activeChoices.findIndex((c) => c.Value === val);
-      const nextIdx = idx + (e.key === "ArrowUp" ? -1 : 1);
-      if (idx < 0 || nextIdx < 0 || nextIdx >= activeChoices.length) return;
-      const copy = [...activeChoices];
-      const [moved] = copy.splice(idx, 1);
-      copy.splice(nextIdx, 0, moved);
-      setActiveChoices(copy);
-      setDirty(true);
+      const targetIdx = e.key === "ArrowUp" ? idx - 1 : idx + 2;
+      if (targetIdx < 0 || targetIdx > activeChoices.length) return;
+      commitMove("active", idx, "active", targetIdx);
     } else if (e.key === " " || e.key === "Enter") {
       e.preventDefault();
       if (zone === "active") {
-        commitDrop(val, "inactive", 0);
+        commitMove("active", idx, "inactive", 0);
       } else {
-        commitDrop(val, "active", activeChoices.length);
+        commitMove("inactive", idx, "active", activeChoices.length);
       }
     }
+  };
+
+  const handlePointerDown = (
+    zone: "active" | "inactive",
+    idx: number,
+    choice: SubscriptionTargetOption,
+    e: React.PointerEvent<HTMLDivElement>,
+  ) => {
+    if (e.button !== 0 || saving) return;
+    const cardEl = e.currentTarget;
+    const rect = cardEl.getBoundingClientRect();
+    const startX = e.clientX;
+    const startY = e.clientY;
+    const offsetX = startX - rect.left;
+    const offsetY = startY - rect.top;
+    const label = choice.Builtin ? t(choice.Label) : choice.Label;
+    const kind = t(choice.Kind);
+
+    let active = false;
+    let lastY = startY;
+    let direction: DragDirection = "none";
+    let currentTargetZone: "active" | "inactive" = zone;
+    let currentTargetIdx = idx;
+
+    const measureZoneTarget = (clientY: number, dir: DragDirection): { zone: "active" | "inactive"; index: number } => {
+      const activeZoneRect = activeZoneRef.current?.getBoundingClientRect();
+      const inactiveZoneRect = inactiveZoneRef.current?.getBoundingClientRect();
+      let targetZone: "active" | "inactive" = currentTargetZone;
+      if (activeZoneRect && inactiveZoneRect) {
+        const boundaryY = (activeZoneRect.bottom + inactiveZoneRect.top) / 2;
+        targetZone = clientY <= boundaryY ? "active" : "inactive";
+      }
+      const listEl = targetZone === "active" ? activeListRef.current : inactiveListRef.current;
+      const itemEls = listEl ? Array.from(listEl.querySelectorAll<HTMLElement>("[data-group-drag-item]")) : [];
+      const rects = itemEls.map((el) => {
+        const r = el.getBoundingClientRect();
+        return { top: r.top, height: r.height };
+      });
+      return { zone: targetZone, index: computeDropIndex(rects, clientY, dir) };
+    };
+
+    const cleanup = () => {
+      window.removeEventListener("pointermove", onMove);
+      window.removeEventListener("pointerup", onUp);
+      window.removeEventListener("pointercancel", onCancel);
+      window.removeEventListener("keydown", onKeyDown, true);
+      document.body.classList.remove("is-pointer-dragging");
+      setDragState(null);
+    };
+
+    const onMove = (ev: PointerEvent) => {
+      if (!active) {
+        if (Math.hypot(ev.clientX - startX, ev.clientY - startY) < 4) return;
+        active = true;
+        document.body.classList.add("is-pointer-dragging");
+      }
+      ev.preventDefault();
+      const dy = ev.clientY - lastY;
+      if (Math.abs(dy) >= 1) {
+        direction = dy > 0 ? "down" : "up";
+        lastY = ev.clientY;
+      }
+      const next = measureZoneTarget(ev.clientY, direction);
+      currentTargetZone = next.zone;
+      currentTargetIdx = next.index;
+      setDragState({
+        value: choice.Value,
+        sourceZone: zone,
+        sourceIdx: idx,
+        label,
+        kind,
+        x: ev.clientX - offsetX,
+        y: ev.clientY - offsetY,
+        offsetX,
+        offsetY,
+        width: rect.width,
+        targetZone: currentTargetZone,
+        targetIdx: currentTargetIdx,
+      });
+    };
+
+    const onUp = () => {
+      const wasActive = active;
+      const finalZone = currentTargetZone;
+      const finalIdx = currentTargetIdx;
+      cleanup();
+      if (wasActive) {
+        commitMove(zone, idx, finalZone, finalIdx);
+      }
+    };
+
+    const onCancel = () => {
+      cleanup();
+    };
+
+    const onKeyDown = (ev: KeyboardEvent) => {
+      if (ev.key === "Escape" && active) {
+        ev.preventDefault();
+        ev.stopPropagation();
+        cleanup();
+      }
+    };
+
+    window.addEventListener("pointermove", onMove, { passive: false });
+    window.addEventListener("pointerup", onUp);
+    window.addEventListener("pointercancel", onCancel);
+    window.addEventListener("keydown", onKeyDown, true);
   };
 
   const handleSubmit = async (e: React.FormEvent) => {
@@ -142,8 +235,8 @@ const GroupEditorModal: React.FC<GroupModalProps> = ({ open, group, isNew, onClo
         members: activeChoices.map((c) => c.Value).join("\n"),
       });
       setDirty(false);
-      onClose();
       await onSaved();
+      onClose();
     } catch (err) {
       setError(err instanceof ApiError ? err.message : t("Could not save proxy group."));
     } finally {
@@ -174,33 +267,16 @@ const GroupEditorModal: React.FC<GroupModalProps> = ({ open, group, isNew, onClo
     </span>
   );
 
-  const startDrag = (val: string, e: React.DragEvent) => {
-    setDraggingValue(val);
-    setDropPreview(null);
-    e.dataTransfer.effectAllowed = "move";
-    e.dataTransfer.setData("text/plain", val);
-  };
-
-  const finishDrag = () => {
-    setDraggingValue(null);
-    setDropPreview(null);
-  };
-
-  const updateDropPreview = (zone: "active" | "inactive", index: number) => {
-    setDropPreview((prev) => (prev && prev.zone === zone && prev.index === index ? prev : { zone, index }));
-  };
-
-  const handleDropOn = (zone: "active" | "inactive", fallbackIndex: number, e: React.DragEvent) => {
-    e.preventDefault();
-    e.stopPropagation();
-    const dragVal = draggingValue || e.dataTransfer.getData("text/plain");
-    const targetIndex = dropPreview && dropPreview.zone === zone ? dropPreview.index : fallbackIndex;
-    if (dragVal) {
-      commitDrop(dragVal, zone, targetIndex);
+  const visibleDropIndex = (zone: "active" | "inactive") => {
+    if (!dragState || dragState.targetZone !== zone) return -1;
+    if (dragState.sourceZone === zone && isNoOpSameListDrop(dragState.sourceIdx, dragState.targetIdx)) {
+      return -1;
     }
-    setDraggingValue(null);
-    setDropPreview(null);
+    return dragState.targetIdx;
   };
+
+  const activeDropIdx = visibleDropIndex("active");
+  const inactiveDropIdx = visibleDropIndex("inactive");
 
   return (
     <Modal
@@ -250,129 +326,125 @@ const GroupEditorModal: React.FC<GroupModalProps> = ({ open, group, isNew, onClo
 
             <div className="subscription-member-zones">
               <div
-                className={`subscription-member-zone subscription-member-zone--active ${dropPreview?.zone === "active" ? "is-drop-target" : ""}`}
-                onDragOver={(e) => {
-                  e.preventDefault();
-                  e.dataTransfer.dropEffect = "move";
-                  updateDropPreview("active", activeChoices.length);
-                }}
-                onDrop={(e) => handleDropOn("active", activeChoices.length, e)}
+                ref={activeZoneRef}
+                className={`subscription-member-zone subscription-member-zone--active ${dragState?.targetZone === "active" ? "is-drop-target" : ""}`}
               >
                 <div className="subscription-member-zone__header">
                   <strong>{t("Active options")}</strong>
                   <span className="panel__count">{activeChoices.length}</span>
                 </div>
-                <div className="subscription-member-list">
+                <div ref={activeListRef} className="subscription-member-list">
                   {activeChoices.length === 0 ? (
                     <div className="subscription-member-zone__empty">{t("Drag options here to enable")}</div>
                   ) : (
-                    <>
-                      {activeChoices.map((choice, idx) => {
-                        if (!matchesQuery(choice)) return null;
-                        const label = choice.Builtin ? t(choice.Label) : choice.Label;
-                        const kind = t(choice.Kind);
-                        const showBefore = dropPreview?.zone === "active" && dropPreview.index === idx;
-                        return (
-                          <React.Fragment key={choice.Value}>
-                            {showBefore && <div className="subscription-member-drop-line" aria-hidden="true" />}
-                            <div
-                              draggable
-                              tabIndex={0}
-                              className={`subscription-member subscription-member--draggable is-selected ${draggingValue === choice.Value ? "is-dragging" : ""}`}
-                              onDragStart={(e) => startDrag(choice.Value, e)}
-                              onDragOver={(e) => {
-                                e.preventDefault();
-                                e.stopPropagation();
-                                e.dataTransfer.dropEffect = "move";
-                                const rect = e.currentTarget.getBoundingClientRect();
-                                const placeAfter = e.clientY > rect.top + rect.height / 2;
-                                updateDropPreview("active", placeAfter ? idx + 1 : idx);
-                              }}
-                              onDrop={(e) => handleDropOn("active", idx, e)}
-                              onDragEnd={finishDrag}
-                              onKeyDown={(e) => handleCardKeyDown("active", choice.Value, e)}
-                            >
-                              {gripIcon}
-                              <span className="subscription-member__order">{idx + 1}</span>
-                              <div className="subscription-member__copy">
-                                <span>{label}</span>
-                                <small>{kind}</small>
-                              </div>
-                              {idx === 0 && <span className="subscription-member__default">{t("Default")}</span>}
-                            </div>
-                          </React.Fragment>
-                        );
-                      })}
-                      {dropPreview?.zone === "active" && dropPreview.index === activeChoices.length && (
-                        <div className="subscription-member-drop-line" aria-hidden="true" />
-                      )}
-                    </>
+                    activeChoices.map((choice, idx) => {
+                      if (!matchesQuery(choice)) return null;
+                      const label = choice.Builtin ? t(choice.Label) : choice.Label;
+                      const kind = t(choice.Kind);
+                      const isSource = dragState?.value === choice.Value;
+                      const dropBefore = activeDropIdx === idx;
+                      const dropAfter = idx === activeChoices.length - 1 && activeDropIdx === activeChoices.length;
+                      return (
+                        <div
+                          key={choice.Value}
+                          data-group-drag-item=""
+                          tabIndex={0}
+                          className={[
+                            "subscription-member",
+                            "subscription-member--draggable",
+                            "is-selected",
+                            isSource ? "is-dragging" : "",
+                            dropBefore ? "is-drop-before" : "",
+                            dropAfter ? "is-drop-after" : "",
+                          ]
+                            .filter(Boolean)
+                            .join(" ")}
+                          onPointerDown={(e) => handlePointerDown("active", idx, choice, e)}
+                          onKeyDown={(e) => handleCardKeyDown("active", idx, e)}
+                        >
+                          {gripIcon}
+                          <span className="subscription-member__order">{idx + 1}</span>
+                          <div className="subscription-member__copy">
+                            <span>{label}</span>
+                            <small>{kind}</small>
+                          </div>
+                          {idx === 0 && <span className="subscription-member__default">{t("Default")}</span>}
+                        </div>
+                      );
+                    })
                   )}
                 </div>
               </div>
 
               <div
-                className={`subscription-member-zone subscription-member-zone--inactive ${dropPreview?.zone === "inactive" ? "is-drop-target" : ""}`}
-                onDragOver={(e) => {
-                  e.preventDefault();
-                  e.dataTransfer.dropEffect = "move";
-                  updateDropPreview("inactive", inactiveChoices.length);
-                }}
-                onDrop={(e) => handleDropOn("inactive", inactiveChoices.length, e)}
+                ref={inactiveZoneRef}
+                className={`subscription-member-zone subscription-member-zone--inactive ${dragState?.targetZone === "inactive" ? "is-drop-target" : ""}`}
               >
                 <div className="subscription-member-zone__header">
                   <strong>{t("Inactive options")}</strong>
                   <span className="panel__count">{inactiveChoices.length}</span>
                 </div>
-                <div className="subscription-member-list">
+                <div ref={inactiveListRef} className="subscription-member-list">
                   {inactiveChoices.length === 0 ? (
                     <div className="subscription-member-zone__empty">{t("Drag options here to disable")}</div>
                   ) : (
-                    <>
-                      {inactiveChoices.map((choice, idx) => {
-                        if (!matchesQuery(choice)) return null;
-                        const label = choice.Builtin ? t(choice.Label) : choice.Label;
-                        const kind = t(choice.Kind);
-                        const showBefore = dropPreview?.zone === "inactive" && dropPreview.index === idx;
-                        return (
-                          <React.Fragment key={choice.Value}>
-                            {showBefore && <div className="subscription-member-drop-line" aria-hidden="true" />}
-                            <div
-                              draggable
-                              tabIndex={0}
-                              className={`subscription-member subscription-member--draggable is-inactive ${draggingValue === choice.Value ? "is-dragging" : ""}`}
-                              onDragStart={(e) => startDrag(choice.Value, e)}
-                              onDragOver={(e) => {
-                                e.preventDefault();
-                                e.stopPropagation();
-                                e.dataTransfer.dropEffect = "move";
-                                const rect = e.currentTarget.getBoundingClientRect();
-                                const placeAfter = e.clientY > rect.top + rect.height / 2;
-                                updateDropPreview("inactive", placeAfter ? idx + 1 : idx);
-                              }}
-                              onDrop={(e) => handleDropOn("inactive", idx, e)}
-                              onDragEnd={finishDrag}
-                              onKeyDown={(e) => handleCardKeyDown("inactive", choice.Value, e)}
-                            >
-                              {gripIcon}
-                              <div className="subscription-member__copy">
-                                <span>{label}</span>
-                                <small>{kind}</small>
-                              </div>
-                            </div>
-                          </React.Fragment>
-                        );
-                      })}
-                      {dropPreview?.zone === "inactive" && dropPreview.index === inactiveChoices.length && (
-                        <div className="subscription-member-drop-line" aria-hidden="true" />
-                      )}
-                    </>
+                    inactiveChoices.map((choice, idx) => {
+                      if (!matchesQuery(choice)) return null;
+                      const label = choice.Builtin ? t(choice.Label) : choice.Label;
+                      const kind = t(choice.Kind);
+                      const isSource = dragState?.value === choice.Value;
+                      const dropBefore = inactiveDropIdx === idx;
+                      const dropAfter = idx === inactiveChoices.length - 1 && inactiveDropIdx === inactiveChoices.length;
+                      return (
+                        <div
+                          key={choice.Value}
+                          data-group-drag-item=""
+                          tabIndex={0}
+                          className={[
+                            "subscription-member",
+                            "subscription-member--draggable",
+                            "is-inactive",
+                            isSource ? "is-dragging" : "",
+                            dropBefore ? "is-drop-before" : "",
+                            dropAfter ? "is-drop-after" : "",
+                          ]
+                            .filter(Boolean)
+                            .join(" ")}
+                          onPointerDown={(e) => handlePointerDown("inactive", idx, choice, e)}
+                          onKeyDown={(e) => handleCardKeyDown("inactive", idx, e)}
+                        >
+                          {gripIcon}
+                          <div className="subscription-member__copy">
+                            <span>{label}</span>
+                            <small>{kind}</small>
+                          </div>
+                        </div>
+                      );
+                    })
                   )}
                 </div>
               </div>
             </div>
           </fieldset>
         </div>
+
+        {dragState && (
+          <div
+            className={`subscription-member subscription-member--floating ${dragState.targetZone === "active" ? "is-selected" : "is-inactive"}`}
+            style={{
+              left: dragState.x,
+              top: dragState.y,
+              width: dragState.width,
+            }}
+            aria-hidden="true"
+          >
+            {gripIcon}
+            <div className="subscription-member__copy">
+              <span>{dragState.label}</span>
+              <small>{dragState.kind}</small>
+            </div>
+          </div>
+        )}
 
         <footer className="modal__footer">
           <button type="button" className="button button--secondary" onClick={onClose}>
@@ -484,8 +556,8 @@ const RuleEditorModal: React.FC<RuleModalProps> = ({ open, rule, targets, onClos
       }
       await submitMutation(url, fields);
       setDirty(false);
-      onClose();
       await onSaved();
+      onClose();
     } catch (err) {
       setError(err instanceof ApiError ? err.message : t("Could not save rule."));
     } finally {
@@ -500,8 +572,8 @@ const RuleEditorModal: React.FC<RuleModalProps> = ({ open, rule, targets, onClos
     try {
       await submitMutation(`/subscriptions/rules/${encodeURIComponent(rule.ID)}/delete`, {});
       setDirty(false);
-      onClose();
       await onSaved();
+      onClose();
     } catch (err) {
       setError(err instanceof ApiError ? err.message : t("Could not delete rule."));
     } finally {
@@ -688,13 +760,23 @@ export const SubscriptionsPage: React.FC = () => {
 
   const [ruleSearch, setRuleSearch] = useState("");
   const [orderedRules, setOrderedRules] = useState<SubscriptionRuleView[]>([]);
-  const [ruleActions, setRuleActions] = useState<Record<string, string>>({});
   const [defaultAction, setDefaultAction] = useState("proxy");
   const [reorderStatus, setReorderStatus] = useState("");
   const [reorderError, setReorderError] = useState(false);
-  const [dragId, setDragId] = useState<string | null>(null);
-  const dragOriginRef = useRef<SubscriptionRuleView[] | null>(null);
-  const droppedRef = useRef(false);
+  const [ruleDrag, setRuleDrag] = useState<{
+    id: string;
+    sourceIdx: number;
+    targetIdx: number;
+    matchLabel: string;
+    summary: string;
+    noResolve: boolean;
+    policyLabel: string;
+    toneClass: string;
+    x: number;
+    y: number;
+    width: number;
+  } | null>(null);
+  const ruleListRef = useRef<HTMLOListElement>(null);
   const [busyKey, setBusyKey] = useState("");
   const [pageError, setPageError] = useState("");
 
@@ -710,13 +792,13 @@ export const SubscriptionsPage: React.FC = () => {
     open: false,
     rule: null,
   });
+  const [finalModalOpen, setFinalModalOpen] = useState(false);
+  const [finalDraft, setFinalDraft] = useState("proxy");
+  const [finalError, setFinalError] = useState("");
 
   useEffect(() => {
     if (!policy) return;
     setOrderedRules(policy.Rules || []);
-    const nextActions: Record<string, string> = {};
-    for (const r of policy.Rules || []) nextActions[r.ID] = r.Action;
-    setRuleActions(nextActions);
     setDefaultAction(policy.DefaultAction || policy.DefaultTargets.Action || "proxy");
   }, [policy]);
 
@@ -752,32 +834,124 @@ export const SubscriptionsPage: React.FC = () => {
     void persistRuleOrder(copy, nextIdx);
   };
 
-  const saveRuleAction = async (ruleId: string) => {
-    if (busyKey) return;
-    setBusyKey(`rule-${ruleId}`);
-    setPageError("");
-    try {
-      await submitMutation(`/subscriptions/rules/${encodeURIComponent(ruleId)}/action`, {
-        action: ruleActions[ruleId] || "proxy",
+  const handleRulePointerDown = (
+    rule: SubscriptionRuleView,
+    index: number,
+    policyLabel: string,
+    toneClass: string,
+    e: React.PointerEvent<HTMLLIElement>,
+  ) => {
+    if (e.button !== 0 || Boolean(ruleSearch.trim()) || busyKey === "reorder") return;
+    const target = e.target as HTMLElement | null;
+    if (target?.closest("button:not([data-rule-drag-handle]), a, input")) return;
+
+    const rowEl = e.currentTarget;
+    const rect = rowEl.getBoundingClientRect();
+    const startX = e.clientX;
+    const startY = e.clientY;
+    const offsetX = startX - rect.left;
+    const offsetY = startY - rect.top;
+
+    let active = false;
+    let lastY = startY;
+    let direction: DragDirection = "none";
+    let currentTargetIdx = index;
+    const originRules = orderedRules;
+
+    const measureTargetIdx = (clientY: number, dir: DragDirection): number => {
+      const listEl = ruleListRef.current;
+      if (!listEl) return index;
+      const itemEls = Array.from(listEl.querySelectorAll<HTMLElement>("[data-rule-drag-item]"));
+      const rects = itemEls.map((el) => {
+        const r = el.getBoundingClientRect();
+        return { top: r.top, height: r.height };
       });
-      await reload();
-    } catch (err) {
-      setPageError(err instanceof ApiError ? err.message : t("Could not update rule."));
-    } finally {
-      setBusyKey("");
-    }
+      return computeDropIndex(rects, clientY, dir);
+    };
+
+    const cleanup = () => {
+      window.removeEventListener("pointermove", onMove);
+      window.removeEventListener("pointerup", onUp);
+      window.removeEventListener("pointercancel", onCancel);
+      window.removeEventListener("keydown", onKeyDown, true);
+      document.body.classList.remove("is-pointer-dragging");
+      setRuleDrag(null);
+    };
+
+    const onMove = (ev: PointerEvent) => {
+      if (!active) {
+        if (Math.hypot(ev.clientX - startX, ev.clientY - startY) < 4) return;
+        active = true;
+        document.body.classList.add("is-pointer-dragging");
+      }
+      ev.preventDefault();
+      // Gently scroll viewport if dragging near the top or bottom edge.
+      if (ev.clientY < 72) {
+        window.scrollBy(0, -10);
+      } else if (ev.clientY > window.innerHeight - 72) {
+        window.scrollBy(0, 10);
+      }
+      const dy = ev.clientY - lastY;
+      if (Math.abs(dy) >= 1) {
+        direction = dy > 0 ? "down" : "up";
+        lastY = ev.clientY;
+      }
+      currentTargetIdx = measureTargetIdx(ev.clientY, direction);
+      setRuleDrag({
+        id: rule.ID,
+        sourceIdx: index,
+        targetIdx: currentTargetIdx,
+        matchLabel: rule.MatchLabel,
+        summary: rule.Summary,
+        noResolve: rule.NoResolve,
+        policyLabel,
+        toneClass,
+        x: ev.clientX - offsetX,
+        y: ev.clientY - offsetY,
+        width: rect.width,
+      });
+    };
+
+    const onUp = () => {
+      const wasActive = active;
+      const finalTargetIdx = currentTargetIdx;
+      cleanup();
+      if (!wasActive) return;
+      const res = reorderList(originRules, index, finalTargetIdx);
+      if (res.changed) {
+        void persistRuleOrder(res.list, res.finalIndex, originRules);
+      }
+    };
+
+    const onCancel = () => {
+      cleanup();
+    };
+
+    const onKeyDown = (ev: KeyboardEvent) => {
+      if (ev.key === "Escape" && active) {
+        ev.preventDefault();
+        ev.stopPropagation();
+        cleanup();
+      }
+    };
+
+    window.addEventListener("pointermove", onMove, { passive: false });
+    window.addEventListener("pointerup", onUp);
+    window.addEventListener("pointercancel", onCancel);
+    window.addEventListener("keydown", onKeyDown, true);
   };
 
   const saveDefaultAction = async (e: React.FormEvent) => {
     e.preventDefault();
     if (busyKey) return;
     setBusyKey("default");
-    setPageError("");
+    setFinalError("");
     try {
-      await submitMutation("/subscriptions/default", { action: defaultAction });
+      await submitMutation("/subscriptions/default", { action: finalDraft });
       await reload();
+      setFinalModalOpen(false);
     } catch (err) {
-      setPageError(err instanceof ApiError ? err.message : t("Could not save final policy."));
+      setFinalError(err instanceof ApiError ? err.message : t("Could not save final policy."));
     } finally {
       setBusyKey("");
     }
@@ -791,8 +965,8 @@ export const SubscriptionsPage: React.FC = () => {
       await submitMutation(`/subscriptions/groups/${encodeURIComponent(deleteGroup.ID)}/delete`, {
         replacement: deleteReplacement,
       });
-      setDeleteGroup(null);
       await reload();
+      setDeleteGroup(null);
     } catch (err) {
       setPageError(err instanceof ApiError ? err.message : t("Could not delete proxy group."));
     } finally {
@@ -920,183 +1094,224 @@ export const SubscriptionsPage: React.FC = () => {
                   {t("Add rule")}
                 </button>
               </div>
-              <div className="subscription-rule-toolbar">
-                <label className="field">
-                  <span className="sr-only">{t("Search rules")}</span>
-                  <input
-                    type="search"
-                    value={ruleSearch}
-                    onChange={(e) => setRuleSearch(e.target.value)}
-                    placeholder={t("Search rules")}
-                  />
-                </label>
-                <p className="form-help">
-                  {t("First match wins. Drag the handle or use its arrow keys to reorder.")}
-                </p>
-              </div>
-
-              {orderedRules.length > 0 ? (
-                <>
-                  <ol className="subscription-rule-list" aria-busy={busyKey === "reorder"}>
-                    {orderedRules.map((rule, index) => {
-                      const targetOpts = mapTargetOptions(rule.Targets);
-                      const currentAct = ruleActions[rule.ID] ?? rule.Action;
-                      const selectedLabel = targetOpts.find((o) => o.value === currentAct)?.label || "";
-                      const matchesSearch =
-                        !searchLower ||
-                        `${rule.MatchLabel} ${rule.Summary} ${selectedLabel}`.toLocaleLowerCase().includes(searchLower);
-                      if (!matchesSearch) return null;
-
-                      return (
-                        <li
-                          key={rule.ID}
-                          draggable={!searchLower && busyKey !== "reorder"}
-                          className={dragId === rule.ID ? "is-dragging" : ""}
-                          onDragStart={() => {
-                            dragOriginRef.current = orderedRules;
-                            droppedRef.current = false;
-                            setDragId(rule.ID);
-                          }}
-                          onDragOver={(e) => {
-                            if (!dragId || dragId === rule.ID) return;
-                            e.preventDefault();
-                            const fromIdx = orderedRules.findIndex((r) => r.ID === dragId);
-                            if (fromIdx < 0 || fromIdx === index) return;
-                            const copy = [...orderedRules];
-                            const [moved] = copy.splice(fromIdx, 1);
-                            copy.splice(index, 0, moved);
-                            setOrderedRules(copy);
-                          }}
-                          onDrop={(e) => {
-                            e.preventDefault();
-                            if (!dragId) return;
-                            const finalIdx = orderedRules.findIndex((r) => r.ID === dragId);
-                            const origin = dragOriginRef.current || orderedRules;
-                            droppedRef.current = true;
-                            dragOriginRef.current = null;
-                            setDragId(null);
-                            if (finalIdx >= 0) void persistRuleOrder(orderedRules, finalIdx, origin);
-                          }}
-                          onDragEnd={() => {
-                            if (!droppedRef.current && dragOriginRef.current) {
-                              setOrderedRules(dragOriginRef.current);
-                            }
-                            dragOriginRef.current = null;
-                            droppedRef.current = false;
-                            setDragId(null);
-                          }}
-                        >
-                          <button
-                            type="button"
-                            className="subscription-rule__handle"
-                            disabled={Boolean(searchLower) || busyKey === "reorder"}
-                            aria-keyshortcuts="ArrowUp ArrowDown"
-                            onKeyDown={(e) => {
-                              if (e.key === "ArrowUp") {
-                                e.preventDefault();
-                                moveRuleByKey(index, -1);
-                              } else if (e.key === "ArrowDown") {
-                                e.preventDefault();
-                                moveRuleByKey(index, 1);
-                              }
-                            }}
-                          >
-                            <svg viewBox="0 0 20 20" aria-hidden="true">
-                              <circle cx="7" cy="5" r="1.2" />
-                              <circle cx="13" cy="5" r="1.2" />
-                              <circle cx="7" cy="10" r="1.2" />
-                              <circle cx="13" cy="10" r="1.2" />
-                              <circle cx="7" cy="15" r="1.2" />
-                              <circle cx="13" cy="15" r="1.2" />
-                            </svg>
-                            <span className="sr-only">{t("Reorder Rule")}</span>
-                          </button>
-                          <span className="subscription-rule__order">{index + 1}</span>
-                          <div className="subscription-rule__copy">
-                            <strong>{rule.MatchLabel}</strong>
-                            <small>
-                              {rule.Summary}
-                              {rule.NoResolve && (
-                                <>
-                                  {" · "}
-                                  <b>{t("No Resolve")}</b>
-                                </>
-                              )}
-                            </small>
-                          </div>
-                          <form
-                            className="subscription-rule__target"
-                            onSubmit={(e) => {
-                              e.preventDefault();
-                              void saveRuleAction(rule.ID);
-                            }}
-                            noValidate
-                          >
-                            <label className="field">
-                              <span className="sr-only">
-                                {t("Final policy")} · {t("Rule")} {index + 1}
-                              </span>
-                              <SelectBox
-                                value={currentAct}
-                                onChange={(val) => setRuleActions((prev) => ({ ...prev, [rule.ID]: val }))}
-                                options={targetOpts}
-                              />
-                            </label>
-                            <button
-                              type="submit"
-                              className="button button--secondary button--small"
-                              disabled={busyKey === `rule-${rule.ID}`}
-                            >
-                              {t("Save")}
-                            </button>
-                          </form>
-                          <div className="subscription-rule__actions">
-                            <button
-                              type="button"
-                              className="button button--secondary button--small"
-                              onClick={() => setRuleModal({ open: true, rule })}
-                            >
-                              {t("Edit")}
-                            </button>
-                          </div>
-                        </li>
-                      );
-                    })}
-                  </ol>
-                  {reorderStatus && (
-                    <p
-                      className={`subscription-rule__reorder-status ${reorderError ? "is-error" : "sr-only"}`}
-                      role="status"
-                      aria-live="polite"
-                    >
-                      {reorderStatus}
-                    </p>
-                  )}
-                </>
-              ) : (
-                <div className="panel__empty">
-                  <strong>{t("No rules")}</strong>
+              {orderedRules.length > 0 && (
+                <div className="subscription-rule-toolbar">
+                  <label className="field">
+                    <span className="sr-only">{t("Search rules")}</span>
+                    <input
+                      type="search"
+                      value={ruleSearch}
+                      onChange={(e) => setRuleSearch(e.target.value)}
+                      placeholder={t("Search rules")}
+                    />
+                  </label>
+                  <p className="form-help">
+                    {t("First match wins. Drag the handle or use its arrow keys to reorder.")}
+                  </p>
                 </div>
               )}
-            </section>
 
-            <section className="panel subscription-default">
-              <div className="panel__header">
-                <h2>{t("FINAL (Unmatched Rules)")}</h2>
-              </div>
-              <form className="inline-form" onSubmit={(e) => void saveDefaultAction(e)} noValidate>
-                <label className="field">
-                  <span>{t("Route")}</span>
-                  <SelectBox
-                    value={defaultAction}
-                    onChange={setDefaultAction}
-                    options={mapTargetOptions(policy.DefaultTargets)}
-                  />
-                </label>
-                <button type="submit" className="button button--secondary" disabled={busyKey === "default"}>
-                  {t("Save")}
-                </button>
-              </form>
+              <ol ref={ruleListRef} className="subscription-rule-list" aria-busy={busyKey === "reorder"}>
+                {orderedRules.map((rule, index) => {
+                  const targetOpts = mapTargetOptions(rule.Targets);
+                  const selectedLabel =
+                    targetOpts.find((o) => o.value === rule.Action)?.label ||
+                    (rule.ActionLabel ? t(rule.ActionLabel) : rule.Action);
+                  const actionToneClass =
+                    rule.Action === "proxy"
+                      ? "subscription-action--proxy"
+                      : rule.Action === "direct"
+                        ? "subscription-action--direct"
+                        : rule.Action === "reject"
+                          ? "subscription-action--reject"
+                          : "subscription-action--group";
+                  const matchesSearch =
+                    !searchLower ||
+                    `${rule.MatchLabel} ${rule.Summary} ${selectedLabel}`.toLocaleLowerCase().includes(searchLower);
+                  if (!matchesSearch) return null;
+
+                  const visibleRuleDropIdx =
+                    ruleDrag && !isNoOpSameListDrop(ruleDrag.sourceIdx, ruleDrag.targetIdx)
+                      ? ruleDrag.targetIdx
+                      : -1;
+                  const dropBefore = visibleRuleDropIdx === index;
+                  const dropAfter = index === orderedRules.length - 1 && visibleRuleDropIdx === orderedRules.length;
+
+                  return (
+                    <li
+                      key={rule.ID}
+                      data-rule-drag-item=""
+                      className={[
+                        ruleDrag?.id === rule.ID ? "is-dragging" : "",
+                        dropBefore ? "is-drop-before" : "",
+                        dropAfter ? "is-drop-after" : "",
+                      ]
+                        .filter(Boolean)
+                        .join(" ")}
+                      onPointerDown={(e) => handleRulePointerDown(rule, index, selectedLabel, actionToneClass, e)}
+                    >
+                      <button
+                        type="button"
+                        data-rule-drag-handle=""
+                        className="subscription-rule__handle"
+                        disabled={Boolean(searchLower) || busyKey === "reorder"}
+                        aria-keyshortcuts="ArrowUp ArrowDown"
+                        onKeyDown={(e) => {
+                          if (e.key === "ArrowUp") {
+                            e.preventDefault();
+                            moveRuleByKey(index, -1);
+                          } else if (e.key === "ArrowDown") {
+                            e.preventDefault();
+                            moveRuleByKey(index, 1);
+                          }
+                        }}
+                      >
+                        <svg viewBox="0 0 20 20" aria-hidden="true">
+                          <circle cx="7" cy="5" r="1.2" />
+                          <circle cx="13" cy="5" r="1.2" />
+                          <circle cx="7" cy="10" r="1.2" />
+                          <circle cx="13" cy="10" r="1.2" />
+                          <circle cx="7" cy="15" r="1.2" />
+                          <circle cx="13" cy="15" r="1.2" />
+                        </svg>
+                        <span className="sr-only">{t("Reorder Rule")}</span>
+                      </button>
+                      <span className="subscription-rule__order">{index + 1}</span>
+                      <div className="subscription-rule__copy">
+                        <strong>{rule.MatchLabel}</strong>
+                        <small>
+                          {rule.Summary}
+                          {rule.NoResolve && (
+                            <>
+                              {" · "}
+                              <b>{t("No Resolve")}</b>
+                            </>
+                          )}
+                        </small>
+                      </div>
+                      <span className={`subscription-action ${actionToneClass}`} title={selectedLabel}>
+                        {selectedLabel}
+                      </span>
+                      <div className="subscription-rule__actions">
+                        <button
+                          type="button"
+                          className="button button--secondary button--small"
+                          onClick={() => setRuleModal({ open: true, rule })}
+                        >
+                          {t("Edit")}
+                        </button>
+                      </div>
+                    </li>
+                  );
+                })}
+
+                {(() => {
+                  const defaultOpts = mapTargetOptions(policy.DefaultTargets);
+                  const finalLabel =
+                    defaultOpts.find((o) => o.value === defaultAction)?.label || defaultAction;
+                  const finalToneClass =
+                    defaultAction === "proxy"
+                      ? "subscription-action--proxy"
+                      : defaultAction === "direct"
+                        ? "subscription-action--direct"
+                        : defaultAction === "reject"
+                          ? "subscription-action--reject"
+                          : "subscription-action--group";
+                  const finalMatchesSearch =
+                    !searchLower ||
+                    `FINAL ${t("All unmatched traffic")} ${finalLabel}`.toLocaleLowerCase().includes(searchLower);
+                  if (!finalMatchesSearch) return null;
+                  return (
+                    <li className="subscription-rule--final">
+                      <span className="subscription-rule__handle subscription-rule__handle--static" aria-hidden="true">
+                        <svg viewBox="0 0 20 20">
+                          <path
+                            d="M10 4v10m0 0-3.5-3.5M10 14l3.5-3.5M5 16.5h10"
+                            fill="none"
+                            stroke="currentColor"
+                            strokeWidth="1.6"
+                            strokeLinecap="round"
+                            strokeLinejoin="round"
+                          />
+                        </svg>
+                      </span>
+                      <span className="subscription-rule__order subscription-rule__order--final" aria-hidden="true">
+                        *
+                      </span>
+                      <div className="subscription-rule__copy">
+                        <strong>FINAL</strong>
+                        <small>{t("All unmatched traffic")}</small>
+                      </div>
+                      <span className={`subscription-action ${finalToneClass}`} title={finalLabel}>
+                        {finalLabel}
+                      </span>
+                      <div className="subscription-rule__actions">
+                        <button
+                          type="button"
+                          className="button button--secondary button--small"
+                          onClick={() => {
+                            setFinalDraft(defaultAction);
+                            setFinalError("");
+                            setFinalModalOpen(true);
+                          }}
+                        >
+                          {t("Edit")}
+                        </button>
+                      </div>
+                    </li>
+                  );
+                })()}
+              </ol>
+
+              {reorderStatus && (
+                <p
+                  className={`subscription-rule__reorder-status ${reorderError ? "is-error" : "sr-only"}`}
+                  role="status"
+                  aria-live="polite"
+                >
+                  {reorderStatus}
+                </p>
+              )}
+
+              {ruleDrag && (
+                <div
+                  className="subscription-rule__drag-preview"
+                  style={{
+                    left: ruleDrag.x,
+                    top: ruleDrag.y,
+                    width: ruleDrag.width,
+                  }}
+                  aria-hidden="true"
+                >
+                  <span className="subscription-rule__handle">
+                    <svg viewBox="0 0 20 20">
+                      <circle cx="7" cy="5" r="1.2" />
+                      <circle cx="13" cy="5" r="1.2" />
+                      <circle cx="7" cy="10" r="1.2" />
+                      <circle cx="13" cy="10" r="1.2" />
+                      <circle cx="7" cy="15" r="1.2" />
+                      <circle cx="13" cy="15" r="1.2" />
+                    </svg>
+                  </span>
+                  <span className="subscription-rule__order">{ruleDrag.sourceIdx + 1}</span>
+                  <div className="subscription-rule__copy">
+                    <strong>{ruleDrag.matchLabel}</strong>
+                    <small>
+                      {ruleDrag.summary}
+                      {ruleDrag.noResolve && (
+                        <>
+                          {" · "}
+                          <b>{t("No Resolve")}</b>
+                        </>
+                      )}
+                    </small>
+                  </div>
+                  <span className={`subscription-action ${ruleDrag.toneClass}`}>{ruleDrag.policyLabel}</span>
+                  <div className="subscription-rule__actions">
+                    <span className="button button--secondary button--small">{t("Edit")}</span>
+                  </div>
+                </div>
+              )}
             </section>
 
             <GroupEditorModal
@@ -1114,6 +1329,47 @@ export const SubscriptionsPage: React.FC = () => {
               onClose={() => setRuleModal({ open: false, rule: null })}
               onSaved={reload}
             />
+
+            <Modal
+              open={finalModalOpen}
+              onClose={() => setFinalModalOpen(false)}
+              eyebrow={t("Fallback rule")}
+              title={t("Edit FINAL policy")}
+              size="compact"
+            >
+              <form onSubmit={(e) => void saveDefaultAction(e)} noValidate>
+                <div className="modal__body stack">
+                  {finalError && (
+                    <div className="notice notice--error" role="alert">
+                      {finalError}
+                    </div>
+                  )}
+                  <p className="form-help">
+                    {t("Applies to all traffic that does not match any rule above. This rule always stays last.")}
+                  </p>
+                  <label className="field">
+                    <span>{t("Route")}</span>
+                    <SelectBox
+                      value={finalDraft}
+                      onChange={setFinalDraft}
+                      options={mapTargetOptions(policy.DefaultTargets)}
+                    />
+                  </label>
+                </div>
+                <footer className="modal__footer">
+                  <button
+                    type="button"
+                    className="button button--secondary"
+                    onClick={() => setFinalModalOpen(false)}
+                  >
+                    {t("Cancel")}
+                  </button>
+                  <button type="submit" className="button button--primary" disabled={busyKey === "default"}>
+                    {busyKey === "default" ? t("Saving…") : t("Save")}
+                  </button>
+                </footer>
+              </form>
+            </Modal>
 
             <Modal
               open={Boolean(deleteGroup)}

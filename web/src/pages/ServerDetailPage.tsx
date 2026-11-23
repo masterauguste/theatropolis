@@ -13,7 +13,7 @@ export const ServerDetailPage: React.FC = () => {
   const { agentId = "" } = useParams();
   const navigate = useNavigate();
   const { t, submitMutation } = useApp();
-  const { data, loading, error, reload } = usePageData(`/servers/${encodeURIComponent(agentId)}/manage`);
+  const { data, loading, refreshing, error, reload } = usePageData(`/servers/${encodeURIComponent(agentId)}/manage`);
 
   const agent = data?.Agent;
 
@@ -197,6 +197,7 @@ export const ServerDetailPage: React.FC = () => {
                   type="button"
                   className="button button--secondary button--icon"
                   aria-label={t("Refresh server status")}
+                  disabled={refreshing}
                   onClick={() => void reload()}
                 >
                   <svg viewBox="0 0 24 24" aria-hidden="true">

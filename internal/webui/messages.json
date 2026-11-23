@@ -4262,5 +4262,21 @@
   "Drag options between Active and Inactive, or drag within Active to reorder. The first active option is selected by default. All available nodes expands to every proxy each user has access to.": {
     "en": "Drag options between Active and Inactive, or drag within Active to reorder. The first active option is selected by default. All available nodes expands to every proxy each user has access to.",
     "zh-CN": "在已启用和未启用之间拖放选项，或在已启用列表内拖动排序。排在第一位的已启用选项将作为默认选择。“全部可用节点”会展开为每位用户有权限访问的所有代理。"
+  },
+  "All unmatched traffic": {
+    "en": "All unmatched traffic",
+    "zh-CN": "所有未匹配的流量"
+  },
+  "Fallback rule": {
+    "en": "Fallback rule",
+    "zh-CN": "兜底规则"
+  },
+  "Edit FINAL policy": {
+    "en": "Edit FINAL policy",
+    "zh-CN": "编辑 FINAL 策略"
+  },
+  "Applies to all traffic that does not match any rule above. This rule always stays last.": {
+    "en": "Applies to all traffic that does not match any rule above. This rule always stays last.",
+    "zh-CN": "匹配以上规则均未命中的所有流量。此规则始终固定在最后。"
   }
 }

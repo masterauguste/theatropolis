@@ -2,6 +2,7 @@ import { describe, expect, it, vi } from "vitest";
 import { ApiError, fetchPage, submitForm } from "../api/client";
 import { endpointDraftToFields, endpointToDraft } from "../components/ListenerEditor";
 import { planDraftToFields, planToDraft } from "../components/MembershipPlanFields";
+import { computeDropIndex, isNoOpSameListDrop, moveBetweenLists, reorderList } from "../utils/dragSort";
 
 describe("SPA API client", () => {
   it("sends X-Theatropolis-SPA and Accept JSON headers for page loads", async () => {
@@ -131,6 +132,45 @@ describe("Endpoint and membership plan serialization", () => {
       expiration_mode: "finite",
       subscription_value: "30",
       subscription_unit: "days",
+    });
+  });
+});
+
+describe("Direction-sensitive drag sorting", () => {
+  const rects = [
+    { top: 0, height: 60 },
+    { top: 70, height: 60 },
+    { top: 140, height: 60 },
+  ];
+
+  it("advances early when dragging down and retreats early when dragging up", () => {
+    // At y=95 (25px into item 1, past 35% = 91px), downward drag targets slot 2 (after item 1).
+    expect(computeDropIndex(rects, 95, "down")).toBe(2);
+    // At y=105 (25px up from item 1 bottom, above 65% = 109px), upward drag targets slot 1 (before item 1).
+    expect(computeDropIndex(rects, 105, "up")).toBe(1);
+    // Crossing the 10px gap between item 0 and item 1 never jumps to the end.
+    expect(computeDropIndex(rects, 65, "down")).toBe(1);
+    expect(computeDropIndex(rects, 65, "up")).toBe(1);
+  });
+
+  it("reorders within a single list and ignores no-op slots", () => {
+    expect(isNoOpSameListDrop(1, 1)).toBe(true);
+    expect(isNoOpSameListDrop(1, 2)).toBe(true);
+    expect(reorderList(["a", "b", "c"], 0, 2)).toEqual({ list: ["b", "a", "c"], finalIndex: 1, changed: true });
+    expect(reorderList(["a", "b", "c"], 2, 0)).toEqual({ list: ["c", "a", "b"], finalIndex: 0, changed: true });
+    expect(reorderList(["a", "b", "c"], 1, 2)).toEqual({ list: ["a", "b", "c"], finalIndex: 1, changed: false });
+  });
+
+  it("moves items cleanly between active and inactive zones", () => {
+    expect(moveBetweenLists(["a", "b"], ["c", "d"], "active", 0, "inactive", 1)).toEqual({
+      active: ["b"],
+      inactive: ["c", "a", "d"],
+      changed: true,
+    });
+    expect(moveBetweenLists(["a", "b"], ["c", "d"], "inactive", 1, "active", 0)).toEqual({
+      active: ["d", "a", "b"],
+      inactive: ["c"],
+      changed: true,
     });
   });
 });
