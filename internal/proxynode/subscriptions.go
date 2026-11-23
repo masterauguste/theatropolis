@@ -312,6 +312,10 @@ func (s *Store) updateSubscriptionPolicy(mutation func(*SubscriptionPolicy) erro
 }
 
 func normalizeSubscriptionRuleInput(input SubscriptionRuleInput) SubscriptionRuleInput {
+	if input.Match == SubscriptionMatchIPPrivate {
+		input.Values = []string{"private"}
+		return input
+	}
 	values := make([]string, 0, len(input.Values))
 	for _, value := range input.Values {
 		value = strings.TrimSpace(value)

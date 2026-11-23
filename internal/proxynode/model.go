@@ -124,6 +124,7 @@ const (
 	SubscriptionMatchDomainRegex     SubscriptionMatch = "domain_regex"
 	SubscriptionMatchIPCIDR          SubscriptionMatch = "ip_cidr"
 	SubscriptionMatchSourceIPCIDR    SubscriptionMatch = "source_ip_cidr"
+	SubscriptionMatchIPPrivate       SubscriptionMatch = "ip_is_private"
 	SubscriptionMatchGeosite         SubscriptionMatch = "geosite"
 	SubscriptionMatchGeoIP           SubscriptionMatch = "geoip"
 	SubscriptionMatchDestinationPort SubscriptionMatch = "destination_port"

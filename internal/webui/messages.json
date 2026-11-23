@@ -4278,5 +4278,17 @@
   "Applies to all traffic that does not match any rule above. This rule always stays last.": {
     "en": "Applies to all traffic that does not match any rule above. This rule always stays last.",
     "zh-CN": "匹配以上规则均未命中的所有流量。此规则始终固定在最后。"
+  },
+  "Private / LAN": {
+    "en": "Private / LAN",
+    "zh-CN": "私有 / 局域网 IP"
+  },
+  "RFC 1918, loopback & link-local": {
+    "en": "RFC 1918, loopback & link-local",
+    "zh-CN": "RFC 1918、回环与链路本地地址"
+  },
+  "Matches private and local network IP addresses (RFC 1918, loopback, link-local, and IPv6 ULA).": {
+    "en": "Matches private and local network IP addresses (RFC 1918, loopback, link-local, and IPv6 ULA).",
+    "zh-CN": "匹配私有与本地局域网 IP 地址（RFC 1918、本地回环、链路本地及 IPv6 ULA）。"
   }
 }

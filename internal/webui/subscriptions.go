@@ -599,6 +599,9 @@ func subscriptionPolicyViewFor(policy proxynode.SubscriptionPolicy, nodes ...pro
 	sort.SliceStable(rules, func(left, right int) bool { return rules[left].Order < rules[right].Order })
 	for index, rule := range rules {
 		summary := strings.Join(rule.Values, ", ")
+		if rule.Match == proxynode.SubscriptionMatchIPPrivate {
+			summary = "RFC 1918, loopback & link-local"
+		}
 		view.Rules = append(view.Rules, subscriptionRuleView{
 			ID: rule.ID, Position: index + 1, Match: string(rule.Match), MatchLabel: subscriptionMatchLabel(rule.Match),
 			Values: strings.Join(rule.Values, "\n"), Summary: summary,
@@ -665,6 +668,7 @@ func subscriptionMatchLabel(match proxynode.SubscriptionMatch) string {
 		proxynode.SubscriptionMatchDomain: "Domain", proxynode.SubscriptionMatchDomainSuffix: "Domain suffix",
 		proxynode.SubscriptionMatchDomainKeyword: "Domain keyword", proxynode.SubscriptionMatchDomainRegex: "Domain regex",
 		proxynode.SubscriptionMatchIPCIDR: "IP/CIDR", proxynode.SubscriptionMatchSourceIPCIDR: "Source IP/CIDR",
+		proxynode.SubscriptionMatchIPPrivate: "Private / LAN",
 		proxynode.SubscriptionMatchGeosite: "Geosite", proxynode.SubscriptionMatchGeoIP: "GeoIP", proxynode.SubscriptionMatchDestinationPort: "Destination port",
 		proxynode.SubscriptionMatchSourcePort: "Source port", proxynode.SubscriptionMatchNetwork: "Network",
 		proxynode.SubscriptionMatchProcessName: "Process name",

@@ -295,4 +295,11 @@ func TestGlobalSubscriptionEditorOmitsIndividualNodesAndRejectsNodeTargets(t *te
 	if len(saved) != 1 || saved[0].Name != "AdBlock" || saved[0].AllNodes || len(saved[0].Members) != 2 || saved[0].Members[0] != proxynode.SubscriptionReject {
 		t.Fatalf("unexpected saved AdBlock group: %+v", saved)
 	}
+
+	// One-click Private / LAN rule saves cleanly even with empty values input.
+	post("/subscriptions/rules", url.Values{"match": {"ip_is_private"}, "values": {""}, "no_resolve": {"yes"}, "action": {"direct"}}, http.StatusSeeOther)
+	rules := f.proxyNodes.SubscriptionPolicy().Rules
+	if len(rules) != 1 || rules[0].Match != proxynode.SubscriptionMatchIPPrivate || !rules[0].NoResolve || rules[0].Action != proxynode.SubscriptionDirect {
+		t.Fatalf("unexpected saved Private / LAN rule: %+v", rules)
+	}
 }

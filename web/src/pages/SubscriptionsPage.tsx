@@ -544,10 +544,10 @@ const RuleEditorModal: React.FC<RuleModalProps> = ({ open, rule, targets, onClos
     setError("");
     try {
       const url = isNew ? "/subscriptions/rules" : `/subscriptions/rules/${encodeURIComponent(rule.ID)}`;
-      const supportsNoResolve = match === "ip_cidr" || match === "geoip";
+      const supportsNoResolve = match === "ip_cidr" || match === "geoip" || match === "ip_is_private";
       const fields: Record<string, string> = {
         match,
-        values,
+        values: match === "ip_is_private" ? "private" : values,
         action,
         no_resolve: supportsNoResolve && noResolve ? "yes" : "no",
       };
@@ -588,6 +588,7 @@ const RuleEditorModal: React.FC<RuleModalProps> = ({ open, rule, targets, onClos
     { value: "domain_regex", label: t("Domain regex") },
     { value: "ip_cidr", label: "IP/CIDR" },
     { value: "source_ip_cidr", label: t("Source IP/CIDR") },
+    { value: "ip_is_private", label: t("Private / LAN") },
     { value: "geosite", label: "Geosite" },
     { value: "geoip", label: "GeoIP" },
     { value: "destination_port", label: t("Destination port") },
@@ -620,7 +621,7 @@ const RuleEditorModal: React.FC<RuleModalProps> = ({ open, rule, targets, onClos
     return items;
   }, [kind, values, catalogOptions, t]);
 
-  const supportsNoResolve = match === "ip_cidr" || match === "geoip";
+  const supportsNoResolve = match === "ip_cidr" || match === "geoip" || match === "ip_is_private";
 
   return (
     <Modal
@@ -647,12 +648,25 @@ const RuleEditorModal: React.FC<RuleModalProps> = ({ open, rule, targets, onClos
                 setMatch(nextMatch);
                 setDirty(true);
                 if (nextKind && nextKind !== kind) setValues("");
+                if (nextMatch === "ip_is_private") {
+                  setValues("private");
+                  if (isNew) {
+                    setNoResolve(true);
+                    if (action === "proxy") setAction("direct");
+                  }
+                } else if (match === "ip_is_private") {
+                  setValues("");
+                }
               }}
               options={matchOptions}
             />
           </label>
 
-          {!kind ? (
+          {match === "ip_is_private" ? (
+            <p className="form-help">
+              {t("Matches private and local network IP addresses (RFC 1918, loopback, link-local, and IPv6 ULA).")}
+            </p>
+          ) : !kind ? (
             <label className="field">
               <span>{t("Values")}</span>
               <textarea
@@ -1178,9 +1192,9 @@ export const SubscriptionsPage: React.FC = () => {
                       </button>
                       <span className="subscription-rule__order">{index + 1}</span>
                       <div className="subscription-rule__copy">
-                        <strong>{rule.MatchLabel}</strong>
+                        <strong>{t(rule.MatchLabel)}</strong>
                         <small>
-                          {rule.Summary}
+                          {rule.Match === "ip_is_private" ? t(rule.Summary) : rule.Summary}
                           {rule.NoResolve && (
                             <>
                               {" · "}

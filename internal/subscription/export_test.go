@@ -273,3 +273,55 @@ func TestEmptyProxyGroupUsesDirect(t *testing.T) {
 		}
 	}
 }
+
+func TestPrivateLANRuleExportsAcrossFormatsAndOmitsTunStack(t *testing.T) {
+	profile := Profile{
+		Name:    "alice",
+		Default: proxynode.SubscriptionProxy,
+		Nodes: []Node{
+			{Name: "Tokyo", Protocol: proxynode.ProtocolAnyTLS, Server: "203.0.113.8", Port: 443, Password: "secret", ServerName: "proxy.example"},
+		},
+		Rules: []proxynode.SubscriptionRule{
+			{ID: "sru_012345678901234567890123", Order: 0, Match: proxynode.SubscriptionMatchIPPrivate, Values: []string{"private"}, NoResolve: true, Action: proxynode.SubscriptionDirect},
+		},
+	}
+	clash, _, err := Render(FormatClash, profile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(clash), "IP-CIDR,192.168.0.0/16,DIRECT,no-resolve") ||
+		!strings.Contains(string(clash), "IP-CIDR6,fe80::/10,DIRECT,no-resolve") {
+		t.Fatalf("unexpected Clash private LAN export:\n%s", clash)
+	}
+	surge, _, err := Render(FormatSurge, profile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(surge), "IP-CIDR,10.0.0.0/8,DIRECT,no-resolve") ||
+		!strings.Contains(string(surge), "IP-CIDR6,fc00::/7,DIRECT,no-resolve") {
+		t.Fatalf("unexpected Surge private LAN export:\n%s", surge)
+	}
+	singBox, _, err := Render(FormatSingBox, profile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(singBox), `"ip_is_private": true`) {
+		t.Fatalf("sing-box missing ip_is_private rule:\n%s", singBox)
+	}
+	if strings.Contains(string(singBox), `"action": "resolve"`) {
+		t.Fatalf("NoResolve ip_is_private rule unexpectedly emitted resolve action:\n%s", singBox)
+	}
+	if strings.Contains(string(singBox), `"stack"`) {
+		t.Fatalf("sing-box TUN inbound should omit deprecated stack field:\n%s", singBox)
+	}
+
+	// Without NoResolve, sing-box inserts resolve before ip_is_private.
+	profile.Rules[0].NoResolve = false
+	singBoxResolve, _, err := Render(FormatSingBox, profile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(singBoxResolve), `"action": "resolve"`) {
+		t.Fatalf("resolving ip_is_private rule did not emit resolve action:\n%s", singBoxResolve)
+	}
+}

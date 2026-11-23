@@ -331,8 +331,11 @@ func validateSubscriptionPolicy(policy SubscriptionPolicy) error {
 		if rule.Provider != "" || len(rule.Values) == 0 || len(rule.Values) > 256 {
 			return errors.New("subscription rule values are invalid")
 		}
-		if rule.NoResolve && rule.Match != SubscriptionMatchIPCIDR && rule.Match != SubscriptionMatchGeoIP {
-			return errors.New("subscription no-resolve is only valid for destination IP/CIDR and GeoIP rules")
+		if rule.NoResolve && rule.Match != SubscriptionMatchIPCIDR && rule.Match != SubscriptionMatchGeoIP && rule.Match != SubscriptionMatchIPPrivate {
+			return errors.New("subscription no-resolve is only valid for destination IP/CIDR, Private / LAN, and GeoIP rules")
+		}
+		if rule.Match == SubscriptionMatchIPPrivate && (len(rule.Values) != 1 || rule.Values[0] != "private") {
+			return errors.New("subscription private IP rule value is invalid")
 		}
 		for _, value := range rule.Values {
 			if strings.TrimSpace(value) != value || value == "" || len(value) > maxValueBytes || strings.ContainsRune(value, '\x00') {
@@ -395,7 +398,7 @@ func validSubscriptionAction(action SubscriptionAction) bool {
 func validSubscriptionMatch(match SubscriptionMatch) bool {
 	switch match {
 	case SubscriptionMatchDomain, SubscriptionMatchDomainSuffix, SubscriptionMatchDomainKeyword,
-		SubscriptionMatchDomainRegex, SubscriptionMatchIPCIDR, SubscriptionMatchSourceIPCIDR,
+		SubscriptionMatchDomainRegex, SubscriptionMatchIPCIDR, SubscriptionMatchSourceIPCIDR, SubscriptionMatchIPPrivate,
 		SubscriptionMatchGeosite, SubscriptionMatchGeoIP, SubscriptionMatchDestinationPort, SubscriptionMatchSourcePort,
 		SubscriptionMatchNetwork, SubscriptionMatchProcessName:
 		return true

@@ -184,8 +184,34 @@ func writeClashTLS(out *strings.Builder, node Node) {
 	out.WriteString("    skip-cert-verify: " + strconv.FormatBool(node.Insecure) + "\n")
 }
 
+var privateLANCIDRs = []string{
+	"127.0.0.0/8",
+	"10.0.0.0/8",
+	"172.16.0.0/12",
+	"192.168.0.0/16",
+	"169.254.0.0/16",
+	"::1/128",
+	"fc00::/7",
+	"fe80::/10",
+}
+
 func clashRuleLines(rule proxynode.SubscriptionRule) ([]string, error) {
 	target := csvField(actionName(rule.Action))
+	if rule.Match == proxynode.SubscriptionMatchIPPrivate {
+		lines := make([]string, 0, len(privateLANCIDRs))
+		for _, cidr := range privateLANCIDRs {
+			kind := "IP-CIDR"
+			if strings.Contains(cidr, ":") {
+				kind = "IP-CIDR6"
+			}
+			line := kind + "," + cidr + "," + target
+			if rule.NoResolve {
+				line += ",no-resolve"
+			}
+			lines = append(lines, line)
+		}
+		return lines, nil
+	}
 	kind := map[proxynode.SubscriptionMatch]string{
 		proxynode.SubscriptionMatchDomain: "DOMAIN", proxynode.SubscriptionMatchDomainSuffix: "DOMAIN-SUFFIX",
 		proxynode.SubscriptionMatchDomainKeyword: "DOMAIN-KEYWORD", proxynode.SubscriptionMatchDomainRegex: "DOMAIN-REGEX",
@@ -281,6 +307,21 @@ func surgeNode(node Node) (string, error) {
 
 func surgeRuleLines(rule proxynode.SubscriptionRule, ruleSetBaseURL string) ([]string, error) {
 	target := surgeField(actionName(rule.Action))
+	if rule.Match == proxynode.SubscriptionMatchIPPrivate {
+		lines := make([]string, 0, len(privateLANCIDRs))
+		for _, cidr := range privateLANCIDRs {
+			kind := "IP-CIDR"
+			if strings.Contains(cidr, ":") {
+				kind = "IP-CIDR6"
+			}
+			line := kind + "," + cidr + "," + target
+			if rule.NoResolve {
+				line += ",no-resolve"
+			}
+			lines = append(lines, line)
+		}
+		return lines, nil
+	}
 	// Surge's URL-REGEX matches the full request URL and is not equivalent to
 	// sing-box/Clash domain_regex. Silently emitting it would broaden or narrow
 	// administrator intent, so this non-portable match is omitted for Surge.
@@ -459,7 +500,7 @@ func renderSingBox(profile Profile) ([]byte, error) {
 			map[string]any{
 				"type": "tun", "tag": "tun-in",
 				"address":    []string{"172.19.0.1/30", "fdfe:dcba:9876::1/126"},
-				"auto_route": true, "strict_route": true, "stack": "system",
+				"auto_route": true, "strict_route": true,
 			},
 			map[string]any{
 				"type": "mixed", "tag": "mixed-in", "listen": "127.0.0.1", "listen_port": 7890,
@@ -498,7 +539,7 @@ func insertSingBoxRouteMetadataActions(rules []singBoxRouteRule) []map[string]an
 				needsSniff = true
 			}
 		}
-		for _, field := range []string{"ip_cidr", "geoip"} {
+		for _, field := range []string{"ip_cidr", "geoip", "ip_is_private"} {
 			if _, exists := rule[field]; exists {
 				needsResolve = true
 			}
@@ -603,6 +644,10 @@ func singBoxTLS(node Node) map[string]any {
 
 func singBoxRule(rule proxynode.SubscriptionRule) (map[string]any, error) {
 	result := map[string]any{"action": "route", "outbound": actionName(rule.Action)}
+	if rule.Match == proxynode.SubscriptionMatchIPPrivate {
+		result["ip_is_private"] = true
+		return result, nil
+	}
 	if rule.Match == proxynode.SubscriptionMatchGeoIP {
 		tags := make([]string, 0, len(rule.Values))
 		for _, value := range rule.Values {
