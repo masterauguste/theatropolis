@@ -14,8 +14,10 @@ func TestParseLinkLatencyTargetsSelectsManagedRelayLinks(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(targets) != 3 || targets[0].OutboundTag != "tp-out-first" || targets[0].Transport != "tcp" || targets[1].Port != 20048 ||
-		targets[2].Transport != "quic" || targets[2].ServerName != "hy.example" || targets[2].ObfsSecret != "secret" {
+	if len(targets) != 3 ||
+		targets[0].OutboundTag != "tp-out-first" || targets[0].Transport != "tcp" || targets[0].Port != PeerLatencyListenPort ||
+		targets[1].Transport != "tcp" || targets[1].Port != PeerLatencyListenPort ||
+		targets[2].Transport != "tcp" || targets[2].Port != PeerLatencyListenPort {
 		t.Fatalf("targets = %#v", targets)
 	}
 }

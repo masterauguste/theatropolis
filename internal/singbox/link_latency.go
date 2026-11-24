@@ -16,21 +16,18 @@ var (
 )
 
 // LinkLatencyTarget is one generated relay outbound needed for a parent-Agent
-// path probe. Hysteria2 obfuscation material stays local to the Agent and is
-// never included in its latency report.
+// TCP path probe on PeerLatencyListenPort.
 type LinkLatencyTarget struct {
 	OutboundTag string
 	Address     string
 	Port        uint16
 	Transport   string
-	ServerName  string
-	ObfsType    string
-	ObfsSecret  string
 }
 
 // LinkLatencyTargets returns generated relay outbounds from the currently
-// active configuration. TCP relays use a connect probe and Hysteria2 uses a
-// QUIC handshake; arbitrary user-authored outbounds are ignored by tag.
+// active configuration. Every relay outbound is probed via TCP on
+// PeerLatencyListenPort (20045); arbitrary user-authored outbounds are ignored
+// by tag.
 func (m *Manager) LinkLatencyTargets() ([]LinkLatencyTarget, error) {
 	config, exists, err := m.loadActiveConfig()
 	if err != nil || !exists {
@@ -48,13 +45,6 @@ func ParseLinkLatencyTargets(config []byte) ([]LinkLatencyTarget, error) {
 			Tag        string `json:"tag"`
 			Server     string `json:"server"`
 			ServerPort int    `json:"server_port"`
-			TLS        struct {
-				ServerName string `json:"server_name"`
-			} `json:"tls"`
-			Obfs struct {
-				Type     string `json:"type"`
-				Password string `json:"password"`
-			} `json:"obfs"`
 		} `json:"outbounds"`
 	}
 	if err := json.Unmarshal(config, &document); err != nil {
@@ -84,18 +74,11 @@ func ParseLinkLatencyTargets(config []byte) ([]LinkLatencyTarget, error) {
 			continue
 		}
 		seen[tag] = struct{}{}
-		transport := "tcp"
-		if outbound.Type == "hysteria2" {
-			transport = "quic"
-		}
 		targets = append(targets, LinkLatencyTarget{
 			OutboundTag: tag,
 			Address:     address,
-			Port:        uint16(outbound.ServerPort),
-			Transport:   transport,
-			ServerName:  strings.TrimSpace(outbound.TLS.ServerName),
-			ObfsType:    strings.TrimSpace(outbound.Obfs.Type),
-			ObfsSecret:  outbound.Obfs.Password,
+			Port:        PeerLatencyListenPort,
+			Transport:   "tcp",
 		})
 	}
 	return targets, nil
