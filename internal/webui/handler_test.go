@@ -1475,7 +1475,9 @@ func TestAdminAndPortalShowDailyUserTraffic(t *testing.T) {
 		t.Fatal(err)
 	}
 	listenerID := proxynode.ListenerPresetID("edge-online", node.Entrance.Endpoint)
-	if _, err := fixture.proxyNodes.ApplyTrafficDeltaReport("edge-online", fixture.now, []proxynode.UserTraffic{{
+	// Record using the current UTC clock so the row matches Store.UserDailyUsage's
+	// UTC+8 date window even between 22:00 and 23:59 UTC+8 (fixture.now is +2h).
+	if _, err := fixture.proxyNodes.ApplyTrafficDeltaReport("edge-online", time.Now().UTC(), []proxynode.UserTraffic{{
 		InboundPath: "/tp-in-" + strings.TrimPrefix(listenerID, "listener-"),
 		Username:    "Cinema-Alice", UplinkBytes: 3 << 20, DownlinkBytes: 2 << 20,
 	}}); err != nil {
