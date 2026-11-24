@@ -76,14 +76,10 @@ const LinkProbePanel: React.FC<LinkProbePanelProps> = ({ probeUrl, agentId, endp
   const [status, setStatus] = useState("idle");
   const [output, setOutput] = useState(t("Select a destination"));
   const abortRef = useRef<AbortController | null>(null);
+  const family = endpoint.family || "auto";
 
   const runProbe = useCallback(async () => {
-    if (endpoint.protocol === "reverse_wireguard") {
-      setStatus("idle");
-      setOutput(t("Reverse tunnel is verified after both endpoints are deployed."));
-      return;
-    }
-    if (!agentId || !endpoint.listen_port) {
+    if (!agentId) {
       setStatus("idle");
       setOutput(t("Select a destination"));
       return;
@@ -97,12 +93,7 @@ const LinkProbePanel: React.FC<LinkProbePanelProps> = ({ probeUrl, agentId, endp
       const body = new URLSearchParams({
         csrf_token: session.csrfToken || "",
         agent_id: agentId,
-        family: endpoint.family || "auto",
-        protocol: endpoint.protocol,
-        listen: endpoint.listen,
-        listen_port: endpoint.listen_port,
-        server_name: endpoint.server_name,
-        obfs_type: endpoint.obfs_type,
+        family,
       });
       const res = await fetchJSON<{ status?: string; label?: string; detail?: string }>(probeUrl, {
         method: "POST",
@@ -117,22 +108,20 @@ const LinkProbePanel: React.FC<LinkProbePanelProps> = ({ probeUrl, agentId, endp
       setStatus("error");
       setOutput(err instanceof ApiError ? err.message : t("Path probe unavailable"));
     }
-  }, [probeUrl, agentId, endpoint, session.csrfToken, t]);
+  }, [probeUrl, agentId, family, session.csrfToken, t]);
 
   useEffect(() => {
-    const timer = window.setTimeout(() => void runProbe(), 400);
+    const timer = window.setTimeout(() => void runProbe(), 250);
     return () => {
       window.clearTimeout(timer);
       abortRef.current?.abort();
     };
   }, [runProbe]);
 
-  const probeType = endpoint.protocol === "hysteria2" ? "QUIC" : "TCP";
-
   return (
     <section className="link-probe" data-status={status}>
       <div>
-        <span>{t(`Live ${probeType} Probe`)}</span>
+        <span>{t("Live TCP Probe")}</span>
         <output>{output}</output>
       </div>
       <button type="button" className="button button--secondary" onClick={() => void runProbe()}>
@@ -1466,7 +1455,7 @@ export const ProxyNodeDetailPage: React.FC = () => {
                                 ...(addBranchDialog.hop.DestinationAgentOptions || []).map((a) => ({
                                   value: a.ID,
                                   label: a.Name,
-                                  detail: a.LatencyDetail,
+                                  detail: t(a.LatencyDetail),
                                   status: a.LatencyStatus,
                                 })),
                               ]}
@@ -1656,7 +1645,7 @@ export const ProxyNodeDetailPage: React.FC = () => {
                         options={(replaceDestLink.DestinationAgentOptions || []).map((a) => ({
                           value: a.Deleted ? "" : a.ID,
                           label: `${a.Name}${a.Deleted ? ` — ${t("deleted")}` : ""}`,
-                          detail: a.LatencyDetail,
+                          detail: t(a.LatencyDetail),
                           status: a.LatencyStatus,
                           disabled: a.Deleted,
                         }))}

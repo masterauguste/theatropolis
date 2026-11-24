@@ -33,6 +33,11 @@ func TestValidateManagedConfigReservesHTTP01Port(t *testing.T) {
 			want:   ErrManagedUserAPIListenPort,
 		},
 		{
+			name:   "peer latency probe port is reserved",
+			config: `{"inbounds":[{"type":"shadowsocks","listen_port":20045}]}`,
+			want:   ErrPeerLatencyListenPort,
+		},
+		{
 			name:   "managed user API stays on loopback",
 			config: `{"services":[{"type":"ssm-api","tag":"tp-managed-users","listen":"127.0.0.1","listen_port":19090}]}`,
 		},

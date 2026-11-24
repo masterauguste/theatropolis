@@ -333,6 +333,8 @@ func serve(arguments []string) error {
 		}
 		return proxyNodes.RecordLinkLatencySnapshot(agentID, observedAt, observations)
 	})
+	server.SetAgentReverseOnlyLookup(proxyNodes.AgentReverseOnly)
+	server.StartPeerLatencyMonitor(ctx)
 	accessPath, err := resolveWebAccessPath(*stateDirectory, *webAuthFile)
 	if err != nil {
 		return fmt.Errorf("prepare unified web identity path: %w", err)

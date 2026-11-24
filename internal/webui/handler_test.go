@@ -104,6 +104,7 @@ type testAgentController struct {
 	migrationQueued     int
 	migrationSkipped    int
 	linkLatencies       map[string]control.LinkLatencyState
+	peerLatencies       map[control.PeerLatencyKey]control.LinkLatencyState
 	linkProbeResult     control.LinkLatencyState
 	linkProbeErr        error
 	linkProbeAgent      string
@@ -115,6 +116,18 @@ type testAgentController struct {
 func (c *testAgentController) LinkLatency(agentID, outboundTag string) (control.LinkLatencyState, bool) {
 	value, exists := c.linkLatencies[agentID+"/"+outboundTag]
 	return value, exists
+}
+
+func (c *testAgentController) PeerLatency(sourceAgentID, targetAgentID string) (control.LinkLatencyState, bool) {
+	value, exists := c.peerLatencies[control.PeerLatencyKey{SourceAgentID: sourceAgentID, TargetAgentID: targetAgentID}]
+	return value, exists
+}
+
+func (c *testAgentController) RecordPeerLatency(sourceAgentID, targetAgentID string, state control.LinkLatencyState) {
+	if c.peerLatencies == nil {
+		c.peerLatencies = make(map[control.PeerLatencyKey]control.LinkLatencyState)
+	}
+	c.peerLatencies[control.PeerLatencyKey{SourceAgentID: sourceAgentID, TargetAgentID: targetAgentID}] = state
 }
 
 func (c *testAgentController) RequestLinkLatencyProbe(_ context.Context, agentID string, target control.LinkLatencyProbeTarget) (control.LinkLatencyState, error) {
@@ -2019,17 +2032,19 @@ func TestProxyLinkLatencyProbeAndHistory(t *testing.T) {
 	if err := fixture.proxyNodes.MarkTopologyApplied(fixture.proxyNodes.Snapshot().Revision, []string{"edge-online", "edge-exit"}); err != nil {
 		t.Fatal(err)
 	}
-	fixture.controller.linkProbeResult = control.LinkLatencyState{ProbeType: "quic", Responded: true, Duration: 8 * time.Millisecond, ObservedAt: fixture.handler.(*Handler).now()}
+	fixture.controller.linkProbeResult = control.LinkLatencyState{ProbeType: "tcp", Responded: true, Connected: true, Duration: 8 * time.Millisecond, ObservedAt: fixture.handler.(*Handler).now()}
 	request := fixture.authenticatedMutationRequest(http.MethodPost, proxyLinkURL(node.ID, link.ID)+"/latency-probe", url.Values{
 		"csrf_token": {fixture.session.CSRFToken}, "agent_id": {"edge-exit"}, "family": {"ipv4"},
-		"protocol": {"hysteria2"}, "listen": {"::"}, "listen_port": {"8443"}, "server_name": {"exit.example"}, "obfs_type": {""},
 	}.Encode())
 	response := httptest.NewRecorder()
 	fixture.handler.ServeHTTP(response, request)
 	if response.Code != http.StatusOK || fixture.controller.linkProbeAgent != "edge-online" ||
-		fixture.controller.linkProbeAddress != "203.0.113.50" || fixture.controller.linkProbePort != 8443 || fixture.controller.linkProbeType != "quic" ||
-		!strings.Contains(response.Body.String(), `"status":"reference"`) {
-		t.Fatalf("probe = %d %q, parent=%q address=%q port=%d", response.Code, response.Body.String(), fixture.controller.linkProbeAgent, fixture.controller.linkProbeAddress, fixture.controller.linkProbePort)
+		fixture.controller.linkProbeAddress != "203.0.113.50" || fixture.controller.linkProbePort != control.PeerLatencyListenPort || fixture.controller.linkProbeType != "tcp" ||
+		!strings.Contains(response.Body.String(), `"status":"reachable"`) {
+		t.Fatalf("probe = %d %q, parent=%q address=%q port=%d type=%q", response.Code, response.Body.String(), fixture.controller.linkProbeAgent, fixture.controller.linkProbeAddress, fixture.controller.linkProbePort, fixture.controller.linkProbeType)
+	}
+	if cached, ok := fixture.controller.PeerLatency("edge-online", "edge-exit"); !ok || cached.Duration != 8*time.Millisecond {
+		t.Fatalf("cached peer latency = %+v, %v", cached, ok)
 	}
 	targetID := "0123456789abcdef0123456789abcdef"
 	now := fixture.handler.(*Handler).now()

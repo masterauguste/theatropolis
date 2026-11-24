@@ -9,7 +9,10 @@ import (
 	"strconv"
 )
 
-const HTTP01ListenPort = 80
+const (
+	HTTP01ListenPort      = 80
+	PeerLatencyListenPort = 20045
+)
 
 const disabledManagedConfig = "{\n  \"inbounds\": [],\n  \"outbounds\": [{\"type\": \"direct\", \"tag\": \"tp-direct\"}, {\"type\": \"block\", \"tag\": \"tp-reject\"}],\n  \"route\": {\"rules\": [], \"final\": \"tp-reject\"}\n}\n"
 
@@ -19,6 +22,10 @@ var ErrReservedListenPort = errors.New(
 
 var ErrManagedUserAPIListenPort = errors.New(
 	"an inbound uses the port reserved for the loopback managed-user API",
+)
+
+var ErrPeerLatencyListenPort = errors.New(
+	"an inbound uses port 20045, which is reserved for inter-server TCP latency probes",
 )
 
 var ErrUnsafeManagedUserAPI = errors.New(
@@ -72,6 +79,9 @@ func ValidateManagedConfig(config []byte) error {
 		if err == nil && numericPort == ManagedUserAPIListenPort {
 			return ErrManagedUserAPIListenPort
 		}
+		if err == nil && numericPort == PeerLatencyListenPort {
+			return ErrPeerLatencyListenPort
+		}
 	}
 	for _, serviceJSON := range document.Services {
 		var service map[string]json.RawMessage
@@ -106,7 +116,7 @@ func ValidateManagedConfig(config []byte) error {
 		if endpoint.Type != "wireguard" {
 			continue
 		}
-		if endpoint.System || endpoint.Port < 0 || endpoint.Port > 65535 || (endpoint.Port > 0 && endpoint.Port < 1024) || endpoint.Port == ManagedUserAPIListenPort || endpoint.Port == ACMEHTTP01RelayPort {
+		if endpoint.System || endpoint.Port < 0 || endpoint.Port > 65535 || (endpoint.Port > 0 && endpoint.Port < 1024) || endpoint.Port == ManagedUserAPIListenPort || endpoint.Port == ACMEHTTP01RelayPort || endpoint.Port == PeerLatencyListenPort {
 			return errors.New("managed WireGuard must be userspace and use an unprivileged, non-reserved UDP port")
 		}
 	}

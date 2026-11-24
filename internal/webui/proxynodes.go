@@ -2010,7 +2010,7 @@ func linkLatencyRange(value string) (string, time.Duration, time.Duration) {
 }
 
 func (h *Handler) proxyHopLatencyProbe(response http.ResponseWriter, request *http.Request) {
-	_, form, ok := h.authorizeProxyMutation(response, request, "agent_id", "family", "protocol", "listen", "listen_port", "server_name", "obfs_type")
+	_, form, ok := h.authorizeProxyMutation(response, request, "agent_id", "family")
 	if !ok {
 		return
 	}
@@ -2027,7 +2027,7 @@ func (h *Handler) proxyHopLatencyProbe(response http.ResponseWriter, request *ht
 }
 
 func (h *Handler) proxyLinkLatencyProbe(response http.ResponseWriter, request *http.Request) {
-	_, form, ok := h.authorizeProxyMutation(response, request, "agent_id", "family", "protocol", "listen", "listen_port", "server_name", "obfs_type")
+	_, form, ok := h.authorizeProxyMutation(response, request, "agent_id", "family")
 	if !ok {
 		return
 	}
@@ -2049,47 +2049,37 @@ func (h *Handler) proxyLinkLatencyProbe(response http.ResponseWriter, request *h
 }
 
 func (h *Handler) proxyLatencyProbe(response http.ResponseWriter, request *http.Request, parentAgent string, form url.Values) {
-	if h.controller == nil || h.controller.PoolRegistry() == nil || !h.enrolledAgent(form.Get("agent_id")) {
+	targetAgent := strings.TrimSpace(form.Get("agent_id"))
+	if h.controller == nil || h.controller.PoolRegistry() == nil || !h.enrolledAgent(targetAgent) {
 		writeUserError(response, "target Agent is unavailable", http.StatusBadRequest)
 		return
 	}
-	family, err := pool.ParseFamily(form.Get("family"))
+	rawFamily := strings.TrimSpace(form.Get("family"))
+	if rawFamily == "" {
+		rawFamily = "auto"
+	}
+	family, err := pool.ParseFamily(rawFamily)
 	if err != nil {
 		writeUserError(response, "address family is invalid", http.StatusBadRequest)
 		return
 	}
-	port, err := strconv.ParseUint(form.Get("listen_port"), 10, 16)
-	if err != nil || port == 0 {
-		writeUserError(response, "listen port is invalid", http.StatusBadRequest)
-		return
+	probeSource, probeTarget := parentAgent, targetAgent
+	if h.proxyNodes != nil && h.proxyNodes.AgentReverseOnly(targetAgent) {
+		probeSource, probeTarget = targetAgent, parentAgent
 	}
-	address, exists := h.controller.PoolRegistry().AgentAddressForFamily(form.Get("agent_id"), family)
+	address, exists := h.controller.PoolRegistry().AgentAddressForFamily(probeTarget, family)
 	if !exists {
 		writeUserError(response, "target Agent has no routable address", http.StatusConflict)
 		return
 	}
 	ctx, cancel := context.WithTimeout(request.Context(), 5*time.Second)
 	defer cancel()
-	probeType := "tcp"
-	if form.Get("protocol") == string(proxynode.ProtocolHysteria2) {
-		probeType = "quic"
-	}
-	material := h.proxyProbeEndpointMaterial(form.Get("agent_id"), form.Get("protocol"), form.Get("listen"), int(port))
 	target := control.LinkLatencyProbeTarget{
-		Address: address, Port: uint16(port), ProbeType: probeType,
-		ServerName: form.Get("server_name"), ObfsType: form.Get("obfs_type"),
+		Address:   address,
+		Port:      control.PeerLatencyListenPort,
+		ProbeType: "tcp",
 	}
-	if probeType == "quic" && material != nil && material.ObfsType == target.ObfsType {
-		target.ObfsSecret = material.ObfsSecret
-		if target.ServerName == "" {
-			target.ServerName = material.TLS.ServerName
-		}
-	}
-	if probeType == "quic" && target.ObfsType != "" && target.ObfsSecret == "" {
-		writeUserError(response, "Hysteria2 listener is not active yet", http.StatusConflict)
-		return
-	}
-	sample, err := h.controller.RequestLinkLatencyProbe(ctx, parentAgent, target)
+	sample, err := h.controller.RequestLinkLatencyProbe(ctx, probeSource, target)
 	if err != nil {
 		statusCode := http.StatusServiceUnavailable
 		if errors.Is(err, control.ErrLinkLatencyProbeUnsupported) {
@@ -2098,33 +2088,11 @@ func (h *Handler) proxyLatencyProbe(response http.ResponseWriter, request *http.
 		writeUserError(response, "path probe is unavailable", statusCode)
 		return
 	}
+	h.controller.RecordPeerLatency(probeSource, probeTarget, sample)
 	view := linkLatencyViewFromSample(sample, h.now())
 	response.Header().Set("Content-Type", "application/json")
 	response.Header().Set("Cache-Control", "no-store")
 	_ = json.NewEncoder(response).Encode(view)
-}
-
-func (h *Handler) proxyProbeEndpointMaterial(agentID, protocol, listen string, port int) *proxynode.Endpoint {
-	state := h.proxyNodes.Snapshot()
-	for _, node := range state.ProxyNodes {
-		hops := make(map[string]string, len(node.Hops))
-		for _, hop := range node.Hops {
-			hops[hop.ID] = hop.AgentID
-		}
-		if hops[node.Entrance.HopID] == agentID && string(node.Entrance.Endpoint.Protocol) == protocol &&
-			node.Entrance.Endpoint.Listen == listen && node.Entrance.Endpoint.ListenPort == port {
-			endpoint := node.Entrance.Endpoint
-			return &endpoint
-		}
-		for _, link := range node.Links {
-			if hops[link.ChildHopID] == agentID && string(link.Endpoint.Protocol) == protocol &&
-				link.Endpoint.Listen == listen && link.Endpoint.ListenPort == port {
-				endpoint := link.Endpoint
-				return &endpoint
-			}
-		}
-	}
-	return nil
 }
 
 func (h *Handler) enrolledAgent(agentID string) bool {
@@ -2392,48 +2360,71 @@ func (h *Handler) proxyDestinationAgentOptions(node proxynode.ProxyNode, parentH
 		links   []string
 	}
 	paths := make(map[string]pathView)
-	appliedNodes := h.proxyNodes.Snapshot().AppliedProxyNodes
-	for _, link := range node.Links {
-		if hops[link.ParentHopID] != parentAgent {
-			continue
+	state := h.proxyNodes.Snapshot()
+	appliedNodes := state.AppliedProxyNodes
+	for _, candidateNode := range state.ProxyNodes {
+		nodeHops := make(map[string]string, len(candidateNode.Hops))
+		for _, hop := range candidateNode.Hops {
+			nodeHops[hop.ID] = hop.AgentID
 		}
-		childAgent := hops[link.ChildHopID]
-		path := paths[childAgent]
-		path.links = append(path.links, link.ID)
-		candidate := h.topologyLinkLatencyView(node, appliedNodes, link)
-		if path.latency.ObservedAt == "" || candidate.ObservedAt > path.latency.ObservedAt {
-			path.latency = candidate
+		for _, link := range candidateNode.Links {
+			if nodeHops[link.ParentHopID] != parentAgent {
+				continue
+			}
+			childAgent := nodeHops[link.ChildHopID]
+			path := paths[childAgent]
+			if candidateNode.ID == node.ID {
+				path.links = append(path.links, link.ID)
+			}
+			candidate := h.topologyLinkLatencyView(candidateNode, appliedNodes, link)
+			if path.latency.ObservedAt == "" || candidate.ObservedAt > path.latency.ObservedAt {
+				path.latency = candidate
+			}
+			paths[childAgent] = path
 		}
-		paths[childAgent] = path
 	}
+	now := h.now()
 	for index := range options {
-		path, exists := paths[options[index].ID]
-		if !exists {
-			if options[index].Online {
-				options[index].LatencyDetail = "Not measured"
-				options[index].LatencyStatus = "pending"
+		path, hasLink := paths[options[index].ID]
+		if hasLink && len(path.links) > 0 {
+			options[index].LatencyLinkIDs = strings.Join(path.links, ",")
+		}
+		if !options[index].Online {
+			options[index].LatencyDetail = "Offline"
+			options[index].LatencyStatus = "offline"
+			continue
+		}
+		probeSource, probeTarget := parentAgent, options[index].ID
+		if options[index].ReverseOnly {
+			probeSource, probeTarget = options[index].ID, parentAgent
+		}
+		peerSample, hasPeer := h.controller.PeerLatency(probeSource, probeTarget)
+		if hasPeer && now.Sub(peerSample.ObservedAt) <= 180*time.Second {
+			view := linkLatencyViewFromSample(peerSample, now)
+			options[index].LatencyStatus = view.Status
+			if view.Status == "unreachable" {
+				options[index].LatencyDetail = "Unavailable"
 			} else {
-				options[index].LatencyDetail = "Offline"
-				options[index].LatencyStatus = "offline"
+				options[index].LatencyDetail = view.Label + " · TCP"
 			}
 			continue
 		}
-		options[index].LatencyLinkIDs = strings.Join(path.links, ",")
-		options[index].LatencyStatus = path.latency.Status
-		if path.latency.Label == "" || path.latency.Label == "—" {
-			if options[index].Online {
-				options[index].LatencyDetail = "Not measured"
-			} else {
-				options[index].LatencyDetail = "Offline"
-				options[index].LatencyStatus = "offline"
+		if hasLink && path.latency.Label != "" && path.latency.Label != "—" {
+			options[index].LatencyStatus = path.latency.Status
+			probeType := path.latency.ProbeType
+			if probeType == "" {
+				probeType = "tcp"
 			}
+			options[index].LatencyDetail = path.latency.Label + " · " + strings.ToUpper(probeType)
 			continue
 		}
-		probeType := path.latency.ProbeType
-		if probeType == "" {
-			probeType = "tcp"
+		if hasPeer {
+			options[index].LatencyStatus = "stale"
+			options[index].LatencyDetail = "Stale"
+			continue
 		}
-		options[index].LatencyDetail = path.latency.Label + " · " + strings.ToUpper(probeType)
+		options[index].LatencyDetail = "Not measured"
+		options[index].LatencyStatus = "pending"
 	}
 	return options
 }

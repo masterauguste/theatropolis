@@ -15,6 +15,7 @@ import (
 	"unicode"
 	"unicode/utf8"
 
+	"github.com/masterauguste/theatropolis/internal/singbox"
 	"golang.org/x/text/cases"
 	"golang.org/x/text/unicode/norm"
 )
@@ -467,10 +468,10 @@ func validateProxyNode(node ProxyNode, users map[string]User) error {
 			return fmt.Errorf("invalid Link endpoint: %w", err)
 		}
 		if link.Endpoint.Protocol == ProtocolReverseWireGuard {
-			if link.WireGuard != nil && (link.WireGuard.ProbePort < 1024 || link.WireGuard.ProbePort > 65535 || link.WireGuard.ProbePort == 19090 || link.WireGuard.ProbePort == 19091) {
+			if link.WireGuard != nil && (link.WireGuard.ProbePort < 1024 || link.WireGuard.ProbePort > 65535 || link.WireGuard.ProbePort == 19090 || link.WireGuard.ProbePort == 19091 || link.WireGuard.ProbePort == singbox.PeerLatencyListenPort) {
 				return errors.New("invalid private reverse readiness port")
 			}
-			if link.WireGuard == nil || !validBase64Length(link.WireGuard.PrivateKey, 32) || link.WireGuard.SOCKSPort < 1024 || link.WireGuard.SOCKSPort > 65535 || link.WireGuard.SOCKSPort == 19090 || link.WireGuard.SOCKSPort == 19091 {
+			if link.WireGuard == nil || !validBase64Length(link.WireGuard.PrivateKey, 32) || link.WireGuard.SOCKSPort < 1024 || link.WireGuard.SOCKSPort > 65535 || link.WireGuard.SOCKSPort == 19090 || link.WireGuard.SOCKSPort == 19091 || link.WireGuard.SOCKSPort == singbox.PeerLatencyListenPort {
 				return errors.New("invalid reverse WireGuard Link material")
 			}
 		} else if link.WireGuard != nil {
@@ -696,7 +697,7 @@ func validateEndpoint(endpoint Endpoint) error {
 	if endpoint.Listen == "" || net.ParseIP(endpoint.Listen) == nil {
 		return errors.New("listen address must be a literal IP address")
 	}
-	if endpoint.ListenPort < 1 || endpoint.ListenPort > 65535 || endpoint.ListenPort == 80 {
+	if endpoint.ListenPort < 1 || endpoint.ListenPort > 65535 || endpoint.ListenPort == 80 || endpoint.ListenPort == singbox.PeerLatencyListenPort {
 		return errors.New("listen port is invalid or reserved")
 	}
 	if !slices.Contains([]string{"", "auto", "ipv4", "ipv6"}, endpoint.Family) {
@@ -704,7 +705,7 @@ func validateEndpoint(endpoint Endpoint) error {
 	}
 	switch endpoint.Protocol {
 	case ProtocolReverseWireGuard:
-		if endpoint.Listen != "::" || endpoint.ListenPort < 1024 || endpoint.ListenPort == 19090 || endpoint.ListenPort == 19091 || !validBase64Length(endpoint.ServerKey, 32) || endpoint.Method != "" || endpoint.Multiplex != nil || endpoint.TLS != (TLSConfig{}) || endpoint.UpMbps != 0 || endpoint.DownMbps != 0 || endpoint.ObfsType != "" || endpoint.ObfsSecret != "" {
+		if endpoint.Listen != "::" || endpoint.ListenPort < 1024 || endpoint.ListenPort == 19090 || endpoint.ListenPort == 19091 || endpoint.ListenPort == singbox.PeerLatencyListenPort || !validBase64Length(endpoint.ServerKey, 32) || endpoint.Method != "" || endpoint.Multiplex != nil || endpoint.TLS != (TLSConfig{}) || endpoint.UpMbps != 0 || endpoint.DownMbps != 0 || endpoint.ObfsType != "" || endpoint.ObfsSecret != "" {
 			return errors.New("reverse WireGuard requires an unprivileged parent UDP port and no TLS or protocol-specific options")
 		}
 	case ProtocolShadowsocks:

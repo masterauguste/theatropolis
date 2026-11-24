@@ -12,6 +12,7 @@ import (
 	"strings"
 
 	"github.com/masterauguste/theatropolis/internal/pool"
+	"github.com/masterauguste/theatropolis/internal/singbox"
 )
 
 func (s *Store) AgentReverseOnly(agentID string) bool {
@@ -172,6 +173,9 @@ func reconcileReverseLinks(state *State, previous State) error {
 	}
 	allocate := func(agent, kind string) (int, error) {
 		for port := 20000; port <= 65535; port++ {
+			if port == singbox.PeerLatencyListenPort {
+				continue
+			}
 			if !used[agent][port] {
 				claim(agent, port)
 				return port, nil

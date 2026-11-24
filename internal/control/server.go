@@ -37,6 +37,8 @@ const (
 	CapabilityAddressProbe              = "address-probe-v1"
 	LinkLatencyCapability               = "link-latency-v1"
 	LinkLatencyProbeCapability          = "link-latency-probe-v1"
+	PeerLatencyListenerCapability       = "peer-latency-listener-v1"
+	PeerLatencyListenPort               = singbox.PeerLatencyListenPort
 	ManagedUserTrafficCapability        = "managed-user-traffic-v1"
 	ManagedUserTrafficDeltaCapability   = "managed-user-traffic-delta-v1"
 	ManagedUserTrafficRequestCapability = "managed-user-traffic-request-v1"
@@ -104,6 +106,12 @@ type Server struct {
 	linkLatency                      map[string]map[string]LinkLatencyState
 	linkLatencyProbeMu               sync.Mutex
 	linkLatencyProbeWaiters          map[string]chan LinkLatencyState
+	peerLatencyMu                    sync.RWMutex
+	peerLatency                      map[PeerLatencyKey]LinkLatencyState
+	peerLatencyTrigger               chan struct{}
+	agentReverseOnly                 func(string) bool
+	peerLatencyPortOverride          uint16
+	peerLatencyPeriod                time.Duration
 	closeOnce                        sync.Once
 	reverseProbeMu                   sync.Mutex
 	reverseProbeWaiters              map[string]chan bool
@@ -173,6 +181,8 @@ func NewServer(
 		managedUserTrafficWaiters:   make(map[string]chan error),
 		linkLatency:                 make(map[string]map[string]LinkLatencyState),
 		linkLatencyProbeWaiters:     make(map[string]chan LinkLatencyState),
+		peerLatency:                 make(map[PeerLatencyKey]LinkLatencyState),
+		peerLatencyTrigger:          make(chan struct{}, 1),
 		reverseProbeWaiters:         make(map[string]chan bool),
 	}
 	return server
@@ -268,6 +278,7 @@ func (s *Server) notifyProxyNodeAddressChange() {
 	if s.proxyNodeAddressHandler != nil {
 		s.proxyNodeAddressHandler()
 	}
+	s.TriggerPeerLatencySweep()
 }
 
 func (s *Server) Enroll(
@@ -450,6 +461,12 @@ func (s *Server) Connect(stream controlv1.AgentControlService_ConnectServer) err
 			LinkLatencyProbeCapability,
 		)
 	}
+	if _, supported := session.capabilities[PeerLatencyListenerCapability]; supported {
+		authResult.GetAuthenticationResult().Capabilities = append(
+			authResult.GetAuthenticationResult().Capabilities,
+			PeerLatencyListenerCapability,
+		)
+	}
 	if _, supported := session.capabilities[ReverseWireGuardCapability]; supported {
 		authResult.GetAuthenticationResult().Capabilities = append(authResult.GetAuthenticationResult().Capabilities, ReverseWireGuardCapability)
 	}
@@ -508,6 +525,7 @@ func (s *Server) Connect(stream controlv1.AgentControlService_ConnectServer) err
 		go s.proxyNodeUserHandler()
 	}
 	s.notifyProxyNodeTopologyReady(agentID)
+	s.TriggerPeerLatencySweep()
 	s.Logger.Info("agent connected", "agent_id", agentID)
 	defer s.Logger.Info("agent disconnected", "agent_id", agentID)
 
@@ -1969,6 +1987,17 @@ func (r *SessionRegistry) IsOnline(agentID string) bool {
 	defer r.mu.RUnlock()
 	_, exists := r.sessions[agentID]
 	return exists
+}
+
+func (r *SessionRegistry) OnlineAgentIDs() []string {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	ids := make([]string, 0, len(r.sessions))
+	for id := range r.sessions {
+		ids = append(ids, id)
+	}
+	slices.Sort(ids)
+	return ids
 }
 
 func (r *SessionRegistry) Supports(agentID, capability string) bool {

@@ -267,6 +267,24 @@ export const ListenerEditor: React.FC<ListenerEditorProps> = ({
         conflict: "",
       };
     }
+    if (candidate.port === 80) {
+      const msg = t("Port 80 is reserved for ACME HTTP-01 and cannot be used by a proxy inbound.");
+      return {
+        kind: "conflict" as const,
+        title: t("Reserved port"),
+        message: msg,
+        conflict: msg,
+      };
+    }
+    if (candidate.port === 20045) {
+      const msg = t("Port 20045 is reserved for inter-server TCP latency probes.");
+      return {
+        kind: "conflict" as const,
+        title: t("Reserved port"),
+        message: msg,
+        conflict: msg,
+      };
+    }
     const claims = new Set(listenerClaims(ownerAgent, candidate.protocol, candidate.listen, candidate.port));
     const others = catalog.filter((preset) => preset.AgentID === ownerAgent && preset.ID !== currentListenerId);
     const fields = compatibilityFields(candidate.protocol);
@@ -457,7 +475,7 @@ export const ListenerEditor: React.FC<ListenerEditorProps> = ({
                   onChange={(e) => onChange({ ...value, listen_port: e.target.value })}
                   required
                 />
-                <small>{t("Port 80 remains reserved for ACME.")}</small>
+                <small>{t("Ports 80 (ACME) and 20045 (latency probe) are reserved.")}</small>
               </label>
             </div>
 

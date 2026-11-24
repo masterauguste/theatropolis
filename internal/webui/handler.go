@@ -103,6 +103,8 @@ type AgentController interface {
 	// current accounting interval before an administrator resets usage.
 	RequestManagedUserTraffic(context.Context, string) error
 	LinkLatency(agentID, outboundTag string) (control.LinkLatencyState, bool)
+	PeerLatency(sourceAgentID, targetAgentID string) (control.LinkLatencyState, bool)
+	RecordPeerLatency(sourceAgentID, targetAgentID string, state control.LinkLatencyState)
 	RequestLinkLatencyProbe(context.Context, string, control.LinkLatencyProbeTarget) (control.LinkLatencyState, error)
 	QueueOnlineMasterMigration(context.Context, string, string) (int, int, error)
 }

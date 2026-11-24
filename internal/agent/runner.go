@@ -82,6 +82,10 @@ type Runner struct {
 	// scoped scheduler, e.g. one with a negative Interval to disable
 	// periodic probing.
 	Prober *ProbeScheduler
+	// PeerLatencyListenAddr optionally binds a dedicated TCP socket (e.g.
+	// ":20045") that peer Agents probe for inter-server RTT measurement.
+	PeerLatencyListenAddr string
+	peerLatencyActive     bool
 }
 
 func (r *Runner) Enroll(
@@ -123,6 +127,13 @@ func (r *Runner) Run(
 ) (runErr error) {
 	if err := r.validateIdentity(); err != nil {
 		return err
+	}
+	if listener := startPeerLatencyListener(ctx, r.PeerLatencyListenAddr); listener != nil {
+		r.peerLatencyActive = true
+		defer func() {
+			listener.Close()
+			r.peerLatencyActive = false
+		}()
 	}
 	if r.Manager != nil {
 		startup, err := r.Manager.Start(ctx)
@@ -234,7 +245,10 @@ func (r *Runner) runControlSession(
 	latencyProvider, reportsLinkLatency := r.Manager.(linkLatencyTargetProvider)
 	if reportsLinkLatency {
 		hello.Capabilities = append(hello.Capabilities, control.LinkLatencyCapability)
-		hello.Capabilities = append(hello.Capabilities, control.LinkLatencyProbeCapability)
+	}
+	hello.Capabilities = append(hello.Capabilities, control.LinkLatencyProbeCapability)
+	if r.peerLatencyActive {
+		hello.Capabilities = append(hello.Capabilities, control.PeerLatencyListenerCapability)
 	}
 	_, managesUserAuthority := r.Manager.(managedUserAuthorityManager)
 	if managesUserAuthority {
@@ -452,9 +466,6 @@ func (r *Runner) runControlSession(
 					}
 				}
 			case *controlv1.MasterFrame_LinkLatencyProbe:
-				if !reportsLinkLatency {
-					return errors.New("master requested Link latency from an incompatible agent")
-				}
 				go runLinkLatencyProbe(sessionContext, command.LinkLatencyProbe, linkLatencyProbeReports)
 			case *controlv1.MasterFrame_ReverseTunnelProbe:
 				if !supportsReverse || reverseProbing || command.ReverseTunnelProbe == nil {

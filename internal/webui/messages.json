@@ -1867,6 +1867,10 @@
     "en": "Pool",
     "zh-CN": "出口池"
   },
+  "Port 20045 is reserved for inter-server TCP latency probes.": {
+    "en": "Port 20045 is reserved for inter-server TCP latency probes.",
+    "zh-CN": "端口 20045 保留给服务器间 TCP 延迟探测，不能用于代理入站。"
+  },
   "Port 80 is reserved for ACME HTTP-01 and cannot be used by a proxy inbound.": {
     "en": "Port 80 is reserved for ACME HTTP-01 and cannot be used by a proxy inbound.",
     "zh-CN": "端口 80 保留给 ACME HTTP-01，不能用于代理入站。"
@@ -1874,6 +1878,14 @@
   "Port 80 remains reserved for ACME.": {
     "en": "Port 80 remains reserved for ACME.",
     "zh-CN": "端口 80 保留给 ACME。"
+  },
+  "Ports 80 (ACME) and 20045 (latency probe) are reserved.": {
+    "en": "Ports 80 (ACME) and 20045 (latency probe) are reserved.",
+    "zh-CN": "端口 80（ACME）和 20045（延迟探测）为保留端口。"
+  },
+  "Reserved port": {
+    "en": "Reserved port",
+    "zh-CN": "保留端口"
   },
   "Port": {
     "en": "Port",

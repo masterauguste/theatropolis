@@ -111,6 +111,11 @@ func run(arguments []string) error {
 		"/etc/theatropolis/acme-http01-master-relay",
 		"installer-managed marker for a co-located Master ACME relay",
 	)
+	peerLatencyListen := flags.String(
+		"peer-latency-listen",
+		":"+strconv.Itoa(control.PeerLatencyListenPort),
+		"TCP listen address for inter-server latency probes (empty to disable)",
+	)
 	showVersion := flags.Bool("version", false, "print version")
 	if err := flags.Parse(arguments); err != nil {
 		return err
@@ -231,12 +236,13 @@ func run(arguments []string) error {
 		}
 	}
 	runner := &agent.Runner{
-		ACMEHTTP01Relay: acmeRelay,
-		AgentVersion:    version,
-		SingBoxVersion:  singBoxVersion,
-		PrivateKey:      privateKey,
-		Validator:       validator,
-		MasterMigrator:  controlTarget,
+		ACMEHTTP01Relay:       acmeRelay,
+		AgentVersion:          version,
+		SingBoxVersion:        singBoxVersion,
+		PrivateKey:            privateKey,
+		Validator:             validator,
+		MasterMigrator:        controlTarget,
+		PeerLatencyListenAddr: *peerLatencyListen,
 	}
 	updater, err := agentupdate.NewScheduler(*stateDirectory)
 	if err != nil {
